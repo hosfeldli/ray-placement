@@ -169,11 +169,11 @@ struct LauncherView: View {
                 }
                 .buttonStyle(.bordered)
                 .accessibilityHint("Copies the reviewed text")
-                Button("Paste \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
+                Button("Replace \(review.hasSuggestedChanges ? "Selection" : "Selected Text")") {
                     viewModel.pasteWritingResult(review)
                 }
                 .buttonStyle(.borderedProminent)
-                .accessibilityHint("Pastes the reviewed text into the previous application")
+                .accessibilityHint("Replaces the original selection without using the clipboard")
             }
 
             ScrollView {

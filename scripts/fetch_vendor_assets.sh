@@ -130,7 +130,7 @@ find "$COEDIT_DIRECTORY/node_modules/onnxruntime-node/dist" -type f -name '*.map
 test ! -e "$COEDIT_DIRECTORY/node_modules/adm-zip"
 test -f "$COEDIT_DIRECTORY/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/onnxruntime_binding.node"
 COEDIT_SMOKE_RESULT="$(printf 'This are a sentence with bad grammer.' | \
-  "$COEDIT_DIRECTORY/node" "$COEDIT_DIRECTORY/runner.mjs" "$MODEL_DIRECTORY")"
+  "$COEDIT_DIRECTORY/node" "$COEDIT_DIRECTORY/runner.mjs" "$MODEL_DIRECTORY" 1)"
 [[ "$COEDIT_SMOKE_RESULT" == "This is a sentence with bad grammar." ]]
 
 QWEN_MODEL="$QWEN_DIRECTORY/Qwen3-1.7B-Q8_0.gguf"

@@ -68,6 +68,7 @@ enum SystemAction {
     case openExtensionsFolder
     case reloadExtensions
     case clearClipboardHistory
+    case openNotes
     case openSettings
     case quit
 }

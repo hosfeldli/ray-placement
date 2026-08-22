@@ -15,6 +15,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let panel: LauncherPanel
     private let extensionExecutor = ExtensionExecutor()
     private let writingRunner = WritingProviderRunner()
+    private lazy var notesWindow = NotesWindowController()
     private var previousApplication: NSRunningApplication?
     private var localEventMonitor: Any?
     private lazy var settingsWindow = SettingsWindowController(
@@ -58,11 +59,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         extensionExecutor.cancelAll()
         writingRunner.cancel()
         clipboard.flush()
+        notesWindow.shutdown()
     }
 
     func showSettings() {
         hide()
         settingsWindow.present()
+    }
+
+    func showNotes() {
+        hide()
+        notesWindow.present()
     }
 
     func executeExtensionFromHotkey(_ command: LoadedExtensionCommand) {
@@ -377,6 +384,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .clearClipboardHistory:
             clipboard.clear()
+
+        case .openNotes:
+            showNotes()
 
         case .openSettings:
             showSettings()

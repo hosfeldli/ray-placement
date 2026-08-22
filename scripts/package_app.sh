@@ -12,6 +12,11 @@ ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
 HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 COEDIT_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/CoEdit"
 QWEN_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Qwen"
+USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
+LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
+LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
+LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
+LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
 
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
@@ -61,7 +66,35 @@ rm -rf "$ICONSET_DIRECTORY"
 cp "$ICON_FILE" "$CONTENTS_DIRECTORY/Resources/RayPlacement.icns"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
-codesign --force --deep --sign - "$APP_DIRECTORY"
+if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+    codesign --force --deep --sign - "$APP_DIRECTORY"
+    echo "Warning: local signing was disabled; this build is ad-hoc signed."
+elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then
+    KEYCHAIN_PASSWORD="$(<"$LOCAL_SIGNING_PASSWORD")"
+    security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$LOCAL_SIGNING_KEYCHAIN"
+    if security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | grep -q "\"$LOCAL_SIGNING_IDENTITY\""; then
+        codesign \
+            --force \
+            --deep \
+            --keychain "$LOCAL_SIGNING_KEYCHAIN" \
+            --sign "$LOCAL_SIGNING_IDENTITY" \
+            "$APP_DIRECTORY"
+        echo "Signed with the stable RayPlacement local identity."
+    elif [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+        echo "RayPlacement's local signing identity exists but is not trusted for code signing."
+        exit 1
+    else
+        codesign --force --deep --sign - "$APP_DIRECTORY"
+        echo "Warning: the local identity is not trusted yet; this build is ad-hoc signed."
+    fi
+else
+    if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+        echo "Stable signing is required. Run scripts/setup_local_signing.sh first."
+        exit 1
+    fi
+    codesign --force --deep --sign - "$APP_DIRECTORY"
+    echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
+fi
 "$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
 
 echo "Packaged: $APP_DIRECTORY"

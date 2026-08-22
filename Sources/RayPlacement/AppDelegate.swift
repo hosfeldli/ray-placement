@@ -52,6 +52,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
+    @objc func showNotes() { launcher.showNotes() }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func quit() { NSApp.terminate(nil) }
 
@@ -145,6 +146,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
+        let notes = NSMenuItem(title: "Notes…", action: #selector(showNotes), keyEquivalent: "n")
+        notes.keyEquivalentModifierMask = [.command, .shift]
+        notes.target = self
+        menu.addItem(notes)
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
@@ -164,6 +169,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
+        let notes = NSMenuItem(title: "Notes…", action: #selector(showNotes), keyEquivalent: "n")
+        notes.keyEquivalentModifierMask = [.command, .shift]
+        notes.target = self
+        appMenu.addItem(notes)
         appMenu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit RayPlacement", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self

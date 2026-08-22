@@ -110,6 +110,28 @@ For `shell`, `arguments` is an array passed directly to the process. RayPlacemen
 9. Do not read secrets or send data over the network unless the user explicitly requested and approved that behavior.
 10. Verify a file or directory exists before opening, modifying, or deleting it. Avoid destructive actions by default.
 
+## Required AI performance behavior
+
+An extension that starts an AI model or another expensive worker must obey RayPlacement's resource contract:
+
+1. Read `RAYPLACEMENT_THREAD_LIMIT` and configure every model/runtime thread pool to that number or lower.
+2. Honor `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, and `TOKENIZERS_PARALLELISM` rather than overwriting them.
+3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` only to choose documented quality-versus-speed behavior; never silently download a larger model.
+4. Finish before `RAYPLACEMENT_TIMEOUT_SECONDS`. RayPlacement will terminate the process at that deadline, so keep partial writes atomic.
+5. Load the model only after command invocation and release it by exiting. Do not leave daemons, launch agents, background watchers, or live dictation sessions running.
+6. Avoid GPU use by default. If GPU acceleration is genuinely necessary, state that in the manifest documentation and provide a CPU mode.
+7. Bound input, output, model context, and temporary files. RayPlacement stores only the first 1 MB of process output, but the extension remains responsible for its own memory and disk usage.
+8. Document approximate model download size, peak memory, network behavior, data destination, and whether the thread variables are fully enforced by the runtime.
+
+A conservative shell extension can start with:
+
+```zsh
+thread_limit="${RAYPLACEMENT_THREAD_LIMIT:-1}"
+timeout_seconds="${RAYPLACEMENT_TIMEOUT_SECONDS:-60}"
+```
+
+Validate both values before passing them as separate arguments to a runtime. Do not interpolate them into an evaluated command string.
+
 Extensions run with the user's normal authority. Paste actions and selected-text capture can ask for macOS Accessibility permission. A `checkWriting` action must use the selected text provided by Accessibility and must not silently substitute clipboard contents. Ordinary global shortcuts, file opening, and script execution do not require Accessibility permission.
 
 ## AI implementation checklist
@@ -125,7 +147,8 @@ Before presenting an extension as complete, an AI agent should:
 7. Open RayPlacement, reload extensions, and confirm every new command is visible by title.
 8. Open **Settings → Extensions** and confirm the command has a shortcut recorder.
 9. Run the command from the launcher and, if practical, from a configured hotkey.
-10. Document permissions, local storage, network use, external tools, and failure behavior.
+10. For AI extensions, test Eco mode and confirm the launched process uses the requested thread count and exits at its deadline.
+11. Document permissions, performance behavior, approximate memory, local storage, network use, external tools, and failure behavior.
 
 ## Reference extensions
 

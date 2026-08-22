@@ -7,10 +7,13 @@ import RayPlacementWriting
 final class ExtensionExecutor {
     private var activeProcesses: [UUID: Process] = [:]
     private var cancelledProcesses = Set<UUID>()
+    private var timedOutProcesses = Set<UUID>()
+    private var timeoutWorkItems: [UUID: DispatchWorkItem] = [:]
 
     func cancelAll() {
         for (identifier, process) in activeProcesses {
             cancelledProcesses.insert(identifier)
+            timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
             if process.isRunning { process.terminate() }
         }
     }
@@ -81,8 +84,23 @@ final class ExtensionExecutor {
         }
 
         let task = Process()
+        let performance = SettingsStore.shared.extensionPerformance
         task.executableURL = executable
         task.arguments = action.arguments ?? []
+        task.qualityOfService = performance.qualityOfService
+        task.environment = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
+            "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
+            "LANG": "en_US.UTF-8",
+            "OMP_NUM_THREADS": String(performance.threadLimit),
+            "OMP_THREAD_LIMIT": String(performance.threadLimit),
+            "MKL_NUM_THREADS": String(performance.threadLimit),
+            "VECLIB_MAXIMUM_THREADS": String(performance.threadLimit),
+            "TOKENIZERS_PARALLELISM": "false",
+            "RAYPLACEMENT_PERFORMANCE_SCALE": performance.rawValue,
+            "RAYPLACEMENT_THREAD_LIMIT": String(performance.threadLimit),
+            "RAYPLACEMENT_TIMEOUT_SECONDS": String(Int(performance.extensionTimeout))
+        ]
         if let workingDirectory = action.workingDirectory {
             task.currentDirectoryURL = resolve(workingDirectory, relativeTo: directory)
         } else {
@@ -103,7 +121,23 @@ final class ExtensionExecutor {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        let timeout = DispatchWorkItem { [weak self] in
+            DispatchQueue.main.async {
+                guard let self,
+                      let running = self.activeProcesses[identifier],
+                      running.isRunning else { return }
+                self.timedOutProcesses.insert(identifier)
+                running.terminate()
+            }
+        }
+        timeoutWorkItems[identifier] = timeout
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + performance.extensionTimeout,
+            execute: timeout
+        )
+
+        let executionQueue = DispatchQueue.global(qos: performance.dispatchQoS)
+        executionQueue.async {
             do {
                 let handle = output.fileHandleForReading
                 let limit = 1_000_000
@@ -121,8 +155,14 @@ final class ExtensionExecutor {
                 if truncated { outputText += "\n\n[Output truncated after 1 MB]" }
                 DispatchQueue.main.async {
                     self.activeProcesses.removeValue(forKey: identifier)
-                    if self.cancelledProcesses.remove(identifier) != nil { return }
-                    if task.terminationStatus == 0 {
+                    self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
+                    if self.cancelledProcesses.remove(identifier) != nil {
+                        self.timedOutProcesses.remove(identifier)
+                        return
+                    }
+                    if self.timedOutProcesses.remove(identifier) != nil {
+                        completion(.failure(ExecutionError.timedOut(Int(performance.extensionTimeout))))
+                    } else if task.terminationStatus == 0 {
                         completion(.success(outputText.isEmpty ? nil : outputText))
                     } else {
                         completion(.failure(ExecutionError.processFailed(task.terminationStatus, outputText)))
@@ -131,8 +171,12 @@ final class ExtensionExecutor {
             } catch {
                 DispatchQueue.main.async {
                     self.activeProcesses.removeValue(forKey: identifier)
+                    self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
                     if self.cancelledProcesses.remove(identifier) == nil {
+                        self.timedOutProcesses.remove(identifier)
                         completion(.failure(error))
+                    } else {
+                        self.timedOutProcesses.remove(identifier)
                     }
                 }
             }
@@ -151,6 +195,7 @@ final class ExtensionExecutor {
         case notExecutable(String)
         case cannotOpen(String)
         case processFailed(Int32, String)
+        case timedOut(Int)
 
         var errorDescription: String? {
             switch self {
@@ -159,6 +204,7 @@ final class ExtensionExecutor {
             case .notExecutable(let path): return "The extension script is not executable: \(path)"
             case .cannotOpen(let value): return "macOS could not open: \(value)"
             case .processFailed(let code, let message): return message.isEmpty ? "The command exited with status \(code)." : message
+            case .timedOut(let seconds): return "The extension exceeded its \(seconds)-second performance limit and was stopped."
             }
         }
     }

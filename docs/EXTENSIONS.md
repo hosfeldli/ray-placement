@@ -53,9 +53,23 @@ chmod +x bin/my-command
 
 Script output is shown inside the launcher. Output is limited to 1 MB. Nonzero exit status is shown as an error.
 
+## Performance contract for local AI
+
+Every executable command receives the user's current **Settings → Performance → Extensions** choice through these environment variables:
+
+| Variable | Meaning |
+| --- | --- |
+| `RAYPLACEMENT_PERFORMANCE_SCALE` | `eco`, `balanced`, or `high` |
+| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads: `1`, `2`, or `4` |
+| `RAYPLACEMENT_TIMEOUT_SECONDS` | Hard wall-clock timeout applied by RayPlacement |
+| `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native numerical-library thread limits |
+| `TOKENIZERS_PARALLELISM` | Always `false` |
+
+RayPlacement assigns the child process background, utility, or foreground priority for Eco, Balanced, or High; continuously drains but stores at most 1 MB of output; and terminates it at the configured deadline. AI extensions should also read `RAYPLACEMENT_THREAD_LIMIT` and pass it to their inference runtime. They should load models only when invoked, unload them on exit, avoid GPU use unless clearly disclosed, and document approximate memory use. Environment thread limits are cooperative—a third-party executable can ignore them—so only run extensions you trust.
+
 ## Trust and permissions
 
-Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as fallback. Harper, the INT8 model, and Qwen3 Deep are bundled and run locally; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access.
+Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as fallback. Harper, the INT8 model, and Qwen3 Deep are bundled and run locally; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
 
 The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 

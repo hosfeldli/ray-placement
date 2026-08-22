@@ -368,13 +368,14 @@ final class LauncherViewModel: ObservableObject {
     private func builtInItems() -> [LauncherItem] {
         var items: [LauncherItem] = [
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
+            LauncherItem(id: "builtin.notes", title: "RayPlacement Notes", subtitle: "Markdown notes with on-demand dictation", icon: .system("note.text"), keywords: ["notes", "markdown", "write", "dictate"], action: .system(.openNotes), shortcut: "⇧⌘N"),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
             LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),
             LauncherItem(id: "builtin.sleep", title: "Put Mac to Sleep", subtitle: "System", icon: .system("moon.zzz.fill"), keywords: ["system", "power"], action: .system(.sleep)),
             LauncherItem(id: "builtin.extensions-folder", title: "Open Extensions Folder", subtitle: "Add commands without rebuilding", icon: .system("folder.badge.gearshape"), keywords: ["plugin", "custom", "script", "functionality"], action: .system(.openExtensionsFolder)),
             LauncherItem(id: "builtin.reload-extensions", title: "Reload Extensions", subtitle: "Pick up manifest changes", icon: .system("arrow.clockwise"), keywords: ["plugin", "refresh"], action: .system(.reloadExtensions)),
-            LauncherItem(id: "builtin.settings", title: "RayPlacement Settings", subtitle: "Hotkey, startup, clipboard, and extensions", icon: .system("gearshape.fill"), keywords: ["preferences", "hotkey", "shortcut"], action: .system(.openSettings), shortcut: "⌘,"),
+            LauncherItem(id: "builtin.settings", title: "RayPlacement Settings", subtitle: "Hotkeys, performance, privacy, and extensions", icon: .system("gearshape.fill"), keywords: ["preferences", "hotkey", "shortcut", "performance", "accessibility"], action: .system(.openSettings), shortcut: "⌘,"),
             LauncherItem(id: "builtin.quit", title: "Quit RayPlacement", subtitle: "System", icon: .system("power"), keywords: ["exit"], action: .system(.quit), shortcut: "⌘Q")
         ]
         items.insert(contentsOf: WindowLayout.allCases.map { layout in

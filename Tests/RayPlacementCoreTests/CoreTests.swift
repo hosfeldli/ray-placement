@@ -65,3 +65,47 @@ import Testing
     #expect(manifest.commands.first?.action.type == .openInVSCode)
     #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
 }
+
+@Test func markdownNotesParseRichBlocks() {
+    let markdown = """
+    # Project plan
+
+    Intro with **bold** text.
+
+    - [x] Ship parser
+    - Regular item
+    2. Verify preview
+    > Local and private
+
+    ```swift
+    let ready = true
+    ```
+    """
+    let blocks = MarkdownBlockParser.parse(markdown)
+    #expect(blocks.contains(.heading(level: 1, text: "Project plan")))
+    #expect(blocks.contains(.task(checked: true, text: "Ship parser")))
+    #expect(blocks.contains(.bullet("Regular item")))
+    #expect(blocks.contains(.numbered(number: 2, text: "Verify preview")))
+    #expect(blocks.contains(.quote("Local and private")))
+    #expect(blocks.contains(.code(language: "swift", text: "let ready = true")))
+}
+
+@Test func markdownNoteUsesContentWhenTitleIsBlank() {
+    let note = MarkdownNote(title: "  ", content: "# Derived title\n\nBody")
+    #expect(note.displayTitle == "Derived title")
+    #expect(note.preview == "Derived title")
+}
+
+@Test func meetingDictationPlanCoversOneHourWithBoundedSegments() {
+    let segments = MeetingDictationPlan.segments(for: 60 * 60)
+    #expect(segments.count == 80)
+    #expect(segments.first == MeetingDictationSegment(start: 0, duration: 45))
+    #expect(segments.last == MeetingDictationSegment(start: 3_555, duration: 45))
+    #expect(segments.allSatisfy { $0.duration > 0 && $0.duration <= 45 })
+}
+
+@Test func meetingDictationPlanBoundsStorageAndDuration() {
+    let segments = MeetingDictationPlan.segments(for: 2 * 60 * 60)
+    #expect(segments.count == 80)
+    #expect(MeetingDictationPlan.estimatedEncodedByteCount(for: 60 * 60) == 14_400_000)
+}

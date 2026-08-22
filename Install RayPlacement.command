@@ -47,10 +47,12 @@ codesign --verify --deep --strict "$INSTALLED_APP"
 open "$INSTALLED_APP"
 
 echo
-echo "RayPlacement, Writing Tools, and VS Code Directories are installed."
+echo "RayPlacement, Notes, Writing Tools, and VS Code Directories are installed."
 echo "App: $INSTALLED_APP"
 echo "Plain-text paste: Control-Option-V"
 echo "Writing check: Control-Option-G"
 echo "Configure any extension shortcut in Settings → Extensions."
+echo "Choose AI and dictation limits in Settings → Performance."
+echo "Check selected-text access in Settings → General → Accessibility."
 echo
 echo "You can close this window."

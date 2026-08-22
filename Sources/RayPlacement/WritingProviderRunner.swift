@@ -1,4 +1,4 @@
-import Foundation
+@preconcurrency import Foundation
 import RayPlacementWriting
 
 @MainActor
@@ -110,7 +110,13 @@ final class WritingProviderRunner {
             completion(.failure(RunnerError.missingResource("T5-small CoEdit INT8")))
             return
         }
-        run(executable: executable, arguments: [runner.path, model.path], input: text) { [weak self] result in
+        let performance = SettingsStore.shared.writingPerformance
+        run(
+            executable: executable,
+            arguments: [runner.path, model.path, String(performance.threadLimit)],
+            input: text,
+            timeoutSeconds: performance.writingTimeout
+        ) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -150,15 +156,26 @@ final class WritingProviderRunner {
         }
 
         let systemPrompt = "You are an exacting English proofreading engine. Correct every spelling, grammar, word-choice, and punctuation error. Preserve the intended meaning. Return only the fully corrected text, with no explanation."
+        let performance = SettingsStore.shared.writingPerformance
+        let threads = String(performance.threadLimit)
         let arguments = [
             "-m", model.path,
             "--conversation", "--single-turn", "--reasoning", "off",
             "--system-prompt", systemPrompt,
             "--prompt", text,
             "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", "512", "--temp", "0", "--ctx-size", "4096"
+            "--predict", "512", "--temp", "0", "--ctx-size", "4096",
+            "--threads", threads, "--threads-batch", threads,
+            "--batch-size", "128", "--ubatch-size", "64",
+            "--prio", "-1", "--prio-batch", "0",
+            "--gpu-layers", "0", "--no-warmup"
         ]
-        run(executable: executable, arguments: arguments, input: "") { [weak self] result in
+        run(
+            executable: executable,
+            arguments: arguments,
+            input: "",
+            timeoutSeconds: performance.writingTimeout
+        ) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -205,6 +222,7 @@ final class WritingProviderRunner {
         executable: URL,
         arguments: [String],
         input: String,
+        timeoutSeconds: TimeInterval? = nil,
         completion: @escaping (Result<ProcessOutput, Error>) -> Void
     ) {
         let process = Process()
@@ -216,10 +234,17 @@ final class WritingProviderRunner {
         process.standardInput = standardInput
         process.standardOutput = standardOutput
         process.standardError = standardError
+        let performance = SettingsStore.shared.writingPerformance
+        process.qualityOfService = performance.qualityOfService
         process.environment = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": FileManager.default.homeDirectoryForCurrentUser.path,
-            "LANG": "en_US.UTF-8"
+            "LANG": "en_US.UTF-8",
+            "OMP_NUM_THREADS": String(performance.threadLimit),
+            "OMP_THREAD_LIMIT": String(performance.threadLimit),
+            "MKL_NUM_THREADS": String(performance.threadLimit),
+            "VECLIB_MAXIMUM_THREADS": String(performance.threadLimit),
+            "TOKENIZERS_PARALLELISM": "false"
         ]
 
         do {
@@ -230,40 +255,59 @@ final class WritingProviderRunner {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        let stateLock = NSLock()
+        var didTimeOut = false
+        let timeoutWorkItem = DispatchWorkItem {
+            guard process.isRunning else { return }
+            stateLock.lock()
+            didTimeOut = true
+            stateLock.unlock()
+            process.terminate()
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(
+            deadline: .now() + (timeoutSeconds ?? performance.writingTimeout),
+            execute: timeoutWorkItem
+        )
+
+        DispatchQueue.global(qos: .utility).async {
             standardInput.fileHandleForWriting.write(Data(input.utf8))
             try? standardInput.fileHandleForWriting.close()
 
             let group = DispatchGroup()
-            let lock = NSLock()
             var stdout = Data()
             var stderr = Data()
             group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .utility).async {
                 let data = standardOutput.fileHandleForReading.readDataToEndOfFile()
-                lock.lock(); stdout = data; lock.unlock()
+                stateLock.lock(); stdout = data; stateLock.unlock()
                 group.leave()
             }
             group.enter()
-            DispatchQueue.global(qos: .userInitiated).async {
+            DispatchQueue.global(qos: .utility).async {
                 let data = standardError.fileHandleForReading.readDataToEndOfFile()
-                lock.lock(); stderr = data; lock.unlock()
+                stateLock.lock(); stderr = data; stateLock.unlock()
                 group.leave()
             }
             process.waitUntilExit()
             group.wait()
+            timeoutWorkItem.cancel()
 
-            lock.lock()
+            stateLock.lock()
+            let timedOut = didTimeOut
             let output = ProcessOutput(
                 status: process.terminationStatus,
                 stdout: stdout,
                 stderr: String(decoding: stderr.prefix(64_000), as: UTF8.self)
                     .trimmingCharacters(in: .whitespacesAndNewlines)
             )
-            lock.unlock()
+            stateLock.unlock()
             DispatchQueue.main.async { [weak self] in
                 if self?.activeProcess === process { self?.activeProcess = nil }
-                completion(.success(output))
+                if timedOut {
+                    completion(.failure(RunnerError.processFailed("The local writing engine exceeded its time limit and was stopped.")))
+                } else {
+                    completion(.success(output))
+                }
             }
         }
     }

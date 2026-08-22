@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import RayPlacementCore
 import RayPlacementWriting
 import SwiftUI
@@ -11,6 +12,7 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: LauncherViewModel
     @State private var confirmClipboardClear = false
+    @State private var accessibilityTrusted = AXIsProcessTrusted()
     let reloadExtensions: () -> Void
 
     var body: some View {
@@ -21,6 +23,8 @@ struct SettingsView: View {
                 .tabItem { Label("Clipboard", systemImage: "clipboard") }
             writingTab
                 .tabItem { Label("Writing", systemImage: "text.badge.checkmark") }
+            performanceTab
+                .tabItem { Label("Performance", systemImage: "gauge.medium") }
             extensionsTab
                 .tabItem { Label("Extensions", systemImage: "puzzlepiece.extension") }
             aboutTab
@@ -28,6 +32,56 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 720, height: 560)
+    }
+
+    private var performanceTab: some View {
+        Form {
+            Section("Writing models") {
+                performancePicker("Writing", selection: $settings.writingPerformance)
+                LabeledContent(
+                    "Qwen compute limit",
+                    value: "\(settings.writingPerformance.threadLimit) CPU thread\(settings.writingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.writingPerformance.writingTimeout))s timeout"
+                )
+                Text("Models load only when a writing check is requested and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Qwen still uses about 2 GB of memory while a check is running because the model itself must be loaded. Choose Harper for the lightest checks.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Note dictation") {
+                performancePicker("Dictation", selection: $settings.dictationPerformance)
+                LabeledContent(
+                    "Work limit",
+                    value: "Record \(Int(settings.dictationPerformance.dictationMaximumDuration / 60)) min; \(Int(settings.dictationPerformance.dictationTranscriptionTimeout))s per segment"
+                )
+                Text("Dictation never listens in the background. After Stop, long meetings are processed sequentially in small on-device segments so memory stays bounded. High allows a full 60-minute meeting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("AI-capable extensions") {
+                performancePicker("Extensions", selection: $settings.extensionPerformance)
+                LabeledContent(
+                    "Process budget",
+                    value: "\(settings.extensionPerformance.threadLimit) cooperative thread\(settings.extensionPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.extensionPerformance.extensionTimeout))s timeout"
+                )
+                Text("RayPlacement enforces process priority and timeouts and supplies common AI thread-limit environment variables. Third-party executables can ignore cooperative thread variables, so only install extensions you trust.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func performancePicker(_ title: String, selection: Binding<PerformanceScale>) -> some View {
+        Picker(title, selection: selection) {
+            ForEach(PerformanceScale.allCases) { scale in
+                Text(scale.title).tag(scale)
+            }
+        }
+        .pickerStyle(.segmented)
     }
 
     private var writingTab: some View {
@@ -52,11 +106,11 @@ struct SettingsView: View {
             Section("Provider notes") {
                 LabeledContent("Harper", value: "Fast, explainable, rule-based checks")
                 LabeledContent("T5-small CoEdit INT8", value: "Local sentence rewriting; best for short passages")
-                LabeledContent("Qwen3 1.7B Q8 (Deep)", value: "Stronger proofreading for difficult passages; slower and memory-heavy")
+                LabeledContent("Qwen3 1.7B Q8 (Deep)", value: "On demand; controlled by Settings → Performance")
                 Text("The INT8 option uses the Apache-licensed TonyRaju ONNX conversion of Unbabel/gec-t5_small. It is listed by its published CoEdit name, but it is not an official checkpoint from the CoEdIT paper authors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("The Deep option uses the official Apache-2.0 Qwen3 1.7B Q8 model through the bundled llama.cpp runtime. It does not require Ollama and never sends checked text over the network.")
+                Text("The Deep option uses the official Apache-2.0 Qwen3 1.7B Q8 model through the bundled llama.cpp runtime. It never runs in the background, does not require Ollama, and never sends checked text over the network.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -86,6 +140,32 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Accessibility") {
+                Label(
+                    accessibilityTrusted ? "Accessibility access is working" : "Accessibility access is not available",
+                    systemImage: accessibilityTrusted ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
+                )
+                .foregroundStyle(accessibilityTrusted ? .green : .orange)
+
+                Text("Writing checks, replacing selected text, window commands, and automatic paste use this permission. The launcher and its global shortcuts do not.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button("Request Access") { requestAccessibilityAccess() }
+                    Button("Open Accessibility Settings") { openAccessibilitySettings() }
+                    Button("Reveal This App") {
+                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+                    }
+                }
+
+                Text(Bundle.main.bundleURL.path)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(2)
+            }
+
             Section("Keyboard") {
                 LabeledContent("Navigate", value: "↑ / ↓ or Control-P / Control-N")
                 LabeledContent("Run", value: "Return")
@@ -95,6 +175,19 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            accessibilityTrusted = AXIsProcessTrusted()
+        }
+    }
+
+    private func requestAccessibilityAccess() {
+        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
+        accessibilityTrusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
+    }
+
+    private func openAccessibilitySettings() {
+        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
+        NSWorkspace.shared.open(url)
     }
 
     private var clipboardTab: some View {
@@ -201,7 +294,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local-only writing tools. No cloud AI. No analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version 1.2.0")
+            Text("Version 1.4.0")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

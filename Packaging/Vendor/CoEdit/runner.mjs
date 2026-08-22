@@ -10,6 +10,15 @@ if (!modelArgument) {
   process.exit(2);
 }
 const modelDirectory = path.resolve(modelArgument);
+const requestedThreads = Number.parseInt(process.argv[3] ?? '1', 10);
+const threadLimit = Number.isFinite(requestedThreads)
+  ? Math.min(4, Math.max(1, requestedThreads))
+  : 1;
+const sessionOptions = {
+  executionMode: 'sequential',
+  interOpNumThreads: 1,
+  intraOpNumThreads: threadLimit,
+};
 
 const chunks = [];
 for await (const chunk of process.stdin) chunks.push(chunk);
@@ -25,9 +34,9 @@ try {
   const tokenizer = new Tokenizer(tokenizerJSON, tokenizerConfig);
   const encoded = tokenizer.encode(`gec: ${source}`);
 
-  const encoder = await ort.InferenceSession.create(`${modelDirectory}/encoder_model.onnx`);
-  const decoder = await ort.InferenceSession.create(`${modelDirectory}/decoder_model.onnx`);
-  const decoderWithPast = await ort.InferenceSession.create(`${modelDirectory}/decoder_with_past_model.onnx`);
+  const encoder = await ort.InferenceSession.create(`${modelDirectory}/encoder_model.onnx`, sessionOptions);
+  const decoder = await ort.InferenceSession.create(`${modelDirectory}/decoder_model.onnx`, sessionOptions);
+  const decoderWithPast = await ort.InferenceSession.create(`${modelDirectory}/decoder_with_past_model.onnx`, sessionOptions);
   const inputIds = asOrtInt64(encoded.ids);
   const attentionMask = asOrtInt64(encoded.attention_mask);
   const encoderOutput = await encoder.run({ input_ids: inputIds, attention_mask: attentionMask });

@@ -26,8 +26,23 @@ codesign --verify --deep --strict "$APP_DIRECTORY"
 
 BUNDLE_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIRECTORY/Contents/Info.plist")"
 MINIMUM_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_DIRECTORY/Contents/Info.plist")"
+VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIRECTORY/Contents/Info.plist")"
+BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIRECTORY/Contents/Info.plist")"
+MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
+SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
+[[ "$VERSION" == "1.4.0" ]]
+[[ "$BUILD_NUMBER" == "5" ]]
+[[ -n "$MICROPHONE_DESCRIPTION" ]]
+[[ -n "$SPEECH_DESCRIPTION" ]]
+if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+    DESIGNATED_REQUIREMENT="$(codesign -dr - "$APP_DIRECTORY" 2>&1)"
+    if [[ "$DESIGNATED_REQUIREMENT" == *"cdhash"* ]]; then
+        echo "The app is ad-hoc signed; its Accessibility identity will change after rebuilds."
+        exit 1
+    fi
+fi
 file "$BINARY" | grep -q "Mach-O 64-bit executable arm64"
 file "$APP_DIRECTORY/Contents/Resources/Tools/harper-cli" | grep -q "Mach-O 64-bit executable arm64"
 file "$APP_DIRECTORY/Contents/Resources/CoEdit/node" | grep -q "Mach-O 64-bit executable arm64"
@@ -36,7 +51,8 @@ file "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli" | grep -q "Mach-
 COEDIT_RESULT="$(printf 'This are a sentence with bad grammer.' | \
     "$APP_DIRECTORY/Contents/Resources/CoEdit/node" \
     "$APP_DIRECTORY/Contents/Resources/CoEdit/runner.mjs" \
-    "$APP_DIRECTORY/Contents/Resources/CoEdit/model")"
+    "$APP_DIRECTORY/Contents/Resources/CoEdit/model" \
+    1)"
 [[ "$COEDIT_RESULT" == "This is a sentence with bad grammar." ]]
 
 QWEN_RUNTIME="$APP_DIRECTORY/Contents/Resources/Qwen/runtime"
@@ -54,7 +70,15 @@ QWEN_CONSOLE="$(
         --log-disable \
         --predict 128 \
         --temp 0 \
-        --ctx-size 2048
+        --ctx-size 2048 \
+        --threads 1 \
+        --threads-batch 1 \
+        --batch-size 128 \
+        --ubatch-size 64 \
+        --prio -1 \
+        --prio-batch 0 \
+        --gpu-layers 0 \
+        --no-warmup
 )"
 QWEN_RESULT="$(printf '%s\n' "$QWEN_CONSOLE" | awk '/^> Hi; whot where you thinking, about$/{getline; print; exit}')"
 [[ "$QWEN_RESULT" == "Hi; what are you thinking about?" || "$QWEN_RESULT" == "Hi, what are you thinking about?" ]]

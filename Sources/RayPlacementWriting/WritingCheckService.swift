@@ -23,7 +23,7 @@ public enum WritingProvider: String, CaseIterable, Identifiable, Sendable {
         case .coeditInt8:
             return "A local 60.5M-parameter ONNX model that rewrites English text."
         case .qwen3Deep:
-            return "A much stronger 1.7B-parameter local proofreader. It is slower and uses more memory, but handles difficult spelling, grammar, and punctuation errors."
+            return "A stronger 1.7B-parameter local proofreader. It loads only for a check, follows the CPU limit in Settings → Performance, has a time limit, and exits immediately afterward."
         }
     }
 }

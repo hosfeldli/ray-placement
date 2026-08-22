@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>1.3.0</string>
+	<string>1.4.0</string>
     <key>CFBundleVersion</key>
-	<string>4</string>
+	<string>5</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -34,5 +34,9 @@
     <string>NSApplication</string>
     <key>NSAccessibilityUsageDescription</key>
     <string>RayPlacement uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>RayPlacement records audio only after you press Dictate in Notes, then stops before transcribing the recording on this Mac.</string>
+    <key>NSSpeechRecognitionUsageDescription</key>
+    <string>RayPlacement uses on-device speech recognition to transcribe a completed recording into the note you chose.</string>
 </dict>
 </plist>
