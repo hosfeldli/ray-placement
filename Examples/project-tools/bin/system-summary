@@ -1,0 +1,15 @@
+#!/bin/zsh
+
+echo "System summary"
+echo "--------------"
+echo "Computer: $(scutil --get ComputerName 2>/dev/null || hostname)"
+echo "macOS: $(sw_vers -productVersion)"
+BOOT_SECONDS="$(sysctl -n kern.boottime | sed -E 's/.*sec = ([0-9]+).*/\1/')"
+NOW_SECONDS="$(date +%s)"
+ELAPSED_SECONDS=$((NOW_SECONDS - BOOT_SECONDS))
+UPTIME_DAYS=$((ELAPSED_SECONDS / 86400))
+UPTIME_HOURS=$(((ELAPSED_SECONDS % 86400) / 3600))
+UPTIME_MINUTES=$(((ELAPSED_SECONDS % 3600) / 60))
+echo "Uptime: ${UPTIME_DAYS}d ${UPTIME_HOURS}h ${UPTIME_MINUTES}m"
+echo
+df -h / | awk 'NR == 2 { print "Disk: " $3 " used of " $2 " (" $5 ")" }'

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "local.vscode-directories",
+  "name": "VS Code Directories",
+  "version": "2.0.0",
+  "description": "Search for any file or directory and open it in Visual Studio Code",
+  "commands": [
+    {
+      "id": "open-file-or-directory",
+      "title": "Open File or Directory in VS Code",
+      "subtitle": "Search Spotlight, then choose what to open",
+      "keywords": ["code", "folder", "directory", "file", "project", "workspace"],
+      "icon": "chevron.left.forwardslash.chevron.right",
+      "action": {
+        "type": "openInVSCode",
+        "value": ""
+      }
+    }
+  ]
+}

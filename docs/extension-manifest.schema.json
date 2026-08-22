@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://rayplacement.local/schemas/extension-manifest-v1.json",
+  "title": "RayPlacement Extension Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "name", "commands"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string" },
+    "description": { "type": "string" },
+    "commands": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/command" }
+    }
+  },
+  "$defs": {
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "title", "action"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "subtitle": { "type": "string" },
+        "keywords": { "type": "array", "items": { "type": "string" } },
+        "icon": { "type": "string" },
+        "hotkey": { "type": "string", "minLength": 3 },
+        "action": { "$ref": "#/$defs/action" }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": {
+          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openInVSCode"]
+        },
+        "value": { "type": "string" },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "workingDirectory": { "type": "string" }
+      }
+    }
+  }
+}

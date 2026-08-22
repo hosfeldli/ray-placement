@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "local.project-tools",
+  "name": "Project Tools",
+  "version": "1.0.0",
+  "description": "Example RayPlacement commands",
+  "commands": [
+    {
+      "id": "open-codex-folder",
+      "title": "Open Codex Folder",
+      "subtitle": "Project Tools",
+      "keywords": ["projects", "workspace", "documents"],
+      "icon": "folder.fill",
+      "action": {
+        "type": "file",
+        "value": "~/Documents/Codex"
+      }
+    },
+    {
+      "id": "system-summary",
+      "title": "Show System Summary",
+      "subtitle": "Runs an example local script",
+      "keywords": ["uptime", "disk", "computer"],
+      "icon": "gauge.with.dots.needle.67percent",
+      "hotkey": "option+shift+i",
+      "action": {
+        "type": "shell",
+        "value": "bin/system-summary"
+      }
+    },
+    {
+      "id": "open-status-page",
+      "title": "Open Apple System Status",
+      "subtitle": "Project Tools",
+      "icon": "network",
+      "action": {
+        "type": "url",
+        "value": "https://www.apple.com/support/systemstatus/"
+      }
+    }
+  ]
+}
