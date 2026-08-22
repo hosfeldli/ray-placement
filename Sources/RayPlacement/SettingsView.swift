@@ -36,11 +36,27 @@ struct SettingsView: View {
 
     private var performanceTab: some View {
         Form {
+            Section("Automatic allocation") {
+                Toggle(isOn: $settings.dynamicPerformance) {
+                    Label("Beta Dynamic Performance", systemImage: "gauge.with.dots.needle.67percent")
+                }
+                Text("When enabled, each slider becomes a maximum. RayPlacement lowers active work when Low Power Mode is on or the Mac is getting warm, then raises it again when conditions recover.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Label(settings.dynamicPerformanceDescription, systemImage: settings.dynamicPerformance ? "waveform.path.ecg" : "slider.horizontal.3")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(settings.dynamicPerformance ? Color.accentColor : .secondary)
+            }
+
             Section("Writing and note summaries") {
-                performancePicker("Writing", selection: $settings.writingPerformance)
+                performanceSlider(
+                    "Writing",
+                    selection: $settings.writingPerformance,
+                    active: settings.runtimeWritingPerformance
+                )
                 LabeledContent(
-                    "Qwen compute limit",
-                    value: "\(settings.writingPerformance.threadLimit) CPU thread\(settings.writingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.writingPerformance.writingTimeout))s timeout, \(settings.writingPerformance.summaryTokenLimit)-token summaries"
+                    "Active Qwen budget",
+                    value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.runtimeWritingPerformance.writingTimeout))s timeout"
                 )
                 Text("Models load only for a requested writing check or note summary and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
                     .font(.caption)
@@ -51,10 +67,14 @@ struct SettingsView: View {
             }
 
             Section("Note dictation") {
-                performancePicker("Dictation", selection: $settings.dictationPerformance)
+                performanceSlider(
+                    "Dictation",
+                    selection: $settings.dictationPerformance,
+                    active: settings.runtimeDictationPerformance
+                )
                 LabeledContent(
                     "Work limit",
-                    value: "Record \(Int(settings.dictationPerformance.dictationMaximumDuration / 60)) min; \(Int(settings.dictationPerformance.dictationTranscriptionTimeout))s per segment"
+                    value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; \(Int(settings.runtimeDictationPerformance.dictationTranscriptionTimeout))s per segment"
                 )
                 Text("Dictation never listens in the background. After Stop, long meetings are processed sequentially in small on-device segments so memory stays bounded. High allows a full 60-minute meeting.")
                     .font(.caption)
@@ -62,10 +82,14 @@ struct SettingsView: View {
             }
 
             Section("AI-capable extensions") {
-                performancePicker("Extensions", selection: $settings.extensionPerformance)
+                performanceSlider(
+                    "Extensions",
+                    selection: $settings.extensionPerformance,
+                    active: settings.runtimeExtensionPerformance
+                )
                 LabeledContent(
                     "Process budget",
-                    value: "\(settings.extensionPerformance.threadLimit) cooperative thread\(settings.extensionPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.extensionPerformance.extensionTimeout))s timeout"
+                    value: "\(settings.runtimeExtensionPerformance.threadLimit) cooperative thread\(settings.runtimeExtensionPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.runtimeExtensionPerformance.extensionTimeout))s timeout"
                 )
                 Text("RayPlacement enforces process priority and timeouts and supplies common AI thread-limit environment variables. Third-party executables can ignore cooperative thread variables, so only install extensions you trust.")
                     .font(.caption)
@@ -75,13 +99,38 @@ struct SettingsView: View {
         .formStyle(.grouped)
     }
 
-    private func performancePicker(_ title: String, selection: Binding<PerformanceScale>) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(PerformanceScale.allCases) { scale in
-                Text(scale.title).tag(scale)
+    private func performanceSlider(
+        _ title: String,
+        selection: Binding<PerformanceScale>,
+        active: PerformanceScale
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(title)
+                Spacer()
+                Text(settings.dynamicPerformance && active != selection.wrappedValue
+                    ? "\(active.title) active · \(selection.wrappedValue.title) max"
+                    : selection.wrappedValue.title)
+                    .foregroundStyle(.secondary)
             }
+            Slider(
+                value: Binding(
+                    get: { Double(selection.wrappedValue.level) },
+                    set: { selection.wrappedValue = PerformanceScale.level(Int($0.rounded())) }
+                ),
+                in: 1...Double(PerformanceScale.allCases.count),
+                step: 1
+            )
+            HStack {
+                Text("Eco")
+                Spacer()
+                Text("Maximum")
+            }
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
         }
-        .pickerStyle(.segmented)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(title) performance")
     }
 
     private var writingTab: some View {
@@ -89,7 +138,8 @@ struct SettingsView: View {
             Section("Grammar and spelling engine") {
                 Picker("Writing provider", selection: $settings.writingProvider) {
                     ForEach(WritingProvider.allCases) { provider in
-                        Text(provider.title).tag(provider)
+                        Text(provider == .qwen3Deep ? "\(provider.title) — Recommended" : provider.title)
+                            .tag(provider)
                     }
                 }
                 .pickerStyle(.radioGroup)
@@ -101,12 +151,18 @@ struct SettingsView: View {
                 Label("All providers are bundled and run entirely on this Mac.", systemImage: "checkmark.shield.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
+                Label(
+                    "Qwen Deep gives the most complete full-sentence correction. Harper prioritizes instant feedback; T5-small prioritizes low memory.",
+                    systemImage: "wand.and.stars"
+                )
+                .font(.caption)
+                .foregroundStyle(Color.accentColor)
             }
 
             Section("Provider notes") {
-                LabeledContent("Harper", value: "Fast, explainable, rule-based checks")
-                LabeledContent("T5-small CoEdit INT8", value: "Local sentence rewriting; best for short passages")
-                LabeledContent("Qwen3 1.7B Q8 (Deep)", value: "On demand; controlled by Settings → Performance")
+                LabeledContent("Harper", value: "Fastest; rules plus a high-confidence quality pass")
+                LabeledContent("T5-small CoEdit INT8", value: "Fast local rewrite after spelling cleanup")
+                LabeledContent("Qwen3 1.7B Q8 (Deep)", value: "Best correction quality; controlled by Performance")
                 Text("The INT8 option uses the Apache-licensed TonyRaju ONNX conversion of Unbabel/gec-t5_small. It is listed by its published CoEdit name, but it is not an official checkpoint from the CoEdIT paper authors.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -294,7 +350,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local-only writing tools. No cloud AI. No analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version 1.5.1")
+            Text("Version 1.6.0")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

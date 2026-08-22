@@ -3,13 +3,19 @@ import Foundation
 import RayPlacementCore
 import RayPlacementWriting
 
+enum LauncherOutputState: Equatable {
+    case running(canCancel: Bool)
+    case success
+    case error
+}
+
 enum LauncherMode: Equatable {
     case root
     case files
     case vscodePicker
     case clipboard
     case writingReview(WritingReview)
-    case output(title: String, text: String, isError: Bool)
+    case output(title: String, text: String, state: LauncherOutputState)
 
     var title: String? {
         switch self {

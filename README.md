@@ -36,7 +36,8 @@ After the first install, add that exact app once in **System Settings → Privac
 - A separate Markdown Notes window with local autosave, search, pinned notes, and a single inline-formatted Markdown editor
 - On-demand Qwen note summaries with review, copy, and insert-at-top actions
 - Batch note dictation: it records only after you press Dictate, stops before transcription, requires on-device recognition, and deletes the temporary audio
-- Independent Eco, Balanced, and High performance limits for writing models, dictation, and executable extensions
+- Independent five-level performance sliders for writing models, dictation, and executable extensions, plus an opt-in Beta Dynamic mode
+- Clear Working, Done, and Error states, stage-by-stage writing progress, keyboard action labels, and brief completion confirmations
 - Keyboard navigation with arrows or Control-P/Control-N, Return, Escape, Command-1 through Command-9, and Command-comma
 
 Window changes, automatic paste, and the Lock Screen command request macOS Accessibility permission only when used. The launcher hotkey itself needs no special permission.
@@ -51,13 +52,15 @@ Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop
 
 ## Performance controls
 
-**Settings → Performance** has separate scales for Writing, Dictation, and AI-capable Extensions. All three default to **Eco**.
+**Settings → Performance** has separate sliders for Writing, Dictation, and AI-capable Extensions. Each slider ranges from **Eco** through **Maximum**. **Beta Dynamic Performance** turns those slider values into ceilings: RayPlacement chooses the fastest level under each ceiling while the Mac is cool, and automatically backs down for Low Power Mode or elevated thermal pressure.
 
 | Scale | Writing | Dictation | Executable extensions |
 | --- | --- | --- | --- |
 | Eco | 1 background CPU thread; 90-second limit; 256-token summaries | 15-minute meeting; 90 seconds per transcription segment | background priority; cooperative 1-thread limit; 60-second hard timeout |
 | Balanced | 2 utility CPU threads; 120-second limit; 384-token summaries | 30-minute meeting; 120 seconds per segment | utility priority; cooperative 2-thread limit; 180-second hard timeout |
 | High | 4 foreground CPU threads; 180-second limit; 512-token summaries | 60-minute meeting; 180 seconds per segment | foreground priority; cooperative 4-thread limit; 600-second hard timeout |
+| Turbo | Up to 6 foreground CPU threads; 300-second limit; 768-token summaries | 60-minute meeting; 300 seconds per segment | foreground priority; up to 6 cooperative threads; 1,200-second hard timeout |
+| Maximum | Up to 12 CPU threads, never more than the Mac exposes; 600-second limit; 1,024-token summaries | 60-minute meeting; 600 seconds per segment | foreground priority; up to 12 cooperative threads; 3,600-second hard timeout |
 
 Qwen is CPU-only, never uses the GPU, launches only for a requested writing check or note summary, and exits when the job completes or times out. Its 1.7B-parameter model still temporarily uses about 2 GB of memory while loaded; choose Harper for the lightest grammar checking. Apple controls the internal scheduling of its on-device speech recognizer, so the dictation scale bounds meeting duration and each sequential segment rather than claiming an exact CPU-thread cap. RayPlacement enforces extension priority, output size, and wall-clock time; it also supplies common AI thread-limit environment variables, but an untrusted third-party executable can ignore those cooperative variables.
 
@@ -71,11 +74,13 @@ Choose **Open Extensions Folder** in the launcher and add a folder containing `m
 
 The included [Extensions/writing-tools](Extensions/writing-tools) extension adds **Paste as Plain Text** (`Control-Option-V`) and **Check Spelling & Grammar** (`Control-Option-G`). Choose the engine in **Settings → Writing**:
 
-- **Harper** is the default: fast, rule-based, explainable, and bundled as an offline arm64 executable.
+- **Harper** is fast, rule-based, explainable, and bundled as an offline arm64 executable.
 - **T5-small CoEdit INT8** is a bundled local ONNX rewrite model for short English passages. The published model is an INT8 conversion of `Unbabel/gec-t5_small`; it is not an official checkpoint from the CoEdIT paper authors.
-- **Qwen3 1.7B Q8 (Deep)** is the heavier option for difficult spelling, grammar, word-choice, and punctuation errors. RayPlacement bundles the official Apache-2.0 Qwen model and a pinned llama.cpp runtime, so it does not require Ollama.
+- **Qwen3 1.7B Q8 (Deep)** is the recommended/default option for complete sentence correction. RayPlacement bundles the official Apache-2.0 Qwen model and a pinned llama.cpp runtime, so it does not require Ollama.
 
-All three providers run locally and do not send checked text over the network. Writing checks snapshot the exact highlighted text, Accessibility element, and range when RayPlacement opens; they never fall back to clipboard contents. **Replace Selected Text** validates that the original text is still present, restores that saved range if focus moved, and replaces only that selection. If the source changed during review, RayPlacement stops instead of modifying the wrong text. The chosen Writing performance scale controls CPU priority, thread count, and a hard completion deadline.
+All three providers run locally and do not send checked text over the network. Every provider now starts with the bundled Harper spelling pass and a conservative punctuation/grammar quality floor before an optional model rewrite, so obvious errors are not silently passed through. Writing checks snapshot the exact highlighted text, Accessibility element, and range when RayPlacement opens; they never fall back to clipboard contents. The launcher visibly reports capture, cleanup, model, completion, and error stages. Press **Return** in the completed review to replace the selection. Replacement validates that the original text is still present, restores the saved range if focus moved, and modifies only that highlight. If the source changed during review, RayPlacement stops instead of modifying the wrong text.
+
+**Paste as Plain Text** now inserts through the saved macOS Accessibility text target when the receiving app supports it, including an empty cursor position or a selected range. It falls back to a standard paste event only for editors that do not expose a writable Accessibility selection, and shows a short success confirmation either way.
 
 [Extensions/vscode-directories](Extensions/vscode-directories) adds **Open File or Directory in VS Code**. Running it opens a blank Spotlight-backed picker; type part of a file or directory name, then choose the result to open it in Visual Studio Code. It ships without a default shortcut, and the user can record one in **Settings → Extensions**.
 

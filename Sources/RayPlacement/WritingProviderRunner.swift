@@ -83,7 +83,7 @@ final class WritingProviderRunner {
         }
 
         let chunks = NoteSummaryPlan.chunks(cleanText)
-        let summaryTokenLimit = SettingsStore.shared.writingPerformance.summaryTokenLimit
+        let summaryTokenLimit = SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit
         if chunks.count == 1, let onlyChunk = chunks.first {
             progress("Summarizing this note with Qwen…")
             runQwenText(
@@ -115,6 +115,7 @@ final class WritingProviderRunner {
     func check(
         _ text: String,
         provider: WritingProvider,
+        progress: @escaping (String) -> Void = { _ in },
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
         cancel()
@@ -126,11 +127,14 @@ final class WritingProviderRunner {
 
         switch provider {
         case .harper:
+            progress("Running fast spelling and grammar rules across the full selection…")
             runHarper(text, completion: completion)
         case .coeditInt8:
-            runCoEdit(text, completion: completion)
+            progress("Cleaning spelling, then rewriting the full selection with T5-small…")
+            runCoEdit(text, progress: progress, completion: completion)
         case .qwen3Deep:
-            runQwenDeep(text, completion: completion)
+            progress("Cleaning spelling before the deep proofreading pass…")
+            runQwenDeep(text, progress: progress, completion: completion)
         }
     }
 
@@ -165,7 +169,20 @@ final class WritingProviderRunner {
                     return
                 }
                 do {
-                    completion(.success(try self.reviewer.review(sourceText: text, harperJSON: output.stdout)))
+                    let harperReview = try self.reviewer.review(sourceText: text, harperJSON: output.stdout)
+                    let corrected = self.reviewer.normalizeProofreadRewrite(
+                        harperReview.suggestedText,
+                        preservingBoundaryFrom: text
+                    )
+                    if corrected == harperReview.suggestedText {
+                        completion(.success(harperReview))
+                    } else {
+                        completion(.success(try self.reviewer.review(
+                            sourceText: text,
+                            rewrittenText: corrected,
+                            providerTitle: "Harper + RayPlacement quality pass"
+                        )))
+                    }
                 } catch {
                     completion(.failure(error))
                 }
@@ -175,6 +192,7 @@ final class WritingProviderRunner {
 
     private func runCoEdit(
         _ text: String,
+        progress: @escaping (String) -> Void,
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
         let limit = 4_000
@@ -188,36 +206,49 @@ final class WritingProviderRunner {
             completion(.failure(RunnerError.missingResource("T5-small CoEdit INT8")))
             return
         }
-        let performance = SettingsStore.shared.writingPerformance
-        guard acquireModelLease() else {
-            completion(.failure(RunnerError.modelBusy))
-            return
-        }
-        run(
-            executable: executable,
-            arguments: [runner.path, model.path, String(performance.threadLimit)],
-            input: text,
-            timeoutSeconds: performance.writingTimeout
-        ) { [weak self] result in
+        runHarper(text) { [weak self] preparationResult in
             guard let self else { return }
-            self.releaseModelLease()
-            switch result {
+            switch preparationResult {
             case .failure(let error):
                 completion(.failure(error))
-            case .success(let output):
-                guard output.status == 0 else {
-                    completion(.failure(RunnerError.processFailed(output.stderr)))
+            case .success(let preparation):
+                let preparedText = self.reviewer.normalizeProofreadRewrite(preparation.suggestedText)
+                let performance = SettingsStore.shared.runtimeWritingPerformance
+                progress("Spelling cleanup complete. Rewriting with T5-small on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
+                guard self.acquireModelLease() else {
+                    completion(.failure(RunnerError.modelBusy))
                     return
                 }
-                let rewritten = String(decoding: output.stdout, as: UTF8.self)
-                do {
-                    completion(.success(try self.reviewer.review(
-                        sourceText: text,
-                        rewrittenText: rewritten,
-                        providerTitle: WritingProvider.coeditInt8.title
-                    )))
-                } catch {
-                    completion(.failure(error))
+                self.run(
+                    executable: executable,
+                    arguments: [runner.path, model.path, String(performance.threadLimit)],
+                    input: preparedText,
+                    timeoutSeconds: performance.writingTimeout
+                ) { [weak self] result in
+                    guard let self else { return }
+                    self.releaseModelLease()
+                    switch result {
+                    case .failure(let error):
+                        completion(.failure(error))
+                    case .success(let output):
+                        guard output.status == 0 else {
+                            completion(.failure(RunnerError.processFailed(output.stderr)))
+                            return
+                        }
+                        let rewritten = self.reviewer.normalizeProofreadRewrite(
+                            String(decoding: output.stdout, as: UTF8.self),
+                            preservingBoundaryFrom: text
+                        )
+                        do {
+                            completion(.success(try self.reviewer.review(
+                                sourceText: text,
+                                rewrittenText: rewritten,
+                                providerTitle: WritingProvider.coeditInt8.title
+                            )))
+                        } catch {
+                            completion(.failure(error))
+                        }
+                    }
                 }
             }
         }
@@ -225,6 +256,7 @@ final class WritingProviderRunner {
 
     private func runQwenDeep(
         _ text: String,
+        progress: @escaping (String) -> Void,
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
         let limit = 6_000
@@ -238,55 +270,68 @@ final class WritingProviderRunner {
             return
         }
 
-        let systemPrompt = "You are an exacting English proofreading engine. Correct every spelling, grammar, word-choice, and punctuation error. Preserve the intended meaning. Return only the fully corrected text, with no explanation."
-        let performance = SettingsStore.shared.writingPerformance
-        guard acquireModelLease() else {
-            completion(.failure(RunnerError.modelBusy))
-            return
-        }
-        let threads = String(performance.threadLimit)
-        let arguments = [
-            "-m", model.path,
-            "--conversation", "--single-turn", "--reasoning", "off",
-            "--system-prompt", systemPrompt,
-            "--prompt", text,
-            "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", "512", "--temp", "0", "--ctx-size", "4096",
-            "--threads", threads, "--threads-batch", threads,
-            "--batch-size", "128", "--ubatch-size", "64",
-            "--prio", "-1", "--prio-batch", "0",
-            "--gpu-layers", "0", "--no-warmup"
-        ]
-        run(
-            executable: executable,
-            arguments: arguments,
-            input: "",
-            timeoutSeconds: performance.writingTimeout
-        ) { [weak self] result in
+        runHarper(text) { [weak self] preparationResult in
             guard let self else { return }
-            self.releaseModelLease()
-            switch result {
+            switch preparationResult {
             case .failure(let error):
                 completion(.failure(error))
-            case .success(let output):
-                guard output.status == 0 else {
-                    completion(.failure(RunnerError.processFailed(output.stderr)))
+            case .success(let preparation):
+                let systemPrompt = "You are an exacting English copy editor. Proofread the entire supplied passage, not only one error. Correct every spelling, grammar, verb-tense, word-choice, agreement, capitalization, and punctuation problem. Preserve the intended meaning and line breaks. Make every sentence complete and natural. Return only the fully corrected passage with no explanation, labels, or quotation marks."
+                let performance = SettingsStore.shared.runtimeWritingPerformance
+                let preparedText = self.reviewer.normalizeProofreadRewrite(preparation.suggestedText)
+                progress("Spelling cleanup complete. Qwen is proofreading the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
+                guard self.acquireModelLease() else {
+                    completion(.failure(RunnerError.modelBusy))
                     return
                 }
-                let console = String(decoding: output.stdout, as: UTF8.self)
-                guard let rewritten = self.extractQwenResponse(from: console, prompt: text) else {
-                    completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
-                    return
-                }
-                do {
-                    let normalized = self.reviewer.normalizeModelRewrite(rewritten)
-                    completion(.success(try self.reviewer.review(
-                        sourceText: text,
-                        rewrittenText: normalized,
-                        providerTitle: WritingProvider.qwen3Deep.title
-                    )))
-                } catch {
-                    completion(.failure(error))
+                let threads = String(performance.threadLimit)
+                let arguments = [
+                    "-m", model.path,
+                    "--conversation", "--single-turn", "--reasoning", "off",
+                    "--system-prompt", systemPrompt,
+                    "--prompt", preparedText,
+                    "--simple-io", "--no-display-prompt", "--log-disable",
+                    "--predict", "512", "--temp", "0", "--ctx-size", "4096",
+                    "--threads", threads, "--threads-batch", threads,
+                    "--batch-size", "128", "--ubatch-size", "64",
+                    "--prio", "-1", "--prio-batch", "0",
+                    "--gpu-layers", "0", "--no-warmup"
+                ]
+                self.run(
+                    executable: executable,
+                    arguments: arguments,
+                    input: "",
+                    timeoutSeconds: performance.writingTimeout
+                ) { [weak self] result in
+                    guard let self else { return }
+                    self.releaseModelLease()
+                    switch result {
+                    case .failure(let error):
+                        completion(.failure(error))
+                    case .success(let output):
+                        guard output.status == 0 else {
+                            completion(.failure(RunnerError.processFailed(output.stderr)))
+                            return
+                        }
+                        let console = String(decoding: output.stdout, as: UTF8.self)
+                        guard let rewritten = self.extractQwenResponse(from: console, prompt: preparedText) else {
+                            completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
+                            return
+                        }
+                        do {
+                            let normalized = self.reviewer.normalizeProofreadRewrite(
+                                rewritten,
+                                preservingBoundaryFrom: text
+                            )
+                            completion(.success(try self.reviewer.review(
+                                sourceText: text,
+                                rewrittenText: normalized,
+                                providerTitle: WritingProvider.qwen3Deep.title
+                            )))
+                        } catch {
+                            completion(.failure(error))
+                        }
+                    }
                 }
             }
         }
@@ -305,7 +350,7 @@ final class WritingProviderRunner {
         }
         progress("Summarizing section \(index + 1) of \(chunks.count) with Qwen…")
         let systemPrompt = "Summarize one section of Markdown notes. Preserve concrete facts, names, dates, decisions, action items, risks, and open questions. Return concise Markdown bullets only. Do not invent information."
-        let predict = min(320, SettingsStore.shared.writingPerformance.summaryTokenLimit)
+        let predict = min(320, SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit)
         runQwenText(prompt: wrappedSummaryPrompt(chunks[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -334,7 +379,7 @@ final class WritingProviderRunner {
         if combined.count <= 6_000 || pass >= 4 {
             progress("Building the final Qwen summary…")
             let prompt = String(combined.prefix(8_000))
-            let predict = SettingsStore.shared.writingPerformance.summaryTokenLimit
+            let predict = SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit
             runQwenText(prompt: wrappedSummaryPrompt(prompt), systemPrompt: finalSummarySystemPrompt, predict: predict, completion: completion)
             return
         }
@@ -358,7 +403,7 @@ final class WritingProviderRunner {
         }
         progress("Condensing summary group \(index + 1) of \(groups.count)…")
         let systemPrompt = "Condense these partial Markdown summaries. Keep all distinct decisions, action items, names, dates, risks, and open questions. Remove repetition. Return Markdown bullets only and do not invent facts."
-        let predict = min(320, SettingsStore.shared.writingPerformance.summaryTokenLimit)
+        let predict = min(320, SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit)
         runQwenText(prompt: wrappedSummaryPrompt(groups[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -388,7 +433,7 @@ final class WritingProviderRunner {
             completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
             return
         }
-        let performance = SettingsStore.shared.writingPerformance
+        let performance = SettingsStore.shared.runtimeWritingPerformance
         let threads = String(performance.threadLimit)
         let arguments = [
             "-m", model.path,
@@ -478,7 +523,7 @@ final class WritingProviderRunner {
         process.standardInput = standardInput
         process.standardOutput = standardOutput
         process.standardError = standardError
-        let performance = SettingsStore.shared.writingPerformance
+        let performance = SettingsStore.shared.runtimeWritingPerformance
         process.qualityOfService = performance.qualityOfService
         process.environment = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",

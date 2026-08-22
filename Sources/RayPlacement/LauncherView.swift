@@ -57,12 +57,18 @@ struct LauncherView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            TextField(viewModel.placeholder, text: $viewModel.query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 20, weight: .regular))
-                .focused($searchFocused)
-                .disabled(isOutputMode)
-                .accessibilityLabel(viewModel.placeholder)
+            if isOutputMode {
+                Text(outputHeaderText)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                TextField(viewModel.placeholder, text: $viewModel.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 20, weight: .regular))
+                    .focused($searchFocused)
+                    .accessibilityLabel(viewModel.placeholder)
+            }
 
             if viewModel.isSearching {
                 ProgressView()
@@ -86,8 +92,8 @@ struct LauncherView: View {
         switch viewModel.mode {
         case .writingReview(let review):
             writingReviewView(review)
-        case .output(let title, let text, let isError):
-            outputView(title: title, text: text, isError: isError)
+        case .output(let title, let text, let state):
+            outputView(title: title, text: text, state: state)
         default:
             resultList
         }
@@ -103,7 +109,11 @@ struct LauncherView: View {
                                 viewModel.select(index)
                                 viewModel.executeSelected()
                             } label: {
-                                ResultRow(item: item, selected: index == viewModel.selectedIndex)
+                                ResultRow(
+                                    item: item,
+                                    selected: index == viewModel.selectedIndex,
+                                    actionLabel: actionLabel(for: item)
+                                )
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(Text(accessibilityLabel(for: item)))
@@ -115,7 +125,7 @@ struct LauncherView: View {
                                 if hovering { viewModel.select(index) }
                             }
                         } else {
-                            ResultRow(item: item, selected: false)
+                            ResultRow(item: item, selected: false, actionLabel: nil)
                                 .accessibilityElement(children: .combine)
                                 .accessibilityLabel(Text(accessibilityLabel(for: item)))
                                 .id(item.id)
@@ -135,17 +145,29 @@ struct LauncherView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func outputView(title: String, text: String, isError: Bool) -> some View {
+    private func outputView(title: String, text: String, state: LauncherOutputState) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 10) {
-                let isRunning = text == "Running…"
-                Image(systemName: isRunning ? "clock.fill" : (isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill"))
-                    .foregroundStyle(isRunning ? Color.accentColor : (isError ? Color.orange : Color.green))
+                if case .running = state {
+                    ProgressView()
+                        .controlSize(.small)
+                        .frame(width: 18, height: 18)
+                } else {
+                    Image(systemName: state == .error ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
+                        .foregroundStyle(state == .error ? Color.orange : Color.green)
+                }
                 Text(title).font(.headline)
+                Spacer()
+                Text(outputStateLabel(state))
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(outputStateColor(state))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(outputStateColor(state).opacity(0.12), in: Capsule())
             }
             ScrollView {
                 Text(text.isEmpty ? "Command completed." : text)
-                    .font(.system(size: 13, design: .monospaced))
+                    .font(.system(size: 14, design: state == .running(canCancel: true) || state == .running(canCancel: false) ? .rounded : .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(14)
@@ -163,6 +185,9 @@ struct LauncherView: View {
                     .foregroundStyle(review.issues.isEmpty ? Color.green : Color.accentColor)
                 Text(review.issues.isEmpty ? "No issues found" : "\(review.issues.count) writing \(review.issues.count == 1 ? "issue" : "issues")")
                     .font(.headline)
+                Text("\(review.sourceText.count) selected characters")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
                     viewModel.copyWritingResult(review)
@@ -174,7 +199,17 @@ struct LauncherView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityHint("Replaces the original selection without using the clipboard")
+                .keyboardShortcut(.return, modifiers: [])
             }
+
+            Label(
+                review.hasSuggestedChanges
+                    ? "Review complete — press Return to replace the exact original selection"
+                    : "Review complete — no replacement is needed",
+                systemImage: review.hasSuggestedChanges ? "return" : "checkmark.circle"
+            )
+            .font(.caption.weight(.medium))
+            .foregroundStyle(review.hasSuggestedChanges ? Color.accentColor : .green)
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -212,7 +247,11 @@ struct LauncherView: View {
             }
             Spacer()
             if viewModel.mode != .root {
-                KeyHint(keys: "esc", label: "Back")
+                KeyHint(keys: "esc", label: outputCanCancel ? "Cancel" : "Back")
+            }
+            if case .writingReview = viewModel.mode {
+                KeyHint(keys: "⌘C", label: "Copy")
+                KeyHint(keys: "↩", label: "Replace")
             }
             if viewModel.selectedItemIsActionable, !isOutputMode {
                 KeyHint(keys: "↩", label: primaryActionLabel)
@@ -229,6 +268,39 @@ struct LauncherView: View {
         switch viewModel.mode {
         case .output, .writingReview: return true
         default: return false
+        }
+    }
+
+    private var outputHeaderText: String {
+        switch viewModel.mode {
+        case .writingReview:
+            return "Review complete — Return replaces the original highlight"
+        case .output(_, let text, let state):
+            if case .running = state { return text }
+            return state == .error ? "Action needs attention" : "Action completed"
+        default:
+            return viewModel.placeholder
+        }
+    }
+
+    private var outputCanCancel: Bool {
+        guard case .output(_, _, .running(let canCancel)) = viewModel.mode else { return false }
+        return canCancel
+    }
+
+    private func outputStateLabel(_ state: LauncherOutputState) -> String {
+        switch state {
+        case .running: return "WORKING"
+        case .success: return "DONE"
+        case .error: return "ERROR"
+        }
+    }
+
+    private func outputStateColor(_ state: LauncherOutputState) -> Color {
+        switch state {
+        case .running: return .accentColor
+        case .success: return .green
+        case .error: return .orange
         }
     }
 
@@ -306,6 +378,7 @@ private struct WritingIssueRow: View {
 private struct ResultRow: View {
     let item: LauncherItem
     let selected: Bool
+    let actionLabel: String?
 
     var body: some View {
         HStack(spacing: 13) {
@@ -337,13 +410,29 @@ private struct ResultRow: View {
                     .padding(.vertical, 4)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
             }
+            if selected, let actionLabel {
+                HStack(spacing: 4) {
+                    Text("↩")
+                    Text(actionLabel)
+                }
+                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                .foregroundStyle(Color.accentColor)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+            }
         }
         .padding(.horizontal, 11)
         .frame(height: 51)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(selected ? Color.accentColor.opacity(0.23) : Color.clear)
+                .fill(selected ? Color.accentColor.opacity(0.18) : Color.clear)
         )
+        .overlay(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(selected ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
+        )
+        .animation(.easeOut(duration: 0.1), value: selected)
     }
 }
 
@@ -361,7 +450,7 @@ private struct LauncherIconView: View {
                     .foregroundStyle(Color.accentColor)
                     .padding(5)
             case .application(let url), .file(let url):
-                Image(nsImage: NSWorkspace.shared.icon(forFile: url.path))
+                Image(nsImage: LauncherIconCache.shared.image(for: url))
                     .resizable()
                     .scaledToFit()
             case .text(let text):
@@ -369,6 +458,19 @@ private struct LauncherIconView: View {
             }
         }
         .frame(width: 32, height: 32)
+    }
+}
+
+private final class LauncherIconCache {
+    static let shared = LauncherIconCache()
+    private let cache = NSCache<NSURL, NSImage>()
+
+    func image(for url: URL) -> NSImage {
+        let key = url as NSURL
+        if let cached = cache.object(forKey: key) { return cached }
+        let image = NSWorkspace.shared.icon(forFile: url.path)
+        cache.setObject(image, forKey: key)
+        return image
     }
 }
 

@@ -209,6 +209,43 @@ public final class WritingCheckService {
         return result
     }
 
+    /// Gives every local provider the same spelling and punctuation quality floor.
+    /// This deliberately handles only high-confidence transformations; the selected
+    /// provider remains responsible for the broader rewrite.
+    public func normalizeProofreadRewrite(_ text: String) -> String {
+        var result = normalizeModelRewrite(text)
+        result = replacing(
+            #"\bwhere\s+(you|we|they)\s+([\p{L}'’-]+ing)\b"#,
+            in: result,
+            with: "were $1 $2",
+            options: [.caseInsensitive]
+        )
+        result = replacing(
+            #",\s+(about|for|to|with|from|of|in|on)(?=\s*(?:[?.!]|$))"#,
+            in: result,
+            with: " $1",
+            options: [.caseInsensitive]
+        )
+        result = replacing(#"[ \t]+([,.;:!?])"#, in: result, with: "$1")
+        result = replacing(#"[ \t]{2,}"#, in: result, with: " ")
+
+        let interrogativeGreeting = #"^(?:hi|hello|hey),\s+(?:what|why|where|when|who|whom|whose|how|which|do|does|did|are|is|can|could|would|will|should)\b"#
+        if let expression = try? NSRegularExpression(pattern: interrogativeGreeting, options: [.caseInsensitive]),
+           expression.firstMatch(in: result, range: NSRange(result.startIndex..<result.endIndex, in: result)) != nil,
+           let last = result.last,
+           !"?.!".contains(last) {
+            result.append("?")
+        }
+        return result
+    }
+
+    public func normalizeProofreadRewrite(_ text: String, preservingBoundaryFrom source: String) -> String {
+        let corrected = normalizeProofreadRewrite(text)
+        let leading = source.prefix { $0.isWhitespace }
+        let trailing = source.reversed().prefix { $0.isWhitespace }.reversed()
+        return String(leading) + corrected + String(trailing)
+    }
+
     private func spellingIssues(
         in text: String,
         source: NSString,
@@ -333,6 +370,20 @@ public final class WritingCheckService {
             return String(raw[raw.index(after: opening)..<closing])
         }
         return nil
+    }
+
+    private func replacing(
+        _ pattern: String,
+        in source: String,
+        with template: String,
+        options: NSRegularExpression.Options = []
+    ) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: options) else { return source }
+        return expression.stringByReplacingMatches(
+            in: source,
+            range: NSRange(source.startIndex..<source.endIndex, in: source),
+            withTemplate: template
+        )
     }
 
     private func differingRange(source: String, suggestion: String) -> (sourceRange: NSRange, original: String, replacement: String) {

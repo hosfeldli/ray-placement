@@ -59,13 +59,13 @@ Every executable command receives the user's current **Settings → Performance 
 
 | Variable | Meaning |
 | --- | --- |
-| `RAYPLACEMENT_PERFORMANCE_SCALE` | `eco`, `balanced`, or `high` |
-| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads: `1`, `2`, or `4` |
+| `RAYPLACEMENT_PERFORMANCE_SCALE` | Active runtime level: `eco`, `balanced`, `high`, `turbo`, or `maximum` |
+| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads, from `1` through the available CPU count (capped at `12`) |
 | `RAYPLACEMENT_TIMEOUT_SECONDS` | Hard wall-clock timeout applied by RayPlacement |
 | `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native numerical-library thread limits |
 | `TOKENIZERS_PARALLELISM` | Always `false` |
 
-RayPlacement assigns the child process background, utility, or foreground priority for Eco, Balanced, or High; continuously drains but stores at most 1 MB of output; and terminates it at the configured deadline. AI extensions should also read `RAYPLACEMENT_THREAD_LIMIT` and pass it to their inference runtime. They should load models only when invoked, unload them on exit, avoid GPU use unless clearly disclosed, and document approximate memory use. Environment thread limits are cooperative—a third-party executable can ignore them—so only run extensions you trust.
+RayPlacement assigns the child process background, utility, or foreground priority for the active level; continuously drains but stores at most 1 MB of output; and terminates it at the configured deadline. With Beta Dynamic Performance enabled, the active level can be lower than the user's slider ceiling when Low Power Mode or thermal pressure calls for it, so extensions must read these variables on every invocation. AI extensions should pass `RAYPLACEMENT_THREAD_LIMIT` to every inference runtime. They should load models only when invoked, unload them on exit, avoid GPU use unless clearly disclosed, and document approximate memory use. Environment thread limits are cooperative—a third-party executable can ignore them—so only run extensions you trust.
 
 ## Trust and permissions
 

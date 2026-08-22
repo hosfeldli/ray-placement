@@ -84,7 +84,7 @@ final class ExtensionExecutor {
         }
 
         let task = Process()
-        let performance = SettingsStore.shared.extensionPerformance
+        let performance = SettingsStore.shared.runtimeExtensionPerformance
         task.executableURL = executable
         task.arguments = action.arguments ?? []
         task.qualityOfService = performance.qualityOfService

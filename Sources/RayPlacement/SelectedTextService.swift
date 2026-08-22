@@ -64,6 +64,29 @@ enum SelectedTextService {
         try selectionContext(in: processIdentifier).text
     }
 
+    static func editableContext(in processIdentifier: pid_t) throws -> SelectionContext {
+        guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
+        let elements = focusedElementCandidates(in: processIdentifier)
+        guard !elements.isEmpty else { throw SelectionError.focusedControlUnavailable }
+
+        for element in elements where elementBelongsToProcess(element, processIdentifier) {
+            guard let selection = selection(in: element) else { continue }
+            var isSettable = DarwinBoolean(false)
+            guard AXUIElementIsAttributeSettable(
+                element,
+                kAXSelectedTextAttribute as CFString,
+                &isSettable
+            ) == .success, isSettable.boolValue else { continue }
+            return SelectionContext(
+                processIdentifier: processIdentifier,
+                text: selection.text,
+                element: element,
+                range: selection.range
+            )
+        }
+        throw SelectionError.focusedControlUnavailable
+    }
+
     static func replaceSelectedText(_ replacement: String, using context: SelectionContext) throws {
         guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
         guard elementBelongsToProcess(context.element, context.processIdentifier) else {
@@ -77,7 +100,8 @@ enum SelectedTextService {
         )
 
         let currentSelection = selection(in: context.element)
-        if currentSelection?.text != context.text {
+        let currentRangeMatches = context.range == nil || rangesMatch(currentSelection?.range, context.range)
+        if currentSelection?.text != context.text || !currentRangeMatches {
             guard let range = context.range,
                   string(in: range, from: context.element) == context.text,
                   setSelectedRange(range, in: context.element) else {
@@ -228,5 +252,14 @@ enum SelectedTextService {
             kAXSelectedTextRangeAttribute as CFString,
             rangeValue
         ) == .success
+    }
+
+    private static func rangesMatch(_ lhs: CFRange?, _ rhs: CFRange?) -> Bool {
+        switch (lhs, rhs) {
+        case (nil, nil): return true
+        case (.some(let lhs), .some(let rhs)):
+            return lhs.location == rhs.location && lhs.length == rhs.length
+        default: return false
+        }
     }
 }

@@ -110,8 +110,12 @@ final class LauncherViewModel: ObservableObject {
         refreshResults()
     }
 
-    func showOutput(title: String, text: String, isError: Bool = false) {
-        mode = .output(title: title, text: text, isError: isError)
+    func showOutput(
+        title: String,
+        text: String,
+        state: LauncherOutputState = .success
+    ) {
+        mode = .output(title: title, text: text, state: state)
         query = ""
         results = []
     }

@@ -84,7 +84,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             return "Waiting for microphone and speech-recognition permission."
         case .recording:
             let seconds = activePerformance?.dictationMaximumDuration
-                ?? SettingsStore.shared.dictationPerformance.dictationMaximumDuration
+                ?? SettingsStore.shared.runtimeDictationPerformance.dictationMaximumDuration
             return "Recording locally — maximum \(Self.durationLabel(seconds))."
         case .transcribing:
             return transcriptionProgress ?? "Preparing the completed recording for on-device transcription."
@@ -187,7 +187,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             ]
             let recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder.delegate = self
-            let performance = SettingsStore.shared.dictationPerformance
+            let performance = SettingsStore.shared.runtimeDictationPerformance
             guard recorder.prepareToRecord(), recorder.record(forDuration: performance.dictationMaximumDuration) else {
                 throw DictationError.recorderUnavailable
             }
@@ -326,7 +326,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
         transcriptionTimeout = timeout
         let timeoutSeconds = activePerformance?.dictationTranscriptionTimeout
-            ?? SettingsStore.shared.dictationPerformance.dictationTranscriptionTimeout
+            ?? SettingsStore.shared.runtimeDictationPerformance.dictationTranscriptionTimeout
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in

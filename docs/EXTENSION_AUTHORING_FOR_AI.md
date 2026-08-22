@@ -116,7 +116,7 @@ An extension that starts an AI model or another expensive worker must obey RayPl
 
 1. Read `RAYPLACEMENT_THREAD_LIMIT` and configure every model/runtime thread pool to that number or lower.
 2. Honor `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, and `TOKENIZERS_PARALLELISM` rather than overwriting them.
-3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` only to choose documented quality-versus-speed behavior; never silently download a larger model.
+3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` (`eco`, `balanced`, `high`, `turbo`, or `maximum`) only to choose documented quality-versus-speed behavior; never silently download a larger model. Beta Dynamic may select a lower active value than the slider ceiling, so read it fresh for every run.
 4. Finish before `RAYPLACEMENT_TIMEOUT_SECONDS`. RayPlacement will terminate the process at that deadline, so keep partial writes atomic.
 5. Load the model only after command invocation and release it by exiting. Do not leave daemons, launch agents, background watchers, or live dictation sessions running.
 6. Avoid GPU use by default. If GPU acceleration is genuinely necessary, state that in the manifest documentation and provide a CPU mode.
@@ -147,7 +147,7 @@ Before presenting an extension as complete, an AI agent should:
 7. Open RayPlacement, reload extensions, and confirm every new command is visible by title.
 8. Open **Settings → Extensions** and confirm the command has a shortcut recorder.
 9. Run the command from the launcher and, if practical, from a configured hotkey.
-10. For AI extensions, test Eco mode and confirm the launched process uses the requested thread count and exits at its deadline.
+10. For AI extensions, test Eco and Maximum, then enable Beta Dynamic and confirm the launched process honors the active thread count and exits at its deadline.
 11. Document permissions, performance behavior, approximate memory, local storage, network use, external tools, and failure behavior.
 
 ## Reference extensions

@@ -96,3 +96,20 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(review.hasSuggestedChanges)
     #expect(review.issues.first?.message.contains("Qwen3 1.7B Q8") == true)
 }
+
+@Test func qualityFloorCorrectsTheFullHighlightedSentence() throws {
+    let service = WritingCheckService()
+    let source = "Hi; whot where you thinking, about"
+    let harperJSON = #"[{"file":"<stdin>","lint_count":1,"lints":[{"rule":"SpellCheck","kind":"Spelling","span":{"char_start":4,"char_end":8},"line":1,"column":5,"message":"Possible misspelling","priority":63,"suggestions":["Replace with: “what”"],"matched_text":"whot"}]}]"#.data(using: .utf8)!
+
+    let harperReview = try service.review(sourceText: source, harperJSON: harperJSON)
+    let corrected = service.normalizeProofreadRewrite(harperReview.suggestedText)
+
+    #expect(corrected == "Hi, what were you thinking about?")
+    #expect(
+        service.normalizeProofreadRewrite(
+            "Hi, what were you thinking about?",
+            preservingBoundaryFrom: "\n  \(source)  \n"
+        ) == "\n  Hi, what were you thinking about?  \n"
+    )
+}

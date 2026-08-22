@@ -13,11 +13,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     var onExtensionsChanged: (() -> Void)?
 
     private let panel: LauncherPanel
+    private let toast = ActionToastController()
     private let extensionExecutor = ExtensionExecutor()
     private let writingRunner = WritingProviderRunner()
     private lazy var notesWindow = NotesWindowController()
     private var previousApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
+    private var focusedTextContext: SelectedTextService.SelectionContext?
+    private var writingTaskID: UUID?
     private var localEventMonitor: Any?
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
@@ -59,6 +62,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func shutdown() {
         extensionExecutor.cancelAll()
         writingRunner.cancel()
+        toast.dismiss()
         clipboard.flush()
         notesWindow.shutdown()
     }
@@ -104,6 +108,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .copyText(let text):
             clipboard.copy(text)
             hide()
+            toast.show("Copied to the clipboard")
 
         case .pasteText(let text):
             clipboard.copy(text)
@@ -158,9 +163,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
               frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
             previousApplication = nil
             selectedTextContext = nil
+            focusedTextContext = nil
             return
         }
         previousApplication = frontmost
+        focusedTextContext = try? SelectedTextService.editableContext(in: frontmost.processIdentifier)
         selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
     }
 
@@ -184,6 +191,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     NSApp.terminate(nil)
                     return nil
                 }
+                if characters == "c", case .writingReview(let review) = self.viewModel.mode {
+                    self.viewModel.copyWritingResult(review)
+                    return nil
+                }
                 if let digit = Int(characters), (1...9).contains(digit) {
                     self.viewModel.executeVisibleItem(at: digit - 1)
                     return nil
@@ -200,15 +211,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return nil
             }
             if event.keyCode == 36 || event.keyCode == 76 {
+                if case .writingReview(let review) = self.viewModel.mode {
+                    self.viewModel.pasteWritingResult(review)
+                    return nil
+                }
                 self.viewModel.executeSelected()
                 return nil
             }
             if event.keyCode == 53 {
-                if case .output(_, let text, _) = self.viewModel.mode, text == "Running…" {
+                if case .output(_, _, .running(let canCancel)) = self.viewModel.mode, canCancel {
                     self.extensionExecutor.cancelAll()
-                }
-                if case .output(_, let text, _) = self.viewModel.mode, text.hasPrefix("Checking locally with") {
                     self.writingRunner.cancel()
+                    self.writingTaskID = nil
                 }
                 self.viewModel.handleEscape()
                 return nil
@@ -223,7 +237,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func executeExtension(_ command: LoadedExtensionCommand) {
         let isShell = command.command.action.type == .shell
         if isShell {
-            viewModel.showOutput(title: command.command.title, text: "Running…")
+            viewModel.showOutput(
+                title: command.command.title,
+                text: "Running extension with the configured performance budget…",
+                state: .running(canCancel: true)
+            )
             if !panel.isVisible { presentPanel() }
         } else {
             hide()
@@ -241,10 +259,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.viewModel.enter(.vscodePicker)
                     if !self.panel.isVisible { self.presentPanel() }
                 } else if let output {
-                    self.viewModel.showOutput(title: command.command.title, text: output)
+                    self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                     if !self.panel.isVisible { self.presentPanel() }
                 } else if isShell {
-                    self.viewModel.showOutput(title: command.command.title, text: "Command completed.")
+                    self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
                 }
             case .failure(let error):
                 self.presentError(title: command.command.title, error: error)
@@ -283,10 +301,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func showWritingReview(for text: String) {
         let provider = SettingsStore.shared.writingProvider
-        viewModel.showOutput(title: "Check Spelling & Grammar", text: "Checking locally with \(provider.title)…")
+        let taskID = UUID()
+        writingTaskID = taskID
+        viewModel.showOutput(
+            title: "Check Spelling & Grammar",
+            text: "Captured \(text.count) highlighted characters. Starting \(provider.title)…",
+            state: .running(canCancel: true)
+        )
         if !panel.isVisible { presentPanel() }
-        writingRunner.check(text, provider: provider) { [weak self] result in
+        writingRunner.check(text, provider: provider, progress: { [weak self] message in
+            guard let self, self.writingTaskID == taskID else { return }
+            self.viewModel.showOutput(
+                title: "Check Spelling & Grammar",
+                text: message,
+                state: .running(canCancel: true)
+            )
+        }) { [weak self] result in
             guard let self else { return }
+            guard self.writingTaskID == taskID else { return }
+            self.writingTaskID = nil
             switch result {
             case .success(let review):
                 self.viewModel.showWritingReview(review)
@@ -299,12 +332,45 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func pasteIntoPreviousApplication() {
         hide()
+        guard let text = NSPasteboard.general.string(forType: .string) else {
+            presentError(title: "Paste", message: "The clipboard does not contain text to paste.")
+            return
+        }
+        guard let previousApplication else {
+            presentError(title: "Paste", message: "The app that should receive the text is no longer available.")
+            return
+        }
         guard WindowManager.trusted(prompt: true) else {
             presentError(title: "Paste", message: "Enable RayPlacement in System Settings → Privacy & Security → Accessibility to paste automatically.")
             return
         }
-        previousApplication?.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+        previousApplication.activate(options: [.activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+            guard let self else { return }
+            do {
+                let context: SelectedTextService.SelectionContext
+                if let focusedTextContext = self.focusedTextContext,
+                   focusedTextContext.processIdentifier == previousApplication.processIdentifier {
+                    context = focusedTextContext
+                } else {
+                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
+                }
+                try SelectedTextService.replaceSelectedText(text, using: context)
+                self.focusedTextContext = nil
+                self.toast.show("Pasted as plain text")
+            } catch SelectedTextService.SelectionError.selectionChanged {
+                self.presentError(
+                    title: "Paste",
+                    message: "The original insertion point changed. Put the cursor back where you want the text and try again."
+                )
+            } catch {
+                self.postPasteShortcut()
+            }
+        }
+    }
+
+    private func postPasteShortcut() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
             guard let source = CGEventSource(stateID: .hidSystemState),
                   let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
                   let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return }
@@ -312,6 +378,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             up.flags = .maskCommand
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
+            self?.toast.show("Pasted as plain text")
         }
     }
 
@@ -338,6 +405,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 }
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 self.selectedTextContext = nil
+                self.focusedTextContext = nil
+                self.toast.show("Replaced the exact highlighted text")
             } catch {
                 self.presentError(title: "Replace Selected Text", error: error)
             }
@@ -370,7 +439,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
             guard let self else { return }
             switch WindowManager.apply(layout, to: target?.processIdentifier) {
-            case .success: break
+            case .success: self.toast.show("Applied \(layout.title)")
             case .failure(let error): self.presentError(title: layout.title, error: error)
             }
         }
@@ -445,7 +514,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func presentError(title: String, message: String) {
-        viewModel.showOutput(title: title, text: message, isError: true)
+        viewModel.showOutput(title: title, text: message, state: .error)
         if !panel.isVisible { presentPanel() }
     }
 }
