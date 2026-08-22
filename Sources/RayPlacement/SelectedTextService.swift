@@ -1,12 +1,21 @@
+import AppKit
 import ApplicationServices
 import Foundation
 
 enum SelectedTextService {
+    struct SelectionContext {
+        let processIdentifier: pid_t
+        let text: String
+        fileprivate let element: AXUIElement
+        fileprivate let range: CFRange?
+    }
+
     enum SelectionError: LocalizedError {
         case accessibilityRequired
         case focusedControlUnavailable
         case selectionUnavailable
         case emptySelection
+        case selectionChanged
         case replacementUnavailable
 
         var errorDescription: String? {
@@ -19,60 +28,66 @@ enum SelectedTextService {
                 return "The focused app did not provide its selected text through macOS Accessibility. No clipboard text was used."
             case .emptySelection:
                 return "Select some text in the previous app, then run Check Spelling & Grammar again."
+            case .selectionChanged:
+                return "The original highlighted text changed before it could be replaced. Select it again and rerun the writing check."
             case .replacementUnavailable:
                 return "The previous app did not allow RayPlacement to replace its selected text. You can still copy the reviewed text."
             }
         }
     }
 
-    static func selectedText(in processIdentifier: pid_t) throws -> String {
+    static func selectionContext(in processIdentifier: pid_t) throws -> SelectionContext {
         guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
 
-        let application = AXUIElementCreateApplication(processIdentifier)
-        var focusedValue: CFTypeRef?
-        let focusedStatus = AXUIElementCopyAttributeValue(
-            application,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedValue
-        )
-        guard focusedStatus == .success, let focusedValue else {
-            throw SelectionError.focusedControlUnavailable
+        let elements = focusedElementCandidates(in: processIdentifier)
+        guard !elements.isEmpty else { throw SelectionError.focusedControlUnavailable }
+
+        var foundReadableSelection = false
+        for element in elements {
+            guard elementBelongsToProcess(element, processIdentifier) else { continue }
+            if let selection = selection(in: element) {
+                foundReadableSelection = true
+                guard !selection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+                return SelectionContext(
+                    processIdentifier: processIdentifier,
+                    text: selection.text,
+                    element: element,
+                    range: selection.range
+                )
+            }
         }
 
-        let focusedElement = unsafeBitCast(focusedValue, to: AXUIElement.self)
-        var selectedValue: CFTypeRef?
-        let selectedStatus = AXUIElementCopyAttributeValue(
-            focusedElement,
-            kAXSelectedTextAttribute as CFString,
-            &selectedValue
-        )
-        guard selectedStatus == .success, let selectedText = selectedValue as? String else {
-            throw SelectionError.selectionUnavailable
-        }
-        guard !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw SelectionError.emptySelection
-        }
-        return selectedText
+        throw foundReadableSelection ? SelectionError.emptySelection : SelectionError.selectionUnavailable
     }
 
-    static func replaceSelectedText(_ replacement: String, in processIdentifier: pid_t) throws {
-        guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
+    static func selectedText(in processIdentifier: pid_t) throws -> String {
+        try selectionContext(in: processIdentifier).text
+    }
 
-        let application = AXUIElementCreateApplication(processIdentifier)
-        var focusedValue: CFTypeRef?
-        let focusedStatus = AXUIElementCopyAttributeValue(
-            application,
-            kAXFocusedUIElementAttribute as CFString,
-            &focusedValue
-        )
-        guard focusedStatus == .success, let focusedValue else {
+    static func replaceSelectedText(_ replacement: String, using context: SelectionContext) throws {
+        guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
+        guard elementBelongsToProcess(context.element, context.processIdentifier) else {
             throw SelectionError.focusedControlUnavailable
         }
 
-        let focusedElement = unsafeBitCast(focusedValue, to: AXUIElement.self)
+        _ = AXUIElementSetAttributeValue(
+            context.element,
+            kAXFocusedAttribute as CFString,
+            kCFBooleanTrue
+        )
+
+        let currentSelection = selection(in: context.element)
+        if currentSelection?.text != context.text {
+            guard let range = context.range,
+                  string(in: range, from: context.element) == context.text,
+                  setSelectedRange(range, in: context.element) else {
+                throw SelectionError.selectionChanged
+            }
+        }
+
         var isSettable = DarwinBoolean(false)
         let settableStatus = AXUIElementIsAttributeSettable(
-            focusedElement,
+            context.element,
             kAXSelectedTextAttribute as CFString,
             &isSettable
         )
@@ -80,11 +95,138 @@ enum SelectedTextService {
             throw SelectionError.replacementUnavailable
         }
         guard AXUIElementSetAttributeValue(
-            focusedElement,
+            context.element,
             kAXSelectedTextAttribute as CFString,
             replacement as CFString
         ) == .success else {
             throw SelectionError.replacementUnavailable
         }
+    }
+
+    static func replaceSelectedText(_ replacement: String, in processIdentifier: pid_t) throws {
+        try replaceSelectedText(replacement, using: selectionContext(in: processIdentifier))
+    }
+
+    private static func focusedElementCandidates(in processIdentifier: pid_t) -> [AXUIElement] {
+        let application = AXUIElementCreateApplication(processIdentifier)
+        let systemWide = AXUIElementCreateSystemWide()
+        var candidates: [AXUIElement] = []
+
+        appendFocusedElement(from: systemWide, to: &candidates)
+        appendFocusedElement(from: application, to: &candidates)
+
+        var index = 0
+        while index < candidates.count, index < 8 {
+            let element = candidates[index]
+            appendFocusedElement(from: element, to: &candidates)
+            appendParent(from: element, to: &candidates)
+            index += 1
+        }
+
+        return candidates.filter { elementBelongsToProcess($0, processIdentifier) }
+    }
+
+    private static func appendFocusedElement(from source: AXUIElement, to candidates: inout [AXUIElement]) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            source,
+            kAXFocusedUIElementAttribute as CFString,
+            &value
+        ) == .success, let value else { return }
+        append(unsafeBitCast(value, to: AXUIElement.self), to: &candidates)
+    }
+
+    private static func appendParent(from source: AXUIElement, to candidates: inout [AXUIElement]) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            source,
+            kAXParentAttribute as CFString,
+            &value
+        ) == .success, let value else { return }
+        append(unsafeBitCast(value, to: AXUIElement.self), to: &candidates)
+    }
+
+    private static func append(_ candidate: AXUIElement, to candidates: inout [AXUIElement]) {
+        guard !candidates.contains(where: { CFEqual($0, candidate) }) else { return }
+        candidates.append(candidate)
+    }
+
+    private static func elementBelongsToProcess(_ element: AXUIElement, _ processIdentifier: pid_t) -> Bool {
+        var elementProcessIdentifier: pid_t = 0
+        return AXUIElementGetPid(element, &elementProcessIdentifier) == .success
+            && elementProcessIdentifier == processIdentifier
+    }
+
+    private static func selection(in element: AXUIElement) -> (text: String, range: CFRange?)? {
+        let range = selectedRange(in: element)
+        var selectedValue: CFTypeRef?
+        if AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextAttribute as CFString,
+            &selectedValue
+        ) == .success {
+            if let text = selectedValue as? String { return (text, range) }
+            if let attributed = selectedValue as? NSAttributedString { return (attributed.string, range) }
+        }
+
+        guard let range else { return nil }
+        return string(in: range, from: element).map { ($0, range) }
+    }
+
+    private static func selectedRange(in element: AXUIElement) -> CFRange? {
+        var rangeValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &rangeValue
+        ) == .success, let rangeValue else { return nil }
+        let value = unsafeBitCast(rangeValue, to: AXValue.self)
+        guard AXValueGetType(value) == .cfRange else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value, .cfRange, &range) else { return nil }
+        return range
+    }
+
+    private static func string(in range: CFRange, from element: AXUIElement) -> String? {
+        var mutableRange = range
+        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return nil }
+        var selectedValue: CFTypeRef?
+        if AXUIElementCopyParameterizedAttributeValue(
+            element,
+            kAXStringForRangeParameterizedAttribute as CFString,
+            rangeValue,
+            &selectedValue
+        ) == .success {
+            if let text = selectedValue as? String { return text }
+            if let attributed = selectedValue as? NSAttributedString { return attributed.string }
+        }
+
+        var fullValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &fullValue
+        ) == .success, let text = fullValue as? String else { return nil }
+        let source = text as NSString
+        guard range.location >= 0, range.length >= 0,
+              range.length <= source.length,
+              range.location <= source.length - range.length else { return nil }
+        return source.substring(with: NSRange(location: range.location, length: range.length))
+    }
+
+    private static func setSelectedRange(_ range: CFRange, in element: AXUIElement) -> Bool {
+        var mutableRange = range
+        guard let rangeValue = AXValueCreate(.cfRange, &mutableRange) else { return false }
+        var isSettable = DarwinBoolean(false)
+        guard AXUIElementIsAttributeSettable(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            &isSettable
+        ) == .success, isSettable.boolValue else { return false }
+        return AXUIElementSetAttributeValue(
+            element,
+            kAXSelectedTextRangeAttribute as CFString,
+            rangeValue
+        ) == .success
     }
 }

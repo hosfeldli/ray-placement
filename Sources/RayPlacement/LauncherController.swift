@@ -17,6 +17,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let writingRunner = WritingProviderRunner()
     private lazy var notesWindow = NotesWindowController()
     private var previousApplication: NSRunningApplication?
+    private var selectedTextContext: SelectedTextService.SelectionContext?
     private var localEventMonitor: Any?
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
@@ -153,10 +154,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func rememberFrontmostApplication() {
-        if let frontmost = NSWorkspace.shared.frontmostApplication,
-           frontmost.bundleIdentifier != Bundle.main.bundleIdentifier {
-            previousApplication = frontmost
+        guard let frontmost = NSWorkspace.shared.frontmostApplication,
+              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
+            previousApplication = nil
+            selectedTextContext = nil
+            return
         }
+        previousApplication = frontmost
+        selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
     }
 
     private func screenUnderPointer() -> NSScreen? {
@@ -258,23 +263,29 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         hide()
+        if let selectedTextContext,
+           selectedTextContext.processIdentifier == previousApplication.processIdentifier {
+            showWritingReview(for: selectedTextContext.text)
+            return
+        }
         previousApplication.activate(options: [.activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
             guard let self else { return }
             do {
-                let selectedText = try SelectedTextService.selectedText(in: previousApplication.processIdentifier)
-                self.showWritingReview(for: selectedText)
+                let context = try SelectedTextService.selectionContext(in: previousApplication.processIdentifier)
+                self.selectedTextContext = context
+                self.showWritingReview(for: context.text)
             } catch {
                 self.presentError(title: "Check Spelling & Grammar", error: error)
             }
         }
     }
 
-    private func showWritingReview(for text: String?) {
+    private func showWritingReview(for text: String) {
         let provider = SettingsStore.shared.writingProvider
         viewModel.showOutput(title: "Check Spelling & Grammar", text: "Checking locally with \(provider.title)…")
         if !panel.isVisible { presentPanel() }
-        writingRunner.check(text ?? "", provider: provider) { [weak self] result in
+        writingRunner.check(text, provider: provider) { [weak self] result in
             guard let self else { return }
             switch result {
             case .success(let review):
@@ -316,10 +327,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         previousApplication.activate(options: [.activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+            guard let self else { return }
             do {
-                try SelectedTextService.replaceSelectedText(text, in: previousApplication.processIdentifier)
+                let context: SelectedTextService.SelectionContext
+                if let selectedTextContext = self.selectedTextContext,
+                   selectedTextContext.processIdentifier == previousApplication.processIdentifier {
+                    context = selectedTextContext
+                } else {
+                    context = try SelectedTextService.selectionContext(in: previousApplication.processIdentifier)
+                }
+                try SelectedTextService.replaceSelectedText(text, using: context)
+                self.selectedTextContext = nil
             } catch {
-                self?.presentError(title: "Replace Selected Text", error: error)
+                self.presentError(title: "Replace Selected Text", error: error)
             }
         }
     }

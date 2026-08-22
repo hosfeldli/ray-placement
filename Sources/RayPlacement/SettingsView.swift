@@ -294,7 +294,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local-only writing tools. No cloud AI. No analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version 1.5.0")
+            Text("Version 1.5.1")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
