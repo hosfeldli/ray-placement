@@ -72,13 +72,21 @@ if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
 elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then
     KEYCHAIN_PASSWORD="$(<"$LOCAL_SIGNING_PASSWORD")"
     security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$LOCAL_SIGNING_KEYCHAIN"
-    if security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | grep -q "\"$LOCAL_SIGNING_IDENTITY\""; then
+    LOCAL_SIGNING_HASH="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | awk -v identity="$LOCAL_SIGNING_IDENTITY" 'index($0, "\"" identity "\"") { print $2; exit }')"
+    if [[ -n "$LOCAL_SIGNING_HASH" ]]; then
+        ORIGINAL_USER_KEYCHAINS=("${(@f)$(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')}" )
+        restore_signing_search_list() {
+            security list-keychains -d user -s "${ORIGINAL_USER_KEYCHAINS[@]}" >/dev/null
+        }
+        trap restore_signing_search_list EXIT INT TERM
+        security list-keychains -d user -s "$LOCAL_SIGNING_KEYCHAIN" "${ORIGINAL_USER_KEYCHAINS[@]}"
         codesign \
             --force \
             --deep \
-            --keychain "$LOCAL_SIGNING_KEYCHAIN" \
-            --sign "$LOCAL_SIGNING_IDENTITY" \
+            --sign "$LOCAL_SIGNING_HASH" \
             "$APP_DIRECTORY"
+        restore_signing_search_list
+        trap - EXIT INT TERM
         echo "Signed with the stable RayPlacement local identity."
     elif [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
         echo "RayPlacement's local signing identity exists but is not trusted for code signing."

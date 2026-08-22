@@ -36,13 +36,13 @@ struct SettingsView: View {
 
     private var performanceTab: some View {
         Form {
-            Section("Writing models") {
+            Section("Writing and note summaries") {
                 performancePicker("Writing", selection: $settings.writingPerformance)
                 LabeledContent(
                     "Qwen compute limit",
-                    value: "\(settings.writingPerformance.threadLimit) CPU thread\(settings.writingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.writingPerformance.writingTimeout))s timeout"
+                    value: "\(settings.writingPerformance.threadLimit) CPU thread\(settings.writingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.writingPerformance.writingTimeout))s timeout, \(settings.writingPerformance.summaryTokenLimit)-token summaries"
                 )
-                Text("Models load only when a writing check is requested and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
+                Text("Models load only for a requested writing check or note summary and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("Qwen still uses about 2 GB of memory while a check is running because the model itself must be loaded. Choose Harper for the lightest checks.")
@@ -294,7 +294,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local-only writing tools. No cloud AI. No analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version 1.4.0")
+            Text("Version 1.5.0")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

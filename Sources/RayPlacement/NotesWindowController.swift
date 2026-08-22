@@ -6,6 +6,7 @@ import SwiftUI
 final class NotesWindowController: NSObject, NSWindowDelegate {
     let store: NotesStore
     let dictation: NoteDictationService
+    let summarizer: NoteSummaryService
     private var window: NSWindow?
 
     override init() {
@@ -14,6 +15,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.dictation = NoteDictationService { [weak store] transcript, destinationNoteID in
             store?.appendDictation(transcript, to: destinationNoteID)
         }
+        self.summarizer = NoteSummaryService()
         super.init()
     }
 
@@ -26,17 +28,19 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     func shutdown() {
         dictation.cancel()
+        summarizer.cancel()
         store.flush()
     }
 
     func windowWillClose(_ notification: Notification) {
         dictation.cancel()
+        summarizer.cancel()
         store.flush()
     }
 
     private func makeWindow() -> NSWindow {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_080, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 1_000, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -44,11 +48,15 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.title = "RayPlacement Notes"
         window.setAccessibilityLabel("RayPlacement Notes")
         window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width: 760, height: 500)
+        window.minSize = NSSize(width: 720, height: 500)
         window.center()
         window.setFrameAutosaveName("RayPlacementNotesWindow")
         window.delegate = self
-        window.contentView = NSHostingView(rootView: NotesView(store: store, dictation: dictation))
+        window.contentView = NSHostingView(rootView: NotesView(
+            store: store,
+            dictation: dictation,
+            summarizer: summarizer
+        ))
         return window
     }
 }
@@ -56,10 +64,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 private struct NotesView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var dictation: NoteDictationService
+    @ObservedObject var summarizer: NoteSummaryService
     @State private var searchQuery = ""
     @State private var confirmDelete = false
-    @State private var previewBlocks: [MarkdownBlock] = []
-    @State private var previewWorkItem: DispatchWorkItem?
 
     private var filteredNotes: [MarkdownNote] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -70,25 +77,36 @@ private struct NotesView: View {
         }
     }
 
-    private var selectedContent: String { store.selectedNote?.content ?? "" }
-
     var body: some View {
         HSplitView {
             sidebar
                 .frame(minWidth: 220, idealWidth: 260, maxWidth: 320)
             editor
-                .frame(minWidth: 520, maxWidth: .infinity, maxHeight: .infinity)
+                .frame(minWidth: 480, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(minWidth: 760, minHeight: 500)
+        .frame(minWidth: 720, minHeight: 500)
         .background(Color(nsColor: .windowBackgroundColor))
-        .onAppear { schedulePreview(selectedContent, immediately: true) }
-        .onChange(of: selectedContent) { content in schedulePreview(content) }
-        .onChange(of: store.selectedNoteID) { _ in schedulePreview(selectedContent, immediately: true) }
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
         } message: {
             Text("This permanently removes the selected local note.")
+        }
+        .sheet(isPresented: Binding(
+            get: { summarizer.proposal != nil },
+            set: { if !$0 { summarizer.dismissProposal() } }
+        )) {
+            if let proposal = summarizer.proposal {
+                SummaryReviewView(
+                    proposal: proposal,
+                    insert: {
+                        store.insertSummary(proposal.markdown, into: proposal.noteID)
+                        summarizer.dismissProposal()
+                    },
+                    copy: summarizer.copyProposal,
+                    close: summarizer.dismissProposal
+                )
+            }
         }
     }
 
@@ -125,7 +143,7 @@ private struct NotesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Text("Local only")
+                Text("Local Markdown")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -141,13 +159,14 @@ private struct NotesView: View {
                 HStack(spacing: 10) {
                     TextField(
                         "Untitled Note",
-                        text: Binding(
-                            get: { note.title },
-                            set: store.updateTitle
-                        )
+                        text: Binding(get: { note.title }, set: store.updateTitle)
                     )
                     .textFieldStyle(.plain)
                     .font(.system(size: 21, weight: .semibold))
+
+                    Text("Markdown formats inline")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
 
                     Button {
                         store.togglePin()
@@ -173,15 +192,11 @@ private struct NotesView: View {
 
                 Divider()
 
-                HSplitView {
-                    markdownEditor(note)
-                        .frame(minWidth: 270, maxWidth: .infinity, maxHeight: .infinity)
-                    markdownPreview
-                        .frame(minWidth: 270, maxWidth: .infinity, maxHeight: .infinity)
-                }
+                InlineMarkdownEditor(text: Binding(get: { note.content }, set: store.updateContent))
+                    .accessibilityLabel("Inline formatted Markdown editor")
 
                 Divider()
-                noteToolbar
+                noteToolbar(note)
             }
         } else {
             VStack(spacing: 12) {
@@ -196,49 +211,9 @@ private struct NotesView: View {
         }
     }
 
-    private func markdownEditor(_ note: MarkdownNote) -> some View {
+    private func noteToolbar(_ note: MarkdownNote) -> some View {
         VStack(spacing: 0) {
-            PaneHeader(title: "MARKDOWN", detail: "Autosaved")
-            Divider()
-            TextEditor(text: Binding(get: { note.content }, set: store.updateContent))
-                .font(.system(size: 14, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(10)
-                .accessibilityLabel("Markdown editor")
-        }
-    }
-
-    private var markdownPreview: some View {
-        VStack(spacing: 0) {
-            PaneHeader(title: "PREVIEW", detail: "Rendered Markdown")
-            Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    if previewBlocks.isEmpty {
-                        Text("Start writing to see a rendered preview.")
-                            .foregroundStyle(.secondary)
-                    } else {
-                        ForEach(Array(previewBlocks.prefix(2_000).enumerated()), id: \.offset) { _, block in
-                            MarkdownBlockView(block: block)
-                        }
-                        if previewBlocks.count > 2_000 {
-                            Text("Preview limited to the first 2,000 blocks to stay responsive.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(18)
-            }
-            .textSelection(.enabled)
-            .accessibilityLabel("Markdown preview")
-        }
-    }
-
-    private var noteToolbar: some View {
-        VStack(spacing: 0) {
-            if let error = store.lastError ?? dictation.lastError {
+            if let error = store.lastError ?? dictation.lastError ?? summarizer.lastError {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -247,16 +222,33 @@ private struct NotesView: View {
                     .padding(.top, 7)
             }
             HStack(spacing: 7) {
-                MarkdownInsertButton(symbol: "bold", help: "Insert bold Markdown") { store.appendMarkdown("**bold text**") }
-                MarkdownInsertButton(symbol: "italic", help: "Insert italic Markdown") { store.appendMarkdown("*italic text*") }
+                MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)") { store.appendMarkdown("**bold text**") }
+                MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)") { store.appendMarkdown("*italic text*") }
                 MarkdownInsertButton(symbol: "list.bullet", help: "Insert list item") { store.appendMarkdown("- List item") }
                 MarkdownInsertButton(symbol: "checklist", help: "Insert task") { store.appendMarkdown("- [ ] Task") }
                 MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert code block") {
                     store.appendMarkdown("```\ncode\n```")
                 }
-                MarkdownInsertButton(symbol: "link", help: "Insert link") { store.appendMarkdown("[link title](https://example.com)") }
+                MarkdownInsertButton(symbol: "link", help: "Link (Command-K)") { store.appendMarkdown("[link title](https://example.com)") }
 
-                Spacer()
+                Spacer(minLength: 8)
+
+                if summarizer.isSummarizing {
+                    Text(summarizer.progressText ?? "Summarizing with Qwen…")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Button("Cancel", action: summarizer.cancel)
+                } else {
+                    Button {
+                        summarizer.summarize(note)
+                    } label: {
+                        Label("Summarize", systemImage: "text.quote")
+                    }
+                    .disabled(dictation.phase != .idle || note.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Summarize this note locally with Qwen using the Writing performance limit")
+                }
+
                 Text(dictation.statusText)
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -269,29 +261,16 @@ private struct NotesView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(dictation.phase == .recording ? .red : .accentColor)
-                .disabled(dictation.phase == .requestingPermission || dictation.phase == .transcribing)
+                .disabled(
+                    dictation.phase == .requestingPermission
+                        || dictation.phase == .transcribing
+                        || summarizer.isSummarizing
+                )
                 .help("Record first, then transcribe into this note after Stop")
             }
             .padding(.horizontal, 12)
-            .frame(height: 46)
+            .frame(minHeight: 48)
         }
-    }
-
-    private func schedulePreview(_ content: String, immediately: Bool = false) {
-        previewWorkItem?.cancel()
-        var work: DispatchWorkItem!
-        work = DispatchWorkItem {
-            let blocks = MarkdownBlockParser.parse(content)
-            DispatchQueue.main.async {
-                guard !work.isCancelled else { return }
-                previewBlocks = blocks
-            }
-        }
-        previewWorkItem = work
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + (immediately ? 0 : 0.28),
-            execute: work
-        )
     }
 }
 
@@ -324,25 +303,6 @@ private struct NoteListRow: View {
     }
 }
 
-private struct PaneHeader: View {
-    let title: String
-    let detail: String
-
-    var body: some View {
-        HStack {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Spacer()
-            Text(detail)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 34)
-    }
-}
-
 private struct MarkdownInsertButton: View {
     let symbol: String
     let help: String
@@ -358,75 +318,52 @@ private struct MarkdownInsertButton: View {
     }
 }
 
-private struct MarkdownBlockView: View {
-    let block: MarkdownBlock
+private struct SummaryReviewView: View {
+    let proposal: NoteSummaryProposal
+    let insert: () -> Void
+    let copy: () -> Void
+    let close: () -> Void
 
-    @ViewBuilder
     var body: some View {
-        switch block {
-        case .heading(let level, let text):
-            inlineText(text)
-                .font(.system(size: max(15, 28 - CGFloat(level * 2)), weight: .bold))
-                .padding(.top, level == 1 ? 6 : 2)
-        case .paragraph(let text):
-            inlineText(text)
-                .font(.body)
-                .lineSpacing(3)
-        case .bullet(let text):
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text("•").foregroundStyle(Color.accentColor)
-                inlineText(text)
-            }
-        case .numbered(let number, let text):
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Text("\(number).")
-                    .foregroundStyle(Color.accentColor)
-                    .frame(minWidth: 20, alignment: .trailing)
-                inlineText(text)
-            }
-        case .task(let checked, let text):
-            HStack(alignment: .firstTextBaseline, spacing: 9) {
-                Image(systemName: checked ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(checked ? Color.green : Color.secondary)
-                inlineText(text)
-                    .strikethrough(checked, color: .secondary)
-                    .foregroundStyle(checked ? Color.secondary : Color.primary)
-            }
-        case .quote(let text):
-            HStack(spacing: 10) {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor.opacity(0.7))
-                    .frame(width: 3)
-                inlineText(text)
-                    .italic()
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.vertical, 4)
-        case .code(let language, let text):
-            VStack(alignment: .leading, spacing: 7) {
-                if let language {
-                    Text(language.uppercased())
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Qwen Summary").font(.title2.bold())
+                    Text(proposal.noteTitle).font(.caption).foregroundStyle(.secondary)
                 }
-                Text(text)
-                    .font(.system(size: 12.5, design: .monospaced))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer()
+                Button("Close", action: close)
             }
-            .padding(11)
-            .background(Color.primary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        case .divider:
-            Divider().padding(.vertical, 5)
+            .padding(18)
+            Divider()
+            ScrollView {
+                renderedSummary
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(24)
+            }
+            .textSelection(.enabled)
+            Divider()
+            HStack {
+                Text("Generated locally with Qwen3 1.7B; review before inserting.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Copy Markdown", action: copy)
+                Button("Insert at Top", action: insert)
+                    .buttonStyle(.borderedProminent)
+            }
+            .padding(16)
         }
+        .frame(width: 680, height: 520)
     }
 
-    private func inlineText(_ markdown: String) -> Text {
+    private var renderedSummary: Text {
         if let attributed = try? AttributedString(
-            markdown: markdown,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            markdown: proposal.markdown,
+            options: .init(interpretedSyntax: .full)
         ) {
             return Text(attributed)
         }
-        return Text(markdown)
+        return Text(proposal.markdown)
     }
 }

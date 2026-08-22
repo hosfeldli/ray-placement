@@ -1,5 +1,22 @@
 @preconcurrency import Foundation
+import RayPlacementCore
 import RayPlacementWriting
+
+@MainActor
+private final class LocalAIExecutionGate {
+    static let shared = LocalAIExecutionGate()
+    private var owner: UUID?
+
+    func acquire(_ candidate: UUID) -> Bool {
+        guard owner == nil else { return false }
+        owner = candidate
+        return true
+    }
+
+    func release(_ candidate: UUID) {
+        if owner == candidate { owner = nil }
+    }
+}
 
 @MainActor
 final class WritingProviderRunner {
@@ -13,6 +30,7 @@ final class WritingProviderRunner {
         case missingResource(String)
         case processFailed(String)
         case textTooLong(provider: WritingProvider, limit: Int)
+        case modelBusy
 
         var errorDescription: String? {
             switch self {
@@ -22,16 +40,76 @@ final class WritingProviderRunner {
                 return message.isEmpty ? "The local writing engine failed." : message
             case .textTooLong(let provider, let limit):
                 return "\(provider.title) checks are limited to \(limit.formatted()) characters at a time."
+            case .modelBusy:
+                return "Another local AI task is already running. Wait for it to finish or cancel it first."
             }
         }
     }
 
     private let reviewer = WritingCheckService()
     private var activeProcess: Process?
+    private var modelLease: UUID?
 
     func cancel() {
-        if activeProcess?.isRunning == true { activeProcess?.terminate() }
+        if activeProcess?.isRunning == true {
+            activeProcess?.terminate()
+            // Keep the lease until the terminated process has actually exited. This
+            // prevents a second model from briefly overlapping it during cancellation.
+            return
+        }
         activeProcess = nil
+        releaseModelLease()
+    }
+
+    func summarize(
+        _ markdown: String,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        cancel()
+        let cleanText = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanText.isEmpty else {
+            completion(.failure(WritingCheckService.CheckError.emptyText))
+            return
+        }
+        guard resourceURL("llama-cli", in: "Qwen/runtime") != nil,
+              resourceURL("Qwen3-1.7B-Q8_0.gguf", in: "Qwen") != nil else {
+            completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
+            return
+        }
+        guard acquireModelLease() else {
+            completion(.failure(RunnerError.modelBusy))
+            return
+        }
+
+        let chunks = NoteSummaryPlan.chunks(cleanText)
+        let summaryTokenLimit = SettingsStore.shared.writingPerformance.summaryTokenLimit
+        if chunks.count == 1, let onlyChunk = chunks.first {
+            progress("Summarizing this note with Qwen…")
+            runQwenText(
+                prompt: wrappedSummaryPrompt(onlyChunk),
+                systemPrompt: finalSummarySystemPrompt,
+                predict: summaryTokenLimit
+            ) { [weak self] result in
+                self?.releaseModelLease()
+                completion(result)
+            }
+            return
+        }
+        summarizeSections(chunks, index: 0, summaries: [], progress: progress) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                self.releaseModelLease()
+                completion(.failure(error))
+            case .success(let sectionSummaries):
+                self.reduceSummaries(sectionSummaries, pass: 1, progress: progress) { [weak self] reduced in
+                    guard let self else { return }
+                    self.releaseModelLease()
+                    completion(reduced)
+                }
+            }
+        }
     }
 
     func check(
@@ -111,6 +189,10 @@ final class WritingProviderRunner {
             return
         }
         let performance = SettingsStore.shared.writingPerformance
+        guard acquireModelLease() else {
+            completion(.failure(RunnerError.modelBusy))
+            return
+        }
         run(
             executable: executable,
             arguments: [runner.path, model.path, String(performance.threadLimit)],
@@ -118,6 +200,7 @@ final class WritingProviderRunner {
             timeoutSeconds: performance.writingTimeout
         ) { [weak self] result in
             guard let self else { return }
+            self.releaseModelLease()
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -157,6 +240,10 @@ final class WritingProviderRunner {
 
         let systemPrompt = "You are an exacting English proofreading engine. Correct every spelling, grammar, word-choice, and punctuation error. Preserve the intended meaning. Return only the fully corrected text, with no explanation."
         let performance = SettingsStore.shared.writingPerformance
+        guard acquireModelLease() else {
+            completion(.failure(RunnerError.modelBusy))
+            return
+        }
         let threads = String(performance.threadLimit)
         let arguments = [
             "-m", model.path,
@@ -177,6 +264,7 @@ final class WritingProviderRunner {
             timeoutSeconds: performance.writingTimeout
         ) { [weak self] result in
             guard let self else { return }
+            self.releaseModelLease()
             switch result {
             case .failure(let error):
                 completion(.failure(error))
@@ -202,6 +290,162 @@ final class WritingProviderRunner {
                 }
             }
         }
+    }
+
+    private func summarizeSections(
+        _ chunks: [String],
+        index: Int,
+        summaries: [String],
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<[String], Error>) -> Void
+    ) {
+        guard index < chunks.count else {
+            completion(.success(summaries))
+            return
+        }
+        progress("Summarizing section \(index + 1) of \(chunks.count) with Qwen…")
+        let systemPrompt = "Summarize one section of Markdown notes. Preserve concrete facts, names, dates, decisions, action items, risks, and open questions. Return concise Markdown bullets only. Do not invent information."
+        let predict = min(320, SettingsStore.shared.writingPerformance.summaryTokenLimit)
+        runQwenText(prompt: wrappedSummaryPrompt(chunks[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let summary):
+                self.summarizeSections(
+                    chunks,
+                    index: index + 1,
+                    summaries: summaries + [summary],
+                    progress: progress,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func reduceSummaries(
+        _ summaries: [String],
+        pass: Int,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let combined = summaries.enumerated().map { "### Section \($0.offset + 1)\n\($0.element)" }
+            .joined(separator: "\n\n")
+        if combined.count <= 6_000 || pass >= 4 {
+            progress("Building the final Qwen summary…")
+            let prompt = String(combined.prefix(8_000))
+            let predict = SettingsStore.shared.writingPerformance.summaryTokenLimit
+            runQwenText(prompt: wrappedSummaryPrompt(prompt), systemPrompt: finalSummarySystemPrompt, predict: predict, completion: completion)
+            return
+        }
+
+        let groups = NoteSummaryPlan.chunks(combined)
+        progress("Condensing \(groups.count) groups with Qwen…")
+        summarizeReductionGroups(groups, index: 0, summaries: [], pass: pass, progress: progress, completion: completion)
+    }
+
+    private func summarizeReductionGroups(
+        _ groups: [String],
+        index: Int,
+        summaries: [String],
+        pass: Int,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard index < groups.count else {
+            reduceSummaries(summaries, pass: pass + 1, progress: progress, completion: completion)
+            return
+        }
+        progress("Condensing summary group \(index + 1) of \(groups.count)…")
+        let systemPrompt = "Condense these partial Markdown summaries. Keep all distinct decisions, action items, names, dates, risks, and open questions. Remove repetition. Return Markdown bullets only and do not invent facts."
+        let predict = min(320, SettingsStore.shared.writingPerformance.summaryTokenLimit)
+        runQwenText(prompt: wrappedSummaryPrompt(groups[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let summary):
+                self.summarizeReductionGroups(
+                    groups,
+                    index: index + 1,
+                    summaries: summaries + [summary],
+                    pass: pass,
+                    progress: progress,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func runQwenText(
+        prompt: String,
+        systemPrompt: String,
+        predict: Int,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        guard let executable = resourceURL("llama-cli", in: "Qwen/runtime"),
+              let model = resourceURL("Qwen3-1.7B-Q8_0.gguf", in: "Qwen") else {
+            completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
+            return
+        }
+        let performance = SettingsStore.shared.writingPerformance
+        let threads = String(performance.threadLimit)
+        let arguments = [
+            "-m", model.path,
+            "--conversation", "--single-turn", "--reasoning", "off",
+            "--system-prompt", systemPrompt,
+            "--prompt", prompt,
+            "--simple-io", "--no-display-prompt", "--log-disable",
+            "--predict", String(predict), "--temp", "0", "--ctx-size", "4096",
+            "--threads", threads, "--threads-batch", threads,
+            "--batch-size", "128", "--ubatch-size", "64",
+            "--prio", "-1", "--prio-batch", "0",
+            "--gpu-layers", "0", "--no-warmup"
+        ]
+        run(
+            executable: executable,
+            arguments: arguments,
+            input: "",
+            timeoutSeconds: performance.writingTimeout
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .failure(let error):
+                completion(.failure(error))
+            case .success(let output):
+                guard output.status == 0 else {
+                    completion(.failure(RunnerError.processFailed(output.stderr)))
+                    return
+                }
+                let console = String(decoding: output.stdout, as: UTF8.self)
+                guard let response = self.extractQwenResponse(from: console, prompt: prompt) else {
+                    completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable summary.")))
+                    return
+                }
+                completion(.success(response.trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
+        }
+    }
+
+    private var finalSummarySystemPrompt: String {
+        "Combine the supplied notes into one accurate Markdown summary. Use the headings Overview, Decisions, Action Items, Risks, and Open Questions when relevant. Remove repetition, preserve names and dates, and never invent facts. Return only the finished summary with complete Markdown sentences."
+    }
+
+    private func wrappedSummaryPrompt(_ source: String) -> String {
+        "# Notes to summarize\n\n\(source)\n\n# Required output\nWrite a useful summary with complete Markdown bullet points."
+    }
+
+    private func acquireModelLease() -> Bool {
+        let candidate = UUID()
+        guard LocalAIExecutionGate.shared.acquire(candidate) else { return false }
+        modelLease = candidate
+        return true
+    }
+
+    private func releaseModelLease() {
+        guard let modelLease else { return }
+        LocalAIExecutionGate.shared.release(modelLease)
+        self.modelLease = nil
     }
 
     private func extractQwenResponse(from console: String, prompt: String) -> String? {

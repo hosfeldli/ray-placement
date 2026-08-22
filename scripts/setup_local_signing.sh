@@ -7,6 +7,7 @@ SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement
 KEYCHAIN_PATH="$SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
 PASSWORD_PATH="$SIGNING_DIRECTORY/keychain-password"
 CERTIFICATE_PATH="$SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+LOGIN_KEYCHAIN_PATH="$USER_HOME_DIRECTORY/Library/Keychains/login.keychain-db"
 IDENTITY_NAME="RayPlacement Local Code Signing"
 
 if [[ -z "$USER_HOME_DIRECTORY" || "$USER_HOME_DIRECTORY" != /Users/* ]]; then
@@ -25,6 +26,18 @@ if [[ -f "$KEYCHAIN_PATH" && -f "$PASSWORD_PATH" ]]; then
         echo "RayPlacement local signing identity is ready."
         echo "Keychain: $KEYCHAIN_PATH"
         exit 0
+    fi
+    if [[ -f "$CERTIFICATE_PATH" ]]; then
+        security add-trusted-cert \
+            -r trustRoot \
+            -p codeSign \
+            -k "$LOGIN_KEYCHAIN_PATH" \
+            "$CERTIFICATE_PATH"
+        if security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "\"$IDENTITY_NAME\""; then
+            echo "RayPlacement local signing identity is ready."
+            echo "Private keychain: $KEYCHAIN_PATH"
+            exit 0
+        fi
     fi
     echo "The RayPlacement signing keychain exists but its identity is unavailable."
     echo "Move $SIGNING_DIRECTORY aside, then run this setup again."
@@ -69,7 +82,7 @@ security set-key-partition-list \
 security add-trusted-cert \
     -r trustRoot \
     -p codeSign \
-    -k "$KEYCHAIN_PATH" \
+    -k "$LOGIN_KEYCHAIN_PATH" \
     "$CERTIFICATE_PATH"
 
 if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "\"$IDENTITY_NAME\""; then
@@ -78,5 +91,6 @@ if ! security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -q "\"$IDE
 fi
 
 echo "Created a local-only RayPlacement signing identity."
-echo "Keychain: $KEYCHAIN_PATH"
+echo "Private keychain: $KEYCHAIN_PATH"
+echo "The public certificate is trusted for code signing in the login keychain."
 echo "It is used only to keep macOS Accessibility approval stable between local builds."

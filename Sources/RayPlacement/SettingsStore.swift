@@ -50,6 +50,14 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         }
     }
 
+    var summaryTokenLimit: Int {
+        switch self {
+        case .eco: return 256
+        case .balanced: return 384
+        case .high: return 512
+        }
+    }
+
     var dictationMaximumDuration: TimeInterval {
         switch self {
         case .eco: return 15 * 60

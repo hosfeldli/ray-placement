@@ -123,6 +123,23 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    func insertSummary(_ summary: String, into noteID: UUID) {
+        guard let index = notes.firstIndex(where: { $0.id == noteID }) else {
+            lastError = "The original note no longer exists, so the summary was not inserted."
+            return
+        }
+        let cleanSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanSummary.isEmpty else { return }
+        let block = "## Qwen Summary\n\n\(cleanSummary)\n\n---\n\n"
+        let candidate = block + notes[index].content
+        guard candidate.count <= Self.maximumCharactersPerNote else {
+            lastError = "The summary would exceed this note's \(Self.maximumCharactersPerNote.formatted())-character limit."
+            return
+        }
+        updateNote(noteID) { note in note.content = candidate }
+        selectedNoteID = noteID
+    }
+
     func flush() {
         pendingSave?.cancel()
         pendingSave = nil

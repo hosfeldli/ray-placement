@@ -109,3 +109,11 @@ import Testing
     #expect(segments.count == 80)
     #expect(MeetingDictationPlan.estimatedEncodedByteCount(for: 60 * 60) == 14_400_000)
 }
+
+@Test func noteSummaryPlanPreservesAllTextWithinBoundedChunks() {
+    let source = String(repeating: "alpha ", count: 1_300) + "\n\nDecision: ship Friday."
+    let chunks = NoteSummaryPlan.chunks(source)
+    #expect(chunks.count == 3)
+    #expect(chunks.allSatisfy { $0.count <= NoteSummaryPlan.maximumChunkCharacters })
+    #expect(chunks.joined().replacingOccurrences(of: "\n\n", with: "") == source.replacingOccurrences(of: "\n\n", with: ""))
+}
