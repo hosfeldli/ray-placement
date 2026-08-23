@@ -18,39 +18,48 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let writingRunner = WritingProviderRunner()
     private lazy var notesWindow = NotesWindowController()
     private var previousApplication: NSRunningApplication?
+    private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
     private var localEventMonitor: Any?
+    private var applicationActivationObserver: NSObjectProtocol?
+    private let updateService: UpdateService
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
+        updateService: updateService,
         reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() }
     )
 
-    override init() {
+    init(updateService: UpdateService) {
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 740, height: 510))
+        self.updateService = updateService
         super.init()
 
         viewModel.delegate = self
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: LauncherView(viewModel: viewModel))
+        rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }
 
     deinit {
         if let localEventMonitor { NSEvent.removeMonitor(localEventMonitor) }
+        if let applicationActivationObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(applicationActivationObserver)
+        }
     }
 
-    func toggle() {
-        panel.isVisible ? hide() : show()
+    func toggle(from sourceApplication: NSRunningApplication? = nil) {
+        panel.isVisible ? hide() : show(from: sourceApplication)
     }
 
-    func show() {
-        rememberFrontmostApplication()
+    func show(from sourceApplication: NSRunningApplication? = nil) {
+        rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.resetForPresentation()
         presentPanel()
     }
@@ -77,8 +86,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.present()
     }
 
-    func executeExtensionFromHotkey(_ command: LoadedExtensionCommand) {
-        rememberFrontmostApplication()
+    func showNotesAndToggleDictation() {
+        hide()
+        notesWindow.presentMostRecentAndToggleDictation()
+    }
+
+    func executeExtensionFromHotkey(
+        _ command: LoadedExtensionCommand,
+        sourceApplication: NSRunningApplication? = nil
+    ) {
+        rememberFrontmostApplication(preferred: sourceApplication)
         executeExtension(command)
     }
 
@@ -158,17 +175,42 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         panel.makeKeyAndOrderFront(nil)
     }
 
-    private func rememberFrontmostApplication() {
-        guard let frontmost = NSWorkspace.shared.frontmostApplication,
-              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier else {
+    private func rememberFrontmostApplication(preferred: NSRunningApplication? = nil) {
+        let reportedFrontmost = preferred ?? NSWorkspace.shared.frontmostApplication
+        let frontmost = reportedFrontmost?.bundleIdentifier == Bundle.main.bundleIdentifier
+            ? lastExternalApplication
+            : reportedFrontmost
+        guard let frontmost,
+              frontmost.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !frontmost.isTerminated else {
             previousApplication = nil
             selectedTextContext = nil
             focusedTextContext = nil
             return
         }
+        lastExternalApplication = frontmost
         previousApplication = frontmost
         focusedTextContext = try? SelectedTextService.editableContext(in: frontmost.processIdentifier)
         selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
+    }
+
+    private func rememberExternalApplicationActivation() {
+        if let application = NSWorkspace.shared.frontmostApplication,
+           application.bundleIdentifier != Bundle.main.bundleIdentifier {
+            lastExternalApplication = application
+        }
+        applicationActivationObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            Task { @MainActor in
+                guard let self,
+                      let application = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication,
+                      application.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+                self.lastExternalApplication = application
+            }
+        }
     }
 
     private func screenUnderPointer() -> NSScreen? {
@@ -290,7 +332,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
             guard let self else { return }
             do {
-                let context = try SelectedTextService.selectionContext(in: previousApplication.processIdentifier)
+                let target = try self.resolveSelectedTextTarget(preferred: previousApplication)
+                self.previousApplication = target.application
+                self.lastExternalApplication = target.application
+                let context = target.context
                 self.selectedTextContext = context
                 self.showWritingReview(for: context.text)
             } catch {
@@ -299,8 +344,43 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func resolveSelectedTextTarget(
+        preferred application: NSRunningApplication
+    ) throws -> (application: NSRunningApplication, context: SelectedTextService.SelectionContext) {
+        do {
+            return (
+                application,
+                try SelectedTextService.selectionContext(in: application.processIdentifier)
+            )
+        } catch {
+            let preferredError = error
+            let alternatives = NSWorkspace.shared.runningApplications
+                .filter {
+                    !$0.isTerminated
+                        && $0.processIdentifier != application.processIdentifier
+                        && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+                        && $0.activationPolicy == .regular
+                }
+                .prefix(16)
+                .compactMap { candidate -> (NSRunningApplication, SelectedTextService.SelectionContext)? in
+                    guard let context = try? SelectedTextService.selectionContext(in: candidate.processIdentifier) else {
+                        return nil
+                    }
+                    return (candidate, context)
+                }
+
+            // A focus race can make macOS briefly report the wrong source app.
+            // Recover only when there is one unambiguous nonempty selection;
+            // never guess between selections retained by multiple editors.
+            guard alternatives.count == 1, let target = alternatives.first else {
+                throw preferredError
+            }
+            return (target.0, target.1)
+        }
+    }
+
     private func showWritingReview(for text: String) {
-        let provider = SettingsStore.shared.writingProvider
+        let provider = WritingProvider.qwen3Deep
         let taskID = UUID()
         writingTaskID = taskID
         viewModel.showOutput(
@@ -364,12 +444,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     message: "The original insertion point changed. Put the cursor back where you want the text and try again."
                 )
             } catch {
-                self.postPasteShortcut()
+                self.postPasteShortcut(successMessage: "Pasted as plain text")
             }
         }
     }
 
-    private func postPasteShortcut() {
+    private func postPasteShortcut(successMessage: String) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
             guard let source = CGEventSource(stateID: .hidSystemState),
                   let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
@@ -378,12 +458,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             up.flags = .maskCommand
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
-            self?.toast.show("Pasted as plain text")
+            self?.toast.show(successMessage)
         }
     }
 
     private func replaceSelectedText(_ text: String) {
         hide()
+        toast.show("Replacing the original highlight…", style: .working, duration: 8)
         guard let previousApplication else {
             presentError(title: "Replace Selected Text", message: "The app containing the original selection is no longer available.")
             return
@@ -404,12 +485,75 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     context = try SelectedTextService.selectionContext(in: previousApplication.processIdentifier)
                 }
                 try SelectedTextService.replaceSelectedText(text, using: context)
-                self.selectedTextContext = nil
-                self.focusedTextContext = nil
-                self.toast.show("Replaced the exact highlighted text")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                    self?.finishDirectReplacement(text, using: context)
+                }
+            } catch SelectedTextService.SelectionError.replacementUnavailable {
+                self.pasteReplacementFallback(text, in: previousApplication)
             } catch {
                 self.presentError(title: "Replace Selected Text", error: error)
             }
+        }
+    }
+
+    private func finishDirectReplacement(
+        _ text: String,
+        using context: SelectedTextService.SelectionContext
+    ) {
+        switch SelectedTextService.observeReplacement(text, using: context) {
+        case .replaced, .unavailable:
+            selectedTextContext = nil
+            focusedTextContext = nil
+            toast.show("Replaced the exact highlighted text")
+        case .originalStillPresent:
+            pasteReplacement(text, using: context)
+        case .changed:
+            presentError(
+                title: "Replace Selected Text",
+                message: "The original highlighted text changed while the editor was updating. RayPlacement did not paste over it. Select the text again and rerun the writing check."
+            )
+        }
+    }
+
+    private func pasteReplacementFallback(_ text: String, in application: NSRunningApplication) {
+        do {
+            let context: SelectedTextService.SelectionContext
+            if let selectedTextContext,
+               selectedTextContext.processIdentifier == application.processIdentifier {
+                context = selectedTextContext
+            } else {
+                context = try SelectedTextService.selectionContext(in: application.processIdentifier)
+            }
+            pasteReplacement(text, using: context)
+        } catch {
+            presentError(title: "Replace Selected Text", error: error)
+        }
+    }
+
+    private func pasteReplacement(
+        _ text: String,
+        using context: SelectedTextService.SelectionContext
+    ) {
+        do {
+            try SelectedTextService.restoreSelection(using: context)
+            clipboard.copy(text)
+            postPasteShortcut(successMessage: "Replaced the exact highlighted text")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+                guard let self else { return }
+                switch SelectedTextService.observeReplacement(text, using: context) {
+                case .replaced, .unavailable:
+                    self.selectedTextContext = nil
+                    self.focusedTextContext = nil
+                    self.toast.show("Replaced the exact highlighted text")
+                case .originalStillPresent, .changed:
+                    self.presentError(
+                        title: "Replace Selected Text",
+                        message: "The editor did not accept the replacement. The corrected text is on the clipboard, so you can paste it manually with Command-V."
+                    )
+                }
+            }
+        } catch {
+            presentError(title: "Replace Selected Text", error: error)
         }
     }
 
@@ -476,6 +620,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openNotes:
             showNotes()
+
+        case .toggleNoteDictation:
+            showNotesAndToggleDictation()
 
         case .openSettings:
             showSettings()

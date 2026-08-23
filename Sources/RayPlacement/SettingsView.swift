@@ -11,6 +11,7 @@ private extension LoadedExtensionCommand {
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: LauncherViewModel
+    @ObservedObject var updateService: UpdateService
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     let reloadExtensions: () -> Void
@@ -61,7 +62,7 @@ struct SettingsView: View {
                 Text("Models load only for a requested writing check or note summary and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Qwen still uses about 2 GB of memory while a check is running because the model itself must be loaded. Choose Harper for the lightest checks.")
+                Text("Qwen uses about 2 GB of memory only while a correction or summary is running because the model must be loaded, then releases it when finished.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -135,38 +136,40 @@ struct SettingsView: View {
 
     private var writingTab: some View {
         Form {
-            Section("Grammar and spelling engine") {
-                Picker("Writing provider", selection: $settings.writingProvider) {
-                    ForEach(WritingProvider.allCases) { provider in
-                        Text(provider == .qwen3Deep ? "\(provider.title) — Recommended" : provider.title)
-                            .tag(provider)
-                    }
-                }
-                .pickerStyle(.radioGroup)
-
-                Text(settings.writingProvider.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Label("All providers are bundled and run entirely on this Mac.", systemImage: "checkmark.shield.fill")
+            Section("Grammar correction model") {
+                LabeledContent("Active model", value: "Qwen3 1.7B Q8 (Deep)")
+                Label("Every writing check is corrected directly by the bundled local AI model.", systemImage: "wand.and.stars")
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(Color.accentColor)
+                Label("No rule-based or system spell checker runs before or after the model.", systemImage: "checkmark.shield.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
-                Label(
-                    "Qwen Deep gives the most complete full-sentence correction. Harper prioritizes instant feedback; T5-small prioritizes low memory.",
-                    systemImage: "wand.and.stars"
-                )
+                Text("Qwen loads only after you request a check, follows the Writing limit in Performance settings, and exits when the correction finishes.")
                 .font(.caption)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(.secondary)
             }
 
-            Section("Provider notes") {
-                LabeledContent("Harper", value: "Fastest; rules plus a high-confidence quality pass")
-                LabeledContent("T5-small CoEdit INT8", value: "Fast local rewrite after spelling cleanup")
-                LabeledContent("Qwen3 1.7B Q8 (Deep)", value: "Best correction quality; controlled by Performance")
-                Text("The INT8 option uses the Apache-licensed TonyRaju ONNX conversion of Unbabel/gec-t5_small. It is listed by its published CoEdit name, but it is not an official checkpoint from the CoEdIT paper authors.")
+            Section("Your correction instructions") {
+                Text("Tell Qwen which names, terms, capitalization, tone, or grammar style it must preserve. These instructions apply to every grammar check.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("The Deep option uses the official Apache-2.0 Qwen3 1.7B Q8 model through the bundled llama.cpp runtime. It never runs in the background, does not require Ollama, and never sends checked text over the network.")
+                TextEditor(text: $settings.writingInstructions)
+                    .font(.system(size: 12.5))
+                    .frame(minHeight: 118)
+                    .padding(7)
+                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.25)))
+                    .accessibilityLabel("Grammar correction system instructions")
+                HStack {
+                    Text("\(settings.writingInstructions.count.formatted()) / 4,000 characters")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Spacer()
+                    Button("Restore Recommended Instructions") {
+                        settings.resetWritingInstructions()
+                    }
+                }
+                Text("Example: Keep “RayPlacement,” client surnames, and medical abbreviations exactly as written. Prefer US English and concise sentences.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -182,6 +185,18 @@ struct SettingsView: View {
                         .frame(width: 145, height: 28)
                 }
                 Text("Click the shortcut, then press any modifier and key. The default is ⌥Space.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                LabeledContent("Open Notes") {
+                    ShortcutRecorder(shortcut: $settings.notesShortcut, label: "Open Notes shortcut")
+                        .frame(width: 145, height: 28)
+                }
+                LabeledContent("Start or stop note dictation") {
+                    ShortcutRecorder(shortcut: $settings.dictationShortcut, label: "Note dictation shortcut")
+                        .frame(width: 145, height: 28)
+                }
+                Text("The dictation shortcut opens the most recently edited note and starts recording. Press it again to stop and begin on-device transcription.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -350,9 +365,20 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local-only writing tools. No cloud AI. No analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version 1.6.0")
+            Text("Version \(updateService.currentVersion)")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            Text(updateService.statusText)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
+            HStack {
+                Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
+                    .disabled(updateService.isBusy)
+                Button("View on GitHub") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
+            }
+            if updateService.isBusy { ProgressView().controlSize(.small) }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -565,9 +591,9 @@ private final class ShortcutCaptureView: NSView {
 final class SettingsWindowController: NSWindowController {
     private let settingsStore: SettingsStore
 
-    init(settings: SettingsStore, viewModel: LauncherViewModel, reloadExtensions: @escaping () -> Void) {
+    init(settings: SettingsStore, viewModel: LauncherViewModel, updateService: UpdateService, reloadExtensions: @escaping () -> Void) {
         self.settingsStore = settings
-        let view = SettingsView(settings: settings, viewModel: viewModel, reloadExtensions: reloadExtensions)
+        let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],

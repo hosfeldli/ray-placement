@@ -120,10 +120,12 @@ enum ApplicationPaths {
     static let harperDictionary = applicationSupport.appendingPathComponent("harper-dictionary.txt")
     static let notes = applicationSupport.appendingPathComponent("notes.json")
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
+    static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
 
     static func prepare() throws {
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
     }
 }
 
@@ -133,12 +135,15 @@ final class SettingsStore: ObservableObject {
 
     private enum Key {
         static let activationShortcut = "activationShortcut"
+        static let notesShortcut = "notesShortcut"
+        static let dictationShortcut = "dictationShortcut"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
         static let showInDock = "showInDock"
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
         static let writingProvider = "writingProvider"
+        static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
         static let dictationPerformance = "dictationPerformance"
         static let extensionPerformance = "extensionPerformance"
@@ -147,12 +152,33 @@ final class SettingsStore: ObservableObject {
 
     private let defaults = UserDefaults.standard
     private var isRestoringActivationShortcut = false
+    private var isRestoringActionShortcut = false
+
+    static let defaultWritingInstructions = "Preserve names, product terms, acronyms, Markdown, and intentional capitalization. Use clear, concise, professional English."
 
     @Published var activationShortcut: String {
         didSet {
             defaults.set(activationShortcut, forKey: Key.activationShortcut)
             if !isRestoringActivationShortcut {
                 NotificationCenter.default.post(name: .rayPlacementShortcutChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var notesShortcut: String {
+        didSet {
+            defaults.set(notesShortcut, forKey: Key.notesShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var dictationShortcut: String {
+        didSet {
+            defaults.set(dictationShortcut, forKey: Key.dictationShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
             }
         }
     }
@@ -180,6 +206,16 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(writingProvider.rawValue, forKey: Key.writingProvider) }
     }
 
+    @Published var writingInstructions: String {
+        didSet {
+            if writingInstructions.count > 4_000 {
+                writingInstructions = String(writingInstructions.prefix(4_000))
+                return
+            }
+            defaults.set(writingInstructions, forKey: Key.writingInstructions)
+        }
+    }
+
     @Published var writingPerformance: PerformanceScale {
         didSet { defaults.set(writingPerformance.rawValue, forKey: Key.writingPerformance) }
     }
@@ -203,11 +239,14 @@ final class SettingsStore: ObservableObject {
 
     private init() {
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
+        notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
+        dictationShortcut = defaults.string(forKey: Key.dictationShortcut) ?? "control+option+d"
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
         showInDock = defaults.bool(forKey: Key.showInDock)
-        writingProvider = WritingProvider(rawValue: defaults.string(forKey: Key.writingProvider) ?? "") ?? .qwen3Deep
+        writingProvider = .qwen3Deep
+        writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
@@ -298,6 +337,22 @@ final class SettingsStore: ObservableObject {
         isRestoringActivationShortcut = true
         activationShortcut = shortcut
         isRestoringActivationShortcut = false
+    }
+
+    func restoreNotesShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        notesShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreDictationShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        dictationShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func resetWritingInstructions() {
+        writingInstructions = Self.defaultWritingInstructions
     }
 
     func effectiveShortcut(for loaded: LoadedExtensionCommand) -> String? {

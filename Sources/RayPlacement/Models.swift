@@ -75,6 +75,7 @@ enum SystemAction {
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
+    case toggleNoteDictation
     case openSettings
     case quit
 }
@@ -140,6 +141,7 @@ struct ExtensionIssue: Identifiable, Hashable {
 
 extension Notification.Name {
     static let rayPlacementShortcutChanged = Notification.Name("RayPlacementShortcutChanged")
+    static let rayPlacementActionShortcutsChanged = Notification.Name("RayPlacementActionShortcutsChanged")
     static let rayPlacementClipboardSettingsChanged = Notification.Name("RayPlacementClipboardSettingsChanged")
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")

@@ -8,6 +8,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let dictation: NoteDictationService
     let summarizer: NoteSummaryService
     private var window: NSWindow?
+    private var dictationHUD: DictationHUDController!
 
     override init() {
         let store = NotesStore()
@@ -17,6 +18,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
         self.summarizer = NoteSummaryService()
         super.init()
+        self.dictationHUD = DictationHUDController(dictation: dictation) { [weak self] in
+            self?.present()
+        }
     }
 
     func present() {
@@ -26,6 +30,16 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func presentMostRecentAndToggleDictation() {
+        store.selectMostRecentNote()
+        present()
+        guard dictation.phase == .idle || dictation.phase == .recording else { return }
+        dictation.performPrimaryAction(
+            destinationNoteID: store.selectedNoteID,
+            destinationNoteTitle: store.selectedNote?.displayTitle
+        )
+    }
+
     func shutdown() {
         dictation.cancel()
         summarizer.cancel()
@@ -33,7 +47,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
-        dictation.cancel()
         summarizer.cancel()
         store.flush()
     }
@@ -255,7 +268,10 @@ private struct NotesView: View {
                     .lineLimit(1)
                 Button {
                     if store.selectedNoteID == nil { store.createNote() }
-                    dictation.performPrimaryAction(destinationNoteID: store.selectedNoteID)
+                    dictation.performPrimaryAction(
+                        destinationNoteID: store.selectedNoteID,
+                        destinationNoteTitle: store.selectedNote?.displayTitle
+                    )
                 } label: {
                     Label(dictation.actionTitle, systemImage: dictation.phase == .recording ? "stop.circle.fill" : "mic.fill")
                 }

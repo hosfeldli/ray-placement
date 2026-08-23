@@ -43,6 +43,14 @@ final class NotesStore: ObservableObject {
         return notes.first { $0.id == selectedNoteID }
     }
 
+    func selectMostRecentNote() {
+        if let identifier = notes.max(by: { $0.modifiedAt < $1.modifiedAt })?.id {
+            selectedNoteID = identifier
+        } else {
+            createNote()
+        }
+    }
+
     func createNote() {
         guard notes.count < Self.maximumNotes else {
             lastError = "RayPlacement Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."

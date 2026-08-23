@@ -24,6 +24,13 @@ import Testing
     #expect(ShortcutSpec(string: "control+kc12:") == nil)
 }
 
+@Test func semanticVersionsCompareReleaseTags() {
+    #expect(SemanticVersion("v1.7.0") == SemanticVersion("1.7"))
+    #expect(SemanticVersion("1.6.9")! < SemanticVersion("1.7.0")!)
+    #expect(SemanticVersion("1.10.0")! > SemanticVersion("1.9.9")!)
+    #expect(SemanticVersion("not-a-version") == nil)
+}
+
 @Test func manifestDecoding() throws {
     let data = #"{"schemaVersion":1,"id":"dev.test","name":"Test","commands":[{"id":"site","title":"Open Site","action":{"type":"url","value":"https://example.com"}}]}"#.data(using: .utf8)!
     let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)

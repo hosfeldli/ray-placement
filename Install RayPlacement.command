@@ -106,7 +106,9 @@ for SOURCE_EXTENSION in "$SOURCE_EXTENSIONS_DIRECTORY"/*; do
     ditto "$SOURCE_EXTENSION" "$INSTALLED_EXTENSION"
 done
 codesign --verify --deep --strict "$INSTALLED_APP"
-open "$INSTALLED_APP"
+if [[ "${RAYPLACEMENT_SKIP_LAUNCH:-0}" != "1" ]]; then
+    open "$INSTALLED_APP"
+fi
 
 echo
 echo "RayPlacement, Notes, Writing Tools, and VS Code Directories are installed."
@@ -116,6 +118,7 @@ echo "Writing check: Control-Option-G"
 echo "Configure any extension shortcut in Settings → Extensions."
 echo "Choose AI and dictation limits in Settings → Performance."
 echo "Notes use inline Markdown and can be summarized locally with Qwen."
+echo "Uninstaller: $SCRIPT_DIRECTORY/Uninstall RayPlacement.command"
 echo "Check selected-text access in Settings → General → Accessibility."
 echo
 echo "You can close this window."

@@ -91,7 +91,7 @@ Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) 
 | `copy` | Copies literal text | Text |
 | `paste` | Copies literal text and sends Paste | Text |
 | `pastePlainText` | Rewrites clipboard text as plain text and pastes | Empty string |
-| `checkWriting` | Checks selected text with the offline provider chosen in Settings | Empty string |
+| `checkWriting` | Corrects selected text with bundled local Qwen and the user's persistent Writing instructions | Empty string |
 | `openInVSCode` | Enters RayPlacement's Spotlight picker and opens the chosen file or directory in Visual Studio Code | Empty string |
 | `shell` | Runs an executable directly | Absolute or extension-relative executable path |
 

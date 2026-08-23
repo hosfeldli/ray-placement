@@ -41,7 +41,7 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 | `copy` | Text copied to the clipboard | — |
 | `paste` | Literal text pasted into the previously focused app | — |
 | `pastePlainText` | Current clipboard text with rich formatting removed, then pasted | `value` is ignored |
-| `checkWriting` | Selected text checked with the locally selected Harper, T5-small INT8, or Qwen3 Deep provider | `value` is ignored |
+| `checkWriting` | Selected text corrected directly by the bundled local Qwen model using the user's Writing instructions | `value` is ignored |
 | `openInVSCode` | Enters an interactive Spotlight picker, then opens the chosen file or directory in Visual Studio Code | `value` is ignored |
 | `shell` | Absolute or extension-relative executable path | `arguments`, `workingDirectory` |
 
@@ -69,7 +69,7 @@ RayPlacement assigns the child process background, utility, or foreground priori
 
 ## Trust and permissions
 
-Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as fallback. Harper, the INT8 model, and Qwen3 Deep are bundled and run locally; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
+Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as its source. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
 
 The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 

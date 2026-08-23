@@ -33,8 +33,8 @@ MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDe
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.6.0" ]]
-[[ "$BUILD_NUMBER" == "8" ]]
+[[ "$VERSION" == "1.7.0" ]]
+[[ "$BUILD_NUMBER" == "9" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
@@ -95,7 +95,7 @@ QWEN_CONSOLE="$(
         --conversation \
         --single-turn \
         --reasoning off \
-        --system-prompt "You are an exacting English proofreading engine. Correct every spelling, grammar, word-choice, and punctuation error. Preserve the intended meaning. Return only the fully corrected text, with no explanation." \
+        --system-prompt "You are an exacting English copy editor. Correct the entire supplied passage, not only one error. Fix every spelling, grammar, verb-tense, word-choice, agreement, capitalization, sentence-structure, and punctuation problem. Repair obvious fragments and dangling articles using the smallest natural change that preserves the likely meaning. Preserve formatting and line breaks. Produce complete, idiomatic sentences, not merely text that is technically parseable. Return only the fully corrected passage with no explanation, labels, preamble, or quotation marks. Examples: Input: u really is a great Output: You really are great. Input: Hi; whot where you thinking, about Output: Hi, what were you thinking about? User correction requirements: Preserve names, product terms, acronyms, Markdown, and intentional capitalization. Use clear, concise, professional English." \
         --prompt "Hi; whot where you thinking, about" \
         --simple-io \
         --no-display-prompt \

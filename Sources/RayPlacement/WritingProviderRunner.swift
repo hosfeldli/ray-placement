@@ -125,17 +125,12 @@ final class WritingProviderRunner {
             return
         }
 
-        switch provider {
-        case .harper:
-            progress("Running fast spelling and grammar rules across the full selection…")
-            runHarper(text, completion: completion)
-        case .coeditInt8:
-            progress("Cleaning spelling, then rewriting the full selection with T5-small…")
-            runCoEdit(text, progress: progress, completion: completion)
-        case .qwen3Deep:
-            progress("Cleaning spelling before the deep proofreading pass…")
-            runQwenDeep(text, progress: progress, completion: completion)
-        }
+        // Writing correction is intentionally model-only. The provider argument is
+        // retained for manifest/source compatibility, but every user-facing check
+        // is performed directly by Qwen without Harper, NSSpellChecker, or a
+        // rule-based post-processing pass.
+        progress("Loading Qwen for a complete AI grammar correction…")
+        runQwenDeep(text, progress: progress, completion: completion)
     }
 
     private func runHarper(
@@ -270,68 +265,58 @@ final class WritingProviderRunner {
             return
         }
 
-        runHarper(text) { [weak self] preparationResult in
+        let systemPrompt = AIWritingPrompt.systemPrompt(
+            customInstructions: SettingsStore.shared.writingInstructions
+        )
+        let performance = SettingsStore.shared.runtimeWritingPerformance
+        progress("Qwen is correcting the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
+        guard acquireModelLease() else {
+            completion(.failure(RunnerError.modelBusy))
+            return
+        }
+        let threads = String(performance.threadLimit)
+        let arguments = [
+            "-m", model.path,
+            "--conversation", "--single-turn", "--reasoning", "off",
+            "--system-prompt", systemPrompt,
+            "--prompt", text,
+            "--simple-io", "--no-display-prompt", "--log-disable",
+            "--predict", "768", "--temp", "0", "--ctx-size", "4096",
+            "--threads", threads, "--threads-batch", threads,
+            "--batch-size", "128", "--ubatch-size", "64",
+            "--prio", "-1", "--prio-batch", "0",
+            "--gpu-layers", "0", "--no-warmup"
+        ]
+        run(
+            executable: executable,
+            arguments: arguments,
+            input: "",
+            timeoutSeconds: performance.writingTimeout
+        ) { [weak self] result in
             guard let self else { return }
-            switch preparationResult {
+            self.releaseModelLease()
+            switch result {
             case .failure(let error):
                 completion(.failure(error))
-            case .success(let preparation):
-                let systemPrompt = "You are an exacting English copy editor. Proofread the entire supplied passage, not only one error. Correct every spelling, grammar, verb-tense, word-choice, agreement, capitalization, and punctuation problem. Preserve the intended meaning and line breaks. Make every sentence complete and natural. Return only the fully corrected passage with no explanation, labels, or quotation marks."
-                let performance = SettingsStore.shared.runtimeWritingPerformance
-                let preparedText = self.reviewer.normalizeProofreadRewrite(preparation.suggestedText)
-                progress("Spelling cleanup complete. Qwen is proofreading the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
-                guard self.acquireModelLease() else {
-                    completion(.failure(RunnerError.modelBusy))
+            case .success(let output):
+                guard output.status == 0 else {
+                    completion(.failure(RunnerError.processFailed(output.stderr)))
                     return
                 }
-                let threads = String(performance.threadLimit)
-                let arguments = [
-                    "-m", model.path,
-                    "--conversation", "--single-turn", "--reasoning", "off",
-                    "--system-prompt", systemPrompt,
-                    "--prompt", preparedText,
-                    "--simple-io", "--no-display-prompt", "--log-disable",
-                    "--predict", "512", "--temp", "0", "--ctx-size", "4096",
-                    "--threads", threads, "--threads-batch", threads,
-                    "--batch-size", "128", "--ubatch-size", "64",
-                    "--prio", "-1", "--prio-batch", "0",
-                    "--gpu-layers", "0", "--no-warmup"
-                ]
-                self.run(
-                    executable: executable,
-                    arguments: arguments,
-                    input: "",
-                    timeoutSeconds: performance.writingTimeout
-                ) { [weak self] result in
-                    guard let self else { return }
-                    self.releaseModelLease()
-                    switch result {
-                    case .failure(let error):
-                        completion(.failure(error))
-                    case .success(let output):
-                        guard output.status == 0 else {
-                            completion(.failure(RunnerError.processFailed(output.stderr)))
-                            return
-                        }
-                        let console = String(decoding: output.stdout, as: UTF8.self)
-                        guard let rewritten = self.extractQwenResponse(from: console, prompt: preparedText) else {
-                            completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
-                            return
-                        }
-                        do {
-                            let normalized = self.reviewer.normalizeProofreadRewrite(
-                                rewritten,
-                                preservingBoundaryFrom: text
-                            )
-                            completion(.success(try self.reviewer.review(
-                                sourceText: text,
-                                rewrittenText: normalized,
-                                providerTitle: WritingProvider.qwen3Deep.title
-                            )))
-                        } catch {
-                            completion(.failure(error))
-                        }
-                    }
+                let console = String(decoding: output.stdout, as: UTF8.self)
+                guard let rewritten = self.extractQwenResponse(from: console, prompt: text) else {
+                    completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
+                    return
+                }
+                do {
+                    let cleaned = AIWritingPrompt.cleanResponse(rewritten, preservingBoundaryFrom: text)
+                    completion(.success(try self.reviewer.review(
+                        sourceText: text,
+                        rewrittenText: cleaned,
+                        providerTitle: WritingProvider.qwen3Deep.title
+                    )))
+                } catch {
+                    completion(.failure(error))
                 }
             }
         }

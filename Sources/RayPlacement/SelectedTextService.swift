@@ -36,6 +36,13 @@ enum SelectedTextService {
         }
     }
 
+    enum ReplacementObservation: Equatable {
+        case replaced
+        case originalStillPresent
+        case changed
+        case unavailable
+    }
+
     static func selectionContext(in processIdentifier: pid_t) throws -> SelectionContext {
         guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
 
@@ -88,6 +95,50 @@ enum SelectedTextService {
     }
 
     static func replaceSelectedText(_ replacement: String, using context: SelectionContext) throws {
+        try restoreSelection(using: context)
+
+        var isSettable = DarwinBoolean(false)
+        let settableStatus = AXUIElementIsAttributeSettable(
+            context.element,
+            kAXSelectedTextAttribute as CFString,
+            &isSettable
+        )
+        guard settableStatus == .success, isSettable.boolValue else {
+            throw SelectionError.replacementUnavailable
+        }
+        guard AXUIElementSetAttributeValue(
+            context.element,
+            kAXSelectedTextAttribute as CFString,
+            replacement as CFString
+        ) == .success else {
+            throw SelectionError.replacementUnavailable
+        }
+
+        // Verification is intentionally deferred by the caller. Editors such as
+        // TextEdit can acknowledge this AX write before their text storage makes
+        // the new characters observable. Treating that stale read as a failure
+        // can otherwise cause a second, destructive keyboard paste.
+    }
+
+    static func observeReplacement(_ replacement: String, using context: SelectionContext) -> ReplacementObservation {
+        guard let originalRange = context.range else { return .unavailable }
+        let replacementRange = CFRange(
+            location: originalRange.location,
+            length: (replacement as NSString).length
+        )
+        if string(in: replacementRange, from: context.element) == replacement {
+            return .replaced
+        }
+        if string(in: originalRange, from: context.element) == context.text {
+            return .originalStillPresent
+        }
+        return .changed
+    }
+
+    /// Restores the exact captured selection without modifying it. Callers use
+    /// this immediately before a keyboard paste when an editor exposes its
+    /// selection through Accessibility but refuses direct selected-text writes.
+    static func restoreSelection(using context: SelectionContext) throws {
         guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
         guard elementBelongsToProcess(context.element, context.processIdentifier) else {
             throw SelectionError.focusedControlUnavailable
@@ -108,23 +159,6 @@ enum SelectedTextService {
                 throw SelectionError.selectionChanged
             }
         }
-
-        var isSettable = DarwinBoolean(false)
-        let settableStatus = AXUIElementIsAttributeSettable(
-            context.element,
-            kAXSelectedTextAttribute as CFString,
-            &isSettable
-        )
-        guard settableStatus == .success, isSettable.boolValue else {
-            throw SelectionError.replacementUnavailable
-        }
-        guard AXUIElementSetAttributeValue(
-            context.element,
-            kAXSelectedTextAttribute as CFString,
-            replacement as CFString
-        ) == .success else {
-            throw SelectionError.replacementUnavailable
-        }
     }
 
     static func replaceSelectedText(_ replacement: String, in processIdentifier: pid_t) throws {
@@ -138,12 +172,14 @@ enum SelectedTextService {
 
         appendFocusedElement(from: systemWide, to: &candidates)
         appendFocusedElement(from: application, to: &candidates)
+        appendFocusedWindow(from: application, to: &candidates)
 
         var index = 0
-        while index < candidates.count, index < 8 {
+        while index < candidates.count, index < 80 {
             let element = candidates[index]
             appendFocusedElement(from: element, to: &candidates)
             appendParent(from: element, to: &candidates)
+            appendChildren(from: element, to: &candidates, maximum: 16)
             index += 1
         }
 
@@ -158,6 +194,32 @@ enum SelectedTextService {
             &value
         ) == .success, let value else { return }
         append(unsafeBitCast(value, to: AXUIElement.self), to: &candidates)
+    }
+
+    private static func appendFocusedWindow(from source: AXUIElement, to candidates: inout [AXUIElement]) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            source,
+            kAXFocusedWindowAttribute as CFString,
+            &value
+        ) == .success, let value else { return }
+        append(unsafeBitCast(value, to: AXUIElement.self), to: &candidates)
+    }
+
+    private static func appendChildren(
+        from source: AXUIElement,
+        to candidates: inout [AXUIElement],
+        maximum: Int
+    ) {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            source,
+            kAXChildrenAttribute as CFString,
+            &value
+        ) == .success, let children = value as? [AXUIElement] else { return }
+        for child in children.prefix(maximum) {
+            append(child, to: &candidates)
+        }
     }
 
     private static func appendParent(from source: AXUIElement, to candidates: inout [AXUIElement]) {
@@ -189,8 +251,26 @@ enum SelectedTextService {
             kAXSelectedTextAttribute as CFString,
             &selectedValue
         ) == .success {
-            if let text = selectedValue as? String { return (text, range) }
-            if let attributed = selectedValue as? NSAttributedString { return (attributed.string, range) }
+            let directText: String?
+            if let text = selectedValue as? String {
+                directText = text
+            } else if let attributed = selectedValue as? NSAttributedString {
+                directText = attributed.string
+            } else {
+                directText = nil
+            }
+
+            // Some editors preserve the selected range when they become
+            // inactive but temporarily expose an empty selected-text value.
+            // Prefer the range-backed characters in that state so opening the
+            // launcher does not make a real highlight appear empty.
+            if let directText, !directText.isEmpty || (range?.length ?? 0) == 0 {
+                return (directText, range)
+            }
+            if let range, let rangedText = string(in: range, from: element) {
+                return (rangedText, range)
+            }
+            if let directText { return (directText, range) }
         }
 
         guard let range else { return nil }

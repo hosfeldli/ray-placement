@@ -9,6 +9,8 @@ RayPlacement is a focused, native, keyboard-first macOS launcher inspired by the
 3. Type an app, command, or calculation and press **Return**.
 4. Open **RayPlacement Settings** to change shortcuts, choose performance limits, check Accessibility status, enable launch at login, or opt in to local clipboard history.
 
+To remove the app, double-click `Uninstall RayPlacement.command`. It removes the login item and moves the app to Trash. Notes, extensions, preferences, and the per-Mac signing identity are preserved unless you separately confirm their removal.
+
 RayPlacement also lives in the menu bar. Clipboard history is off by default and, if enabled, stores text locally in `~/Library/Application Support/RayPlacement`.
 
 If Raycast is still running with Option-Space assigned, disable or change its shortcut so both launchers do not respond together.
@@ -29,26 +31,28 @@ After the first install, add that exact app once in **System Settings → Privac
 - Lock, sleep, and screen saver commands
 - Menu-bar controls and launch-at-login setting
 - Configurable global activation shortcut
+- Configurable global shortcuts for opening Notes and starting or stopping note dictation
 - Per-extension global command hotkeys, configurable in **Settings → Extensions**
 - JSON extensions for URLs, files, apps, copy/paste actions, and local executable scripts
-- Included local Writing Tools extension with plain-text paste and three offline proofreading providers
+- Included local Writing Tools extension with plain-text paste and model-only Qwen grammar correction
 - Included VS Code extension with an interactive Spotlight search for opening any indexed file or directory
 - A separate Markdown Notes window with local autosave, search, pinned notes, and a single inline-formatted Markdown editor
 - On-demand Qwen note summaries with review, copy, and insert-at-top actions
 - Batch note dictation: it records only after you press Dictate, stops before transcription, requires on-device recognition, and deletes the temporary audio
 - Independent five-level performance sliders for writing models, dictation, and executable extensions, plus an opt-in Beta Dynamic mode
 - Clear Working, Done, and Error states, stage-by-stage writing progress, keyboard action labels, and brief completion confirmations
+- Startup GitHub Release checks with a user-confirmed, SHA-256-verified, locally signed self-update path
 - Keyboard navigation with arrows or Control-P/Control-N, Return, Escape, Command-1 through Command-9, and Command-comma
 
 Window changes, automatic paste, and the Lock Screen command request macOS Accessibility permission only when used. The launcher hotkey itself needs no special permission.
 
 ## Notes and dictation
 
-Run **RayPlacement Notes** from the launcher, choose **Notes…** in the menu bar, or press **Shift-Command-N**. Notes open in a separate window and are saved as local Markdown data in `~/Library/Application Support/RayPlacement/notes.json`. There is no separate source/preview split: headings, emphasis, links, lists, tasks, quotes, inline code, and fenced code blocks are styled directly inside the editable Markdown document. Markdown syntax remains portable and visible in a muted style. Command-B, Command-I, and Command-K wrap the current selection, and Return continues lists and task lists. Formatting is debounced so typing stays responsive.
+Run **RayPlacement Notes** from the launcher, choose **Notes…** in the menu bar, or use the configurable **Open Notes** shortcut in **Settings → General**. Notes open in a separate window and are saved as local Markdown data in `~/Library/Application Support/RayPlacement/notes.json`. There is no separate source/preview split: headings, emphasis, links, lists, tasks, quotes, inline code, and fenced code blocks are styled directly inside the editable Markdown document. Markdown syntax remains portable and visible in a muted style. Command-B, Command-I, and Command-K wrap the current selection, and Return continues lists and task lists. Formatting is debounced so typing stays responsive.
 
 Choose **Summarize** in a note to run the bundled Qwen3 1.7B model on demand. Long notes are divided into bounded sections and reduced into a final Markdown summary; only one bundled model job can run at a time. The result opens for review and can be copied or inserted at the top of the original note. It uses **Settings → Performance → Writing**, stays CPU-only, sends no note content over the network, and exits when finished or cancelled.
 
-Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop & Transcribe**. RayPlacement records a compact 16 kHz mono AAC file and asks Apple's Speech framework for an on-device-only transcription after recording has stopped. Long meetings are split into 45-second audio segments and transcribed sequentially, so a full recording is never expanded into memory at once. A failed segment is retried once and then represented by a timestamped marker instead of silently losing that part of the meeting. If the current language does not support on-device recognition, RayPlacement stops with an error instead of using a network service. Temporary recording and segment files are deleted after completion, cancellation, or failure. A 60-minute recording is approximately 15 MB at the configured 32 kbps rate.
+Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop & Transcribe**. The configurable dictation shortcut opens the most recently edited note and starts recording; press it again to stop and begin transcription. Closing the Notes window does not stop the recording: a small speech-level panel stays centered above the Dock with elapsed time, the destination note, and Stop/Cancel controls. If recording reaches its configured limit while Notes is closed, RayPlacement still transcribes it into the note that started the session. RayPlacement records a compact 16 kHz mono AAC file and asks Apple's Speech framework for an on-device-only transcription after recording has stopped. Long meetings are split into 45-second audio segments and transcribed sequentially, so a full recording is never expanded into memory at once. A failed segment is retried once and then represented by a timestamped marker instead of silently losing that part of the meeting. If the current language does not support on-device recognition, RayPlacement stops with an error instead of using a network service. Temporary recording and segment files are deleted after completion, cancellation, or failure. A 60-minute recording is approximately 15 MB at the configured 32 kbps rate.
 
 ## Performance controls
 
@@ -62,7 +66,7 @@ Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop
 | Turbo | Up to 6 foreground CPU threads; 300-second limit; 768-token summaries | 60-minute meeting; 300 seconds per segment | foreground priority; up to 6 cooperative threads; 1,200-second hard timeout |
 | Maximum | Up to 12 CPU threads, never more than the Mac exposes; 600-second limit; 1,024-token summaries | 60-minute meeting; 600 seconds per segment | foreground priority; up to 12 cooperative threads; 3,600-second hard timeout |
 
-Qwen is CPU-only, never uses the GPU, launches only for a requested writing check or note summary, and exits when the job completes or times out. Its 1.7B-parameter model still temporarily uses about 2 GB of memory while loaded; choose Harper for the lightest grammar checking. Apple controls the internal scheduling of its on-device speech recognizer, so the dictation scale bounds meeting duration and each sequential segment rather than claiming an exact CPU-thread cap. RayPlacement enforces extension priority, output size, and wall-clock time; it also supplies common AI thread-limit environment variables, but an untrusted third-party executable can ignore those cooperative variables.
+Qwen is CPU-only, never uses the GPU, launches only for a requested writing check or note summary, and exits when the job completes or times out. Its 1.7B-parameter model temporarily uses about 2 GB of memory while loaded. Apple controls the internal scheduling of its on-device speech recognizer, so the dictation scale bounds meeting duration and each sequential segment rather than claiming an exact CPU-thread cap. RayPlacement enforces extension priority, output size, and wall-clock time; it also supplies common AI thread-limit environment variables, but an untrusted third-party executable can ignore those cooperative variables.
 
 ## Accessibility that survives rebuilds
 
@@ -72,13 +76,9 @@ Qwen is CPU-only, never uses the GPU, launches only for a requested writing chec
 
 Choose **Open Extensions Folder** in the launcher and add a folder containing `manifest.json`. The complete format is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md), [docs/EXTENSION_AUTHORING_FOR_AI.md](docs/EXTENSION_AUTHORING_FOR_AI.md) gives future AI agents an exact build-and-verification workflow, and [Examples/project-tools](Examples/project-tools) is a working example.
 
-The included [Extensions/writing-tools](Extensions/writing-tools) extension adds **Paste as Plain Text** (`Control-Option-V`) and **Check Spelling & Grammar** (`Control-Option-G`). Choose the engine in **Settings → Writing**:
+The included [Extensions/writing-tools](Extensions/writing-tools) extension adds **Paste as Plain Text** (`Control-Option-V`) and **Check Spelling & Grammar** (`Control-Option-G`). Grammar correction now goes directly to the bundled Qwen3 1.7B Q8 model. No Harper, NSSpellChecker, or deterministic grammar pass changes the text before or after Qwen. **Settings → Writing** includes persistent correction instructions for protected names and terms, capitalization, dialect, tone, and preferred style.
 
-- **Harper** is fast, rule-based, explainable, and bundled as an offline arm64 executable.
-- **T5-small CoEdit INT8** is a bundled local ONNX rewrite model for short English passages. The published model is an INT8 conversion of `Unbabel/gec-t5_small`; it is not an official checkpoint from the CoEdIT paper authors.
-- **Qwen3 1.7B Q8 (Deep)** is the recommended/default option for complete sentence correction. RayPlacement bundles the official Apache-2.0 Qwen model and a pinned llama.cpp runtime, so it does not require Ollama.
-
-All three providers run locally and do not send checked text over the network. Every provider now starts with the bundled Harper spelling pass and a conservative punctuation/grammar quality floor before an optional model rewrite, so obvious errors are not silently passed through. Writing checks snapshot the exact highlighted text, Accessibility element, and range when RayPlacement opens; they never fall back to clipboard contents. The launcher visibly reports capture, cleanup, model, completion, and error stages. Press **Return** in the completed review to replace the selection. Replacement validates that the original text is still present, restores the saved range if focus moved, and modifies only that highlight. If the source changed during review, RayPlacement stops instead of modifying the wrong text.
+Writing checks snapshot the exact highlighted text, Accessibility element, and range when RayPlacement opens; they never use clipboard contents as the source. The launcher reports capture, model, completion, and error stages. Press **Return** or **Replace Selection** to replace the original highlight. RayPlacement first validates that the original text is still present and attempts a direct Accessibility replacement. If the editor allows reading but refuses direct replacement, RayPlacement restores the verified exact range and uses a normal paste event. If the source changed during review, it stops instead of modifying the wrong text.
 
 **Paste as Plain Text** now inserts through the saved macOS Accessibility text target when the receiving app supports it, including an empty cursor position or a selected range. It falls back to a standard paste event only for editors that do not expose a writable Accessibility selection, and shows a short success confirmation either way.
 
@@ -106,6 +106,12 @@ The repository contains the bundled provider assets. To reproduce them from pinn
 
 The packaged app is written to `build/RayPlacement.app`. Without local-signing setup it falls back to ad-hoc signing and warns that Accessibility approval may be lost after a rebuild. The double-click installer performs the stable per-Mac setup automatically after explicit consent. For a manual development setup, run `./scripts/setup_local_signing.sh` once, then package with `RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 make package`. Developer ID signing and notarization are still needed to distribute a standalone prebuilt app that does not rebuild locally.
 
+## Updates
+
+RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. The release contains a small model-free `RayPlacement-Update.zip`; RayPlacement requires GitHub's SHA-256 asset digest, validates the version and archive structure, reuses the already-installed local models, rebuilds with the existing per-Mac signing identity, verifies the app, installs it, and reports success after relaunch.
+
+Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.0` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
+
 ## Project layout
 
 - `Sources/RayPlacement` — AppKit/SwiftUI application
@@ -120,3 +126,5 @@ The packaged app is written to `build/RayPlacement.app`. Without local-signing s
 - `Examples` — example user extension
 - `scripts/package_app.sh` — release build, app-bundle assembly, icon generation, and local signing
 - `scripts/setup_local_signing.sh` — one-time stable personal signing identity for persistent macOS permissions
+- `scripts/create_update_archive.sh` — model-free GitHub Release update kit
+- `Uninstall RayPlacement.command` — recoverable app removal with optional local-data cleanup

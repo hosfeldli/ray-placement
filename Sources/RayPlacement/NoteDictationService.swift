@@ -40,11 +40,15 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     @Published private(set) var phase: Phase = .idle
     @Published private(set) var transcriptionProgress: String?
+    @Published private(set) var audioLevel: Double = 0
+    @Published private(set) var recordingElapsed: TimeInterval = 0
+    @Published private(set) var destinationNoteTitle = "Current Note"
     @Published var lastError: String?
 
     private let onTranscript: (String, UUID?) -> Void
     private var destinationNoteID: UUID?
     private var recorder: AVAudioRecorder?
+    private var meterTimer: Timer?
     private var audioURL: URL?
     private var recordedDuration: TimeInterval = 0
     private var sourceAsset: AVURLAsset?
@@ -91,10 +95,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
     }
 
-    func performPrimaryAction(destinationNoteID: UUID?) {
+    func performPrimaryAction(destinationNoteID: UUID?, destinationNoteTitle: String? = nil) {
         switch phase {
         case .idle:
             self.destinationNoteID = destinationNoteID
+            self.destinationNoteTitle = Self.cleanDestinationTitle(destinationNoteTitle)
             requestPermissionsAndStart()
         case .recording:
             stopAndTranscribe()
@@ -104,6 +109,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func cancel() {
+        stopMetering()
         recorder?.stop()
         recorder = nil
         activeExportSession?.cancelExport()
@@ -187,6 +193,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             ]
             let recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder.delegate = self
+            recorder.isMeteringEnabled = true
             let performance = SettingsStore.shared.runtimeDictationPerformance
             guard recorder.prepareToRecord(), recorder.record(forDuration: performance.dictationMaximumDuration) else {
                 throw DictationError.recorderUnavailable
@@ -194,7 +201,10 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             self.recorder = recorder
             activePerformance = performance
             audioURL = url
+            recordingElapsed = 0
+            audioLevel = 0
             phase = .recording
+            startMetering()
         } catch {
             fail(error)
         }
@@ -202,6 +212,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func stopAndTranscribe() {
         guard phase == .recording, let recorder else { return }
+        stopMetering()
         recordedDuration = max(recorder.currentTime, 0.1)
         recorder.stop()
         self.recorder = nil
@@ -403,6 +414,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         let duration = recorder.currentTime
         Task { @MainActor [weak self] in
             guard let self, self.phase == .recording else { return }
+            self.stopMetering()
             self.recorder = nil
             self.recordedDuration = max(duration, 0.1)
             if flag {
@@ -420,6 +432,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func fail(_ error: Error) {
+        stopMetering()
         activeExportSession?.cancelExport()
         activeExportSession = nil
         activeExportIdentifier = nil
@@ -449,6 +462,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func resetJobState() {
+        stopMetering()
         recordedDuration = 0
         sourceAsset = nil
         speechRecognizer = nil
@@ -460,6 +474,34 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         skippedChunkCount = 0
         transcriptionProgress = nil
         destinationNoteID = nil
+        audioLevel = 0
+        recordingElapsed = 0
+    }
+
+    private func startMetering() {
+        stopMetering()
+        let timer = Timer(timeInterval: 0.08, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.phase == .recording, let recorder = self.recorder else { return }
+                recorder.updateMeters()
+                self.recordingElapsed = recorder.currentTime
+                let decibels = Double(recorder.averagePower(forChannel: 0))
+                self.audioLevel = min(1, max(0, (decibels + 55) / 55))
+            }
+        }
+        meterTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopMetering() {
+        meterTimer?.invalidate()
+        meterTimer = nil
+        audioLevel = 0
+    }
+
+    private static func cleanDestinationTitle(_ title: String?) -> String {
+        let cleaned = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return cleaned.isEmpty ? "Untitled Note" : String(cleaned.prefix(120))
     }
 
     private static func durationLabel(_ seconds: TimeInterval) -> String {

@@ -2,8 +2,8 @@
   "schemaVersion": 1,
   "id": "local.writing-tools",
   "name": "Writing Tools",
-  "version": "1.3.0",
-  "description": "Local plain-text paste plus Harper, T5-small INT8, or Qwen3 Deep writing checks",
+  "version": "1.4.0",
+  "description": "Local plain-text paste plus model-only Qwen grammar correction",
   "commands": [
     {
       "id": "paste-plain-text",
@@ -20,7 +20,7 @@
     {
       "id": "check-writing",
       "title": "Check Spelling & Grammar",
-      "subtitle": "Check selected text with your chosen local provider",
+      "subtitle": "Correct selected text directly with local Qwen",
       "keywords": ["spell", "grammar", "writing", "proofread", "correct"],
       "icon": "text.badge.checkmark",
       "hotkey": "control+option+g",

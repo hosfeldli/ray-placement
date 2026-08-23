@@ -2,25 +2,39 @@ import AppKit
 import CoreServices
 import Foundation
 import RayPlacementCore
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
+    private let updateService = UpdateService()
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
     private var registeredActivationShortcut: ShortcutSpec?
+    private var registeredNotesShortcut: ShortcutSpec?
+    private var registeredDictationShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
+            if SMAppService.mainApp.status != .notRegistered {
+                try? SMAppService.mainApp.unregister()
+            }
+            NSApp.terminate(nil)
+            return
+        }
         try? ApplicationPaths.prepare()
         NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
-        launcher = LauncherController()
+        launcher = LauncherController(updateService: updateService)
         launcher.onExtensionsChanged = { [weak self] in self?.registerExtensionHotkeys() }
 
         configureMainMenu()
         configureStatusItem()
         registerActivationHotkey()
+        registerActionHotkeys()
+        registerExtensionHotkeys()
         installObservers()
+        configureUpdates()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
         let launchedAsLoginItem = launchEvent?
@@ -53,12 +67,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
+    @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func quit() { NSApp.terminate(nil) }
 
     private func registerActivationHotkey() {
-        hotKeys.unregisterAll(prefix: "extension.")
-        defer { registerExtensionHotkeys() }
         guard let shortcut = ShortcutSpec(string: SettingsStore.shared.activationShortcut) else {
             SettingsStore.shared.lastError = "The activation shortcut is invalid."
             if let registeredActivationShortcut {
@@ -67,8 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         do {
-            try hotKeys.register(identifier: "activation", shortcut: shortcut) { [weak self] in
-                self?.launcher.toggle()
+            try hotKeys.registerFromApplication(identifier: "activation", shortcut: shortcut) { [weak self] application in
+                self?.launcher.toggle(from: application)
             }
             registeredActivationShortcut = shortcut
             SettingsStore.shared.lastError = nil
@@ -77,6 +91,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let registeredActivationShortcut {
                 SettingsStore.shared.restoreActivationShortcut(registeredActivationShortcut.storageString)
             }
+        }
+    }
+
+    private func registerActionHotkeys() {
+        registerActionHotkey(
+            identifier: "builtin.notes",
+            displayName: "Notes",
+            rawShortcut: SettingsStore.shared.notesShortcut,
+            previous: &registeredNotesShortcut,
+            restore: SettingsStore.shared.restoreNotesShortcut
+        ) { [weak self] in
+            self?.launcher.showNotes()
+        }
+        registerActionHotkey(
+            identifier: "builtin.dictation",
+            displayName: "Dictation",
+            rawShortcut: SettingsStore.shared.dictationShortcut,
+            previous: &registeredDictationShortcut,
+            restore: SettingsStore.shared.restoreDictationShortcut
+        ) { [weak self] in
+            self?.launcher.showNotesAndToggleDictation()
+        }
+    }
+
+    private func registerActionHotkey(
+        identifier: String,
+        displayName: String,
+        rawShortcut: String,
+        previous: inout ShortcutSpec?,
+        restore: (String) -> Void,
+        handler: @escaping () -> Void
+    ) {
+        guard let shortcut = ShortcutSpec(string: rawShortcut) else {
+            SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
+            if let previous { restore(previous.storageString) }
+            return
+        }
+        do {
+            try hotKeys.register(identifier: identifier, shortcut: shortcut, handler: handler)
+            previous = shortcut
+            SettingsStore.shared.lastError = nil
+        } catch {
+            SettingsStore.shared.lastError = error.localizedDescription
+            if let previous { restore(previous.storageString) }
         }
     }
 
@@ -94,8 +152,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let identifier = "extension.\(loaded.extensionID).\(loaded.command.id)"
             do {
-                try hotKeys.register(identifier: identifier, shortcut: shortcut) { [weak self] in
-                    self?.launcher.executeExtensionFromHotkey(loaded)
+                try hotKeys.registerFromApplication(identifier: identifier, shortcut: shortcut) { [weak self] application in
+                    self?.launcher.executeExtensionFromHotkey(loaded, sourceApplication: application)
                 }
             } catch {
                 issues.append(ExtensionIssue(
@@ -114,6 +172,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.registerActivationHotkey() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .rayPlacementActionShortcutsChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.registerActionHotkeys() }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .rayPlacementExtensionsReloadRequested,
@@ -150,9 +215,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         menu.addItem(notes)
+        let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
+        dictate.target = self
+        menu.addItem(dictate)
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit RayPlacement", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
@@ -173,6 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         appMenu.addItem(notes)
+        let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
+        dictate.target = self
+        appMenu.addItem(dictate)
+        let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
+        updates.target = self
+        appMenu.addItem(updates)
         appMenu.addItem(.separator())
         let quitItem = NSMenuItem(title: "Quit RayPlacement", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
@@ -199,5 +276,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         mainMenu.addItem(windowItem)
 
         NSApp.mainMenu = mainMenu
+    }
+
+    private func configureUpdates() {
+        updateService.onReleaseAvailable = { [weak self] release in
+            self?.presentUpdateConfirmation(release)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self else { return }
+            if let result = self.updateService.consumePreviousUpdateResult() {
+                let alert = NSAlert()
+                alert.alertStyle = result.succeeded ? .informational : .warning
+                alert.messageText = result.succeeded ? "RayPlacement Updated" : "RayPlacement Update Failed"
+                alert.informativeText = result.message
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            } else {
+                self.updateService.checkForUpdates(manual: false)
+            }
+        }
+    }
+
+    private func presentUpdateConfirmation(_ release: UpdateService.Release) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "RayPlacement \(release.versionText) is available"
+        let notes = release.body?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(1_200) ?? ""
+        alert.informativeText = "Installed: \(updateService.currentVersion)\n\n\(notes)\n\nThe update kit will be verified, rebuilt locally with this Mac's RayPlacement signing identity, and installed only after you confirm."
+        alert.addButton(withTitle: "Update Now")
+        alert.addButton(withTitle: "Later")
+        alert.addButton(withTitle: "View on GitHub")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            updateService.install(release)
+        case .alertThirdButtonReturn:
+            NSWorkspace.shared.open(release.htmlURL)
+        default:
+            break
+        }
     }
 }

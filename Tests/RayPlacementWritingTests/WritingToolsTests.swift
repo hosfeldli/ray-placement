@@ -80,36 +80,20 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(review.hasSuggestedChanges)
 }
 
-@Test func deepRewriteNormalizesDifficultGreeting() throws {
-    let service = WritingCheckService()
-    let source = "Hi; whot where you thinking, about"
-    let modelOutput = "Hi; what are you thinking about?"
-    let normalized = service.normalizeModelRewrite(modelOutput)
-    #expect(normalized == "Hi, what are you thinking about?")
-
-    let review = try service.review(
-        sourceText: source,
-        rewrittenText: normalized,
-        providerTitle: WritingProvider.qwen3Deep.title
+@Test func aiPromptIncludesUserCorrectionRequirements() {
+    let prompt = AIWritingPrompt.systemPrompt(
+        customInstructions: "Keep RayPlacement and Qwen capitalized. Prefer US English."
     )
-    #expect(review.suggestedText == "Hi, what are you thinking about?")
-    #expect(review.hasSuggestedChanges)
-    #expect(review.issues.first?.message.contains("Qwen3 1.7B Q8") == true)
+    #expect(prompt.contains("Correct the entire supplied passage"))
+    #expect(prompt.contains("Keep RayPlacement and Qwen capitalized"))
+    #expect(prompt.contains("Return only the fully corrected passage"))
 }
 
-@Test func qualityFloorCorrectsTheFullHighlightedSentence() throws {
-    let service = WritingCheckService()
-    let source = "Hi; whot where you thinking, about"
-    let harperJSON = #"[{"file":"<stdin>","lint_count":1,"lints":[{"rule":"SpellCheck","kind":"Spelling","span":{"char_start":4,"char_end":8},"line":1,"column":5,"message":"Possible misspelling","priority":63,"suggestions":["Replace with: “what”"],"matched_text":"whot"}]}]"#.data(using: .utf8)!
-
-    let harperReview = try service.review(sourceText: source, harperJSON: harperJSON)
-    let corrected = service.normalizeProofreadRewrite(harperReview.suggestedText)
-
-    #expect(corrected == "Hi, what were you thinking about?")
-    #expect(
-        service.normalizeProofreadRewrite(
-            "Hi, what were you thinking about?",
-            preservingBoundaryFrom: "\n  \(source)  \n"
-        ) == "\n  Hi, what were you thinking about?  \n"
+@Test func aiResponseCleanupDoesNotApplyRuleBasedGrammarEdits() {
+    let source = "\n  Hi; whot where you thinking, about  \n"
+    let cleaned = AIWritingPrompt.cleanResponse(
+        "Corrected text: Hi; whot where you thinking, about",
+        preservingBoundaryFrom: source
     )
+    #expect(cleaned == source)
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Carbon
 import Foundation
 import RayPlacementCore
@@ -7,7 +8,7 @@ final class HotKeyManager {
         let identifier: String
         let shortcut: ShortcutSpec
         let reference: EventHotKeyRef
-        let handler: () -> Void
+        let handler: (NSRunningApplication?) -> Void
     }
 
     enum RegistrationError: LocalizedError {
@@ -39,6 +40,14 @@ final class HotKeyManager {
     }
 
     func register(identifier: String, shortcut: ShortcutSpec, handler: @escaping () -> Void) throws {
+        try registerFromApplication(identifier: identifier, shortcut: shortcut) { _ in handler() }
+    }
+
+    func registerFromApplication(
+        identifier: String,
+        shortcut: ShortcutSpec,
+        handler: @escaping (NSRunningApplication?) -> Void
+    ) throws {
         guard let keyCode = Self.keyCode(for: shortcut.key) else {
             throw RegistrationError.invalidKey(shortcut.key)
         }
@@ -117,7 +126,8 @@ final class HotKeyManager {
                 )
                 guard status == noErr else { return status }
                 let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-                manager.registrations[hotKeyID.id]?.handler()
+                let application = NSWorkspace.shared.frontmostApplication
+                manager.registrations[hotKeyID.id]?.handler(application)
                 return noErr
             },
             1,
