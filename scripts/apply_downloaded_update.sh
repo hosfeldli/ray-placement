@@ -38,16 +38,10 @@ done
 kill -0 "$CURRENT_PID" >/dev/null 2>&1 && fail_update "RayPlacement did not close in time, so the update was cancelled."
 
 [[ -d "$CURRENT_APP/Contents/Resources/Qwen" ]] || fail_update "The installed Qwen model is missing. Reinstall RayPlacement from the full Desktop installer."
-[[ -d "$CURRENT_APP/Contents/Resources/CoEdit" ]] || fail_update "The installed writing resources are incomplete."
-[[ -x "$CURRENT_APP/Contents/Resources/Tools/harper-cli" ]] || fail_update "The installed compatibility resources are incomplete."
 [[ -x "$SOURCE_ROOT/Install RayPlacement.command" ]] || fail_update "The verified update installer is missing."
 
-mkdir -p "$SOURCE_ROOT/Packaging/Vendor/Harper" "$SOURCE_ROOT/Packaging/Vendor"
+mkdir -p "$SOURCE_ROOT/Packaging/Vendor"
 ditto "$CURRENT_APP/Contents/Resources/Qwen" "$SOURCE_ROOT/Packaging/Vendor/Qwen"
-ditto "$CURRENT_APP/Contents/Resources/CoEdit" "$SOURCE_ROOT/Packaging/Vendor/CoEdit"
-cp "$CURRENT_APP/Contents/Resources/Tools/harper-cli" "$SOURCE_ROOT/Packaging/Vendor/Harper/harper-cli"
-cp "$CURRENT_APP/Contents/Resources/Licenses/Harper-LICENSE" "$SOURCE_ROOT/Packaging/Vendor/Harper/LICENSE"
-chmod 755 "$SOURCE_ROOT/Packaging/Vendor/Harper/harper-cli"
 
 echo "Building and signing RayPlacement $VERSION locally…"
 if ! RAYPLACEMENT_APPROVE_LOCAL_SIGNING=1 \

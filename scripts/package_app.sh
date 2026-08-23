@@ -9,8 +9,6 @@ APP_DIRECTORY="$PROJECT_DIRECTORY/build/RayPlacement.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
-HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
-COEDIT_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/CoEdit"
 QWEN_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Qwen"
 QWEN_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_qwen_model.sh"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
@@ -35,17 +33,13 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
 
-if [[ ! -x "$HARPER_DIRECTORY/harper-cli" || ! -x "$COEDIT_DIRECTORY/node" || ! -f "$COEDIT_DIRECTORY/runner.mjs" || ! -d "$COEDIT_DIRECTORY/model" || ! -d "$COEDIT_DIRECTORY/node_modules" || ! -x "$QWEN_DIRECTORY/runtime/llama-cli" || ! -f "$QWEN_DIRECTORY/Qwen3-1.7B-Q8_0.gguf" ]]; then
-    echo "Bundled writing provider assets are missing. Run scripts/fetch_vendor_assets.sh and prepare the CoEdit runtime first."
+if [[ ! -x "$QWEN_DIRECTORY/runtime/llama-cli" || ! -f "$QWEN_DIRECTORY/Qwen3-1.7B-Q8_0.gguf" ]]; then
+    echo "The bundled Qwen writing provider is incomplete. Run scripts/assemble_qwen_model.sh first."
     exit 1
 fi
-mkdir -p "$CONTENTS_DIRECTORY/Resources/Tools" "$CONTENTS_DIRECTORY/Resources/Licenses"
-cp "$HARPER_DIRECTORY/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli"
-cp "$HARPER_DIRECTORY/LICENSE" "$CONTENTS_DIRECTORY/Resources/Licenses/Harper-LICENSE"
-ditto "$COEDIT_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/CoEdit"
 ditto "$QWEN_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Qwen"
 rm -rf "$CONTENTS_DIRECTORY/Resources/Qwen/ModelParts"
-chmod 755 "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli" "$CONTENTS_DIRECTORY/Resources/CoEdit/node" "$CONTENTS_DIRECTORY/Resources/Qwen/runtime/llama-cli"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Qwen/runtime/llama-cli"
 
 swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"
 ICONSET_DIRECTORY="$PROJECT_DIRECTORY/Packaging/RayPlacement.iconset"

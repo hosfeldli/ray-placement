@@ -4,7 +4,7 @@ RayPlacement is a focused, native, keyboard-first macOS launcher inspired by the
 
 ## Use it
 
-1. Double-click `Install RayPlacement.command`. It verifies the bundled model assets, creates a stable local signing identity with your consent, builds and signs for this Mac, checks the resulting bundle, and installs the app and bundled extensions.
+1. Double-click `Install RayPlacement.command`. It verifies the bundled Qwen assets, repairs missing Git LFS files from pinned official downloads when needed, creates a stable local signing identity with your consent, builds and signs for this Mac, checks the resulting bundle, and installs the app and bundled extensions. A source ZIP without Git LFS may download about 1.8 GB on first install.
 2. Press **Option-Space** from any app to show or hide it.
 3. Type an app, command, or calculation and press **Return**.
 4. Open **RayPlacement Settings** to change shortcuts, choose performance limits, check Accessibility status, enable launch at login, or opt in to local clipboard history.
@@ -17,7 +17,7 @@ If Raycast is still running with Option-Space assigned, disable or change its sh
 
 ### First setup on another Mac
 
-RayPlacement currently targets Apple-silicon Macs running macOS 13 or later. Install Swift 6 from Xcode 16 Command Line Tools or newer and Git LFS, clone the repository, run `git lfs pull`, then double-click `Install RayPlacement.command`. The Qwen model is stored as six smaller, hash-pinned LFS chunks so first-time GitHub transfers are reliable; the installer verifies every chunk, reconstructs the exact GGUF locally, and verifies the finished model before building. It does not reuse or copy a signing key from another computer. It explains the local trust change, asks before making it, creates a private key that stays on that Mac, rebuilds RayPlacement locally, verifies both bundled writing models, and installs to `~/Applications/RayPlacement.app`.
+RayPlacement currently targets Apple-silicon Macs running macOS 13 or later. Install Swift 6 from Xcode 16 Command Line Tools or newer, then double-click `Install RayPlacement.command`. Git LFS is recommended for a clone but is no longer required for a downloaded source ZIP: the installer detects pointer stubs or corrupt files and retrieves the exact pinned Qwen model and llama.cpp runtime from their official releases. Every local, reconstructed, or downloaded asset is checked against its expected SHA-256 before use. The installer does not reuse or copy a signing key from another computer. It explains the local trust change, asks before making it, creates a private key that stays on that Mac, rebuilds RayPlacement locally, verifies the bundled Qwen model, and installs to `~/Applications/RayPlacement.app`.
 
 After the first install, add that exact app once in **System Settings → Privacy & Security → Accessibility**. Later installs from the same folder reuse the same local identity, so the permission survives rebuilds. A Developer ID certificate and notarization would still be required to distribute a standalone prebuilt app that does not need local build tools.
 
@@ -88,7 +88,7 @@ Extensions are deliberately process-based rather than dynamically loaded librari
 
 ## Build
 
-The project requires an Apple-silicon Mac on macOS 13 or later, Swift 6 (Xcode 16 Command Line Tools or newer), and Git LFS when cloning the bundled model assets. Node/npm is only needed to reproduce the pinned T5 runtime; normal app use does not need Node, Python, Ollama, or network access.
+The project requires an Apple-silicon Mac on macOS 13 or later and Swift 6 (Xcode 16 Command Line Tools or newer). Git LFS is recommended when cloning; without it, the installer downloads and verifies the pinned Qwen model and runtime. Normal app use does not need Node, Python, Ollama, or network access.
 
 ```sh
 make test
@@ -102,7 +102,7 @@ For a release candidate, run the bundled inference quality checks after packagin
 RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 RAYPLACEMENT_VERIFY_MODEL_QUALITY=1 ./scripts/verify_app.sh build/RayPlacement.app
 ```
 
-The repository contains the bundled provider assets. To reproduce them from pinned upstream releases, run `./scripts/fetch_vendor_assets.sh`; it verifies the Harper archive, both model sets, Node, and llama.cpp before packaging the macOS arm64 inference files the app uses. The Qwen option adds about 1.7 GB to the app because the model is fully local.
+The repository contains the bundled provider assets. To reproduce all historical provider assets from pinned upstream releases, run `./scripts/fetch_vendor_assets.sh`. The shipping app packages only Qwen and its pinned llama.cpp runtime; `./scripts/assemble_qwen_model.sh` verifies local assets and repairs missing ones from their official releases. Qwen adds about 1.7 GB to the app because the model is fully local.
 
 The packaged app is written to `build/RayPlacement.app`. Without local-signing setup it falls back to ad-hoc signing and warns that Accessibility approval may be lost after a rebuild. The double-click installer performs the stable per-Mac setup automatically after explicit consent. For a manual development setup, run `./scripts/setup_local_signing.sh` once, then package with `RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 make package`. Developer ID signing and notarization are still needed to distribute a standalone prebuilt app that does not rebuild locally.
 
@@ -110,7 +110,7 @@ The packaged app is written to `build/RayPlacement.app`. Without local-signing s
 
 RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. The release contains a small model-free `RayPlacement-Update.zip`; RayPlacement requires GitHub's SHA-256 asset digest, validates the version and archive structure, reuses the already-installed local models, rebuilds with the existing per-Mac signing identity, verifies the app, installs it, and reports success after relaunch.
 
-Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.0` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
+Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.1` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
 
 ## Project layout
 

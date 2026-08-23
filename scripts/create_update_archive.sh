@@ -13,6 +13,7 @@ trap cleanup EXIT
 
 STAGED_SOURCE="$TEMP_DIRECTORY/RayPlacementUpdate"
 mkdir -p "$STAGED_SOURCE" "$OUTPUT_DIRECTORY"
+OUTPUT_DIRECTORY="$(cd "$OUTPUT_DIRECTORY" && pwd)"
 rsync -a \
     --exclude .git/ \
     --exclude .github/ \

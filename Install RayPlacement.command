@@ -42,13 +42,10 @@ if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -
     "$QWEN_ASSEMBLER"
     QWEN_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/Qwen3-1.7B-Q8_0.gguf"
     QWEN_RUNTIME="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/runtime/llama-cli"
-    COEDIT_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/CoEdit/model/encoder_model.onnx"
-    HARPER_TOOL="$SCRIPT_DIRECTORY/Packaging/Vendor/Harper/harper-cli"
     if [[ ! -f "$QWEN_MODEL" || "$(stat -f '%z' "$QWEN_MODEL" 2>/dev/null || echo 0)" -lt 1000000000 \
-        || ! -x "$QWEN_RUNTIME" || ! -f "$COEDIT_MODEL" || ! -x "$HARPER_TOOL" ]]; then
-        echo "The bundled local writing models are incomplete."
-        echo "If this is a Git clone, install Git LFS and run: git lfs pull"
-        echo "Then open this installer again."
+        || ! -x "$QWEN_RUNTIME" ]]; then
+        echo "The local Qwen writing model or runtime is incomplete."
+        echo "Check the network connection, then open this installer again."
         exit 1
     fi
 
@@ -80,7 +77,7 @@ fi
 
 if [[ ! -d "$SOURCE_APP" || ! -d "$SOURCE_EXTENSIONS_DIRECTORY" ]]; then
     echo "The RayPlacement app or bundled extensions are missing from this folder."
-    echo "If this is a Git clone, install Git LFS and run: git lfs pull"
+    echo "Open the complete project folder and run this installer again."
     exit 1
 fi
 
