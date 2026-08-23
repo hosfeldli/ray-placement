@@ -15,7 +15,7 @@ If Raycast is still running with Option-Space assigned, disable or change its sh
 
 ### First setup on another Mac
 
-RayPlacement currently targets Apple-silicon Macs running macOS 13 or later. Install Swift 6 from Xcode 16 Command Line Tools or newer and Git LFS, clone the repository, run `git lfs pull`, then double-click `Install RayPlacement.command`. The installer does not reuse or copy a signing key from another computer. It explains the local trust change, asks before making it, creates a private key that stays on that Mac, rebuilds RayPlacement locally, verifies both bundled writing models, and installs to `~/Applications/RayPlacement.app`.
+RayPlacement currently targets Apple-silicon Macs running macOS 13 or later. Install Swift 6 from Xcode 16 Command Line Tools or newer and Git LFS, clone the repository, run `git lfs pull`, then double-click `Install RayPlacement.command`. The Qwen model is stored as six smaller, hash-pinned LFS chunks so first-time GitHub transfers are reliable; the installer verifies every chunk, reconstructs the exact GGUF locally, and verifies the finished model before building. It does not reuse or copy a signing key from another computer. It explains the local trust change, asks before making it, creates a private key that stays on that Mac, rebuilds RayPlacement locally, verifies both bundled writing models, and installs to `~/Applications/RayPlacement.app`.
 
 After the first install, add that exact app once in **System Settings → Privacy & Security → Accessibility**. Later installs from the same folder reuse the same local identity, so the permission survives rebuilds. A Developer ID certificate and notarization would still be required to distribute a standalone prebuilt app that does not need local build tools.
 

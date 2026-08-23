@@ -12,6 +12,7 @@ ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
 HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 COEDIT_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/CoEdit"
 QWEN_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Qwen"
+QWEN_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_qwen_model.sh"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
 LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
@@ -22,6 +23,7 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
 
 mkdir -p "$MODULE_CACHE_DIRECTORY"
+"$QWEN_ASSEMBLER"
 swift build --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
 BIN_DIRECTORY="$(swift build --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
 
@@ -42,6 +44,7 @@ cp "$HARPER_DIRECTORY/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/harper-cl
 cp "$HARPER_DIRECTORY/LICENSE" "$CONTENTS_DIRECTORY/Resources/Licenses/Harper-LICENSE"
 ditto "$COEDIT_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/CoEdit"
 ditto "$QWEN_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Qwen"
+rm -rf "$CONTENTS_DIRECTORY/Resources/Qwen/ModelParts"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli" "$CONTENTS_DIRECTORY/Resources/CoEdit/node" "$CONTENTS_DIRECTORY/Resources/Qwen/runtime/llama-cli"
 
 swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"

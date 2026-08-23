@@ -20,6 +20,7 @@ test -f "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/LICENSE"
 test -f "$APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf"
 test -f "$APP_DIRECTORY/Contents/Resources/Qwen/MODEL_LICENSE"
 test -f "$APP_DIRECTORY/Contents/Resources/Qwen/REVISION"
+test ! -d "$APP_DIRECTORY/Contents/Resources/Qwen/ModelParts"
 test -f "$APP_DIRECTORY/Contents/Resources/Licenses/Harper-LICENSE"
 plutil -lint "$APP_DIRECTORY/Contents/Info.plist" >/dev/null
 codesign --verify --deep --strict "$APP_DIRECTORY"

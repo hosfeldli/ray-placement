@@ -7,6 +7,7 @@ SOURCE_EXTENSIONS_DIRECTORY="$SCRIPT_DIRECTORY/Extensions"
 PACKAGE_MANIFEST="$SCRIPT_DIRECTORY/Package.swift"
 SIGNING_SETUP="$SCRIPT_DIRECTORY/scripts/setup_local_signing.sh"
 PACKAGE_SCRIPT="$SCRIPT_DIRECTORY/scripts/package_app.sh"
+QWEN_ASSEMBLER="$SCRIPT_DIRECTORY/scripts/assemble_qwen_model.sh"
 CURRENT_USER="$(id -un)"
 USER_HOME_DIRECTORY="$(dscl . -read "/Users/$CURRENT_USER" NFSHomeDirectory | awk '{print $2}')"
 
@@ -25,7 +26,7 @@ if [[ "$(uname -m)" != "arm64" ]]; then
     exit 1
 fi
 
-if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" ]]; then
+if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -x "$QWEN_ASSEMBLER" ]]; then
     if ! xcrun --find swiftc >/dev/null 2>&1; then
         echo "Apple Command Line Tools are required for the first local setup."
         echo "Run: xcode-select --install"
@@ -38,6 +39,7 @@ if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" ]]; 
         exit 1
     fi
 
+    "$QWEN_ASSEMBLER"
     QWEN_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/Qwen3-1.7B-Q8_0.gguf"
     QWEN_RUNTIME="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/runtime/llama-cli"
     COEDIT_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/CoEdit/model/encoder_model.onnx"
