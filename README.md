@@ -41,6 +41,7 @@ After the first install, add that exact app once in **System Settings → Privac
 - Batch note dictation: it records only after you press Dictate, stops before transcription, requires on-device recognition, and deletes the temporary audio
 - Independent five-level performance sliders for writing models, dictation, and executable extensions, plus an opt-in Beta Dynamic mode
 - Clear Working, Done, and Error states, stage-by-stage writing progress, keyboard action labels, and brief completion confirmations
+- A fast, offline two-column timezone converter plus confirmed single-app and all-app Force Quit controls (RayPlacement is always excluded)
 - Startup GitHub Release checks with a user-confirmed, SHA-256-verified, locally signed self-update path
 - Keyboard navigation with arrows or Control-P/Control-N, Return, Escape, Command-1 through Command-9, and Command-comma
 
@@ -108,9 +109,9 @@ The packaged app is written to `build/RayPlacement.app`. Without local-signing s
 
 ## Updates
 
-RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. The release contains a small model-free `RayPlacement-Update.zip`; RayPlacement requires GitHub's SHA-256 asset digest, validates the version and archive structure, reuses the already-installed local models, rebuilds with the existing per-Mac signing identity, verifies the app, installs it, and reports success after relaunch.
+RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. A dedicated progress window then stays visible while RayPlacement downloads the small model-free update kit, verifies GitHub's SHA-256 digest, reuses the installed Qwen model, rebuilds with this Mac's stable signing identity, and verifies the result. Only then does RayPlacement close briefly for the final app swap and reopen with a success report. A failed build leaves the current app running; a failed final swap restores the previous app. The detailed helper output is retained at `~/Library/Application Support/RayPlacement/Updates/update.log` so the build never disappears into an unexplained close.
 
-Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.2` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
+Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.8.0` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The updater remains compatible with the older five-argument helper call used by RayPlacement 1.7.x. The full Desktop installer remains the recovery path if a local model or build tool is missing.
 
 ## Project layout
 
@@ -120,7 +121,7 @@ Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pus
 - `Sources/RayPlacement/NotesStore.swift`, `InlineMarkdownEditor.swift`, and `NotesWindowController.swift` — bounded local Markdown notes and inline styling
 - `Sources/RayPlacement/NoteSummaryService.swift` — bounded on-demand Qwen summary workflow
 - `Sources/RayPlacement/NoteDictationService.swift` — explicit record-then-transcribe on-device dictation
-- `Extensions` — bundled Writing Tools and VS Code Directories extensions
+- `Extensions` — bundled Writing Tools, VS Code Directories, and Productivity Tools extensions
 - `docs/extension-manifest.schema.json` — machine-readable extension manifest contract
 - `Tests` — core behavior tests
 - `Examples` — example user extension

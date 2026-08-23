@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "id": "local.productivity-tools",
+  "name": "Productivity Tools",
+  "version": "1.0.0",
+  "description": "Fast timezone conversion and safe force-quit controls",
+  "commands": [
+    {
+      "id": "convert-timezones",
+      "title": "Convert Timezones",
+      "subtitle": "Translate a time between cities in a two-panel view",
+      "keywords": ["time", "timezone", "zone", "convert", "utc", "meeting", "world clock"],
+      "icon": "globe.americas.fill",
+      "action": {
+        "type": "convertTimezones",
+        "value": ""
+      }
+    },
+    {
+      "id": "force-quit-applications",
+      "title": "Force Quit Application",
+      "subtitle": "Choose an unresponsive app and confirm before closing it",
+      "keywords": ["force", "quit", "kill", "application", "unresponsive", "frozen"],
+      "icon": "xmark.app.fill",
+      "action": {
+        "type": "forceQuitApplications",
+        "value": ""
+      }
+    },
+    {
+      "id": "force-quit-all-applications",
+      "title": "Force Quit All Applications",
+      "subtitle": "Close every foreground app except RayPlacement after confirmation",
+      "keywords": ["force", "quit", "all", "kill", "applications", "unresponsive", "frozen"],
+      "icon": "xmark.bin.fill",
+      "action": {
+        "type": "forceQuitAllApplications",
+        "value": ""
+      }
+    }
+  ]
+}

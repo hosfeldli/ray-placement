@@ -13,6 +13,8 @@ enum LauncherMode: Equatable {
     case root
     case files
     case vscodePicker
+    case timezoneConverter
+    case forceQuitPicker
     case clipboard
     case writingReview(WritingReview)
     case output(title: String, text: String, state: LauncherOutputState)
@@ -22,6 +24,8 @@ enum LauncherMode: Equatable {
         case .root: return nil
         case .files: return "Search Files"
         case .vscodePicker: return "Open in VS Code"
+        case .timezoneConverter: return "Timezone Converter"
+        case .forceQuitPicker: return "Force Quit"
         case .clipboard: return "Clipboard History"
         case .writingReview: return "Writing Review"
         case .output(let title, _, _): return title
@@ -89,6 +93,7 @@ enum LauncherAction {
     case copyText(String)
     case pasteText(String)
     case replaceSelectedText(String)
+    case forceQuitApplication(processIdentifier: Int32, name: String)
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
     case window(WindowLayout)
@@ -117,6 +122,15 @@ struct ApplicationRecord: Identifiable, Hashable {
     let bundleIdentifier: String?
 
     var id: String { url.path }
+}
+
+struct TimezoneOption: Identifiable, Hashable {
+    let id: String
+    let title: String
+
+    var city: String {
+        id.split(separator: "/").last.map(String.init)?.replacingOccurrences(of: "_", with: " ") ?? id
+    }
 }
 
 struct ClipboardEntry: Codable, Identifiable, Hashable {

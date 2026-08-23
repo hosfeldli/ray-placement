@@ -93,6 +93,9 @@ Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) 
 | `pastePlainText` | Rewrites clipboard text as plain text and pastes | Empty string |
 | `checkWriting` | Corrects selected text with bundled local Qwen and the user's persistent Writing instructions | Empty string |
 | `openInVSCode` | Enters RayPlacement's Spotlight picker and opens the chosen file or directory in Visual Studio Code | Empty string |
+| `convertTimezones` | Opens RayPlacement's native two-column offline timezone converter | Empty string |
+| `forceQuitApplications` | Opens a searchable running-app picker with a destructive-action confirmation | Empty string |
+| `forceQuitAllApplications` | Confirms, then force quits all foreground apps except RayPlacement | Empty string |
 | `shell` | Runs an executable directly | Absolute or extension-relative executable path |
 
 For `shell`, `arguments` is an array passed directly to the process. RayPlacement never builds a shell command and never expands variables inside an argument. Put conditional logic and safe path expansion in the executable itself. `workingDirectory` is optional.
@@ -154,6 +157,7 @@ Before presenting an extension as complete, an AI agent should:
 
 - `Extensions/writing-tools` demonstrates native actions (`pastePlainText` and `checkWriting`).
 - `Extensions/vscode-directories` demonstrates the native interactive `openInVSCode` action.
+- `Extensions/productivity-tools` demonstrates native interactive `convertTimezones`, `forceQuitApplications`, and `forceQuitAllApplications` actions.
 - `Examples/project-tools` demonstrates URL, file, and shell commands.
 
 When future functionality requires parameters, interactive forms, streaming, or richer command results, evolve the schema version deliberately instead of hiding a new protocol inside existing fields.

@@ -43,6 +43,9 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 | `pastePlainText` | Current clipboard text with rich formatting removed, then pasted | `value` is ignored |
 | `checkWriting` | Selected text corrected directly by the bundled local Qwen model using the user's Writing instructions | `value` is ignored |
 | `openInVSCode` | Enters an interactive Spotlight picker, then opens the chosen file or directory in Visual Studio Code | `value` is ignored |
+| `convertTimezones` | Opens the offline, two-column timezone converter | `value` is ignored |
+| `forceQuitApplications` | Opens a searchable running-app picker and requires confirmation before force quitting | `value` is ignored |
+| `forceQuitAllApplications` | Confirms, then force quits every foreground app except RayPlacement | `value` is ignored |
 | `shell` | Absolute or extension-relative executable path | `arguments`, `workingDirectory` |
 
 Arguments are passed directly to the executable—RayPlacement does not assemble a shell command. Put shell logic in a script with a shebang, then mark it executable:
@@ -71,7 +74,7 @@ RayPlacement assigns the child process background, utility, or foreground priori
 
 Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as its source. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
 
-The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
+The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 
 For a precise AI-oriented build and verification contract, see [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md). A JSON Schema is available at [extension-manifest.schema.json](extension-manifest.schema.json).
 

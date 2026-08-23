@@ -27,6 +27,13 @@ final class LauncherViewModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var extensionIssues: [ExtensionIssue] = []
     @Published private(set) var focusGeneration = 0
+    @Published var timezoneSourceID: String = UserDefaults.standard.string(forKey: "timezoneSourceID") ?? TimeZone.current.identifier {
+        didSet { UserDefaults.standard.set(timezoneSourceID, forKey: "timezoneSourceID") }
+    }
+    @Published var timezoneDestinationID: String = UserDefaults.standard.string(forKey: "timezoneDestinationID") ?? "UTC" {
+        didSet { UserDefaults.standard.set(timezoneDestinationID, forKey: "timezoneDestinationID") }
+    }
+    @Published private(set) var timezoneDidCopy = false
 
     weak var delegate: LauncherViewModelDelegate?
 
@@ -64,6 +71,8 @@ final class LauncherViewModel: ObservableObject {
         case .root: return "Search commands and applications…"
         case .files: return "Search files with Spotlight…"
         case .vscodePicker: return "Search for a file or directory to open in VS Code…"
+        case .timezoneConverter: return "Enter a time like 9:30 AM, 14:00, or now"
+        case .forceQuitPicker: return "Search running applications…"
         case .clipboard: return "Search clipboard history…"
         case .writingReview: return "Writing review"
         case .output: return "Command output"
@@ -82,6 +91,47 @@ final class LauncherViewModel: ObservableObject {
 
     var hasActionableResults: Bool {
         results.contains(where: isActionable)
+    }
+
+    static let timezoneOptions: [TimezoneOption] = [
+        TimezoneOption(id: TimeZone.current.identifier, title: "Local Time"),
+        TimezoneOption(id: "UTC", title: "UTC"),
+        TimezoneOption(id: "America/New_York", title: "New York"),
+        TimezoneOption(id: "America/Chicago", title: "Chicago"),
+        TimezoneOption(id: "America/Denver", title: "Denver"),
+        TimezoneOption(id: "America/Los_Angeles", title: "Los Angeles"),
+        TimezoneOption(id: "America/Toronto", title: "Toronto"),
+        TimezoneOption(id: "America/Sao_Paulo", title: "São Paulo"),
+        TimezoneOption(id: "Europe/London", title: "London"),
+        TimezoneOption(id: "Europe/Paris", title: "Paris"),
+        TimezoneOption(id: "Europe/Berlin", title: "Berlin"),
+        TimezoneOption(id: "Africa/Johannesburg", title: "Johannesburg"),
+        TimezoneOption(id: "Asia/Dubai", title: "Dubai"),
+        TimezoneOption(id: "Asia/Kolkata", title: "India"),
+        TimezoneOption(id: "Asia/Singapore", title: "Singapore"),
+        TimezoneOption(id: "Asia/Shanghai", title: "Shanghai"),
+        TimezoneOption(id: "Asia/Tokyo", title: "Tokyo"),
+        TimezoneOption(id: "Australia/Sydney", title: "Sydney"),
+        TimezoneOption(id: "Pacific/Auckland", title: "Auckland")
+    ].reduce(into: [TimezoneOption]()) { result, option in
+        if !result.contains(where: { $0.id == option.id }) { result.append(option) }
+    }
+
+    var timezoneConversion: TimezoneConversion? {
+        TimezoneConverter.convert(query, from: timezoneSourceID, to: timezoneDestinationID)
+    }
+
+    func swapTimezones() {
+        (timezoneSourceID, timezoneDestinationID) = (timezoneDestinationID, timezoneSourceID)
+    }
+
+    func copyTimezoneResult() {
+        guard let conversion = timezoneConversion else { return }
+        clipboard.copy("\(conversion.destinationTime) \(conversion.destinationZone) — \(conversion.destinationDate)")
+        timezoneDidCopy = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            self?.timezoneDidCopy = false
+        }
     }
 
     func isActionable(_ item: LauncherItem) -> Bool {
@@ -193,6 +243,12 @@ final class LauncherViewModel: ObservableObject {
             results = rootResults()
         case .files, .vscodePicker:
             refreshFileResults()
+        case .timezoneConverter:
+            isSearching = false
+            results = []
+        case .forceQuitPicker:
+            isSearching = false
+            results = runningApplicationItems()
         case .clipboard:
             refreshClipboardResults()
         case .writingReview:
@@ -216,7 +272,8 @@ final class LauncherViewModel: ObservableObject {
 
         guard !cleanQuery.isEmpty else {
             let priority = [
-                "builtin.search-files", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
+                "builtin.search-files", "extension.local.productivity-tools.convert-timezones",
+                "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
                 "window.maximize", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
             ]
             let defaults = priority.compactMap { id in items.first { $0.id == id } }
@@ -350,6 +407,44 @@ final class LauncherViewModel: ObservableObject {
                 icon: .application(app.url),
                 keywords: [app.bundleIdentifier ?? "", app.url.path],
                 action: .launchApplication(app.url)
+            )
+        }
+    }
+
+    private func runningApplicationItems() -> [LauncherItem] {
+        let currentBundleIdentifier = Bundle.main.bundleIdentifier
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let allRunning = NSWorkspace.shared.runningApplications
+            .filter {
+                !$0.isTerminated
+                    && $0.activationPolicy == .regular
+                    && $0.bundleIdentifier != currentBundleIdentifier
+                    && $0.localizedName != nil
+            }
+            .sorted { ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending }
+        let running = cleanQuery.isEmpty ? allRunning : allRunning.filter { application in
+            let searchable = [application.localizedName ?? "", application.bundleIdentifier ?? ""]
+                .joined(separator: " ")
+            return FuzzyMatcher.score(searchable, query: cleanQuery) != nil
+        }
+        guard !running.isEmpty else {
+            return [placeholderItem(
+                id: "force-quit.empty",
+                title: cleanQuery.isEmpty ? "No running applications" : "No matching applications",
+                subtitle: cleanQuery.isEmpty ? "Only normal foreground apps are shown" : "Try another application name",
+                icon: cleanQuery.isEmpty ? "checkmark.circle" : "magnifyingglass"
+            )]
+        }
+        return running.map { application in
+            let name = application.localizedName ?? "Application"
+            return LauncherItem(
+                id: "force-quit.\(application.processIdentifier)",
+                title: name,
+                subtitle: "Force quit immediately — unsaved work may be lost",
+                icon: application.bundleURL.map(LauncherIcon.application) ?? .system("app.dashed"),
+                keywords: [application.bundleIdentifier ?? "", "quit", "kill", "frozen"],
+                action: .forceQuitApplication(processIdentifier: application.processIdentifier, name: name),
+                accessory: "Confirm"
             )
         }
     }

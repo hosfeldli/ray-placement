@@ -7,6 +7,11 @@ private let rayPlacementUpdateAssetMaximumBytes = 100 * 1_024 * 1_024
 
 @MainActor
 final class UpdateService: ObservableObject {
+    struct CompletionResult: Equatable {
+        let succeeded: Bool
+        let message: String
+    }
+
     struct Release: Decodable {
         struct Asset: Decodable {
             let name: String
@@ -66,9 +71,19 @@ final class UpdateService: ObservableObject {
     @Published private(set) var statusText = "Updates are checked from GitHub when RayPlacement starts."
     @Published private(set) var isBusy = false
     @Published private(set) var latestVersion: String?
+    @Published private(set) var isInstalling = false
+    @Published private(set) var installationProgress = 0.0
+    @Published private(set) var installationStage = ""
+    @Published private(set) var installingVersion: String?
+    @Published private(set) var completionResult: CompletionResult?
 
     var onReleaseAvailable: ((Release) -> Void)?
+    var onInstallStarted: (() -> Void)?
     private let resultFile = ApplicationPaths.updates.appendingPathComponent("last-update-result.txt")
+    private let progressFile = ApplicationPaths.updates.appendingPathComponent("update-progress.txt")
+    private var helperProcess: Process?
+    private var progressTimer: Timer?
+    private var restartScheduled = false
 
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -83,8 +98,19 @@ final class UpdateService: ObservableObject {
         return (status == "success", message)
     }
 
+    func showCompletion(succeeded: Bool, message: String) {
+        isBusy = false
+        isInstalling = false
+        completionResult = CompletionResult(succeeded: succeeded, message: message)
+        statusText = message
+    }
+
+    func dismissCompletion() {
+        completionResult = nil
+    }
+
     func checkForUpdates(manual: Bool) {
-        guard !isBusy else { return }
+        guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking GitHub for updates…"
 
@@ -127,7 +153,7 @@ final class UpdateService: ObservableObject {
     }
 
     func install(_ release: Release) {
-        guard !isBusy else { return }
+        guard !isBusy, !isInstalling else { return }
         guard let asset = release.updateAsset else {
             statusText = UpdateError.missingAsset.localizedDescription
             return
@@ -147,7 +173,14 @@ final class UpdateService: ObservableObject {
         }
 
         isBusy = true
-        statusText = "Downloading RayPlacement \(release.versionText)…"
+        isInstalling = true
+        installingVersion = release.versionText
+        installationProgress = 0.08
+        installationStage = "Downloading the small model-free update kit from GitHub…"
+        statusText = installationStage
+        completionResult = nil
+        restartScheduled = false
+        onInstallStarted?()
         var request = URLRequest(url: asset.browserDownloadURL)
         request.setValue("RayPlacement/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
@@ -163,6 +196,11 @@ final class UpdateService: ObservableObject {
                 return
             }
             let expectedHash = String(digest.dropFirst("sha256:".count))
+            Task { @MainActor in
+                self.installationProgress = 0.2
+                self.installationStage = "Download complete. Verifying GitHub's SHA-256 digest…"
+                self.statusText = self.installationStage
+            }
             DispatchQueue.global(qos: .utility).async {
                 do {
                     let sourceRoot = try self.prepareUpdate(
@@ -170,7 +208,12 @@ final class UpdateService: ObservableObject {
                         expectedHash: expectedHash,
                         expectedVersion: release.versionText
                     )
-                    Task { @MainActor in self.launchInstaller(sourceRoot: sourceRoot, version: release.versionText) }
+                    Task { @MainActor in
+                        self.installationProgress = 0.3
+                        self.installationStage = "Update verified. Preparing the local build…"
+                        self.statusText = self.installationStage
+                        self.launchInstaller(sourceRoot: sourceRoot, version: release.versionText)
+                    }
                 } catch {
                     Task { @MainActor in self.finishWithError(error) }
                 }
@@ -233,9 +276,10 @@ final class UpdateService: ObservableObject {
     }
 
     private func launchInstaller(sourceRoot: URL, version: String) {
-        statusText = "Verified. Preparing the local signed update…"
+        statusText = "Preparing the local signed update…"
         let helper = sourceRoot.appendingPathComponent("scripts/apply_downloaded_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
+        try? FileManager.default.removeItem(at: progressFile)
         FileManager.default.createFile(atPath: log.path, contents: Data())
         do {
             let handle = try FileHandle(forWritingTo: log)
@@ -247,20 +291,70 @@ final class UpdateService: ObservableObject {
                 Bundle.main.bundleURL.path,
                 sourceRoot.path,
                 version,
-                resultFile.path
+                resultFile.path,
+                progressFile.path
             ]
             process.standardOutput = handle
             process.standardError = handle
+            process.terminationHandler = { [weak self] process in
+                Task { @MainActor in self?.helperDidTerminate(process) }
+            }
             try process.run()
-            isBusy = false
-            NSApp.terminate(nil)
+            helperProcess = process
+            startProgressMonitoring()
         } catch {
             finishWithError(UpdateError.helperFailed("The verified update could not start: \(error.localizedDescription)"))
         }
     }
 
     private func finishWithError(_ error: Error) {
+        progressTimer?.invalidate()
+        progressTimer = nil
         isBusy = false
+        isInstalling = false
+        installationProgress = 0
+        completionResult = CompletionResult(succeeded: false, message: error.localizedDescription)
         statusText = "Update failed: \(error.localizedDescription)"
+    }
+
+    private func startProgressMonitoring() {
+        progressTimer?.invalidate()
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.readProgress() }
+        }
+        readProgress()
+    }
+
+    private func readProgress() {
+        guard let value = try? String(contentsOf: progressFile, encoding: .utf8) else { return }
+        let lines = value.split(separator: "\n", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
+        guard lines.count == 3, let progress = Double(lines[1]) else { return }
+        let state = lines[0]
+        installationProgress = min(max(progress, 0), 1)
+        installationStage = lines[2]
+        statusText = installationStage
+
+        if state == "failure" {
+            finishWithError(UpdateError.helperFailed(lines[2]))
+        } else if state == "ready", !restartScheduled {
+            restartScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
+                guard let self, self.isInstalling else { return }
+                self.installationProgress = 0.95
+                self.installationStage = "Closing for the final verified swap. RayPlacement will reopen automatically…"
+                self.statusText = self.installationStage
+                NSApp.terminate(nil)
+            }
+        }
+    }
+
+    private func helperDidTerminate(_ process: Process) {
+        helperProcess = nil
+        guard isInstalling, !restartScheduled else { return }
+        if let result = consumePreviousUpdateResult(), !result.succeeded {
+            finishWithError(UpdateError.helperFailed(result.message))
+        } else if process.terminationStatus != 0 {
+            finishWithError(UpdateError.helperFailed("The local updater stopped unexpectedly. Open Settings → About for the update log location."))
+        }
     }
 }

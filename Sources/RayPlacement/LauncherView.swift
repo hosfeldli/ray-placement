@@ -5,43 +5,72 @@ import SwiftUI
 struct LauncherView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @FocusState private var searchFocused: Bool
+    @FocusState private var timezoneFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            searchHeader
-            Divider().opacity(0.65)
-            content
-            Divider().opacity(0.65)
-            footer
+        ZStack {
+            VisualEffectView(material: .popover, blendingMode: .behindWindow)
+            LinearGradient(
+                colors: [
+                    RayColors.indigo.opacity(0.12),
+                    Color.clear,
+                    RayColors.cyan.opacity(0.055)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            VStack(spacing: 0) {
+                searchHeader
+                Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 1)
+                content
+                    .id(viewModel.mode.visualIdentity)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
+                footer
+            }
         }
-        .frame(width: 740, height: 510)
-        .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
-        .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .frame(width: 760, height: 540)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.34), RayColors.indigo.opacity(0.25), Color.black.opacity(0.08)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1
+                )
         )
-        .shadow(color: .black.opacity(0.32), radius: 28, y: 14)
+        .shadow(color: RayColors.indigo.opacity(0.16), radius: 34, y: 16)
+        .shadow(color: .black.opacity(0.28), radius: 24, y: 12)
+        .animation(.easeOut(duration: 0.16), value: viewModel.mode.visualIdentity)
         .onAppear { focusSearch() }
         .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }
+        .onChange(of: viewModel.mode.visualIdentity) { _ in focusSearch() }
     }
 
     private var searchHeader: some View {
         HStack(spacing: 12) {
             if viewModel.mode == .root {
-                Image(systemName: "sparkle.magnifyingglass")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 28)
+                ZStack {
+                    Circle().fill(RayColors.heroGradient)
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 34, height: 34)
+                .shadow(color: RayColors.indigo.opacity(0.3), radius: 8, y: 3)
                     .accessibilityHidden(true)
             } else {
                 Button {
                     viewModel.enter(.root)
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 28)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.primary)
+                        .frame(width: 31, height: 31)
+                        .background(Color.primary.opacity(0.075), in: Circle())
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Back")
@@ -50,14 +79,21 @@ struct LauncherView: View {
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
                 Text(title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundStyle(.primary)
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
+                    .font(.system(size: 9, weight: .bold))
                     .foregroundStyle(.tertiary)
             }
 
-            if isOutputMode {
+            if viewModel.mode == .timezoneConverter {
+                Text("Translate time across the world")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                StatusCapsule(text: "OFFLINE", color: RayColors.cyan)
+            } else if isOutputMode {
                 Text(outputHeaderText)
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
@@ -65,7 +101,7 @@ struct LauncherView: View {
             } else {
                 TextField(viewModel.placeholder, text: $viewModel.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 20, weight: .regular))
+                    .font(.system(size: 19, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
             }
@@ -83,13 +119,15 @@ struct LauncherView: View {
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
             }
         }
-        .padding(.horizontal, 20)
-        .frame(height: 66)
+        .padding(.horizontal, 18)
+        .frame(height: 72)
     }
 
     @ViewBuilder
     private var content: some View {
         switch viewModel.mode {
+        case .timezoneConverter:
+            timezoneConverterView
         case .writingReview(let review):
             writingReviewView(review)
         case .output(let title, let text, let state):
@@ -132,8 +170,8 @@ struct LauncherView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
             .onChange(of: viewModel.selectedIndex) { newIndex in
                 guard viewModel.results.indices.contains(newIndex) else { return }
@@ -146,48 +184,186 @@ struct LauncherView: View {
     }
 
     private func outputView(title: String, text: String, state: LauncherOutputState) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
-                if case .running = state {
-                    ProgressView()
-                        .controlSize(.small)
-                        .frame(width: 18, height: 18)
-                } else {
-                    Image(systemName: state == .error ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                        .foregroundStyle(state == .error ? Color.orange : Color.green)
+        VStack(alignment: .leading, spacing: 16) {
+            if case .running = state {
+                HStack(spacing: 18) {
+                    TaskOrbitView(color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
+                        .frame(width: 54, height: 54)
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(spacing: 8) {
+                            Text(title).font(.system(size: 16, weight: .bold))
+                            StatusCapsule(text: isAIOutput(title) ? "LOCAL AI" : "RUNNING", color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
+                        }
+                        Text(text.isEmpty ? "Working…" : text)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Text(title).font(.headline)
-                Spacer()
-                Text(outputStateLabel(state))
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(outputStateColor(state))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(outputStateColor(state).opacity(0.12), in: Capsule())
+                .padding(18)
+                .background(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(RayColors.cardBackground)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke((isAIOutput(title) ? RayColors.violet : RayColors.cyan).opacity(0.24), lineWidth: 1)
+                )
+                ActivityTimeline(activeStep: activityStep(for: text), isAI: isAIOutput(title))
+            } else {
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(outputStateColor(state).opacity(0.14))
+                        Image(systemName: state == .error ? "exclamationmark.triangle.fill" : "checkmark")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundStyle(outputStateColor(state))
+                    }
+                    .frame(width: 38, height: 38)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(.system(size: 16, weight: .bold))
+                        Text(state == .error ? "RayPlacement needs your attention" : "Finished successfully")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    StatusCapsule(text: outputStateLabel(state), color: outputStateColor(state))
+                }
+                ScrollView {
+                    Text(text.isEmpty ? "Command completed." : text)
+                        .font(.system(size: 13.5, design: .rounded))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(16)
+                }
+                .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.09)))
             }
-            ScrollView {
-                Text(text.isEmpty ? "Command completed." : text)
-                    .font(.system(size: 14, design: state == .running(canCancel: true) || state == .running(canCancel: false) ? .rounded : .monospaced))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(14)
-            }
-            .background(Color.black.opacity(0.16), in: RoundedRectangle(cornerRadius: 10))
         }
-        .padding(18)
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func writingReviewView(_ review: WritingReview) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: review.issues.isEmpty ? "checkmark.seal.fill" : "text.badge.checkmark")
-                    .foregroundStyle(review.issues.isEmpty ? Color.green : Color.accentColor)
-                Text(review.issues.isEmpty ? "No issues found" : "\(review.issues.count) writing \(review.issues.count == 1 ? "issue" : "issues")")
-                    .font(.headline)
-                Text("\(review.sourceText.count) selected characters")
+    private var timezoneConverterView: some View {
+        VStack(spacing: 18) {
+            HStack(spacing: 0) {
+                timezoneCard(
+                    title: "FROM",
+                    selection: $viewModel.timezoneSourceID,
+                    time: viewModel.timezoneConversion?.sourceTime,
+                    date: viewModel.timezoneConversion?.sourceDate,
+                    isSource: true
+                )
+
+                Button { viewModel.swapTimezones() } label: {
+                    Image(systemName: "arrow.left.arrow.right")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .background(RayColors.heroGradient, in: Circle())
+                        .shadow(color: RayColors.indigo.opacity(0.28), radius: 9, y: 4)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, -3)
+                .zIndex(2)
+                .accessibilityLabel("Swap timezones")
+
+                timezoneCard(
+                    title: "TO",
+                    selection: $viewModel.timezoneDestinationID,
+                    time: viewModel.timezoneConversion?.destinationTime,
+                    date: viewModel.timezoneConversion?.destinationDate,
+                    isSource: false
+                )
+            }
+
+            HStack {
+                Label("Understands “now,” 9:30 AM, 14:00, and dated times", systemImage: "sparkles")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    viewModel.copyTimezoneResult()
+                } label: {
+                    Label(viewModel.timezoneDidCopy ? "Copied" : "Copy result", systemImage: viewModel.timezoneDidCopy ? "checkmark" : "doc.on.doc")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(RayColors.indigo)
+                .disabled(viewModel.timezoneConversion == nil)
+            }
+        }
+        .padding(22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func timezoneCard(
+        title: String,
+        selection: Binding<String>,
+        time: String?,
+        date: String?,
+        isSource: Bool
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 15) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .tracking(1.4)
+                    .foregroundStyle(isSource ? RayColors.indigo : RayColors.cyan)
+                Spacer()
+                Picker("", selection: selection) {
+                    ForEach(LauncherViewModel.timezoneOptions) { option in
+                        Text("\(option.title) · \(option.city)").tag(option.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 165)
+            }
+
+            if isSource {
+                TextField("9:30 AM", text: $viewModel.query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                    .focused($timezoneFocused)
+                    .accessibilityLabel("Time to convert")
+                Text(time == nil && !viewModel.query.isEmpty ? "Enter a valid time" : (date ?? "Type a time above"))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(time == nil && !viewModel.query.isEmpty ? Color.orange : .secondary)
+            } else {
+                Text(time ?? "—")
+                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                Text(date.map { "\($0) · \(viewModel.timezoneConversion?.destinationZone ?? "")" } ?? "Converted time appears here")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, minHeight: 188, alignment: .topLeading)
+        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 17, style: .continuous)
+                .stroke((isSource ? RayColors.indigo : RayColors.cyan).opacity(0.22), lineWidth: 1)
+        )
+    }
+
+    private func writingReviewView(_ review: WritingReview) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().fill((review.issues.isEmpty ? Color.green : RayColors.violet).opacity(0.14))
+                    Image(systemName: review.issues.isEmpty ? "checkmark" : "wand.and.stars")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(review.issues.isEmpty ? Color.green : RayColors.violet)
+                }
+                .frame(width: 38, height: 38)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(review.issues.isEmpty ? "Your writing is ready" : "AI correction ready")
+                        .font(.system(size: 16, weight: .bold))
+                    Text("\(review.sourceText.count) selected characters · reviewed locally")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Spacer()
                 Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
                     viewModel.copyWritingResult(review)
@@ -198,6 +374,7 @@ struct LauncherView: View {
                     viewModel.pasteWritingResult(review)
                 }
                 .buttonStyle(.borderedProminent)
+                .tint(RayColors.indigo)
                 .accessibilityHint("Replaces the original selection without using the clipboard")
                 .keyboardShortcut(.return, modifiers: [])
             }
@@ -208,8 +385,11 @@ struct LauncherView: View {
                     : "Review complete — no replacement is needed",
                 systemImage: review.hasSuggestedChanges ? "return" : "checkmark.circle"
             )
-            .font(.caption.weight(.medium))
-            .foregroundStyle(review.hasSuggestedChanges ? Color.accentColor : .green)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(review.hasSuggestedChanges ? RayColors.indigo : .green)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background((review.hasSuggestedChanges ? RayColors.indigo : .green).opacity(0.09), in: Capsule())
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
@@ -222,8 +402,9 @@ struct LauncherView: View {
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .padding(13)
-                    .background(Color.black.opacity(0.14), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(15)
+                    .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(RayColors.violet.opacity(0.2)))
 
                     ForEach(review.issues) { issue in
                         WritingIssueRow(issue: issue)
@@ -232,7 +413,7 @@ struct LauncherView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(18)
+        .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -240,7 +421,7 @@ struct LauncherView: View {
         HStack(spacing: 10) {
             Text("RayPlacement")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(RayColors.indigo)
             if let title = viewModel.mode.title {
                 Text("/").foregroundStyle(.tertiary)
                 Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
@@ -260,8 +441,9 @@ struct LauncherView: View {
                 KeyHint(keys: "↑↓", label: "Navigate")
             }
         }
-        .padding(.horizontal, 17)
-        .frame(height: 42)
+        .padding(.horizontal, 18)
+        .frame(height: 44)
+        .background(Color.black.opacity(0.025))
     }
 
     private var isOutputMode: Bool {
@@ -311,6 +493,7 @@ struct LauncherView: View {
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
+        case .forceQuitApplication: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -322,6 +505,7 @@ struct LauncherView: View {
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
+        case .forceQuitApplication: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -333,7 +517,25 @@ struct LauncherView: View {
 
     private func focusSearch() {
         guard !isOutputMode else { return }
-        DispatchQueue.main.async { searchFocused = true }
+        DispatchQueue.main.async {
+            if viewModel.mode == .timezoneConverter {
+                timezoneFocused = true
+            } else {
+                searchFocused = true
+            }
+        }
+    }
+
+    private func isAIOutput(_ title: String) -> Bool {
+        let clean = title.lowercased()
+        return clean.contains("writing") || clean.contains("grammar") || clean.contains("summary") || clean.contains("qwen")
+    }
+
+    private func activityStep(for message: String) -> Int {
+        let clean = message.lowercased()
+        if clean.contains("review") || clean.contains("format") || clean.contains("final") { return 2 }
+        if clean.contains("correct") || clean.contains("qwen") || clean.contains("model") || clean.contains("analy") { return 1 }
+        return 0
     }
 }
 
@@ -369,7 +571,8 @@ private struct WritingIssueRow: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9))
+        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08)))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(issue.kind.rawValue): \(issue.original). \(issue.message)")
     }
@@ -381,63 +584,73 @@ private struct ResultRow: View {
     let actionLabel: String?
 
     var body: some View {
-        HStack(spacing: 13) {
-            LauncherIconView(icon: item.icon)
-                .frame(width: 32, height: 32)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(item.title)
-                    .font(.system(size: 14.5, weight: .medium))
-                    .lineLimit(1)
-                if !item.subtitle.isEmpty {
-                    Text(item.subtitle)
-                        .font(.system(size: 11.5))
-                        .foregroundStyle(.secondary)
+        HStack(spacing: 0) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(selected ? RayColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .top, endPoint: .bottom))
+                .frame(width: 3, height: 30)
+                .padding(.trailing, 10)
+            HStack(spacing: 13) {
+                LauncherIconView(icon: item.icon, selected: selected)
+                    .frame(width: 34, height: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(item.title)
+                        .font(.system(size: 14.5, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
-                        .truncationMode(.middle)
+                    if !item.subtitle.isEmpty {
+                        Text(item.subtitle)
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(selected ? Color.primary.opacity(0.62) : .secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
-            }
-            Spacer(minLength: 10)
-            if let accessory = item.accessory {
-                Text(accessory)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
-            if let shortcut = item.shortcut {
-                Text(shortcut)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
-            }
-            if selected, let actionLabel {
-                HStack(spacing: 4) {
-                    Text("↩")
-                    Text(actionLabel)
+                Spacer(minLength: 10)
+                if let accessory = item.accessory {
+                    Text(accessory)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundStyle(.secondary)
                 }
-                .font(.system(size: 10.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(Color.accentColor)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                if let shortcut = item.shortcut {
+                    Text(shortcut)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 6))
+                }
+                if selected, let actionLabel {
+                    HStack(spacing: 4) {
+                        Text("↩")
+                        Text(actionLabel)
+                    }
+                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(RayColors.heroGradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .shadow(color: RayColors.indigo.opacity(0.2), radius: 5, y: 2)
+                }
             }
         }
-        .padding(.horizontal, 11)
-        .frame(height: 51)
+        .padding(.horizontal, 10)
+        .frame(height: 54)
         .background(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(selected ? Color.accentColor.opacity(0.18) : Color.clear)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(selected ? RayColors.selectionBackground : Color.clear)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .stroke(selected ? Color.accentColor.opacity(0.35) : Color.clear, lineWidth: 1)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(selected ? RayColors.indigo.opacity(0.3) : Color.clear, lineWidth: 1)
         )
-        .animation(.easeOut(duration: 0.1), value: selected)
+        .shadow(color: selected ? RayColors.indigo.opacity(0.09) : .clear, radius: 10, y: 4)
+        .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.86), value: selected)
     }
 }
 
 private struct LauncherIconView: View {
     let icon: LauncherIcon
+    let selected: Bool
 
     var body: some View {
         Group {
@@ -447,8 +660,9 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(5)
+                    .foregroundStyle(selected ? RayColors.indigo : RayColors.cyan)
+                    .padding(7)
+                    .background((selected ? RayColors.indigo : RayColors.cyan).opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url))
                     .resizable()
@@ -457,7 +671,7 @@ private struct LauncherIconView: View {
                 Text(text).font(.system(size: 23))
             }
         }
-        .frame(width: 32, height: 32)
+        .frame(width: 34, height: 34)
     }
 }
 
@@ -484,8 +698,125 @@ private struct KeyHint: View {
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 4))
+                .background(Color.primary.opacity(0.085), in: RoundedRectangle(cornerRadius: 5))
             Text(label).font(.system(size: 10.5)).foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct StatusCapsule: View {
+    let text: String
+    let color: Color
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+            .tracking(0.6)
+            .foregroundStyle(color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(color.opacity(0.11), in: Capsule())
+            .overlay(Capsule().stroke(color.opacity(0.2), lineWidth: 1))
+    }
+}
+
+private struct TaskOrbitView: View {
+    let color: Color
+    @State private var spinning = false
+    @State private var pulsing = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(color.opacity(pulsing ? 0.08 : 0.16))
+                .scaleEffect(pulsing ? 1.14 : 0.88)
+            Circle()
+                .trim(from: 0.08, to: 0.72)
+                .stroke(
+                    AngularGradient(colors: [color.opacity(0.05), color, RayColors.cyan], center: .center),
+                    style: StrokeStyle(lineWidth: 3, lineCap: .round)
+                )
+                .rotationEffect(.degrees(spinning ? 360 : 0))
+                .padding(5)
+            Image(systemName: "sparkles")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(color)
+        }
+        .onAppear {
+            withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) { spinning = true }
+            withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) { pulsing = true }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct ActivityTimeline: View {
+    let activeStep: Int
+    let isAI: Bool
+
+    private var labels: [String] {
+        isAI ? ["Capture", "AI correction", "Review"] : ["Prepare", "Run", "Finish"]
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ForEach(Array(labels.enumerated()), id: \.offset) { index, label in
+                HStack(spacing: 7) {
+                    ZStack {
+                        Circle()
+                            .fill(index <= activeStep ? RayColors.indigo : Color.primary.opacity(0.09))
+                            .frame(width: 18, height: 18)
+                        if index < activeStep {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white)
+                        } else {
+                            Circle()
+                                .fill(index == activeStep ? Color.white : Color.secondary.opacity(0.45))
+                                .frame(width: 5, height: 5)
+                        }
+                    }
+                    Text(label)
+                        .font(.system(size: 11, weight: index == activeStep ? .semibold : .medium))
+                        .foregroundStyle(index <= activeStep ? Color.primary : .secondary)
+                }
+                if index < labels.count - 1 {
+                    Rectangle()
+                        .fill(index < activeStep ? RayColors.indigo.opacity(0.6) : Color.primary.opacity(0.08))
+                        .frame(height: 1)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Current step: \(labels[activeStep])")
+    }
+}
+
+private enum RayColors {
+    static let indigo = Color(red: 0.33, green: 0.32, blue: 0.95)
+    static let violet = Color(red: 0.64, green: 0.31, blue: 0.95)
+    static let cyan = Color(red: 0.04, green: 0.67, blue: 0.82)
+    static let heroGradient = LinearGradient(
+        colors: [indigo, violet, cyan],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+    static let cardBackground = Color(nsColor: .controlBackgroundColor).opacity(0.78)
+    static let selectionBackground = indigo.opacity(0.13)
+}
+
+private extension LauncherMode {
+    var visualIdentity: String {
+        switch self {
+        case .root: return "root"
+        case .files: return "files"
+        case .vscodePicker: return "vscode"
+        case .timezoneConverter: return "timezone"
+        case .forceQuitPicker: return "force-quit"
+        case .clipboard: return "clipboard"
+        case .writingReview: return "writing-review"
+        case .output: return "output"
         }
     }
 }

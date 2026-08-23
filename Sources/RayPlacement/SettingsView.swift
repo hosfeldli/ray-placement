@@ -8,31 +8,158 @@ private extension LoadedExtensionCommand {
     var settingsIdentifier: String { "\(extensionID).\(command.id)" }
 }
 
+private enum SettingsSection: String, CaseIterable, Identifiable {
+    case general, clipboard, writing, performance, extensions, about
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var symbol: String {
+        switch self {
+        case .general: return "gearshape.fill"
+        case .clipboard: return "clipboard.fill"
+        case .writing: return "wand.and.stars"
+        case .performance: return "gauge.with.dots.needle.67percent"
+        case .extensions: return "puzzlepiece.extension.fill"
+        case .about: return "info.circle.fill"
+        }
+    }
+    var subtitle: String {
+        switch self {
+        case .general: return "Launcher, shortcuts, and macOS access"
+        case .clipboard: return "Private, on-device clipboard history"
+        case .writing: return "Local AI correction behavior"
+        case .performance: return "Control speed and system impact"
+        case .extensions: return "Commands, integrations, and hotkeys"
+        case .about: return "Version, updates, and project information"
+        }
+    }
+}
+
+private enum SettingsColors {
+    static let indigo = Color(red: 0.33, green: 0.32, blue: 0.95)
+    static let violet = Color(red: 0.64, green: 0.31, blue: 0.95)
+    static let cyan = Color(red: 0.04, green: 0.67, blue: 0.82)
+    static let heroGradient = LinearGradient(
+        colors: [indigo, violet, cyan],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+}
+
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var updateService: UpdateService
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
+    @State private var selectedSection: SettingsSection = .general
     let reloadExtensions: () -> Void
 
     var body: some View {
-        TabView {
-            generalTab
-                .tabItem { Label("General", systemImage: "gearshape") }
-            clipboardTab
-                .tabItem { Label("Clipboard", systemImage: "clipboard") }
-            writingTab
-                .tabItem { Label("Writing", systemImage: "text.badge.checkmark") }
-            performanceTab
-                .tabItem { Label("Performance", systemImage: "gauge.medium") }
-            extensionsTab
-                .tabItem { Label("Extensions", systemImage: "puzzlepiece.extension") }
-            aboutTab
-                .tabItem { Label("About", systemImage: "info.circle") }
+        HStack(spacing: 0) {
+            settingsSidebar
+            Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1)
+            VStack(spacing: 0) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(selectedSection.title)
+                            .font(.system(size: 22, weight: .bold, design: .rounded))
+                        Text(selectedSection.subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Text("LOCAL · PRIVATE")
+                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                        .tracking(0.8)
+                        .foregroundStyle(SettingsColors.cyan)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(SettingsColors.cyan.opacity(0.1), in: Capsule())
+                }
+                .padding(.horizontal, 22)
+                .frame(height: 72)
+                Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
+                selectedContent
+                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
         }
-        .padding(20)
-        .frame(width: 720, height: 560)
+        .frame(width: 820, height: 590)
+        .background(
+            ZStack {
+                Color(nsColor: .windowBackgroundColor)
+                LinearGradient(
+                    colors: [SettingsColors.indigo.opacity(0.07), .clear, SettingsColors.cyan.opacity(0.035)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        )
+        .animation(.easeOut(duration: 0.16), value: selectedSection)
+    }
+
+    private var settingsSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 11) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .fill(SettingsColors.heroGradient)
+                    Image(systemName: "sparkle.magnifyingglass")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .frame(width: 38, height: 38)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("RayPlacement").font(.system(size: 14, weight: .bold))
+                    Text("Settings").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 18)
+            .padding(.bottom, 20)
+
+            ForEach(SettingsSection.allCases) { section in
+                Button { selectedSection = section } label: {
+                    HStack(spacing: 11) {
+                        Image(systemName: section.symbol)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(selectedSection == section ? Color.white : SettingsColors.indigo)
+                            .frame(width: 23)
+                        Text(section.title)
+                            .font(.system(size: 13, weight: selectedSection == section ? .semibold : .medium))
+                        Spacer()
+                    }
+                    .foregroundStyle(selectedSection == section ? Color.white : .primary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 38)
+                    .background(selectedSection == section ? SettingsColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .shadow(color: selectedSection == section ? SettingsColors.indigo.opacity(0.18) : .clear, radius: 7, y: 3)
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 2)
+                .accessibilityValue(selectedSection == section ? "Selected" : "")
+            }
+            Spacer()
+            Text("Fast by design\nPrivate by default")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(.tertiary)
+                .padding(16)
+        }
+        .frame(width: 184)
+        .background(Color.black.opacity(0.025))
+    }
+
+    @ViewBuilder
+    private var selectedContent: some View {
+        switch selectedSection {
+        case .general: generalTab
+        case .clipboard: clipboardTab
+        case .writing: writingTab
+        case .performance: performanceTab
+        case .extensions: extensionsTab
+        case .about: aboutTab
+        }
     }
 
     private var performanceTab: some View {
@@ -373,12 +500,30 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
+            if updateService.isInstalling {
+                VStack(spacing: 7) {
+                    ProgressView(value: updateService.installationProgress)
+                        .tint(SettingsColors.indigo)
+                    Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: 420)
+            }
             HStack {
                 Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
-                    .disabled(updateService.isBusy)
+                    .disabled(updateService.isBusy || updateService.isInstalling)
                 Button("View on GitHub") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
             }
-            if updateService.isBusy { ProgressView().controlSize(.small) }
+            if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }
+            Text("How updates work: RayPlacement downloads a small source kit, verifies GitHub’s SHA-256 digest, reuses your existing Qwen model, and builds with this Mac’s stable signing identity. The app stays open during the build and closes only for the final verified replacement before reopening automatically.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 470)
+            Text("Detailed build log: ~/Library/Application Support/RayPlacement/Updates/update.log")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -595,7 +740,7 @@ final class SettingsWindowController: NSWindowController {
         self.settingsStore = settings
         let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

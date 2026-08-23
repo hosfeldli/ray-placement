@@ -73,6 +73,43 @@ import Testing
     #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
 }
 
+@Test func productivityToolsManifestDecodes() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/productivity-tools/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.id == "local.productivity-tools")
+    #expect(manifest.commands.map(\.action.type) == [.convertTimezones, .forceQuitApplications, .forceQuitAllApplications])
+    #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
+}
+
+@Test func timezoneConversionRespectsDaylightSavingTime() throws {
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(secondsFromGMT: 0)!
+    let reference = utc.date(from: DateComponents(year: 2026, month: 7, day: 1, hour: 12))!
+    let result = try #require(TimezoneConverter.convert(
+        "9:30 AM",
+        from: "America/New_York",
+        to: "Europe/London",
+        now: reference
+    ))
+    #expect(result.sourceTime == "9:30 AM")
+    #expect(result.destinationTime == "2:30 PM")
+    #expect(result.destinationZone == "GMT+1")
+}
+
+@Test func timezoneConversionHandlesDateRollover() throws {
+    let result = try #require(TimezoneConverter.convert(
+        "2026-01-02 09:00",
+        from: "Asia/Tokyo",
+        to: "America/Los_Angeles"
+    ))
+    #expect(result.destinationTime == "4:00 PM")
+    #expect(result.destinationDate == "Thursday, Jan 1")
+}
+
 @Test func markdownNotesParseRichBlocks() {
     let markdown = """
     # Project plan

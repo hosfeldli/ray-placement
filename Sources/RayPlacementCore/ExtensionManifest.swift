@@ -49,6 +49,9 @@ public struct ExtensionAction: Codable, Sendable {
         case pastePlainText
         case checkWriting
         case openInVSCode
+        case convertTimezones
+        case forceQuitApplications
+        case forceQuitAllApplications
     }
 
     public var type: ActionType

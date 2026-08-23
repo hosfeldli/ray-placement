@@ -8,6 +8,7 @@ import ServiceManagement
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let updateService = UpdateService()
+    private lazy var updateProgressWindow = UpdateProgressWindowController(service: updateService)
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -282,15 +283,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateService.onReleaseAvailable = { [weak self] release in
             self?.presentUpdateConfirmation(release)
         }
+        updateService.onInstallStarted = { [weak self] in
+            self?.updateProgressWindow.present()
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             if let result = self.updateService.consumePreviousUpdateResult() {
-                let alert = NSAlert()
-                alert.alertStyle = result.succeeded ? .informational : .warning
-                alert.messageText = result.succeeded ? "RayPlacement Updated" : "RayPlacement Update Failed"
-                alert.informativeText = result.message
-                alert.addButton(withTitle: "OK")
-                alert.runModal()
+                self.updateService.showCompletion(succeeded: result.succeeded, message: result.message)
+                self.updateProgressWindow.present()
             } else {
                 self.updateService.checkForUpdates(manual: false)
             }

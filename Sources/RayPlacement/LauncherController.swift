@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import QuartzCore
 import RayPlacementCore
 import RayPlacementWriting
 import SwiftUI
@@ -36,7 +37,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
-        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 740, height: 510))
+        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 540))
         self.updateService = updateService
         super.init()
 
@@ -134,6 +135,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .replaceSelectedText(let text):
             replaceSelectedText(text)
 
+        case .forceQuitApplication(let processIdentifier, let name):
+            confirmForceQuit(processIdentifier: processIdentifier, name: name)
+
         case .enterMode(let mode):
             viewModel.enter(mode)
 
@@ -165,14 +169,24 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func presentPanel() {
         let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
+        var finalOrigin = panel.frame.origin
         if let visibleFrame = targetScreen?.visibleFrame {
             let size = panel.frame.size
             let x = visibleFrame.midX - size.width / 2
             let topInset = max(64, visibleFrame.height * 0.12)
             let y = max(visibleFrame.minY + 24, visibleFrame.maxY - size.height - topInset)
-            panel.setFrameOrigin(NSPoint(x: x, y: y))
+            finalOrigin = NSPoint(x: x, y: y)
         }
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        panel.alphaValue = 0
+        panel.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y + (reduceMotion ? 0 : 8)))
         panel.makeKeyAndOrderFront(nil)
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.01 : 0.16
+            context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+            panel.animator().setFrameOrigin(finalOrigin)
+        }
     }
 
     private func rememberFrontmostApplication(preferred: NSRunningApplication? = nil) {
@@ -300,6 +314,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 } else if output == "__OPEN_IN_VSCODE__" {
                     self.viewModel.enter(.vscodePicker)
                     if !self.panel.isVisible { self.presentPanel() }
+                } else if output == "__CONVERT_TIMEZONES__" {
+                    self.viewModel.enter(.timezoneConverter)
+                    if !self.panel.isVisible { self.presentPanel() }
+                } else if output == "__FORCE_QUIT_APPLICATIONS__" {
+                    self.viewModel.enter(.forceQuitPicker)
+                    if !self.panel.isVisible { self.presentPanel() }
+                } else if output == "__FORCE_QUIT_ALL_APPLICATIONS__" {
+                    self.confirmForceQuitAllApplications()
                 } else if let output {
                     self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                     if !self.panel.isVisible { self.presentPanel() }
@@ -573,6 +595,80 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if let error {
                 DispatchQueue.main.async { self?.presentError(title: title, error: error) }
             }
+        }
+    }
+
+    private func confirmForceQuit(processIdentifier: Int32, name: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Force Quit \(name)?"
+        alert.informativeText = "The app will close immediately. Any unsaved work may be lost."
+        alert.addButton(withTitle: "Force Quit")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard let application = NSRunningApplication(processIdentifier: processIdentifier),
+              !application.isTerminated else {
+            presentError(title: "Force Quit", message: "\(name) is no longer running.")
+            return
+        }
+        if application.forceTerminate() {
+            hide()
+            toast.show("Force quit \(name)")
+        } else {
+            presentError(title: "Force Quit", message: "macOS did not allow \(name) to be force quit.")
+        }
+    }
+
+    private func confirmForceQuitAllApplications() {
+        let currentBundleIdentifier = Bundle.main.bundleIdentifier
+        let applications = NSWorkspace.shared.runningApplications
+            .filter {
+                !$0.isTerminated
+                    && $0.activationPolicy == .regular
+                    && $0.bundleIdentifier != currentBundleIdentifier
+                    && $0.localizedName != nil
+            }
+            .sorted { ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending }
+
+        guard !applications.isEmpty else {
+            toast.show("No other applications are running")
+            return
+        }
+
+        let names = applications.compactMap(\.localizedName)
+        let preview = names.prefix(8).joined(separator: ", ")
+        let remaining = max(0, names.count - 8)
+        let list = remaining == 0 ? preview : "\(preview), and \(remaining) more"
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.alertStyle = .critical
+        alert.messageText = "Force Quit All \(applications.count) Applications?"
+        alert.informativeText = "RayPlacement will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)"
+        alert.addButton(withTitle: "Force Quit All")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            if !panel.isVisible { presentPanel() }
+            return
+        }
+
+        var closed = 0
+        var failed: [String] = []
+        for application in applications where application.bundleIdentifier != currentBundleIdentifier {
+            if application.forceTerminate() {
+                closed += 1
+            } else {
+                failed.append(application.localizedName ?? "Unknown application")
+            }
+        }
+        hide()
+        if failed.isEmpty {
+            toast.show("Force quit \(closed) applications — RayPlacement stayed open")
+        } else {
+            presentError(
+                title: "Force Quit All",
+                message: "Closed \(closed) applications. macOS did not allow: \(failed.joined(separator: ", "))."
+            )
         }
     }
 

@@ -67,6 +67,15 @@ final class ExtensionExecutor {
         case .openInVSCode:
             completion(.success("__OPEN_IN_VSCODE__"))
 
+        case .convertTimezones:
+            completion(.success("__CONVERT_TIMEZONES__"))
+
+        case .forceQuitApplications:
+            completion(.success("__FORCE_QUIT_APPLICATIONS__"))
+
+        case .forceQuitAllApplications:
+            completion(.success("__FORCE_QUIT_ALL_APPLICATIONS__"))
+
         case .shell:
             run(action, relativeTo: loaded.directory, completion: completion)
         }
