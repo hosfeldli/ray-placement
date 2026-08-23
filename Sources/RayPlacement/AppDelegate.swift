@@ -35,13 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkeys()
         registerExtensionHotkeys()
         installObservers()
-        configureUpdates()
+        let isShowingUpdateResult = configureUpdates()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
         let launchedAsLoginItem = launchEvent?
             .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))?
             .booleanValue ?? false
-        if !launchedAsLoginItem {
+        if !launchedAsLoginItem, !isShowingUpdateResult {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 self?.launcher.show()
             }
@@ -55,7 +55,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        launcher.show()
+        if updateService.isInstalling || updateService.completionResult != nil {
+            updateProgressWindow.present()
+        } else {
+            launcher.show()
+        }
         return true
     }
 
@@ -279,22 +283,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.mainMenu = mainMenu
     }
 
-    private func configureUpdates() {
+    private func configureUpdates() -> Bool {
         updateService.onReleaseAvailable = { [weak self] release in
             self?.presentUpdateConfirmation(release)
         }
         updateService.onInstallStarted = { [weak self] in
             self?.updateProgressWindow.present()
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self else { return }
-            if let result = self.updateService.consumePreviousUpdateResult() {
-                self.updateService.showCompletion(succeeded: result.succeeded, message: result.message)
-                self.updateProgressWindow.present()
-            } else {
-                self.updateService.checkForUpdates(manual: false)
+        if let result = updateService.consumePreviousUpdateResult() {
+            updateService.showCompletion(succeeded: result.succeeded, message: result.message)
+            DispatchQueue.main.async { [weak self] in
+                self?.updateProgressWindow.present()
             }
+            return true
         }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            self?.updateService.checkForUpdates(manual: false)
+        }
+        return false
     }
 
     private func presentUpdateConfirmation(_ release: UpdateService.Release) {
