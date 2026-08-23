@@ -20,6 +20,8 @@ USER_APPLICATIONS_DIRECTORY="$USER_HOME_DIRECTORY/Applications"
 INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/RayPlacement.app"
 BUILT_APP="$SOURCE_ROOT/build/RayPlacement.app"
 EXTENSIONS_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Extensions"
+UPDATES_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Updates"
+EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/RayPlacementUpdate"
 BACKUP_APP="$USER_APPLICATIONS_DIRECTORY/.RayPlacement.previous-update.$$"
 
 write_atomic_lines() {
@@ -107,4 +109,11 @@ fi
 rm -rf "$BACKUP_APP"
 write_result success "RayPlacement $VERSION was downloaded, verified, locally built, signed, and installed successfully."
 write_progress success 1 "RayPlacement $VERSION is ready."
+# A successful local build temporarily contains another full copy of Qwen.
+# Remove only the updater-owned, exactly validated working directory after the
+# signed app and extensions are safely installed. Failed builds are retained so
+# their log and files remain available for troubleshooting.
+if [[ "$SOURCE_ROOT" == "$EXPECTED_SOURCE_ROOT" ]]; then
+    rm -rf "$UPDATES_DIRECTORY/pending"
+fi
 open "$INSTALLED_APP"
