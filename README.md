@@ -110,7 +110,7 @@ The packaged app is written to `build/RayPlacement.app`. Without local-signing s
 
 RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. The release contains a small model-free `RayPlacement-Update.zip`; RayPlacement requires GitHub's SHA-256 asset digest, validates the version and archive structure, reuses the already-installed local models, rebuilds with the existing per-Mac signing identity, verifies the app, installs it, and reports success after relaunch.
 
-Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.1` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
+Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.7.2` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The full Desktop installer remains the recovery path if a local model or build tool is missing.
 
 ## Project layout
 

@@ -28,8 +28,8 @@ MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDe
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.7.1" ]]
-[[ "$BUILD_NUMBER" == "10" ]]
+[[ "$VERSION" == "1.7.2" ]]
+[[ "$BUILD_NUMBER" == "11" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then

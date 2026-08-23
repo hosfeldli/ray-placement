@@ -22,8 +22,8 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
 
 mkdir -p "$MODULE_CACHE_DIRECTORY"
 "$QWEN_ASSEMBLER"
-swift build --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
-BIN_DIRECTORY="$(swift build --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
+swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
+BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
 
 if [[ -d "$APP_DIRECTORY" ]]; then
     rm -rf "$APP_DIRECTORY"
