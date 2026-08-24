@@ -3,6 +3,7 @@ import SwiftUI
 
 struct InlineMarkdownEditor: NSViewRepresentable {
     @Binding var text: String
+    var compact = false
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text)
@@ -28,7 +29,9 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
-        textView.textContainerInset = NSSize(width: 28, height: 24)
+        textView.textContainerInset = compact
+            ? NSSize(width: 16, height: 18)
+            : NSSize(width: 32, height: 26)
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         textView.isVerticallyResizable = true
@@ -47,6 +50,9 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
         context.coordinator.text = $text
+        textView.textContainerInset = compact
+            ? NSSize(width: 16, height: 18)
+            : NSSize(width: 32, height: 26)
         if textView.string != text {
             let selection = textView.selectedRange()
             context.coordinator.isApplyingExternalUpdate = true

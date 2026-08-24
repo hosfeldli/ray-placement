@@ -14,6 +14,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var observers: [NSObjectProtocol] = []
     private var registeredActivationShortcut: ShortcutSpec?
     private var registeredNotesShortcut: ShortcutSpec?
+    private var registeredQuickNoteShortcut: ShortcutSpec?
     private var registeredDictationShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -73,6 +74,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
@@ -118,6 +120,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore: SettingsStore.shared.restoreDictationShortcut
         ) { [weak self] in
             self?.launcher.showNotesAndToggleDictation()
+        }
+        registerActionHotkey(
+            identifier: "builtin.quick-note",
+            displayName: "Quick Note",
+            rawShortcut: SettingsStore.shared.quickNoteShortcut,
+            previous: &registeredQuickNoteShortcut,
+            restore: SettingsStore.shared.restoreQuickNoteShortcut
+        ) { [weak self] in
+            self?.launcher.showQuickNote()
         }
     }
 
@@ -221,6 +232,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         menu.addItem(notes)
+        let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
+        quickNote.keyEquivalentModifierMask = [.command, .option]
+        quickNote.target = self
+        menu.addItem(quickNote)
         let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         menu.addItem(dictate)
@@ -250,6 +265,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         appMenu.addItem(notes)
+        let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
+        quickNote.keyEquivalentModifierMask = [.command, .option]
+        quickNote.target = self
+        appMenu.addItem(quickNote)
         let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         appMenu.addItem(dictate)

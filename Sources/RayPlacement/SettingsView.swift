@@ -67,30 +67,18 @@ struct SettingsView: View {
             Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1)
             VStack(spacing: 0) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(selectedSection.title)
-                            .font(.system(size: 22, weight: .bold, design: .rounded))
-                        Text(selectedSection.subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(selectedSection.title)
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                     Spacer()
-                    Text("LOCAL · PRIVATE")
-                        .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                        .tracking(0.8)
-                        .foregroundStyle(SettingsColors.cyan)
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 5)
-                        .background(SettingsColors.cyan.opacity(0.1), in: Capsule())
                 }
-                .padding(.horizontal, 22)
-                .frame(height: 72)
+                .padding(.horizontal, 20)
+                .frame(height: 56)
                 Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
                 selectedContent
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
         }
-        .frame(width: 820, height: 590)
+        .frame(width: 790, height: 560)
         .background(
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
@@ -124,23 +112,22 @@ struct SettingsView: View {
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 11) {
+            HStack(spacing: 9) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
                         .fill(SettingsColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
                         .font(.system(size: 17, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 38, height: 38)
+                .frame(width: 32, height: 32)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("RayPlacement").font(.system(size: 14, weight: .bold))
-                    Text("Settings").font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 18)
-            .padding(.bottom, 20)
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+            .padding(.bottom, 14)
 
             ForEach(SettingsSection.allCases) { section in
                 Button { selectedSection = section } label: {
@@ -155,20 +142,17 @@ struct SettingsView: View {
                     }
                     .foregroundStyle(selectedSection == section ? Color.white : .primary)
                     .padding(.horizontal, 12)
-                    .frame(height: 38)
-                    .background(selectedSection == section ? SettingsColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(height: 34)
+                    .background(selectedSection == section ? SettingsColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .shadow(color: selectedSection == section ? SettingsColors.indigo.opacity(0.18) : .clear, radius: 7, y: 3)
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 2)
                 .accessibilityValue(selectedSection == section ? "Selected" : "")
+                .help(section.subtitle)
             }
             Spacer()
-            Text("Fast by design\nPrivate by default")
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.tertiary)
-                .padding(16)
         }
         .frame(width: 184)
         .background(Color.black.opacity(0.025))
@@ -193,9 +177,6 @@ struct SettingsView: View {
                 Toggle(isOn: $settings.dynamicPerformance) {
                     Label("Beta Dynamic Performance", systemImage: "gauge.with.dots.needle.67percent")
                 }
-                Text("When enabled, each slider becomes a maximum. RayPlacement lowers active work when Low Power Mode is on or the Mac is getting warm, then raises it again when conditions recover.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Label(settings.dynamicPerformanceDescription, systemImage: settings.dynamicPerformance ? "waveform.path.ecg" : "slider.horizontal.3")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(settings.dynamicPerformance ? Color.accentColor : .secondary)
@@ -211,14 +192,8 @@ struct SettingsView: View {
                     "Active Qwen budget",
                     value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeWritingPerformance.timeoutDescription(settings.runtimeWritingPerformance.writingTimeout))"
                 )
-                Text("Models load only for a requested writing check or note summary and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Memory follows the selected task model (about 639 MB to 2.5 GB on disk). It is loaded only while work is running and released when the task finishes.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 if settings.writingPerformance == .unbounded {
-                    Label("Unbounded uses every CPU core and removes the task timeout. The model still exits as soon as the requested work is complete.", systemImage: "bolt.trianglebadge.exclamationmark.fill")
+                    Label("Uses every CPU core with no timeout", systemImage: "bolt.trianglebadge.exclamationmark.fill")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.orange)
                 }
@@ -234,9 +209,6 @@ struct SettingsView: View {
                     "Work limit",
                     value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; \(settings.runtimeDictationPerformance.timeoutDescription(settings.runtimeDictationPerformance.dictationTranscriptionTimeout)) per segment"
                 )
-                Text("Dictation never listens in the background. After Stop, long meetings are processed sequentially in small on-device segments so memory stays bounded. High allows a full 60-minute meeting.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("AI-capable extensions") {
@@ -249,9 +221,15 @@ struct SettingsView: View {
                     "Process budget",
                     value: "\(settings.runtimeExtensionPerformance.threadLimit) cooperative thread\(settings.runtimeExtensionPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeExtensionPerformance.timeoutDescription(settings.runtimeExtensionPerformance.extensionTimeout))"
                 )
-                Text("RayPlacement enforces process priority and timeouts and supplies common AI thread-limit environment variables. Third-party executables can ignore cooperative thread variables, so only install extensions you trust.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                DisclosureGroup("How limits work") {
+                    Text("Dynamic mode lowers each slider when Low Power Mode or heat requires it. Local models load only for a requested task and exit afterward. Extension limits are cooperative, so install only code you trust.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 4)
+                }
             }
         }
         .formStyle(.grouped)
@@ -297,15 +275,6 @@ struct SettingsView: View {
                 modelPicker("Grammar correction", selection: $settings.writingModel)
                 modelPicker("Note summaries", selection: $settings.summaryModel)
                 modelPicker("Formatter proposals", selection: $settings.formatterModel)
-                Label("Every task runs directly through the selected local AI model.", systemImage: "wand.and.stars")
-                    .font(.callout.weight(.medium))
-                    .foregroundStyle(Color.accentColor)
-                Label("No rule-based or system spell checker runs before or after the model.", systemImage: "checkmark.shield.fill")
-                    .font(.caption)
-                    .foregroundStyle(.green)
-                Text("Models load only after you request work, follow the Writing limit in Performance, and exit when the task finishes. If an optional selection is removed, RayPlacement safely falls back to the bundled Balanced model.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
 
             Section("Local model library") {
@@ -316,9 +285,6 @@ struct SettingsView: View {
                     ProgressView(value: modelDownloads.progress)
                 }
                 Text(modelDownloads.status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Optional models come from the official Qwen repositories over HTTPS and are SHA-256 verified before installation. They remain local after download.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -343,9 +309,6 @@ struct SettingsView: View {
                         settings.resetWritingInstructions()
                     }
                 }
-                Text("Example: Keep “RayPlacement,” client surnames, and medical abbreviations exactly as written. Prefer US English and concise sentences.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -468,22 +431,18 @@ struct SettingsView: View {
                     ShortcutRecorder(shortcut: $settings.activationShortcut)
                         .frame(width: 145, height: 28)
                 }
-                Text("Click the shortcut, then press any modifier and key. The default is ⌥Space.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 LabeledContent("Open Notes") {
                     ShortcutRecorder(shortcut: $settings.notesShortcut, label: "Open Notes shortcut")
+                        .frame(width: 145, height: 28)
+                }
+                LabeledContent("Quick Note sidebar") {
+                    ShortcutRecorder(shortcut: $settings.quickNoteShortcut, label: "Quick Note sidebar shortcut")
                         .frame(width: 145, height: 28)
                 }
                 LabeledContent("Start or stop note dictation") {
                     ShortcutRecorder(shortcut: $settings.dictationShortcut, label: "Note dictation shortcut")
                         .frame(width: 145, height: 28)
                 }
-                Text("The dictation shortcut opens the most recently edited note and starts recording. Press it again to stop and begin on-device transcription.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 Toggle("Start RayPlacement when I log in", isOn: Binding(
                     get: { settings.launchAtLogin },
                     set: { settings.setLaunchAtLogin($0) }
@@ -514,19 +473,22 @@ struct SettingsView: View {
                     }
                 }
 
-                Text(Bundle.main.bundleURL.path)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(2)
+                DisclosureGroup("App identity") {
+                    Text(Bundle.main.bundleURL.path)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
             }
 
-            Section("Keyboard") {
-                LabeledContent("Navigate", value: "↑ / ↓ or Control-P / Control-N")
-                LabeledContent("Run", value: "Return")
-                LabeledContent("Back or close", value: "Escape")
-                LabeledContent("Settings", value: "⌘,")
-                LabeledContent("Visible result", value: "⌘1 … ⌘9")
+            Section {
+                DisclosureGroup("Keyboard reference") {
+                    LabeledContent("Navigate", value: "↑ / ↓")
+                    LabeledContent("Run", value: "Return")
+                    LabeledContent("Back", value: "Escape")
+                    LabeledContent("Visible result", value: "⌘1 … ⌘9")
+                }
             }
         }
         .formStyle(.grouped)
@@ -593,10 +555,6 @@ struct SettingsView: View {
             } label: {
                 Label("Add functionality", systemImage: "folder.badge.plus")
             }
-
-            Text("Drop in a JSON manifest for URL, file, copy, paste, writing, or executable-script commands. Record or clear a global shortcut for any loaded command below.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
 
             if !viewModel.extensionIssues.isEmpty {
                 GroupBox("Extension issues") {
@@ -673,14 +631,15 @@ struct SettingsView: View {
                 Button("View on GitHub") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
             }
             if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }
-            Text("How updates work: RayPlacement downloads a small source kit, verifies GitHub’s SHA-256 digest, reuses your existing Qwen model, and builds with this Mac’s stable signing identity. The app stays open during the build and closes only for the final verified replacement before reopening automatically.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 470)
-            Text("Detailed build log: ~/Library/Application Support/RayPlacement/Updates/update.log")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
+            DisclosureGroup("Update details") {
+                Text("Updates are downloaded from GitHub, verified, rebuilt locally with this Mac’s signing identity, and installed after confirmation.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("~/Library/Application Support/RayPlacement/Updates/update.log")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: 470)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -897,7 +856,7 @@ final class SettingsWindowController: NSWindowController {
         self.settingsStore = settings
         let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
+            contentRect: NSRect(x: 0, y: 0, width: 790, height: 560),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

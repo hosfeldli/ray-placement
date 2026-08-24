@@ -246,7 +246,7 @@ struct FormatterWorkspaceView: View {
     }
 
     private var header: some View {
-        VStack(spacing: 9) {
+        VStack(spacing: 7) {
             HStack(spacing: 9) {
                 Picker("Format", selection: $model.kind) {
                     ForEach(FormatterDocumentKind.allCases, id: \.self) { Text($0.title).tag($0) }
@@ -262,7 +262,7 @@ struct FormatterWorkspaceView: View {
                     }
                     .frame(width: 170)
                 }
-                Button { model.format() } label: { Label("Format & Validate", systemImage: "wand.and.stars") }
+                Button { model.format() } label: { Label("Format", systemImage: "wand.and.stars") }
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.return, modifiers: [.command])
                 Spacer()
@@ -281,7 +281,7 @@ struct FormatterWorkspaceView: View {
                     Button("Cancel", action: model.cancelProposal)
                 } else {
                     Button { model.proposeCorrections() } label: {
-                        Label("AI Propose Corrections", systemImage: "sparkles")
+                        Label("AI Fix", systemImage: "sparkles")
                     }
                     .disabled(model.result == nil)
                     .help("Ask the selected local Formatter model to propose a complete corrected document")
@@ -289,7 +289,7 @@ struct FormatterWorkspaceView: View {
             }
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.vertical, 8)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
@@ -297,9 +297,7 @@ struct FormatterWorkspaceView: View {
             HStack {
                 Text(title).font(.caption2.bold()).tracking(1.1).foregroundStyle(.secondary)
                 Spacer()
-                if editable {
-                    Text("Temporary · up to 1,000,000 characters").font(.caption2).foregroundStyle(.tertiary)
-                } else {
+                if !editable {
                     TextField("Search output", text: $model.searchQuery)
                         .textFieldStyle(.roundedBorder)
                         .frame(width: 150)

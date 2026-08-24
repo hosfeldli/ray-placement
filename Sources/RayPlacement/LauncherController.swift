@@ -37,7 +37,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
-        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 760, height: 540))
+        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500))
         self.updateService = updateService
         super.init()
 
@@ -85,6 +85,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func showNotes() {
         hide()
         notesWindow.present()
+    }
+
+    func showQuickNote() {
+        hide()
+        notesWindow.presentQuickNote()
     }
 
     func showNotesAndToggleDictation() {
@@ -734,6 +739,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openNotes:
             showNotes()
+
+        case .openQuickNote:
+            showQuickNote()
 
         case .toggleNoteDictation:
             showNotesAndToggleDictation()

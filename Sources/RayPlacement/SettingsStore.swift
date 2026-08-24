@@ -156,6 +156,7 @@ final class SettingsStore: ObservableObject {
     private enum Key {
         static let activationShortcut = "activationShortcut"
         static let notesShortcut = "notesShortcut"
+        static let quickNoteShortcut = "quickNoteShortcut"
         static let dictationShortcut = "dictationShortcut"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
@@ -191,6 +192,15 @@ final class SettingsStore: ObservableObject {
     @Published var notesShortcut: String {
         didSet {
             defaults.set(notesShortcut, forKey: Key.notesShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var quickNoteShortcut: String {
+        didSet {
+            defaults.set(quickNoteShortcut, forKey: Key.quickNoteShortcut)
             if !isRestoringActionShortcut {
                 NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
             }
@@ -275,6 +285,7 @@ final class SettingsStore: ObservableObject {
     private init() {
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
         notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
+        quickNoteShortcut = defaults.string(forKey: Key.quickNoteShortcut) ?? "command+option+n"
         dictationShortcut = defaults.string(forKey: Key.dictationShortcut) ?? "control+option+d"
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
@@ -390,6 +401,12 @@ final class SettingsStore: ObservableObject {
     func restoreNotesShortcut(_ shortcut: String) {
         isRestoringActionShortcut = true
         notesShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreQuickNoteShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        quickNoteShortcut = shortcut
         isRestoringActionShortcut = false
     }
 

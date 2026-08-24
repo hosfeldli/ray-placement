@@ -27,7 +27,7 @@ final class NotesStore: ObservableObject {
                 Notes are private, local, and written in Markdown.
 
                 - Use **bold**, *italic*, links, lists, and fenced code blocks.
-                - Pin important notes so they remain at the top.
+                - Pin active notes or favorite the ones you want to keep close.
                 - Search titles and content from the sidebar.
                 - Dictation records first and transcribes only after you stop.
 
@@ -134,6 +134,11 @@ final class NotesStore: ObservableObject {
         sortNotes()
     }
 
+    func toggleFavorite() {
+        updateSelected { note in note.isFavorite.toggle() }
+        sortNotes()
+    }
+
     func duplicateSelectedNote() {
         guard notes.count < Self.maximumNotes, var duplicate = selectedNote else { return }
         duplicate.id = UUID()
@@ -141,6 +146,7 @@ final class NotesStore: ObservableObject {
         duplicate.createdAt = Date()
         duplicate.modifiedAt = Date()
         duplicate.isPinned = false
+        duplicate.isFavorite = false
         notes.insert(duplicate, at: 0)
         selectedNoteID = duplicate.id
         scheduleSave()
@@ -186,6 +192,7 @@ final class NotesStore: ObservableObject {
     private func sortNotes() {
         notes.sort {
             if $0.isPinned != $1.isPinned { return $0.isPinned }
+            if $0.isFavorite != $1.isFavorite { return $0.isFavorite }
             return $0.modifiedAt > $1.modifiedAt
         }
     }

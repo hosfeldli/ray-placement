@@ -7,6 +7,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var createdAt: Date
     public var modifiedAt: Date
     public var isPinned: Bool
+    public var isFavorite: Bool
 
     public init(
         id: UUID = UUID(),
@@ -14,7 +15,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         content: String = "",
         createdAt: Date = Date(),
         modifiedAt: Date = Date(),
-        isPinned: Bool = false
+        isPinned: Bool = false,
+        isFavorite: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -22,6 +24,33 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         self.createdAt = createdAt
         self.modifiedAt = modifiedAt
         self.isPinned = isPinned
+        self.isFavorite = isFavorite
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        title = try container.decode(String.self, forKey: .title)
+        content = try container.decode(String.self, forKey: .content)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        modifiedAt = try container.decode(Date.self, forKey: .modifiedAt)
+        isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
+        isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(content, forKey: .content)
+        try container.encode(createdAt, forKey: .createdAt)
+        try container.encode(modifiedAt, forKey: .modifiedAt)
+        try container.encode(isPinned, forKey: .isPinned)
+        try container.encode(isFavorite, forKey: .isFavorite)
     }
 
     public var displayTitle: String {

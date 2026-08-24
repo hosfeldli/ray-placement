@@ -24,6 +24,27 @@ import Testing
     #expect(ShortcutSpec(string: "control+kc12:") == nil)
 }
 
+@Test func notesDockLayoutPinsToEitherVisibleScreenEdge() {
+    let screen = CGRect(x: 100, y: 40, width: 1_440, height: 860)
+    let left = NotesWindowLayout.dockedFrame(edge: .left, visibleFrame: screen, preferredWidth: 420)
+    let right = NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 420)
+
+    #expect(left == CGRect(x: 100, y: 40, width: 420, height: 860))
+    #expect(right == CGRect(x: 1_120, y: 40, width: 420, height: 860))
+}
+
+@Test func notesDockLayoutBoundsWidthAndWorkspaceFrame() {
+    let screen = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 100).width == 340)
+    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 900).width == 560)
+
+    let clamped = NotesWindowLayout.clampedWorkspaceFrame(
+        CGRect(x: -200, y: 600, width: 500, height: 900),
+        visibleFrame: screen
+    )
+    #expect(clamped == CGRect(x: 0, y: 0, width: 720, height: 800))
+}
+
 @Test func semanticVersionsCompareReleaseTags() {
     #expect(SemanticVersion("v1.7.0") == SemanticVersion("1.7"))
     #expect(SemanticVersion("1.6.9")! < SemanticVersion("1.7.0")!)
@@ -138,6 +159,36 @@ import Testing
     let note = MarkdownNote(title: "  ", content: "# Derived title\n\nBody")
     #expect(note.displayTitle == "Derived title")
     #expect(note.preview == "Derived title")
+}
+
+@Test func markdownNoteFavoritePersistsAndOldNotesRemainCompatible() throws {
+    struct LegacyNote: Encodable {
+        let id: UUID
+        let title: String
+        let content: String
+        let createdAt: Date
+        let modifiedAt: Date
+        let isPinned: Bool
+    }
+
+    let identifier = UUID()
+    let timestamp = Date(timeIntervalSinceReferenceDate: 123)
+    let legacy = LegacyNote(
+        id: identifier,
+        title: "Legacy",
+        content: "Body",
+        createdAt: timestamp,
+        modifiedAt: timestamp,
+        isPinned: true
+    )
+    let decoded = try JSONDecoder().decode(MarkdownNote.self, from: JSONEncoder().encode(legacy))
+    #expect(decoded.id == identifier)
+    #expect(decoded.isPinned)
+    #expect(!decoded.isFavorite)
+
+    let favorite = MarkdownNote(title: "Favorite", isFavorite: true)
+    let roundTrip = try JSONDecoder().decode(MarkdownNote.self, from: JSONEncoder().encode(favorite))
+    #expect(roundTrip.isFavorite)
 }
 
 @Test func meetingDictationPlanCoversOneHourWithBoundedSegments() {

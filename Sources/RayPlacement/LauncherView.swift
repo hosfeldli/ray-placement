@@ -29,10 +29,10 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: 760, height: 540)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(width: 720, height: 500)
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
                         colors: [Color.white.opacity(0.34), RayColors.indigo.opacity(0.25), Color.black.opacity(0.08)],
@@ -42,8 +42,8 @@ struct LauncherView: View {
                     lineWidth: 1
                 )
         )
-        .shadow(color: RayColors.indigo.opacity(0.16), radius: 34, y: 16)
-        .shadow(color: .black.opacity(0.28), radius: 24, y: 12)
+        .shadow(color: RayColors.indigo.opacity(0.14), radius: 28, y: 14)
+        .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
         .animation(.easeOut(duration: 0.16), value: viewModel.mode.visualIdentity)
         .onAppear { focusSearch() }
         .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }
@@ -59,7 +59,7 @@ struct LauncherView: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 34, height: 34)
+                .frame(width: 32, height: 32)
                 .shadow(color: RayColors.indigo.opacity(0.3), radius: 8, y: 3)
                     .accessibilityHidden(true)
             } else {
@@ -120,7 +120,7 @@ struct LauncherView: View {
             }
         }
         .padding(.horizontal, 18)
-        .frame(height: 72)
+        .frame(height: 62)
     }
 
     @ViewBuilder
@@ -171,7 +171,7 @@ struct LauncherView: View {
                     }
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.vertical, 7)
             }
             .onChange(of: viewModel.selectedIndex) { newIndex in
                 guard viewModel.results.indices.contains(newIndex) else { return }
@@ -245,7 +245,7 @@ struct LauncherView: View {
     }
 
     private var timezoneConverterView: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 14) {
             HStack(spacing: 0) {
                 timezoneCard(
                     title: "FROM",
@@ -278,9 +278,6 @@ struct LauncherView: View {
             }
 
             HStack {
-                Label("Understands “now,” 9:30 AM, 14:00, and dated times", systemImage: "sparkles")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button {
                     viewModel.copyTimezoneResult()
@@ -292,7 +289,7 @@ struct LauncherView: View {
                 .disabled(viewModel.timezoneConversion == nil)
             }
         }
-        .padding(22)
+        .padding(18)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
@@ -338,17 +335,17 @@ struct LauncherView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(18)
-        .frame(maxWidth: .infinity, minHeight: 188, alignment: .topLeading)
-        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 17, style: .continuous))
+        .padding(16)
+        .frame(maxWidth: .infinity, minHeight: 174, alignment: .topLeading)
+        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 17, style: .continuous)
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .stroke((isSource ? RayColors.indigo : RayColors.cyan).opacity(0.22), lineWidth: 1)
         )
     }
 
     private func writingReviewView(_ review: WritingReview) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle().fill((review.issues.isEmpty ? Color.green : RayColors.violet).opacity(0.14))
@@ -379,18 +376,6 @@ struct LauncherView: View {
                 .keyboardShortcut(.return, modifiers: [])
             }
 
-            Label(
-                review.hasSuggestedChanges
-                    ? "Review complete — press Return to replace the exact original selection"
-                    : "Review complete — no replacement is needed",
-                systemImage: review.hasSuggestedChanges ? "return" : "checkmark.circle"
-            )
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(review.hasSuggestedChanges ? RayColors.indigo : .green)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background((review.hasSuggestedChanges ? RayColors.indigo : .green).opacity(0.09), in: Capsule())
-
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(alignment: .top, spacing: 12) {
@@ -408,18 +393,6 @@ struct LauncherView: View {
                         )
                     }
 
-                    if review.hasSuggestedChanges {
-                        HStack(spacing: 8) {
-                            StatusCapsule(text: "LOCAL AI", color: RayColors.violet)
-                            Label("Complete-passage correction", systemImage: "text.badge.checkmark")
-                            Spacer()
-                            Text("The original capture is revalidated before replacement")
-                                .foregroundStyle(.secondary)
-                        }
-                        .font(.caption.weight(.medium))
-                        .padding(.horizontal, 4)
-                    }
-
                     if let issue = review.issues.first {
                         WritingIssueRow(issue: issue)
                     }
@@ -427,7 +400,7 @@ struct LauncherView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(20)
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -461,11 +434,7 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Text("RayPlacement")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(RayColors.indigo)
             if let title = viewModel.mode.title {
-                Text("/").foregroundStyle(.tertiary)
                 Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -484,7 +453,7 @@ struct LauncherView: View {
             }
         }
         .padding(.horizontal, 18)
-        .frame(height: 44)
+        .frame(height: 38)
         .background(Color.black.opacity(0.025))
     }
 
@@ -498,7 +467,7 @@ struct LauncherView: View {
     private var outputHeaderText: String {
         switch viewModel.mode {
         case .writingReview:
-            return "Review complete — Return replaces the original highlight"
+            return "Ready to replace"
         case .output(_, let text, let state):
             if case .running = state { return text }
             return state == .error ? "Action needs attention" : "Action completed"
@@ -633,7 +602,7 @@ private struct ResultRow: View {
                 .padding(.trailing, 10)
             HStack(spacing: 13) {
                 LauncherIconView(icon: item.icon, selected: selected)
-                    .frame(width: 34, height: 34)
+                .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(item.title)
                         .font(.system(size: 14.5, weight: selected ? .semibold : .medium))
@@ -676,7 +645,7 @@ private struct ResultRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 54)
+        .frame(height: 49)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(selected ? RayColors.selectionBackground : Color.clear)
@@ -713,7 +682,7 @@ private struct LauncherIconView: View {
                 Text(text).font(.system(size: 23))
             }
         }
-        .frame(width: 34, height: 34)
+        .frame(width: 30, height: 30)
     }
 }
 

@@ -272,7 +272,7 @@ final class LauncherViewModel: ObservableObject {
 
         guard !cleanQuery.isEmpty else {
             let priority = [
-                "builtin.search-files", "extension.local.productivity-tools.convert-timezones",
+                "builtin.quick-note", "builtin.search-files", "extension.local.productivity-tools.convert-timezones",
                 "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
                 "window.maximize", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
             ]
@@ -468,6 +468,7 @@ final class LauncherViewModel: ObservableObject {
         var items: [LauncherItem] = [
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
             LauncherItem(id: "builtin.notes", title: "RayPlacement Notes", subtitle: "Open the separate Markdown notes window", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString),
+            LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString),
             LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),

@@ -79,6 +79,7 @@ enum SystemAction {
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
+    case openQuickNote
     case toggleNoteDictation
     case openSettings
     case quit
