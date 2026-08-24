@@ -1,4 +1,5 @@
 import AppKit
+import RayPlacementCore
 import SwiftUI
 
 struct InlineMarkdownEditor: NSViewRepresentable {
@@ -253,6 +254,17 @@ final class MarkdownTextView: NSTextView {
         }
     }
 
+    override func paste(_ sender: Any?) {
+        let pasteboard = NSPasteboard.general
+        let plainText = pasteboard.string(forType: .string) ?? ""
+        let html = pasteboard.string(forType: .html)
+        guard let data = TabularDataParser.parse(text: plainText, html: html) else {
+            super.paste(sender)
+            return
+        }
+        insertTable(data)
+    }
+
     override func insertNewline(_ sender: Any?) {
         let source = string as NSString
         let selection = selectedRange()
@@ -325,6 +337,15 @@ final class MarkdownTextView: NSTextView {
     }
 
     func insertTable() {
+        insertTable(TabularData(rows: [
+            ["Column 1", "Column 2", "Column 3"],
+            ["", "", ""],
+            ["", "", ""]
+        ]))
+    }
+
+    private func insertTable(_ data: TabularData) {
+        guard data.columnCount > 1, let firstRow = data.rows.first else { return }
         let selection = selectedRange()
         let source = string as NSString
         let needsLeadingBreak = selection.location > 0
@@ -332,9 +353,11 @@ final class MarkdownTextView: NSTextView {
         let needsTrailingBreak = selection.location + selection.length < source.length
             && source.substring(with: NSRange(location: selection.location + selection.length, length: 1)) != "\n"
         let table = MarkdownTableData(
-            headers: ["Column 1", "Column 2", "Column 3"],
-            alignments: [.leading, .leading, .leading],
-            rows: [["", "", ""], ["", "", ""]]
+            headers: firstRow.enumerated().map { index, value in
+                value.isEmpty ? "Column \(index + 1)" : value
+            },
+            alignments: Array(repeating: .leading, count: data.columnCount),
+            rows: Array(data.rows.dropFirst())
         )
         let attachment = MarkdownTableAttachment(table: table)
         attachment.onChange = { [weak self] in self?.attachmentChangeHandler?() }

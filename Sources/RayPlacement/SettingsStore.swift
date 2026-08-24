@@ -172,16 +172,20 @@ final class SettingsStore: ObservableObject {
 
     private enum Key {
         static let activationShortcut = "activationShortcut"
+        static let activationHotkeyEnabled = "activationHotkeyEnabled"
         static let notesShortcut = "notesShortcut"
+        static let notesHotkeyEnabled = "notesHotkeyEnabled"
         static let quickNoteShortcut = "quickNoteShortcut"
+        static let quickNoteHotkeyEnabled = "quickNoteHotkeyEnabled"
         static let dictationShortcut = "dictationShortcut"
+        static let dictationHotkeyEnabled = "dictationHotkeyEnabled"
+        static let accentTheme = "accentTheme"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
         static let showInDock = "showInDock"
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
         static let extensionEnabledOverrides = "extensionEnabledOverrides"
-        static let extensionCommandEnabledOverrides = "extensionCommandEnabledOverrides"
         static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
         static let writingProvider = "writingProvider"
         static let writingInstructions = "writingInstructions"
@@ -211,12 +215,26 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var activationHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(activationHotkeyEnabled, forKey: Key.activationHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementShortcutChanged, object: nil)
+        }
+    }
+
     @Published var notesShortcut: String {
         didSet {
             defaults.set(notesShortcut, forKey: Key.notesShortcut)
             if !isRestoringActionShortcut {
                 NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
             }
+        }
+    }
+
+    @Published var notesHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(notesHotkeyEnabled, forKey: Key.notesHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
         }
     }
 
@@ -229,12 +247,33 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var quickNoteHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(quickNoteHotkeyEnabled, forKey: Key.quickNoteHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
     @Published var dictationShortcut: String {
         didSet {
             defaults.set(dictationShortcut, forKey: Key.dictationShortcut)
             if !isRestoringActionShortcut {
                 NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
             }
+        }
+    }
+
+    @Published var dictationHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(dictationHotkeyEnabled, forKey: Key.dictationHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var accentTheme: AppAccentTheme {
+        didSet {
+            defaults.set(accentTheme.rawValue, forKey: Key.accentTheme)
+            NotificationCenter.default.post(name: .rayPlacementAccentChanged, object: nil)
         }
     }
 
@@ -309,7 +348,6 @@ final class SettingsStore: ObservableObject {
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
     @Published private(set) var extensionEnabledOverrides: [String: Bool]
-    @Published private(set) var extensionCommandEnabledOverrides: [String: Bool]
     @Published private(set) var extensionHotkeyEnabledOverrides: [String: Bool]
 
     @Published private(set) var launchAtLogin: Bool
@@ -317,9 +355,14 @@ final class SettingsStore: ObservableObject {
 
     private init() {
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
+        activationHotkeyEnabled = defaults.object(forKey: Key.activationHotkeyEnabled) as? Bool ?? true
         notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
+        notesHotkeyEnabled = defaults.object(forKey: Key.notesHotkeyEnabled) as? Bool ?? true
         quickNoteShortcut = defaults.string(forKey: Key.quickNoteShortcut) ?? "command+option+n"
+        quickNoteHotkeyEnabled = defaults.object(forKey: Key.quickNoteHotkeyEnabled) as? Bool ?? true
         dictationShortcut = defaults.string(forKey: Key.dictationShortcut) ?? "control+option+d"
+        dictationHotkeyEnabled = defaults.object(forKey: Key.dictationHotkeyEnabled) as? Bool ?? true
+        accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
@@ -337,7 +380,6 @@ final class SettingsStore: ObservableObject {
         formatterModel = LocalModelID(rawValue: defaults.string(forKey: Key.formatterModel) ?? "") ?? .qwen3Balanced
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
-        extensionCommandEnabledOverrides = defaults.dictionary(forKey: Key.extensionCommandEnabledOverrides) as? [String: Bool] ?? [:]
         extensionHotkeyEnabledOverrides = defaults.dictionary(forKey: Key.extensionHotkeyEnabledOverrides) as? [String: Bool] ?? [:]
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -492,17 +534,10 @@ final class SettingsStore: ObservableObject {
 
     func isCommandEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
         isExtensionEnabled(loaded.extensionID)
-            && (extensionCommandEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
-    }
-
-    func setCommandEnabled(_ enabled: Bool, for loaded: LoadedExtensionCommand) {
-        extensionCommandEnabledOverrides[commandIdentifier(for: loaded)] = enabled
-        defaults.set(extensionCommandEnabledOverrides, forKey: Key.extensionCommandEnabledOverrides)
-        notifyExtensionConfigurationChanged()
     }
 
     func isHotkeyEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isCommandEnabled(loaded)
+        isExtensionEnabled(loaded.extensionID)
             && (extensionHotkeyEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
     }
 

@@ -30,28 +30,14 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .about: return "info.circle.fill"
         }
     }
-    var subtitle: String {
-        switch self {
-        case .general: return "Launcher, shortcuts, and macOS access"
-        case .clipboard: return "Private, on-device clipboard history"
-        case .writing: return "Local AI correction behavior"
-        case .performance: return "Control speed and system impact"
-        case .usage: return "Live local work and private activity logs"
-        case .extensions: return "Commands, integrations, and hotkeys"
-        case .about: return "Version, updates, and project information"
-        }
-    }
 }
 
+@MainActor
 private enum SettingsColors {
-    static let indigo = Color(red: 0.33, green: 0.32, blue: 0.95)
-    static let violet = Color(red: 0.64, green: 0.31, blue: 0.95)
-    static let cyan = Color(red: 0.04, green: 0.67, blue: 0.82)
-    static let heroGradient = LinearGradient(
-        colors: [indigo, violet, cyan],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    static var indigo: Color { SettingsStore.shared.accentTheme.primary }
+    static var violet: Color { SettingsStore.shared.accentTheme.secondary }
+    static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }
+    static var heroGradient: LinearGradient { SettingsStore.shared.accentTheme.gradient }
 }
 
 struct SettingsView: View {
@@ -77,14 +63,14 @@ struct SettingsView: View {
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                     Spacer()
                 }
-                .padding(.horizontal, 20)
-                .frame(height: 56)
+                .padding(.horizontal, 18)
+                .frame(height: 50)
                 Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
                 selectedContent
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
             }
         }
-        .frame(width: 790, height: 560)
+        .frame(width: 760, height: 540)
         .background(
             ZStack {
                 Color(nsColor: .windowBackgroundColor)
@@ -95,6 +81,7 @@ struct SettingsView: View {
                 )
             }
         )
+        .tint(settings.accentTheme.primary)
         .animation(.easeOut(duration: 0.16), value: selectedSection)
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
@@ -132,8 +119,8 @@ struct SettingsView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, 14)
-            .padding(.bottom, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 11)
 
             ForEach(SettingsSection.allCases) { section in
                 Button { selectedSection = section } label: {
@@ -154,14 +141,13 @@ struct SettingsView: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 10)
-                .padding(.vertical, 2)
+                .padding(.vertical, 1)
                 .accessibilityValue(selectedSection == section ? "Selected" : "")
-                .help(section.subtitle)
             }
             Spacer()
         }
-        .frame(width: 184)
-        .background(Color.black.opacity(0.025))
+        .frame(width: 176)
+        .background(Color.primary.opacity(0.022))
     }
 
     @ViewBuilder
@@ -447,23 +433,38 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
-            Section("Launcher") {
-                LabeledContent("Activation shortcut") {
-                    ShortcutRecorder(shortcut: $settings.activationShortcut)
-                        .frame(width: 145, height: 28)
-                }
-                LabeledContent("Open Notes") {
-                    ShortcutRecorder(shortcut: $settings.notesShortcut, label: "Open Notes shortcut")
-                        .frame(width: 145, height: 28)
-                }
-                LabeledContent("Quick Note sidebar") {
-                    ShortcutRecorder(shortcut: $settings.quickNoteShortcut, label: "Quick Note sidebar shortcut")
-                        .frame(width: 145, height: 28)
-                }
-                LabeledContent("Start or stop note dictation") {
-                    ShortcutRecorder(shortcut: $settings.dictationShortcut, label: "Note dictation shortcut")
-                        .frame(width: 145, height: 28)
-                }
+            Section("Appearance") {
+                AccentThemePicker(selection: $settings.accentTheme)
+            }
+
+            Section("Global hotkeys") {
+                PrimaryShortcutRow(
+                    title: "Launcher",
+                    symbol: "command",
+                    enabled: $settings.activationHotkeyEnabled,
+                    shortcut: $settings.activationShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Notes",
+                    symbol: "note.text",
+                    enabled: $settings.notesHotkeyEnabled,
+                    shortcut: $settings.notesShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Quick Note",
+                    symbol: "rectangle.righthalf.inset.filled",
+                    enabled: $settings.quickNoteHotkeyEnabled,
+                    shortcut: $settings.quickNoteShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Dictation",
+                    symbol: "mic.fill",
+                    enabled: $settings.dictationHotkeyEnabled,
+                    shortcut: $settings.dictationShortcut
+                )
+            }
+
+            Section("Startup") {
                 Toggle("Start RayPlacement when I log in", isOn: Binding(
                     get: { settings.launchAtLogin },
                     set: { settings.setLaunchAtLogin($0) }
@@ -482,19 +483,16 @@ struct SettingsView: View {
                 )
                 .foregroundStyle(accessibilityTrusted ? .green : .orange)
 
-                Text("Writing checks, replacing selected text, window commands, and automatic paste use this permission. The launcher and its global shortcuts do not.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
                 HStack {
-                    Button("Request Access") { requestAccessibilityAccess() }
-                    Button("Open Accessibility Settings") { openAccessibilitySettings() }
-                    Button("Reveal This App") {
-                        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
-                    }
+                    Button(accessibilityTrusted ? "Recheck" : "Request Access") { requestAccessibilityAccess() }
+                    Button("Open Settings") { openAccessibilitySettings() }
+                    Spacer()
+                    Text("Needed for selection, replace, paste, and windows")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
                 }
 
-                DisclosureGroup("App identity") {
+                DisclosureGroup("Troubleshooting") {
                     Text(Bundle.main.bundleURL.path)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -503,14 +501,6 @@ struct SettingsView: View {
                 }
             }
 
-            Section {
-                DisclosureGroup("Keyboard reference") {
-                    LabeledContent("Navigate", value: "↑ / ↓")
-                    LabeledContent("Run", value: "Return")
-                    LabeledContent("Back", value: "Escape")
-                    LabeledContent("Visible result", value: "⌘1 … ⌘9")
-                }
-            }
         }
         .formStyle(.grouped)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -556,26 +546,16 @@ struct SettingsView: View {
     }
 
     private var extensionsTab: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            GroupBox {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(ApplicationPaths.extensions.path)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    HStack {
-                        Button("Open Extensions Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
-                        Button("Reload") { reloadExtensions() }
-                        Spacer()
-                        Text("\(viewModel.extensionCommands.count) commands")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .padding(4)
-            } label: {
-                Label("Add functionality", systemImage: "folder.badge.plus")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Button("Open Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
+                Button("Reload") { reloadExtensions() }
+                Spacer()
+                Text("\(viewModel.extensionCommands.count) commands")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
+            .help(ApplicationPaths.extensions.path)
 
             if !viewModel.extensionIssues.isEmpty {
                 GroupBox("Extension issues") {
@@ -615,14 +595,14 @@ struct SettingsView: View {
                                         .font(.system(size: 13, weight: .semibold))
                                     Spacer()
                                     Toggle(
-                                        "Enabled",
+                                        "Extension",
                                         isOn: Binding(
                                             get: { settings.isExtensionEnabled(group.id) },
                                             set: { settings.setExtensionEnabled($0, extensionID: group.id) }
                                         )
                                     )
                                     .toggleStyle(.checkbox)
-                                    .font(.caption)
+                                    .font(.caption2)
                                 }
                                 .padding(.horizontal, 11)
                                 .frame(height: 36)
@@ -632,7 +612,7 @@ struct SettingsView: View {
                                 ForEach(group.commands, id: \LoadedExtensionCommand.settingsIdentifier) { loaded in
                                     ExtensionShortcutRow(settings: settings, loaded: loaded)
                                         .disabled(!settings.isExtensionEnabled(group.id))
-                                        .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.48)
+                                        .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.42)
                                 }
                             }
                             .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
@@ -719,6 +699,59 @@ struct SettingsView: View {
     }
 }
 
+private struct AccentThemePicker: View {
+    @Binding var selection: AppAccentTheme
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text("Accent")
+            Spacer()
+            ForEach(AppAccentTheme.allCases) { theme in
+                Button { selection = theme } label: {
+                    Circle()
+                        .fill(theme.gradient)
+                        .frame(width: 20, height: 20)
+                        .overlay(
+                            Circle().stroke(Color.primary.opacity(selection == theme ? 0.82 : 0.14), lineWidth: selection == theme ? 2 : 1)
+                        )
+                        .padding(3)
+                        .background(Circle().fill(selection == theme ? theme.primary.opacity(0.16) : .clear))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(theme.title)
+                .accessibilityValue(selection == theme ? "Selected" : "")
+            }
+        }
+    }
+}
+
+private struct PrimaryShortcutRow: View {
+    let title: String
+    let symbol: String
+    @Binding var enabled: Bool
+    @Binding var shortcut: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .foregroundStyle(enabled ? Color.accentColor : .secondary)
+                .frame(width: 20)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.callout.weight(.medium))
+            Spacer()
+            Toggle("Enable \(title) hotkey", isOn: $enabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+            ShortcutRecorder(shortcut: $shortcut, label: "\(title) shortcut")
+                .frame(width: 132, height: 28)
+                .disabled(!enabled)
+                .opacity(enabled ? 1 : 0.46)
+        }
+    }
+}
+
 private struct ExtensionShortcutRow: View {
     @ObservedObject var settings: SettingsStore
     let loaded: LoadedExtensionCommand
@@ -729,20 +762,11 @@ private struct ExtensionShortcutRow: View {
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 24)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(loaded.command.title)
-                    .font(.system(size: 13, weight: .semibold))
-            }
+            Text(loaded.command.title)
+                .font(.system(size: 13, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 10)
-            Toggle(
-                "Function",
-                isOn: Binding(
-                    get: { settings.isCommandEnabled(loaded) },
-                    set: { settings.setCommandEnabled($0, for: loaded) }
-                )
-            )
-            .toggleStyle(.checkbox)
-            .font(.caption2)
             Toggle(
                 "Hotkey",
                 isOn: Binding(
@@ -752,7 +776,7 @@ private struct ExtensionShortcutRow: View {
             )
             .toggleStyle(.checkbox)
             .font(.caption2)
-            .disabled(!settings.isCommandEnabled(loaded))
+            .fixedSize()
             ShortcutRecorder(
                 shortcut: Binding(
                     get: { settings.effectiveShortcut(for: loaded) ?? "" },
@@ -760,8 +784,8 @@ private struct ExtensionShortcutRow: View {
                 ),
                 label: "\(loaded.command.title) shortcut"
             )
-            .frame(width: 112, height: 28)
-            .disabled(!settings.isCommandEnabled(loaded) || !settings.isHotkeyEnabled(loaded))
+            .frame(width: 106, height: 28)
+            .disabled(!settings.isHotkeyEnabled(loaded))
 
             Menu {
                 Button("Clear Shortcut") { settings.setShortcut(nil, for: loaded) }
@@ -908,9 +932,10 @@ private final class ShortcutCaptureView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let bounds = self.bounds
         let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 6, yRadius: 6)
-        (recording ? NSColor.controlAccentColor.withAlphaComponent(0.18) : NSColor.controlBackgroundColor).setFill()
+        let accent = SettingsStore.shared.accentTheme.nsPrimary
+        (recording ? accent.withAlphaComponent(0.18) : NSColor.controlBackgroundColor).setFill()
         path.fill()
-        (recording ? NSColor.controlAccentColor : NSColor.separatorColor).setStroke()
+        (recording ? accent : NSColor.separatorColor).setStroke()
         path.lineWidth = 1
         path.stroke()
 
@@ -962,7 +987,7 @@ final class SettingsWindowController: NSWindowController {
         self.settingsStore = settings
         let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 790, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false

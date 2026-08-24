@@ -38,7 +38,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
-        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 720, height: 500))
+        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 690, height: 470))
         self.updateService = updateService
         super.init()
 

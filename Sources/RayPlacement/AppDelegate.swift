@@ -81,6 +81,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func quit() { NSApp.terminate(nil) }
 
     private func registerActivationHotkey() {
+        guard SettingsStore.shared.activationHotkeyEnabled else {
+            hotKeys.unregister(identifier: "activation")
+            registeredActivationShortcut = nil
+            return
+        }
         guard let shortcut = ShortcutSpec(string: SettingsStore.shared.activationShortcut) else {
             SettingsStore.shared.lastError = "The activation shortcut is invalid."
             if let registeredActivationShortcut {
@@ -106,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkey(
             identifier: "builtin.notes",
             displayName: "Notes",
+            enabled: SettingsStore.shared.notesHotkeyEnabled,
             rawShortcut: SettingsStore.shared.notesShortcut,
             previous: &registeredNotesShortcut,
             restore: SettingsStore.shared.restoreNotesShortcut
@@ -115,6 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkey(
             identifier: "builtin.dictation",
             displayName: "Dictation",
+            enabled: SettingsStore.shared.dictationHotkeyEnabled,
             rawShortcut: SettingsStore.shared.dictationShortcut,
             previous: &registeredDictationShortcut,
             restore: SettingsStore.shared.restoreDictationShortcut
@@ -124,6 +131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkey(
             identifier: "builtin.quick-note",
             displayName: "Quick Note",
+            enabled: SettingsStore.shared.quickNoteHotkeyEnabled,
             rawShortcut: SettingsStore.shared.quickNoteShortcut,
             previous: &registeredQuickNoteShortcut,
             restore: SettingsStore.shared.restoreQuickNoteShortcut
@@ -135,11 +143,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func registerActionHotkey(
         identifier: String,
         displayName: String,
+        enabled: Bool,
         rawShortcut: String,
         previous: inout ShortcutSpec?,
         restore: (String) -> Void,
         handler: @escaping () -> Void
     ) {
+        guard enabled else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            return
+        }
         guard let shortcut = ShortcutSpec(string: rawShortcut) else {
             SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
             if let previous { restore(previous.storageString) }

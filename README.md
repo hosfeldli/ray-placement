@@ -30,10 +30,10 @@ After the first install, add that exact app once in **System Settings → Privac
 - Left/right/top/bottom half, maximize, and center window commands
 - Lock, sleep, and screen saver commands
 - Menu-bar controls and launch-at-login setting
-- Configurable global activation shortcut
-- Configurable global shortcuts for opening Notes, docking a Quick Note, and starting or stopping note dictation
+- Independently enabled and configurable global shortcuts for the launcher, Notes, Quick Note, and note dictation
 - Per-extension global command hotkeys, configurable in **Settings → Extensions**
-- Per-extension, per-function, and per-hotkey enabled checkboxes that preserve configuration while disabled
+- Per-extension and per-hotkey enabled controls that preserve each shortcut while disabled
+- Six selectable accent themes shared by the launcher, Notes, tables, and Settings
 - JSON extensions for URLs, files, apps, copy/paste actions, and local executable scripts
 - Included local Writing Tools extension with plain-text paste and model-only Qwen grammar correction
 - Included VS Code extension with an interactive Spotlight search for opening any indexed file or directory
@@ -53,7 +53,7 @@ Window changes, automatic paste, and the Lock Screen command request macOS Acces
 
 ## Notes and dictation
 
-Run **RayPlacement Notes** from the launcher, choose **Notes…** in the menu bar, or use the configurable **Open Notes** shortcut in **Settings → General**. **Quick Note Sidebar** has its own configurable global shortcut and pins the most recent note to either screen edge beside the current app. The compact header can move the dock, restore the full workspace, hide the note list, or enter a screen-filling focus mode; the prior size and position are restored when focus mode ends. Notes are saved as local Markdown data in `~/Library/Application Support/RayPlacement/notes.json`. There is no separate source/preview split: headings, emphasis, links, lists, tasks, quotes, inline code, fenced code blocks, and GitHub-style tables are formatted directly inside the editable document. Markdown punctuation collapses out of the normal reading view while the portable source remains intact underneath. Use the compact format menu to insert headings, quotes, dividers, or tables. Command-B, Command-I, and Command-K format the current selection, and Return continues lists and task lists. Formatting is debounced so typing stays responsive.
+Run **RayPlacement Notes** from the launcher, choose **Notes…** in the menu bar, or use the configurable **Open Notes** shortcut in **Settings → General**. **Quick Note Sidebar** has its own configurable global shortcut and pins the most recent note to either screen edge beside the current app. The compact header can move the dock, restore the full workspace, hide the note list, or enter a screen-filling focus mode; the prior size and position are restored when focus mode ends. Notes are saved as local Markdown data in `~/Library/Application Support/RayPlacement/notes.json`. There is no separate source/preview split: headings, emphasis, links, lists, tasks, quotes, inline code, fenced code blocks, and GitHub-style tables are formatted directly inside the editable document. Markdown punctuation collapses out of the normal reading view while the portable source remains intact underneath. Paste a table copied from a spreadsheet, website, Markdown, TSV, or CSV source and Notes converts it into an editable native table; pasting a grid into an existing table fills from the active cell and grows the table as needed. Use the compact format menu to insert headings, quotes, dividers, or tables. Command-B, Command-I, and Command-K format the current selection, and Return continues lists and task lists. Formatting is debounced so typing stays responsive.
 
 Choose **Summarize** in a note to run the bundled Qwen3 1.7B model on demand. Long notes are divided into bounded sections and reduced into a final Markdown summary; only one bundled model job can run at a time. The result opens for review and can be copied or inserted at the top of the original note. It uses **Settings → Performance → Writing**, stays CPU-only, sends no note content over the network, and exits when finished or cancelled.
 
@@ -96,7 +96,7 @@ Writing checks snapshot the exact highlighted text, Accessibility element, and r
 
 [Extensions/vscode-directories](Extensions/vscode-directories) adds **Open File or Directory in VS Code**. Running it opens a blank Spotlight-backed picker; type part of a file or directory name, then choose the result to open it in Visual Studio Code. It ships without a default shortcut, and the user can record one in **Settings → Extensions**.
 
-[Extensions/emoji-picker](Extensions/emoji-picker) adds a fast searchable emoji selector. Tap Command twice by default, search by name or meaning, and press Return to paste the emoji into the app you came from. The double-Command gesture ignores Command when it participates in another shortcut. Its function, hotkey, and entire extension can each be disabled independently in **Settings → Extensions**.
+[Extensions/emoji-picker](Extensions/emoji-picker) adds a fast searchable emoji selector. Tap Command twice by default, search by name or meaning, and press Return to paste the emoji into the app you came from. The double-Command gesture ignores Command when it participates in another shortcut. Its hotkey and entire extension can each be disabled independently in **Settings → Extensions**.
 
 Extensions are deliberately process-based rather than dynamically loaded libraries: a script can be written in any language installed on the Mac, reloaded without rebuilding, and isolated from the launcher's process. Extension scripts still run with your macOS user account's permissions, so only install code you wrote or reviewed.
 

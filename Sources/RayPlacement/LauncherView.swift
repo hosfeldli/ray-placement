@@ -4,6 +4,7 @@ import SwiftUI
 
 struct LauncherView: View {
     @ObservedObject var viewModel: LauncherViewModel
+    @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
 
@@ -12,9 +13,9 @@ struct LauncherView: View {
             VisualEffectView(material: .popover, blendingMode: .behindWindow)
             LinearGradient(
                 colors: [
-                    RayColors.indigo.opacity(0.12),
+                    RayColors.indigo.opacity(0.105),
                     Color.clear,
-                    RayColors.cyan.opacity(0.055)
+                    RayColors.cyan.opacity(0.045)
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
@@ -29,10 +30,10 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: 720, height: 500)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(width: 690, height: 470)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
                         colors: [Color.white.opacity(0.34), RayColors.indigo.opacity(0.25), Color.black.opacity(0.08)],
@@ -44,6 +45,7 @@ struct LauncherView: View {
         )
         .shadow(color: RayColors.indigo.opacity(0.14), radius: 28, y: 14)
         .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
+        .tint(settings.accentTheme.primary)
         .animation(.easeOut(duration: 0.16), value: viewModel.mode.visualIdentity)
         .onAppear { focusSearch() }
         .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }
@@ -87,10 +89,6 @@ struct LauncherView: View {
             }
 
             if viewModel.mode == .timezoneConverter {
-                Text("Translate time across the world")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: RayColors.cyan)
             } else if isOutputMode {
@@ -120,7 +118,7 @@ struct LauncherView: View {
             }
         }
         .padding(.horizontal, 18)
-        .frame(height: 62)
+        .frame(height: 58)
     }
 
     @ViewBuilder
@@ -434,9 +432,6 @@ struct LauncherView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            if let title = viewModel.mode.title {
-                Text(title).font(.system(size: 11)).foregroundStyle(.secondary)
-            }
             Spacer()
             if viewModel.mode != .root {
                 KeyHint(keys: "esc", label: outputCanCancel ? "Cancel" : "Back")
@@ -453,8 +448,8 @@ struct LauncherView: View {
             }
         }
         .padding(.horizontal, 18)
-        .frame(height: 38)
-        .background(Color.black.opacity(0.025))
+        .frame(height: 34)
+        .background(Color.primary.opacity(0.018))
     }
 
     private var isOutputMode: Bool {
@@ -645,7 +640,7 @@ private struct ResultRow: View {
             }
         }
         .padding(.horizontal, 10)
-        .frame(height: 49)
+        .frame(height: 47)
         .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .fill(selected ? RayColors.selectionBackground : Color.clear)
@@ -804,15 +799,12 @@ private struct ActivityTimeline: View {
     }
 }
 
+@MainActor
 private enum RayColors {
-    static let indigo = Color(red: 0.33, green: 0.32, blue: 0.95)
-    static let violet = Color(red: 0.64, green: 0.31, blue: 0.95)
-    static let cyan = Color(red: 0.04, green: 0.67, blue: 0.82)
-    static let heroGradient = LinearGradient(
-        colors: [indigo, violet, cyan],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    static var indigo: Color { SettingsStore.shared.accentTheme.primary }
+    static var violet: Color { SettingsStore.shared.accentTheme.secondary }
+    static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }
+    static var heroGradient: LinearGradient { SettingsStore.shared.accentTheme.gradient }
     static let cardBackground = Color(nsColor: .controlBackgroundColor).opacity(0.78)
     static let selectionBackground = indigo.opacity(0.13)
 }

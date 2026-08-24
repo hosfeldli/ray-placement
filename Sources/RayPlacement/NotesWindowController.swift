@@ -349,6 +349,7 @@ private struct NotesView: View {
     @ObservedObject var summarizer: NoteSummaryService
     @ObservedObject var formatter: FormatterWorkspaceModel
     @ObservedObject var presentation: NotesPresentationModel
+    @ObservedObject private var settings = SettingsStore.shared
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
@@ -390,6 +391,7 @@ private struct NotesView: View {
             minHeight: 500
         )
         .background(Color(nsColor: .windowBackgroundColor))
+        .tint(settings.accentTheme.primary)
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
@@ -422,7 +424,7 @@ private struct NotesView: View {
                 ZStack {
                     Circle()
                         .fill(LinearGradient(
-                            colors: [Color.accentColor, Color.purple.opacity(0.82)],
+                            colors: [settings.accentTheme.primary, settings.accentTheme.secondary],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         ))

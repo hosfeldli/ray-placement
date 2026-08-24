@@ -51,6 +51,11 @@ final class MarkdownTableData {
         for index in rows.indices { rows[index].removeLast() }
     }
 
+    func ensureSize(rowCount: Int, columnCount: Int) {
+        while self.columnCount < columnCount { addColumn() }
+        while rows.count < rowCount { addRow() }
+    }
+
     private func markdownRow(_ cells: [String]) -> String {
         "| " + cells.map(Self.escaped).joined(separator: " | ") + " |"
     }
@@ -138,7 +143,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private let toolbar = NSStackView()
     private var gridView: NSGridView?
     private var fields: [MarkdownTableField] = []
+    private var cellAppearances: [(view: NSView, header: Bool, alternate: Bool)] = []
+    private weak var toolbarIcon: NSImageView?
     private var isSizingColumns = false
+    private var accentObserver: NSObjectProtocol?
 
     var onChange: (() -> Void)?
     var onDelete: (() -> Void)?
@@ -153,20 +161,35 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         super.init(frame: NSRect(x: 0, y: 0, width: 560, height: 150))
         translatesAutoresizingMaskIntoConstraints = true
         wantsLayer = true
-        layer?.cornerRadius = 11
+        layer?.cornerRadius = 12
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.separatorColor.withAlphaComponent(0.62).cgColor
-        layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
         layer?.masksToBounds = true
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
         setAccessibilityLabel("Editable table")
         configureToolbar()
         rebuildGrid()
+        updateAppearance()
+        accentObserver = NotificationCenter.default.addObserver(
+            forName: .rayPlacementAccentChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.updateAppearance() }
+        }
     }
 
     required init?(coder: NSCoder) { nil }
+
+    deinit {
+        if let accentObserver { NotificationCenter.default.removeObserver(accentObserver) }
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        updateAppearance()
+    }
 
     override func layout() {
         super.layout()
@@ -193,6 +216,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             accessibilityDescription: nil
         ) ?? NSImage())
         icon.contentTintColor = .controlAccentColor
+        toolbarIcon = icon
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
         let title = NSTextField(labelWithString: "Table")
@@ -239,6 +263,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private func rebuildGrid(focus coordinate: CellCoordinate? = nil) {
         gridView?.removeFromSuperview()
         fields.removeAll(keepingCapacity: true)
+        cellAppearances.removeAll(keepingCapacity: true)
 
         var visualRows: [[NSView]] = []
         visualRows.append(table.headers.enumerated().map { column, value in
@@ -257,7 +282,6 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         grid.xPlacement = .fill
         grid.yPlacement = .fill
         grid.wantsLayer = true
-        grid.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.52).cgColor
         for row in 0..<grid.numberOfRows { grid.row(at: row).height = 34 }
         for column in 0..<grid.numberOfColumns { grid.column(at: column).xPlacement = .fill }
 
@@ -269,6 +293,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             grid.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
         gridView = grid
+        updateAppearance()
 
         if let coordinate {
             DispatchQueue.main.async { [weak self] in
@@ -304,6 +329,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.placeholderString = header ? "Column" : "Add value"
         field.lineBreakMode = .byTruncatingTail
         field.setAccessibilityLabel(coordinate.accessibilityLabel)
+        field.onPasteTable = { [weak self, weak field] data in
+            guard let self, let field else { return false }
+            return self.paste(data, startingAt: field.coordinate)
+        }
 
         container.addSubview(field)
         NSLayoutConstraint.activate([
@@ -312,8 +341,75 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             field.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
         fields.append(field)
+        cellAppearances.append((container, header, alternate))
         return container
     }
+
+    private func paste(_ data: TabularData, startingAt coordinate: CellCoordinate) -> Bool {
+        guard data.columnCount > 1 || data.rows.count > 1 else { return false }
+        let startGridRow: Int
+        switch coordinate {
+        case .header: startGridRow = 0
+        case .body(let row, _): startGridRow = row + 1
+        }
+        let requiredColumns = coordinate.column + data.columnCount
+        let requiredBodyRows = max(table.rows.count, startGridRow + data.rows.count - 1)
+        let priorRowCount = table.rows.count
+        table.ensureSize(rowCount: requiredBodyRows, columnCount: requiredColumns)
+
+        for (rowOffset, sourceRow) in data.rows.enumerated() {
+            let destinationGridRow = startGridRow + rowOffset
+            for (columnOffset, value) in sourceRow.enumerated() {
+                let destinationColumn = coordinate.column + columnOffset
+                if destinationGridRow == 0 {
+                    table.headers[destinationColumn] = value
+                } else {
+                    table.rows[destinationGridRow - 1][destinationColumn] = value
+                }
+            }
+        }
+        rebuildGrid(focus: coordinate)
+        onChange?()
+        if table.rows.count != priorRowCount { onSizeChange?() }
+        return true
+    }
+
+    private func updateAppearance() {
+        guard isViewLoadedForStyling else { return }
+        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let accent = SettingsStore.shared.accentTheme.nsPrimary
+        let background = isDark
+            ? NSColor(calibratedWhite: 0.105, alpha: 0.98)
+            : NSColor(calibratedWhite: 0.995, alpha: 0.99)
+        let border = isDark
+            ? NSColor.white.withAlphaComponent(0.19)
+            : NSColor(calibratedWhite: 0.48, alpha: 0.55)
+        let separator = isDark
+            ? NSColor.white.withAlphaComponent(0.16)
+            : NSColor(calibratedWhite: 0.68, alpha: 0.72)
+        layer?.backgroundColor = background.cgColor
+        layer?.borderColor = border.cgColor
+        gridView?.layer?.backgroundColor = separator.cgColor
+        toolbarIcon?.contentTintColor = accent
+
+        for item in cellAppearances {
+            let color: NSColor
+            if item.header {
+                color = background.blended(withFraction: isDark ? 0.30 : 0.20, of: accent) ?? background
+            } else if item.alternate {
+                color = isDark
+                    ? NSColor(calibratedWhite: 0.17, alpha: 0.98)
+                    : NSColor(calibratedWhite: 0.945, alpha: 1)
+            } else {
+                color = isDark
+                    ? NSColor(calibratedWhite: 0.135, alpha: 0.98)
+                    : NSColor.white
+            }
+            item.view.layer?.backgroundColor = color.cgColor
+        }
+    }
+
+    private var isViewLoadedForStyling: Bool { layer != nil }
 
     func controlTextDidChange(_ notification: Notification) {
         guard let field = notification.object as? MarkdownTableField else { return }
@@ -332,6 +428,14 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         doCommandBy commandSelector: Selector
     ) -> Bool {
         guard let field = control as? MarkdownTableField else { return false }
+        if commandSelector == #selector(NSText.paste(_:)),
+           let data = TabularDataParser.parse(
+               text: NSPasteboard.general.string(forType: .string) ?? "",
+               html: NSPasteboard.general.string(forType: .html)
+           ),
+           paste(data, startingAt: field.coordinate) {
+            return true
+        }
         if commandSelector == #selector(NSResponder.insertTab(_:)) {
             move(from: field, forward: true)
             return true
@@ -455,6 +559,21 @@ private enum CellCoordinate: Equatable {
 
 private final class MarkdownTableField: NSTextField {
     var coordinate: CellCoordinate = .header(0)
+    var onPasteTable: ((TabularData) -> Bool)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           let data = TabularDataParser.parse(
+               text: NSPasteboard.general.string(forType: .string) ?? "",
+               html: NSPasteboard.general.string(forType: .html)
+           ),
+           onPasteTable?(data) == true {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 }
 
 @MainActor

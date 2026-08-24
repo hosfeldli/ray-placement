@@ -177,6 +177,22 @@ import Testing
     #expect(blocks.contains(.code(language: "swift", text: "let ready = true")))
 }
 
+@Test func tabularPasteParsesSpreadsheetMarkdownCSVAndHTML() {
+    #expect(TabularDataParser.parse(text: "Owner\tStatus\nMaya\tReady") == TabularData(rows: [
+        ["Owner", "Status"], ["Maya", "Ready"]
+    ]))
+    #expect(TabularDataParser.parse(text: "| Owner | Status |\n| --- | --- |\n| Maya | Ready |") == TabularData(rows: [
+        ["Owner", "Status"], ["Maya", "Ready"]
+    ]))
+    #expect(TabularDataParser.parse(text: "Owner,Status\n\"Maya, Sr.\",Ready") == TabularData(rows: [
+        ["Owner", "Status"], ["Maya, Sr.", "Ready"]
+    ]))
+    #expect(TabularDataParser.parse(
+        text: "Owner Status",
+        html: "<table><tr><th>Owner</th><th>Status</th></tr><tr><td>Maya</td><td>Ready</td></tr></table>"
+    ) == TabularData(rows: [["Owner", "Status"], ["Maya", "Ready"]]))
+}
+
 @Test func markdownNoteUsesContentWhenTitleIsBlank() {
     let note = MarkdownNote(title: "  ", content: "# Derived title\n\nBody")
     #expect(note.displayTitle == "Derived title")

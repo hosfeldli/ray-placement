@@ -490,8 +490,10 @@ final class LauncherViewModel: ObservableObject {
                 icon: .system(loaded.command.icon ?? "puzzlepiece.extension.fill"),
                 keywords: loaded.command.keywords ?? [],
                 action: .extensionCommand(loaded),
-                shortcut: SettingsStore.shared.effectiveShortcut(for: loaded)
-                    .flatMap { ShortcutSpec(string: $0)?.displayString }
+                shortcut: SettingsStore.shared.isHotkeyEnabled(loaded)
+                    ? SettingsStore.shared.effectiveShortcut(for: loaded)
+                        .flatMap { ShortcutSpec(string: $0)?.displayString }
+                    : nil
             )
         }
     }
@@ -499,9 +501,9 @@ final class LauncherViewModel: ObservableObject {
     private func builtInItems() -> [LauncherItem] {
         var items: [LauncherItem] = [
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
-            LauncherItem(id: "builtin.notes", title: "RayPlacement Notes", subtitle: "Open the separate Markdown notes window", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString),
-            LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString),
-            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString),
+            LauncherItem(id: "builtin.notes", title: "RayPlacement Notes", subtitle: "Open the separate Markdown notes window", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: SettingsStore.shared.notesHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
             LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),
