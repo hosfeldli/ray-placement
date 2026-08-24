@@ -15,6 +15,7 @@ enum LauncherMode: Equatable {
     case vscodePicker
     case timezoneConverter
     case forceQuitPicker
+    case emojiPicker
     case clipboard
     case writingReview(WritingReview)
     case output(title: String, text: String, state: LauncherOutputState)
@@ -26,6 +27,7 @@ enum LauncherMode: Equatable {
         case .vscodePicker: return "Open in VS Code"
         case .timezoneConverter: return "Timezone Converter"
         case .forceQuitPicker: return "Force Quit"
+        case .emojiPicker: return "Emoji Picker"
         case .clipboard: return "Clipboard History"
         case .writingReview: return "Writing Review"
         case .output(let title, _, _): return title

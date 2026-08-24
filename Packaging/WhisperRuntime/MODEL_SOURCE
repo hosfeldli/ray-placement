@@ -1,0 +1,4 @@
+Model: ggml-small.en.bin
+Source: https://huggingface.co/ggerganov/whisper.cpp
+SHA-256: c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d
+Upstream SHA-1: db8a495a91d927739e50b3fc1cc4c6b8f6c2d022

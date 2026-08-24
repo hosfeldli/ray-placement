@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "local.emoji-picker",
+  "name": "Emoji Picker",
+  "version": "1.0.0",
+  "description": "Search common emojis and paste one into the source app.",
+  "commands": [
+    {
+      "id": "search-and-paste",
+      "title": "Search Emojis",
+      "subtitle": "Find an emoji and paste it into the app you came from",
+      "keywords": ["emoji", "emoticon", "symbol", "reaction", "smile"],
+      "icon": "face.smiling.inverse",
+      "hotkey": "command+command",
+      "action": {
+        "type": "openEmojiPicker",
+        "value": ""
+      }
+    }
+  ]
+}

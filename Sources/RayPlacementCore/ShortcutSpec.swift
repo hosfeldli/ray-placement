@@ -80,6 +80,7 @@ public struct ShortcutSpec: Codable, Equatable, Hashable, Sendable {
             return displayName(for: label)
         }
         switch key {
+        case "command": return " twice"
         case "space": return "Space"
         case "return", "enter": return "↩"
         case "escape", "esc": return "Esc"

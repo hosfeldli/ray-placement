@@ -772,6 +772,21 @@ private struct NotesView: View {
                     }
                     Text(status).lineLimit(1)
                     Spacer()
+                    if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
+                        Button("Retry") { dictation.retryFailedRecording() }
+                            .buttonStyle(.borderedProminent)
+                            .controlSize(.mini)
+                        if let recoveryURL = dictation.recoveryAudioURL {
+                            Button {
+                                NSWorkspace.shared.activateFileViewerSelecting([recoveryURL])
+                            } label: {
+                                Image(systemName: "folder")
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.mini)
+                            .help("Show preserved recording in Finder")
+                        }
+                    }
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -857,7 +872,7 @@ private struct NotesView: View {
                 || dictation.phase == .transcribing
                 || summarizer.isSummarizing
         )
-        .help("Record first, then transcribe into this note after Stop")
+        .help("Record into this note; Stop finishes any remaining transcription")
     }
 
     private var activeStatus: String? {

@@ -11,9 +11,12 @@ public struct MeetingDictationSegment: Equatable, Sendable {
 }
 
 public enum MeetingDictationPlan {
-    public static let maximumDuration: TimeInterval = 60 * 60
-    public static let segmentDuration: TimeInterval = 45
-    public static let recordingBitRate = 32_000
+    // Two hours gives a full one-hour meeting a generous overrun buffer.
+    public static let maximumDuration: TimeInterval = 2 * 60 * 60
+    public static let appleSpeechSegmentDuration: TimeInterval = 45
+    public static let localWhisperSegmentDuration: TimeInterval = 60
+    public static let segmentDuration = appleSpeechSegmentDuration
+    public static let recordingBytesPerSecond = 32_000
 
     public static func segments(for duration: TimeInterval) -> [MeetingDictationSegment] {
         let boundedDuration = min(max(duration, 0), maximumDuration)
@@ -30,6 +33,6 @@ public enum MeetingDictationPlan {
 
     public static func estimatedEncodedByteCount(for duration: TimeInterval) -> Int {
         let boundedDuration = min(max(duration, 0), maximumDuration)
-        return Int((boundedDuration * Double(recordingBitRate) / 8).rounded(.up))
+        return Int((boundedDuration * Double(recordingBytesPerSecond)).rounded(.up))
     }
 }

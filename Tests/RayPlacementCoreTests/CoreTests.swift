@@ -22,6 +22,7 @@ import Testing
     #expect(ShortcutSpec(string: "control+kc128:q") == nil)
     #expect(ShortcutSpec(string: "control+kc4294967296:q") == nil)
     #expect(ShortcutSpec(string: "control+kc12:") == nil)
+    #expect(ShortcutSpec(string: "command+command")?.displayString == "⌘ twice")
 }
 
 @Test func notesDockLayoutPinsToEitherVisibleScreenEdge() {
@@ -104,6 +105,18 @@ import Testing
     #expect(manifest.id == "local.productivity-tools")
     #expect(manifest.commands.map(\.action.type) == [.convertTimezones, .forceQuitApplications, .forceQuitAllApplications])
     #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
+}
+
+@Test func emojiPickerManifestDecodesWithDoubleCommand() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/emoji-picker/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.id == "local.emoji-picker")
+    #expect(manifest.commands.map(\.action.type) == [.openEmojiPicker])
+    #expect(ShortcutSpec(string: manifest.commands.first?.hotkey ?? "")?.displayString == "⌘ twice")
 }
 
 @Test func timezoneConversionRespectsDaylightSavingTime() throws {
@@ -200,9 +213,16 @@ import Testing
 }
 
 @Test func meetingDictationPlanBoundsStorageAndDuration() {
-    let segments = MeetingDictationPlan.segments(for: 2 * 60 * 60)
-    #expect(segments.count == 80)
-    #expect(MeetingDictationPlan.estimatedEncodedByteCount(for: 60 * 60) == 14_400_000)
+    let segments = MeetingDictationPlan.segments(for: 3 * 60 * 60)
+    #expect(segments.count == 160)
+    #expect(MeetingDictationPlan.estimatedEncodedByteCount(for: 60 * 60) == 115_200_000)
+    #expect(MeetingDictationPlan.estimatedEncodedByteCount(for: 3 * 60 * 60) == 230_400_000)
+}
+
+@Test func meetingDictationUsesShortRollingAudioSegments() {
+    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 60)
+    #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 45)
+    #expect(MeetingDictationPlan.maximumDuration >= 60 * 60)
 }
 
 @Test func noteSummaryPlanPreservesAllTextWithinBoundedChunks() {

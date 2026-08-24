@@ -88,22 +88,14 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
     }
 
     var dictationMaximumDuration: TimeInterval {
-        switch self {
-        case .eco: return 15 * 60
-        case .balanced: return 30 * 60
-        case .high, .turbo, .maximum, .unbounded: return MeetingDictationPlan.maximumDuration
-        }
+        // Performance controls CPU use, not how much of a meeting may be saved.
+        MeetingDictationPlan.maximumDuration
     }
 
     var dictationTranscriptionTimeout: TimeInterval {
-        switch self {
-        case .eco: return 90
-        case .balanced: return 120
-        case .high: return 180
-        case .turbo: return 300
-        case .maximum: return 600
-        case .unbounded: return 0
-        }
+        // Meeting audio is irreplaceable. Dictation remains cancelable in the
+        // HUD, but it is never discarded because a model crossed a short timer.
+        0
     }
 
     var extensionTimeout: TimeInterval {
@@ -124,6 +116,29 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
     }
 }
 
+enum DictationEngine: String, CaseIterable, Identifiable {
+    case localWhisper
+    case appleSpeech
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .localWhisper: return "Local Whisper · Recommended"
+        case .appleSpeech: return "Apple Speech"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .localWhisper:
+            return "More reliable for meetings and distant speech. Runs locally on one-minute audio segments and needs only Microphone access."
+        case .appleSpeech:
+            return "Uses macOS on-device recognition. Smaller and usually faster, but some recordings can return incomplete results."
+        }
+    }
+}
+
 enum ApplicationPaths {
     static let applicationSupport: URL = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -135,6 +150,7 @@ enum ApplicationPaths {
     static let harperDictionary = applicationSupport.appendingPathComponent("harper-dictionary.txt")
     static let notes = applicationSupport.appendingPathComponent("notes.json")
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
+    static let failedDictations = applicationSupport.appendingPathComponent("Failed Dictations", isDirectory: true)
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
     static let models = applicationSupport.appendingPathComponent("Models", isDirectory: true)
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
@@ -143,6 +159,7 @@ enum ApplicationPaths {
     static func prepare() throws {
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: failedDictations, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
@@ -163,10 +180,15 @@ final class SettingsStore: ObservableObject {
         static let launchAtLogin = "launchAtLogin"
         static let showInDock = "showInDock"
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
+        static let extensionEnabledOverrides = "extensionEnabledOverrides"
+        static let extensionCommandEnabledOverrides = "extensionCommandEnabledOverrides"
+        static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
         static let writingProvider = "writingProvider"
         static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
         static let dictationPerformance = "dictationPerformance"
+        static let dictationEngine = "dictationEngine"
+        static let dictationTranscribeWhileRecording = "dictationTranscribeWhileRecording"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
         static let writingModel = "writingModel"
@@ -257,6 +279,14 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dictationPerformance.rawValue, forKey: Key.dictationPerformance) }
     }
 
+    @Published var dictationEngine: DictationEngine {
+        didSet { defaults.set(dictationEngine.rawValue, forKey: Key.dictationEngine) }
+    }
+
+    @Published var dictationTranscribeWhileRecording: Bool {
+        didSet { defaults.set(dictationTranscribeWhileRecording, forKey: Key.dictationTranscribeWhileRecording) }
+    }
+
     @Published var extensionPerformance: PerformanceScale {
         didSet { defaults.set(extensionPerformance.rawValue, forKey: Key.extensionPerformance) }
     }
@@ -278,6 +308,9 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
+    @Published private(set) var extensionEnabledOverrides: [String: Bool]
+    @Published private(set) var extensionCommandEnabledOverrides: [String: Bool]
+    @Published private(set) var extensionHotkeyEnabledOverrides: [String: Bool]
 
     @Published private(set) var launchAtLogin: Bool
     @Published var lastError: String?
@@ -295,12 +328,17 @@ final class SettingsStore: ObservableObject {
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
+        dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
+        dictationTranscribeWhileRecording = defaults.object(forKey: Key.dictationTranscribeWhileRecording) as? Bool ?? false
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
         writingModel = LocalModelID(rawValue: defaults.string(forKey: Key.writingModel) ?? "") ?? .qwen3Balanced
         summaryModel = LocalModelID(rawValue: defaults.string(forKey: Key.summaryModel) ?? "") ?? .qwen3Balanced
         formatterModel = LocalModelID(rawValue: defaults.string(forKey: Key.formatterModel) ?? "") ?? .qwen3Balanced
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
+        extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
+        extensionCommandEnabledOverrides = defaults.dictionary(forKey: Key.extensionCommandEnabledOverrides) as? [String: Bool] ?? [:]
+        extensionHotkeyEnabledOverrides = defaults.dictionary(forKey: Key.extensionHotkeyEnabledOverrides) as? [String: Bool] ?? [:]
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
 
@@ -442,12 +480,48 @@ final class SettingsStore: ObservableObject {
         saveShortcutOverrides()
     }
 
+    func isExtensionEnabled(_ extensionID: String) -> Bool {
+        extensionEnabledOverrides[extensionID] ?? true
+    }
+
+    func setExtensionEnabled(_ enabled: Bool, extensionID: String) {
+        extensionEnabledOverrides[extensionID] = enabled
+        defaults.set(extensionEnabledOverrides, forKey: Key.extensionEnabledOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
+    func isCommandEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
+        isExtensionEnabled(loaded.extensionID)
+            && (extensionCommandEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
+    }
+
+    func setCommandEnabled(_ enabled: Bool, for loaded: LoadedExtensionCommand) {
+        extensionCommandEnabledOverrides[commandIdentifier(for: loaded)] = enabled
+        defaults.set(extensionCommandEnabledOverrides, forKey: Key.extensionCommandEnabledOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
+    func isHotkeyEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
+        isCommandEnabled(loaded)
+            && (extensionHotkeyEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
+    }
+
+    func setHotkeyEnabled(_ enabled: Bool, for loaded: LoadedExtensionCommand) {
+        extensionHotkeyEnabledOverrides[commandIdentifier(for: loaded)] = enabled
+        defaults.set(extensionHotkeyEnabledOverrides, forKey: Key.extensionHotkeyEnabledOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
     private func commandIdentifier(for loaded: LoadedExtensionCommand) -> String {
         "\(loaded.extensionID).\(loaded.command.id)"
     }
 
     private func saveShortcutOverrides() {
         defaults.set(extensionShortcutOverrides, forKey: Key.extensionShortcutOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
+    private func notifyExtensionConfigurationChanged() {
         NotificationCenter.default.post(name: .rayPlacementExtensionShortcutsChanged, object: nil)
     }
 }

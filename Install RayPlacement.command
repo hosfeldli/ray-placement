@@ -8,6 +8,7 @@ PACKAGE_MANIFEST="$SCRIPT_DIRECTORY/Package.swift"
 SIGNING_SETUP="$SCRIPT_DIRECTORY/scripts/setup_local_signing.sh"
 PACKAGE_SCRIPT="$SCRIPT_DIRECTORY/scripts/package_app.sh"
 QWEN_ASSEMBLER="$SCRIPT_DIRECTORY/scripts/assemble_qwen_model.sh"
+WHISPER_ASSEMBLER="$SCRIPT_DIRECTORY/scripts/assemble_whisper_model.sh"
 CURRENT_USER="$(id -un)"
 USER_HOME_DIRECTORY="$(dscl . -read "/Users/$CURRENT_USER" NFSHomeDirectory | awk '{print $2}')"
 
@@ -26,7 +27,7 @@ if [[ "$(uname -m)" != "arm64" ]]; then
     exit 1
 fi
 
-if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -x "$QWEN_ASSEMBLER" ]]; then
+if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -x "$QWEN_ASSEMBLER" && -x "$WHISPER_ASSEMBLER" ]]; then
     if ! xcrun --find swiftc >/dev/null 2>&1; then
         echo "Apple Command Line Tools are required for the first local setup."
         echo "Run: xcode-select --install"
@@ -40,11 +41,20 @@ if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -
     fi
 
     "$QWEN_ASSEMBLER"
+    "$WHISPER_ASSEMBLER"
     QWEN_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/Qwen3-1.7B-Q8_0.gguf"
     QWEN_RUNTIME="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/runtime/llama-cli"
     if [[ ! -f "$QWEN_MODEL" || "$(stat -f '%z' "$QWEN_MODEL" 2>/dev/null || echo 0)" -lt 1000000000 \
         || ! -x "$QWEN_RUNTIME" ]]; then
         echo "The local Qwen writing model or runtime is incomplete."
+        echo "Check the network connection, then open this installer again."
+        exit 1
+    fi
+    WHISPER_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en.bin"
+    WHISPER_RUNTIME="$SCRIPT_DIRECTORY/Packaging/WhisperRuntime/whisper-cli"
+    if [[ ! -f "$WHISPER_MODEL" || "$(stat -f '%z' "$WHISPER_MODEL" 2>/dev/null || echo 0)" -lt 400000000 \
+        || ! -x "$WHISPER_RUNTIME" ]]; then
+        echo "The local Whisper meeting model or runtime is incomplete."
         echo "Check the network connection, then open this installer again."
         exit 1
     fi
@@ -108,15 +118,16 @@ if [[ "${RAYPLACEMENT_SKIP_LAUNCH:-0}" != "1" ]]; then
 fi
 
 echo
-echo "RayPlacement, Notes, Writing Tools, VS Code Directories, Productivity Tools, and Document Formatter are installed."
+echo "RayPlacement, Notes, Writing Tools, Emoji Picker, VS Code Directories, Productivity Tools, and Document Formatter are installed."
 echo "App: $INSTALLED_APP"
 echo "Plain-text paste: Control-Option-V"
 echo "Writing check: Control-Option-G"
+echo "Emoji picker: tap Command twice"
 echo "Configure any extension shortcut in Settings → Extensions."
 echo "Productivity Tools: offline timezone conversion and confirmed single/all-app force quit (RayPlacement stays open)."
 echo "Choose local models in Settings → Writing and bounded, Dynamic, or Unbounded limits in Settings → Performance."
 echo "Monitor local AI and extension work in Settings → Usage."
-echo "Notes use inline Markdown and can be summarized locally with Qwen."
+echo "Notes use inline Markdown, can be summarized locally with Qwen, and use Local Whisper for reliable meeting dictation."
 echo "Document Formatter opens as a temporary Notes workspace for EDI, JSON, and XML."
 echo "Uninstaller: $SCRIPT_DIRECTORY/Uninstall RayPlacement.command"
 echo "Check selected-text access in Settings → General → Accessibility."

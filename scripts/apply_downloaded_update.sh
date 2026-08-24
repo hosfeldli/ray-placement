@@ -64,6 +64,13 @@ write_progress working 0.34 "Reusing the verified local Qwen model — no model 
 mkdir -p "$SOURCE_ROOT/Packaging/Vendor"
 ditto "$CURRENT_APP/Contents/Resources/Qwen" "$SOURCE_ROOT/Packaging/Vendor/Qwen"
 
+if [[ -f "$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en.bin" ]]; then
+    write_progress working 0.38 "Reusing the verified Local Whisper meeting model…"
+    mkdir -p "$SOURCE_ROOT/Packaging/Vendor/Whisper/model"
+    cp "$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en.bin" \
+        "$SOURCE_ROOT/Packaging/Vendor/Whisper/model/ggml-small.en.bin"
+fi
+
 write_progress working 0.42 "Preparing this Mac's stable RayPlacement signing identity…"
 "$SOURCE_ROOT/scripts/setup_local_signing.sh"
 
@@ -109,7 +116,7 @@ fi
 rm -rf "$BACKUP_APP"
 write_result success "RayPlacement $VERSION was downloaded, verified, locally built, signed, and installed successfully."
 write_progress success 1 "RayPlacement $VERSION is ready."
-# A successful local build temporarily contains another full copy of Qwen.
+# A successful local build temporarily contains another full copy of Qwen and Whisper.
 # Remove only the updater-owned, exactly validated working directory after the
 # signed app and extensions are safely installed. Failed builds are retained so
 # their log and files remain available for troubleshooting.

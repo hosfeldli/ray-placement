@@ -5,3 +5,4 @@ dist/
 Downloads/
 Packaging/RayPlacement.iconset/
 Packaging/Vendor/Qwen/Qwen3-1.7B-Q8_0.gguf
+Packaging/Vendor/Whisper/model/ggml-small.en.bin

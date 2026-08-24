@@ -83,6 +83,9 @@ final class ExtensionExecutor {
         case .openFormatterWorkspace:
             completion(.success("__OPEN_FORMATTER_WORKSPACE__"))
 
+        case .openEmojiPicker:
+            completion(.success("__OPEN_EMOJI_PICKER__"))
+
         case .shell:
             run(action, relativeTo: loaded.directory, completion: completion)
         }

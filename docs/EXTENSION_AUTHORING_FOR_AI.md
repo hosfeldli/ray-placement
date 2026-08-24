@@ -77,9 +77,9 @@ Required fields are `id`, `title`, and `action`. Optional fields are:
 - `subtitle`: short source or context shown below the title.
 - `keywords`: search terms that do not repeat the title.
 - `icon`: an SF Symbols name available on macOS 13 or later.
-- `hotkey`: a default global shortcut. Users can replace, clear, or restore it in **Settings → Extensions**.
+- `hotkey`: a default global shortcut. Users can replace, clear, restore, or independently disable it in **Settings → Extensions**. Users can also disable the containing extension or function without losing settings.
 
-Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) plus one supported key, joined by `+`. Example: `control+option+p`. Defaults should be rare to avoid collisions. Prefer leaving `hotkey` out and letting the user choose one in Settings.
+Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) plus one supported key, joined by `+`. Example: `control+option+p`. `command+command` is the dedicated double-tap Command gesture; it ignores Command presses used with another key. Defaults should be rare to avoid collisions. Prefer leaving `hotkey` out and letting the user choose one in Settings.
 
 ## Action contract
 
@@ -97,6 +97,7 @@ Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) 
 | `forceQuitApplications` | Opens a searchable running-app picker with a destructive-action confirmation | Empty string |
 | `forceQuitAllApplications` | Confirms, then force quits all foreground apps except RayPlacement | Empty string |
 | `openFormatterWorkspace` | Opens RayPlacement's temporary native EDI/JSON/XML formatter note | Empty string |
+| `openEmojiPicker` | Opens RayPlacement's native searchable emoji selector and pastes the selection into the source app | Empty string |
 | `shell` | Runs an executable directly | Absolute or extension-relative executable path |
 
 For `shell`, `arguments` is an array passed directly to the process. RayPlacement never builds a shell command and never expands variables inside an argument. Put conditional logic and safe path expansion in the executable itself. `workingDirectory` is optional.
@@ -136,7 +137,7 @@ timeout_seconds="${RAYPLACEMENT_TIMEOUT_SECONDS:-60}"
 
 Validate both values before passing them as separate arguments to a runtime. Do not interpolate them into an evaluated command string.
 
-Extensions run with the user's normal authority. Paste actions and selected-text capture can ask for macOS Accessibility permission. A `checkWriting` action must use the selected text provided by Accessibility and must not silently substitute clipboard contents. Ordinary global shortcuts, file opening, and script execution do not require Accessibility permission.
+Extensions run with the user's normal authority. Paste actions and selected-text capture can ask for macOS Accessibility permission. A `checkWriting` action uses a user-initiated Copy transaction first, reads only the selected text, and restores the previous clipboard if it remained unchanged; Accessibility selection is the fallback. It must never use unrelated pre-existing clipboard text as the document selection. Ordinary global shortcuts, file opening, and script execution do not require Accessibility permission.
 
 ## AI implementation checklist
 
@@ -149,7 +150,7 @@ Before presenting an extension as complete, an AI agent should:
 5. Test the executable's success path and at least one safe failure path.
 6. Run `swift test`, package the app, and use the installer when changing a bundled extension.
 7. Open RayPlacement, reload extensions, and confirm every new command is visible by title.
-8. Open **Settings → Extensions** and confirm the command has a shortcut recorder.
+8. Open **Settings → Extensions** and confirm the extension, function, and hotkey enabled checkboxes work and the command has a shortcut recorder.
 9. Run the command from the launcher and, if practical, from a configured hotkey.
 10. For AI extensions, test Eco and Maximum, then enable Beta Dynamic and confirm the launched process honors the active thread count and exits at its deadline.
 11. Document permissions, performance behavior, approximate memory, local storage, network use, external tools, and failure behavior.
@@ -160,6 +161,7 @@ Before presenting an extension as complete, an AI agent should:
 - `Extensions/vscode-directories` demonstrates the native interactive `openInVSCode` action.
 - `Extensions/productivity-tools` demonstrates native interactive `convertTimezones`, `forceQuitApplications`, and `forceQuitAllApplications` actions.
 - `Extensions/document-formatter` demonstrates the native temporary-workspace `openFormatterWorkspace` action. Its native implementation keeps deterministic parsing and validation separate from reviewable AI proposals.
+- `Extensions/emoji-picker` demonstrates the native interactive `openEmojiPicker` action and special `command+command` default gesture.
 - `Examples/project-tools` demonstrates URL, file, and shell commands.
 
 When future functionality requires parameters, interactive forms, streaming, or richer command results, evolve the schema version deliberately instead of hiding a new protocol inside existing fields.

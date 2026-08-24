@@ -11,6 +11,9 @@ ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
 QWEN_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Qwen"
 QWEN_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_qwen_model.sh"
+WHISPER_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"
+WHISPER_RUNTIME="$PROJECT_DIRECTORY/Packaging/WhisperRuntime"
+WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en.bin"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
 LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
@@ -22,6 +25,7 @@ export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
 
 mkdir -p "$MODULE_CACHE_DIRECTORY"
 "$QWEN_ASSEMBLER"
+"$WHISPER_ASSEMBLER"
 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
 BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
 
@@ -40,6 +44,18 @@ fi
 ditto "$QWEN_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Qwen"
 rm -rf "$CONTENTS_DIRECTORY/Resources/Qwen/ModelParts"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Qwen/runtime/llama-cli"
+
+if [[ ! -x "$WHISPER_RUNTIME/whisper-cli" || ! -f "$WHISPER_MODEL" ]]; then
+    echo "The bundled Local Whisper provider is incomplete. Run scripts/assemble_whisper_model.sh first."
+    exit 1
+fi
+mkdir -p "$CONTENTS_DIRECTORY/Resources/Whisper/runtime" "$CONTENTS_DIRECTORY/Resources/Whisper/model"
+cp "$WHISPER_RUNTIME/whisper-cli" "$CONTENTS_DIRECTORY/Resources/Whisper/runtime/whisper-cli"
+cp "$WHISPER_RUNTIME/LICENSE" "$CONTENTS_DIRECTORY/Resources/Whisper/LICENSE"
+cp "$WHISPER_RUNTIME/REVISION" "$CONTENTS_DIRECTORY/Resources/Whisper/REVISION"
+cp "$WHISPER_RUNTIME/MODEL_SOURCE" "$CONTENTS_DIRECTORY/Resources/Whisper/MODEL_SOURCE"
+cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en.bin"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Whisper/runtime/whisper-cli"
 
 swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"
 ICONSET_DIRECTORY="$PROJECT_DIRECTORY/Packaging/RayPlacement.iconset"

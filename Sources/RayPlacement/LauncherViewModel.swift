@@ -73,6 +73,7 @@ final class LauncherViewModel: ObservableObject {
         case .vscodePicker: return "Search for a file or directory to open in VS Code…"
         case .timezoneConverter: return "Enter a time like 9:30 AM, 14:00, or now"
         case .forceQuitPicker: return "Search running applications…"
+        case .emojiPicker: return "Search emojis…"
         case .clipboard: return "Search clipboard history…"
         case .writingReview: return "Writing review"
         case .output: return "Command output"
@@ -249,6 +250,9 @@ final class LauncherViewModel: ObservableObject {
         case .forceQuitPicker:
             isSearching = false
             results = runningApplicationItems()
+        case .emojiPicker:
+            isSearching = false
+            results = emojiItems()
         case .clipboard:
             refreshClipboardResults()
         case .writingReview:
@@ -449,8 +453,36 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
+    private func emojiItems() -> [LauncherItem] {
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let matching = EmojiCatalog.entries.filter { entry in
+            cleanQuery.isEmpty
+                || entry.emoji.contains(cleanQuery)
+                || FuzzyMatcher.score(([entry.name] + entry.keywords).joined(separator: " "), query: cleanQuery) != nil
+        }
+        guard !matching.isEmpty else {
+            return [placeholderItem(
+                id: "emoji.empty",
+                title: "No matching emoji",
+                subtitle: "Try a feeling, object, or action",
+                icon: "face.smiling"
+            )]
+        }
+        return matching.prefix(60).map { entry in
+            LauncherItem(
+                id: "emoji.\(entry.id)",
+                title: entry.name,
+                subtitle: entry.keywords.prefix(4).joined(separator: " · "),
+                icon: .text(entry.emoji),
+                keywords: entry.keywords,
+                action: .pasteText(entry.emoji),
+                accessory: "Paste"
+            )
+        }
+    }
+
     private func extensionItems() -> [LauncherItem] {
-        extensionCommands.map { loaded in
+        extensionCommands.filter(SettingsStore.shared.isCommandEnabled).map { loaded in
             LauncherItem(
                 id: "extension.\(loaded.extensionID).\(loaded.command.id)",
                 title: loaded.command.title,

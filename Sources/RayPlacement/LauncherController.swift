@@ -21,6 +21,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
+    private var keyboardSelectionContext: KeyboardSelectionService.Capture?
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
     private var localEventMonitor: Any?
@@ -204,6 +205,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
               !frontmost.isTerminated else {
             previousApplication = nil
             selectedTextContext = nil
+            keyboardSelectionContext = nil
             focusedTextContext = nil
             return
         }
@@ -211,6 +213,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         previousApplication = frontmost
         focusedTextContext = try? SelectedTextService.editableContext(in: frontmost.processIdentifier)
         selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
+        keyboardSelectionContext = nil
     }
 
     private func rememberExternalApplicationActivation() {
@@ -329,6 +332,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.confirmForceQuitAllApplications()
                 } else if output == "__OPEN_FORMATTER_WORKSPACE__" {
                     self.notesWindow.presentFormatterWorkspace()
+                } else if output == "__OPEN_EMOJI_PICKER__" {
+                    self.viewModel.enter(.emojiPicker)
+                    if !self.panel.isVisible { self.presentPanel() }
                 } else if let output {
                     self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                     if !self.panel.isVisible { self.presentPanel() }
@@ -352,23 +358,36 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         hide()
-        if let selectedTextContext,
-           selectedTextContext.processIdentifier == previousApplication.processIdentifier {
-            showWritingReview(for: selectedTextContext.text)
-            return
-        }
-        previousApplication.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+        // Copy is the broadest public selected-text API on macOS. It works in
+        // browser, Electron, Office, and custom editors that omit AXSelectedText.
+        captureWritingSelectionWithKeyboard(from: previousApplication)
+    }
+
+    private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication) {
+        toast.show("Reading the highlight with Copy…", style: .working, duration: 4)
+        KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
             guard let self else { return }
-            do {
-                let target = try self.resolveSelectedTextTarget(preferred: previousApplication)
-                self.previousApplication = target.application
-                self.lastExternalApplication = target.application
-                let context = target.context
-                self.selectedTextContext = context
-                self.showWritingReview(for: context.text)
-            } catch {
-                self.presentError(title: "Check Spelling & Grammar", error: error)
+            switch result {
+            case .success(let capture):
+                self.previousApplication = application
+                self.lastExternalApplication = application
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = capture
+                self.showWritingReview(for: capture.text)
+            case .failure(let keyboardError):
+                do {
+                    let target = try self.resolveSelectedTextTarget(preferred: application)
+                    self.previousApplication = target.application
+                    self.lastExternalApplication = target.application
+                    self.keyboardSelectionContext = nil
+                    self.selectedTextContext = target.context
+                    self.showWritingReview(for: target.context.text)
+                } catch {
+                    self.presentError(
+                        title: "Check Spelling & Grammar",
+                        message: "RayPlacement could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                    )
+                }
             }
         }
     }
@@ -454,8 +473,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             presentError(title: "Paste", message: "Enable RayPlacement in System Settings → Privacy & Security → Accessibility to paste automatically.")
             return
         }
-        previousApplication.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
+        previousApplication.unhide()
+        previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
             guard let self else { return }
             do {
                 let context: SelectedTextService.SelectionContext
@@ -474,21 +494,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     message: "The original insertion point changed. Put the cursor back where you want the text and try again."
                 )
             } catch {
-                self.postPasteShortcut(successMessage: "Pasted as plain text")
+                self.postPasteShortcut(into: previousApplication, successMessage: "Pasted as plain text")
             }
         }
     }
 
-    private func postPasteShortcut(successMessage: String?) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
-            guard let source = CGEventSource(stateID: .hidSystemState),
-                  let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return }
-            down.flags = .maskCommand
-            up.flags = .maskCommand
-            down.post(tap: .cghidEventTap)
-            up.post(tap: .cghidEventTap)
-            if let successMessage { self?.toast.show(successMessage) }
+    private func postPasteShortcut(
+        into application: NSRunningApplication,
+        successMessage: String?
+    ) {
+        KeyboardSelectionService.paste(into: application) { [weak self] result in
+            switch result {
+            case .success:
+                if let successMessage { self?.toast.show(successMessage) }
+            case .failure(let error):
+                self?.presentError(
+                    title: "Paste",
+                    message: "RayPlacement could not return keyboard focus and paste. The text remains on the clipboard. \(error.localizedDescription)"
+                )
+            }
         }
     }
 
@@ -503,9 +527,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             presentError(title: "Replace Selected Text", error: SelectedTextService.SelectionError.accessibilityRequired)
             return
         }
-        previousApplication.activate(options: [.activateIgnoringOtherApps])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+        previousApplication.unhide()
+        previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
             guard let self else { return }
+            if self.selectedTextContext == nil,
+               self.keyboardSelectionContext?.processIdentifier == previousApplication.processIdentifier {
+                self.pasteReplacementWithKeyboard(text, in: previousApplication)
+                return
+            }
             do {
                 let context = try self.replacementContext(in: previousApplication)
                 self.selectedTextContext = context
@@ -556,7 +586,36 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             let context = try replacementContext(in: application)
             pasteReplacement(text, using: context)
         } catch {
-            presentError(title: "Replace Selected Text", error: error)
+            if keyboardSelectionContext?.processIdentifier == application.processIdentifier {
+                pasteReplacementWithKeyboard(text, in: application)
+            } else {
+                presentError(title: "Replace Selected Text", error: error)
+            }
+        }
+    }
+
+    private func pasteReplacementWithKeyboard(_ text: String, in application: NSRunningApplication) {
+        guard !application.isTerminated else {
+            presentError(title: "Replace Selected Text", message: "The source app is no longer running.")
+            return
+        }
+        clipboard.copy(text)
+        toast.show("Returning to the source selection…", style: .working, duration: 5)
+        KeyboardSelectionService.paste(into: application) { [weak self] result in
+            guard let self else { return }
+            guard case .success = result else {
+                let detail: String
+                if case .failure(let error) = result { detail = error.localizedDescription } else { detail = "Unknown error." }
+                self.presentError(
+                    title: "Replace Selected Text",
+                    message: "RayPlacement could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
+                )
+                return
+            }
+            self.selectedTextContext = nil
+            self.keyboardSelectionContext = nil
+            self.focusedTextContext = nil
+            self.toast.show("Replaced the highlighted text")
         }
     }
 
@@ -569,7 +628,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             try SelectedTextService.restoreSelection(using: refreshed)
             toast.show("Direct edit was unavailable · using a verified paste…", style: .working, duration: 8)
             clipboard.copy(text)
-            postPasteShortcut(successMessage: nil)
+            guard let application = NSRunningApplication(processIdentifier: refreshed.processIdentifier) else {
+                presentError(title: "Replace Selected Text", message: "The source app is no longer running. The corrected text is on the clipboard.")
+                return
+            }
+            postPasteShortcut(into: application, successMessage: nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
                 guard let self else { return }
                 switch SelectedTextService.observeReplacement(text, using: refreshed) {

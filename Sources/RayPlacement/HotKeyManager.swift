@@ -7,7 +7,7 @@ final class HotKeyManager {
     struct Registration {
         let identifier: String
         let shortcut: ShortcutSpec
-        let reference: EventHotKeyRef
+        let reference: EventHotKeyRef?
         let handler: (NSRunningApplication?) -> Void
     }
 
@@ -29,6 +29,11 @@ final class HotKeyManager {
     private var nextID: UInt32 = 1
     private var registrations: [UInt32: Registration] = [:]
     private var eventHandler: EventHandlerRef?
+    private var globalModifierMonitor: Any?
+    private var localModifierMonitor: Any?
+    private var commandIsDown = false
+    private var commandWasChorded = false
+    private var lastCleanCommandRelease: TimeInterval?
 
     init() {
         installEventHandler()
@@ -37,6 +42,7 @@ final class HotKeyManager {
     deinit {
         unregisterAll()
         if let eventHandler { RemoveEventHandler(eventHandler) }
+        removeDoubleCommandMonitors()
     }
 
     func register(identifier: String, shortcut: ShortcutSpec, handler: @escaping () -> Void) throws {
@@ -48,6 +54,10 @@ final class HotKeyManager {
         shortcut: ShortcutSpec,
         handler: @escaping (NSRunningApplication?) -> Void
     ) throws {
+        if isDoubleCommand(shortcut) {
+            try registerDoubleCommand(identifier: identifier, shortcut: shortcut, handler: handler)
+            return
+        }
         guard let keyCode = Self.keyCode(for: shortcut.key) else {
             throw RegistrationError.invalidKey(shortcut.key)
         }
@@ -88,9 +98,10 @@ final class HotKeyManager {
         let ids = registrations.compactMap { $0.value.identifier == identifier ? $0.key : nil }
         for id in ids {
             if let registration = registrations.removeValue(forKey: id) {
-                UnregisterEventHotKey(registration.reference)
+                if let reference = registration.reference { UnregisterEventHotKey(reference) }
             }
         }
+        updateDoubleCommandMonitors()
     }
 
     func unregisterAll(prefix: String? = nil) {
@@ -99,8 +110,95 @@ final class HotKeyManager {
         }
         for id in ids {
             if let registration = registrations.removeValue(forKey: id) {
-                UnregisterEventHotKey(registration.reference)
+                if let reference = registration.reference { UnregisterEventHotKey(reference) }
             }
+        }
+        updateDoubleCommandMonitors()
+    }
+
+    private func registerDoubleCommand(
+        identifier: String,
+        shortcut: ShortcutSpec,
+        handler: @escaping (NSRunningApplication?) -> Void
+    ) throws {
+        if let existing = registrations.first(where: { $0.value.identifier == identifier && $0.value.shortcut == shortcut }) {
+            registrations[existing.key] = Registration(
+                identifier: identifier,
+                shortcut: shortcut,
+                reference: nil,
+                handler: handler
+            )
+            updateDoubleCommandMonitors()
+            return
+        }
+        guard !registrations.values.contains(where: { $0.identifier != identifier && $0.shortcut == shortcut }) else {
+            throw RegistrationError.duplicate(shortcut)
+        }
+        let id = nextID
+        nextID += 1
+        unregister(identifier: identifier)
+        registrations[id] = Registration(identifier: identifier, shortcut: shortcut, reference: nil, handler: handler)
+        updateDoubleCommandMonitors()
+    }
+
+    private func isDoubleCommand(_ shortcut: ShortcutSpec) -> Bool {
+        shortcut.key == "command" && shortcut.modifiers == [.command]
+    }
+
+    private func updateDoubleCommandMonitors() {
+        let needed = registrations.values.contains { isDoubleCommand($0.shortcut) }
+        if needed, globalModifierMonitor == nil {
+            let mask: NSEvent.EventTypeMask = [.flagsChanged, .keyDown]
+            globalModifierMonitor = NSEvent.addGlobalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.observeDoubleCommand(event)
+            }
+            localModifierMonitor = NSEvent.addLocalMonitorForEvents(matching: mask) { [weak self] event in
+                self?.observeDoubleCommand(event)
+                return event
+            }
+        } else if !needed {
+            removeDoubleCommandMonitors()
+        }
+    }
+
+    private func removeDoubleCommandMonitors() {
+        if let globalModifierMonitor { NSEvent.removeMonitor(globalModifierMonitor) }
+        if let localModifierMonitor { NSEvent.removeMonitor(localModifierMonitor) }
+        globalModifierMonitor = nil
+        localModifierMonitor = nil
+        commandIsDown = false
+        commandWasChorded = false
+        lastCleanCommandRelease = nil
+    }
+
+    private func observeDoubleCommand(_ event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.type == .keyDown {
+            if commandIsDown { commandWasChorded = true }
+            return
+        }
+        guard event.type == .flagsChanged, event.keyCode == 54 || event.keyCode == 55 else { return }
+        let commandNowDown = flags.contains(.command)
+        let otherModifiers: NSEvent.ModifierFlags = [.option, .control, .shift]
+        if commandNowDown, !commandIsDown {
+            commandIsDown = true
+            commandWasChorded = !flags.intersection(otherModifiers).isEmpty
+            return
+        }
+        guard !commandNowDown, commandIsDown else { return }
+        commandIsDown = false
+        guard !commandWasChorded else {
+            commandWasChorded = false
+            lastCleanCommandRelease = nil
+            return
+        }
+        let now = event.timestamp
+        if let previous = lastCleanCommandRelease, now - previous <= 0.38 {
+            lastCleanCommandRelease = nil
+            let application = NSWorkspace.shared.frontmostApplication
+            registrations.values.first(where: { isDoubleCommand($0.shortcut) })?.handler(application)
+        } else {
+            lastCleanCommandRelease = now
         }
     }
 

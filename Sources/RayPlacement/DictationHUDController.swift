@@ -161,7 +161,9 @@ private struct DictationHUDView: View {
     private var secondaryText: String {
         switch dictation.phase {
         case .requestingPermission:
-            return "Approve Microphone and Speech Recognition if prompted"
+            return SettingsStore.shared.dictationEngine == .localWhisper
+                ? "Approve Microphone access if prompted"
+                : "Approve Microphone and Speech Recognition if prompted"
         case .recording:
             return "\(Self.clock(dictation.recordingElapsed)) · \(dictation.inputSignalText)"
         case .transcribing:

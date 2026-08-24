@@ -54,6 +54,10 @@ final class ClipboardHistoryService: ObservableObject {
         if SettingsStore.shared.clipboardEnabled { insert(text) }
     }
 
+    func synchronizePasteboardChangeCount() {
+        lastChangeCount = NSPasteboard.general.changeCount
+    }
+
     func clear() {
         entries.removeAll()
         save()

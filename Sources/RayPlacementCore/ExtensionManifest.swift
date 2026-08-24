@@ -53,6 +53,7 @@ public struct ExtensionAction: Codable, Sendable {
         case forceQuitApplications
         case forceQuitAllApplications
         case openFormatterWorkspace
+        case openEmojiPicker
     }
 
     public var type: ActionType

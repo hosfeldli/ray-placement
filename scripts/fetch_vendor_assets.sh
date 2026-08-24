@@ -185,3 +185,4 @@ test -f "$QWEN_RUNTIME_DIRECTORY/LICENSE"
 )
 
 echo "Vendor assets downloaded and verified."
+"$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"

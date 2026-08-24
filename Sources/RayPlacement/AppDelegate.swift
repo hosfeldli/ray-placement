@@ -159,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeys.unregisterAll(prefix: "extension.")
         var issues: [ExtensionIssue] = []
         for loaded in launcher.viewModel.extensionCommands {
+            guard SettingsStore.shared.isHotkeyEnabled(loaded) else { continue }
             guard let raw = SettingsStore.shared.effectiveShortcut(for: loaded) else { continue }
             guard let shortcut = ShortcutSpec(string: raw) else {
                 issues.append(ExtensionIssue(

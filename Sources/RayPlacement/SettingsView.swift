@@ -8,6 +8,12 @@ private extension LoadedExtensionCommand {
     var settingsIdentifier: String { "\(extensionID).\(command.id)" }
 }
 
+private struct SettingsExtensionGroup: Identifiable {
+    let id: String
+    let name: String
+    let commands: [LoadedExtensionCommand]
+}
+
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general, clipboard, writing, performance, usage, extensions, about
 
@@ -192,7 +198,7 @@ struct SettingsView: View {
                     "Active Qwen budget",
                     value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeWritingPerformance.timeoutDescription(settings.runtimeWritingPerformance.writingTimeout))"
                 )
-                if settings.writingPerformance == .unbounded {
+                if settings.runtimeWritingPerformance == .unbounded {
                     Label("Uses every CPU core with no timeout", systemImage: "bolt.trianglebadge.exclamationmark.fill")
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.orange)
@@ -200,6 +206,21 @@ struct SettingsView: View {
             }
 
             Section("Note dictation") {
+                Picker("Transcription engine", selection: $settings.dictationEngine) {
+                    ForEach(DictationEngine.allCases) { engine in
+                        Text(engine.title).tag(engine)
+                    }
+                }
+                Text(settings.dictationEngine.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Transcribe completed segments while recording", isOn: $settings.dictationTranscribeWhileRecording)
+                    .disabled(settings.dictationEngine != .localWhisper)
+                if settings.dictationTranscribeWhileRecording, settings.dictationEngine == .localWhisper {
+                    Text("Whisper processes each secured one-minute segment in the background. This reduces work after Stop but uses the selected CPU budget during the meeting.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 performanceSlider(
                     "Dictation",
                     selection: $settings.dictationPerformance,
@@ -207,7 +228,7 @@ struct SettingsView: View {
                 )
                 LabeledContent(
                     "Work limit",
-                    value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; \(settings.runtimeDictationPerformance.timeoutDescription(settings.runtimeDictationPerformance.dictationTranscriptionTimeout)) per segment"
+                    value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; no transcription timeout"
                 )
             }
 
@@ -585,8 +606,36 @@ struct SettingsView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 8) {
-                        ForEach(viewModel.extensionCommands, id: \LoadedExtensionCommand.settingsIdentifier) { loaded in
-                            ExtensionShortcutRow(settings: settings, loaded: loaded)
+                        ForEach(extensionGroups) { group in
+                            VStack(spacing: 0) {
+                                HStack(spacing: 8) {
+                                    Image(systemName: "puzzlepiece.extension.fill")
+                                        .foregroundStyle(SettingsColors.violet)
+                                    Text(group.name)
+                                        .font(.system(size: 13, weight: .semibold))
+                                    Spacer()
+                                    Toggle(
+                                        "Enabled",
+                                        isOn: Binding(
+                                            get: { settings.isExtensionEnabled(group.id) },
+                                            set: { settings.setExtensionEnabled($0, extensionID: group.id) }
+                                        )
+                                    )
+                                    .toggleStyle(.checkbox)
+                                    .font(.caption)
+                                }
+                                .padding(.horizontal, 11)
+                                .frame(height: 36)
+
+                                Divider().opacity(0.6)
+
+                                ForEach(group.commands, id: \LoadedExtensionCommand.settingsIdentifier) { loaded in
+                                    ExtensionShortcutRow(settings: settings, loaded: loaded)
+                                        .disabled(!settings.isExtensionEnabled(group.id))
+                                        .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.48)
+                                }
+                            }
+                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
                         }
                     }
                     .padding(.vertical, 2)
@@ -594,6 +643,20 @@ struct SettingsView: View {
             }
         }
         .padding(12)
+    }
+
+    private var extensionGroups: [SettingsExtensionGroup] {
+        Dictionary(grouping: viewModel.extensionCommands, by: \LoadedExtensionCommand.extensionID)
+            .map { id, commands in
+                SettingsExtensionGroup(
+                    id: id,
+                    name: commands.first?.extensionName ?? id,
+                    commands: commands.sorted {
+                        $0.command.title.localizedStandardCompare($1.command.title) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
     private var aboutTab: some View {
@@ -661,7 +724,7 @@ private struct ExtensionShortcutRow: View {
     let loaded: LoadedExtensionCommand
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 9) {
             Image(systemName: loaded.command.icon ?? "puzzlepiece.extension.fill")
                 .foregroundStyle(Color.accentColor)
                 .frame(width: 24)
@@ -669,11 +732,27 @@ private struct ExtensionShortcutRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(loaded.command.title)
                     .font(.system(size: 13, weight: .semibold))
-                Text(loaded.extensionName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             Spacer(minLength: 10)
+            Toggle(
+                "Function",
+                isOn: Binding(
+                    get: { settings.isCommandEnabled(loaded) },
+                    set: { settings.setCommandEnabled($0, for: loaded) }
+                )
+            )
+            .toggleStyle(.checkbox)
+            .font(.caption2)
+            Toggle(
+                "Hotkey",
+                isOn: Binding(
+                    get: { settings.isHotkeyEnabled(loaded) },
+                    set: { settings.setHotkeyEnabled($0, for: loaded) }
+                )
+            )
+            .toggleStyle(.checkbox)
+            .font(.caption2)
+            .disabled(!settings.isCommandEnabled(loaded))
             ShortcutRecorder(
                 shortcut: Binding(
                     get: { settings.effectiveShortcut(for: loaded) ?? "" },
@@ -681,17 +760,23 @@ private struct ExtensionShortcutRow: View {
                 ),
                 label: "\(loaded.command.title) shortcut"
             )
-            .frame(width: 145, height: 28)
+            .frame(width: 112, height: 28)
+            .disabled(!settings.isCommandEnabled(loaded) || !settings.isHotkeyEnabled(loaded))
 
-            Button("Clear") { settings.setShortcut(nil, for: loaded) }
-                .disabled(settings.effectiveShortcut(for: loaded) == nil)
-            if settings.hasShortcutOverride(for: loaded) {
+            Menu {
+                Button("Clear Shortcut") { settings.setShortcut(nil, for: loaded) }
+                    .disabled(settings.effectiveShortcut(for: loaded) == nil)
                 Button("Use Default") { settings.resetShortcut(for: loaded) }
+                    .disabled(!settings.hasShortcutOverride(for: loaded))
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 22, height: 22)
             }
+            .menuStyle(.borderlessButton)
+            .frame(width: 26)
         }
         .padding(.horizontal, 11)
-        .padding(.vertical, 9)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 9))
+        .padding(.vertical, 7)
     }
 }
 
@@ -733,10 +818,12 @@ private final class ShortcutCaptureView: NSView {
     }
     private var recording = false {
         didSet {
+            if !recording { lastCommandRelease = nil }
             needsDisplay = true
             updateAccessibilityValue()
         }
     }
+    private var lastCommandRelease: TimeInterval?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -793,6 +880,25 @@ private final class ShortcutCaptureView: NSView {
         window?.makeFirstResponder(nil)
     }
 
+    override func flagsChanged(with event: NSEvent) {
+        guard recording, event.keyCode == 54 || event.keyCode == 55 else {
+            super.flagsChanged(with: event)
+            return
+        }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard !flags.contains(.command) else { return }
+        let now = event.timestamp
+        if let previous = lastCommandRelease, now - previous <= 0.55 {
+            let value = ShortcutSpec(modifiers: [.command], key: "command").storageString
+            shortcut = value
+            onChange?(value)
+            recording = false
+            window?.makeFirstResponder(nil)
+        } else {
+            lastCommandRelease = now
+        }
+    }
+
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard recording else { return super.performKeyEquivalent(with: event) }
         keyDown(with: event)
@@ -830,7 +936,7 @@ private final class ShortcutCaptureView: NSView {
 
     private func updateAccessibilityValue() {
         let value = recording
-            ? "Recording. Press a modifier and key."
+            ? "Recording. Press a modifier and key, or tap Command twice."
             : (shortcut.isEmpty ? "No shortcut" : (ShortcutSpec(string: shortcut)?.displayString ?? shortcut))
         setAccessibilityValue(value)
     }

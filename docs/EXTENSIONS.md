@@ -29,7 +29,7 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 }
 ```
 
-`icon` is any SF Symbols name. `subtitle`, `keywords`, and `hotkey` are optional. Hotkeys use names such as `command`, `option`, `control`, and `shift`, followed by a supported letter, number, arrow, Space, Tab, Return, Escape, or F1–F12. Every loaded command also gets a recorder in **Settings → Extensions**, where the user can replace, clear, or restore its manifest shortcut.
+`icon` is any SF Symbols name. `subtitle`, `keywords`, and `hotkey` are optional. Hotkeys use names such as `command`, `option`, `control`, and `shift`, followed by a supported letter, number, arrow, Space, Tab, Return, Escape, or F1–F12. `command+command` is the special double-Command gesture. Every loaded command also gets a recorder in **Settings → Extensions**, where the user can replace, clear, restore, or independently disable its shortcut. Each extension and function has its own enabled checkbox; disabling one preserves its configuration.
 
 ## Action types
 
@@ -47,6 +47,7 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 | `forceQuitApplications` | Opens a searchable running-app picker and requires confirmation before force quitting | `value` is ignored |
 | `forceQuitAllApplications` | Confirms, then force quits every foreground app except RayPlacement | `value` is ignored |
 | `openFormatterWorkspace` | Opens the temporary Notes workspace for EDI, JSON, and XML formatting, validation, inspection, search, and optional local-AI proposals | `value` is ignored |
+| `openEmojiPicker` | Opens the native searchable emoji selector and pastes the chosen emoji into the source app | `value` is ignored |
 | `shell` | Absolute or extension-relative executable path | `arguments`, `workingDirectory` |
 
 Arguments are passed directly to the executable—RayPlacement does not assemble a shell command. Put shell logic in a script with a shebang, then mark it executable:
@@ -73,9 +74,9 @@ RayPlacement assigns the child process background, utility, or foreground priori
 
 ## Trust and permissions
 
-Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as its source. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
+Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` sends the standard Copy command to the previously focused app so it works in browsers, Electron, Office, and custom editors; RayPlacement reads only the resulting text and immediately restores the prior clipboard when no other app changed it. Accessibility selection is the fallback. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. The special double-Command gesture is observed only while its hotkey is enabled and ignores Command when used in a chord. Performance limits do not turn untrusted executable code into a security sandbox.
 
-The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
+The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/emoji-picker` adds the searchable emoji selector with double Command as its default gesture. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 
 For a precise AI-oriented build and verification contract, see [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md). A JSON Schema is available at [extension-manifest.schema.json](extension-manifest.schema.json).
 

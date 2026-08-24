@@ -17,6 +17,10 @@ test -f "$APP_DIRECTORY/Contents/Resources/Qwen/REVISION"
 test ! -d "$APP_DIRECTORY/Contents/Resources/Qwen/ModelParts"
 test ! -e "$APP_DIRECTORY/Contents/Resources/CoEdit"
 test ! -e "$APP_DIRECTORY/Contents/Resources/Tools/harper-cli"
+test -x "$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli"
+test -f "$APP_DIRECTORY/Contents/Resources/Whisper/model/ggml-small.en.bin"
+test -f "$APP_DIRECTORY/Contents/Resources/Whisper/LICENSE"
+test -f "$APP_DIRECTORY/Contents/Resources/Whisper/REVISION"
 plutil -lint "$APP_DIRECTORY/Contents/Info.plist" >/dev/null
 codesign --verify --deep --strict "$APP_DIRECTORY"
 
@@ -28,8 +32,8 @@ MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDe
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.10.1" ]]
-[[ "$BUILD_NUMBER" == "17" ]]
+[[ "$VERSION" == "1.11.1" ]]
+[[ "$BUILD_NUMBER" == "19" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
@@ -41,8 +45,12 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
 fi
 file "$BINARY" | grep -q "Mach-O 64-bit executable arm64"
 file "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli" | grep -q "Mach-O 64-bit executable arm64"
+file "$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" | grep -q "Mach-O 64-bit executable arm64"
 echo "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a  $APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf" | shasum -a 256 -c - >/dev/null
 echo "1895313a209f70c745ccd8d1946c2c81c84e87ac50564ddb3dd4adb376dd7a52  $APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli" | shasum -a 256 -c - >/dev/null
+echo "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc  $APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" | shasum -a 256 -c - >/dev/null
+echo "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d  $APP_DIRECTORY/Contents/Resources/Whisper/model/ggml-small.en.bin" | shasum -a 256 -c - >/dev/null
+"$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" --version | grep -q "1.9.1"
 
 QWEN_RUNTIME="$APP_DIRECTORY/Contents/Resources/Qwen/runtime"
 QWEN_MODEL="$APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf"

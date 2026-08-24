@@ -825,6 +825,7 @@ private extension LauncherMode {
         case .vscodePicker: return "vscode"
         case .timezoneConverter: return "timezone"
         case .forceQuitPicker: return "force-quit"
+        case .emojiPicker: return "emoji"
         case .clipboard: return "clipboard"
         case .writingReview: return "writing-review"
         case .output: return "output"
