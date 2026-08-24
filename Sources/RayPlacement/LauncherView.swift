@@ -184,12 +184,12 @@ struct LauncherView: View {
     }
 
     private func outputView(title: String, text: String, state: LauncherOutputState) -> some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 12) {
             if case .running = state {
-                HStack(spacing: 18) {
+                HStack(spacing: 12) {
                     TaskOrbitView(color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
-                        .frame(width: 54, height: 54)
-                    VStack(alignment: .leading, spacing: 5) {
+                        .frame(width: 36, height: 36)
+                    VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(title).font(.system(size: 16, weight: .bold))
                             StatusCapsule(text: isAIOutput(title) ? "LOCAL AI" : "RUNNING", color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
@@ -201,7 +201,7 @@ struct LauncherView: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .padding(18)
+                .padding(13)
                 .background(
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(RayColors.cardBackground)
@@ -219,7 +219,7 @@ struct LauncherView: View {
                             .font(.system(size: 17, weight: .bold))
                             .foregroundStyle(outputStateColor(state))
                     }
-                    .frame(width: 38, height: 38)
+                    .frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).font(.system(size: 16, weight: .bold))
                         Text(state == .error ? "RayPlacement needs your attention" : "Finished successfully")
@@ -240,7 +240,7 @@ struct LauncherView: View {
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.09)))
             }
         }
-        .padding(20)
+        .padding(16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
@@ -353,7 +353,7 @@ struct LauncherView: View {
                         .font(.system(size: 16, weight: .bold))
                         .foregroundStyle(review.issues.isEmpty ? Color.green : RayColors.violet)
                 }
-                .frame(width: 38, height: 38)
+                .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(review.issues.isEmpty ? "Your writing is ready" : "AI correction ready")
                         .font(.system(size: 16, weight: .bold))
@@ -750,7 +750,7 @@ private struct TaskOrbitView: View {
                 .rotationEffect(.degrees(spinning ? 360 : 0))
                 .padding(5)
             Image(systemName: "sparkles")
-                .font(.system(size: 16, weight: .bold))
+                .font(.system(size: 11, weight: .bold))
                 .foregroundStyle(color)
         }
         .onAppear {
@@ -776,19 +776,19 @@ private struct ActivityTimeline: View {
                     ZStack {
                         Circle()
                             .fill(index <= activeStep ? RayColors.indigo : Color.primary.opacity(0.09))
-                            .frame(width: 18, height: 18)
+                            .frame(width: 14, height: 14)
                         if index < activeStep {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 8, weight: .bold))
+                                .font(.system(size: 7, weight: .bold))
                                 .foregroundStyle(.white)
                         } else {
                             Circle()
                                 .fill(index == activeStep ? Color.white : Color.secondary.opacity(0.45))
-                                .frame(width: 5, height: 5)
+                                .frame(width: 4, height: 4)
                         }
                     }
                     Text(label)
-                        .font(.system(size: 11, weight: index == activeStep ? .semibold : .medium))
+                        .font(.system(size: 10, weight: index == activeStep ? .semibold : .medium))
                         .foregroundStyle(index <= activeStep ? Color.primary : .secondary)
                 }
                 if index < labels.count - 1 {
@@ -798,7 +798,7 @@ private struct ActivityTimeline: View {
                 }
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Current step: \(labels[activeStep])")
     }

@@ -79,6 +79,15 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func toggleVisibility() {
+        if let window, window.isVisible {
+            store.flush()
+            window.orderOut(nil)
+        } else {
+            present()
+        }
+    }
+
     func presentQuickNote() {
         store.closeFormatterWorkspace()
         store.selectMostRecentNote()

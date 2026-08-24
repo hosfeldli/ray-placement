@@ -84,7 +84,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func showNotes() {
         hide()
-        notesWindow.present()
+        notesWindow.toggleVisibility()
     }
 
     func showQuickNote() {
@@ -479,7 +479,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func postPasteShortcut(successMessage: String) {
+    private func postPasteShortcut(successMessage: String?) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
             guard let source = CGEventSource(stateID: .hidSystemState),
                   let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
@@ -488,7 +488,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             up.flags = .maskCommand
             down.post(tap: .cghidEventTap)
             up.post(tap: .cghidEventTap)
-            self?.toast.show(successMessage)
+            if let successMessage { self?.toast.show(successMessage) }
         }
     }
 
@@ -528,7 +528,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         retryCount: Int
     ) {
         switch SelectedTextService.observeReplacement(text, using: context) {
-        case .replaced, .unavailable:
+        case .replaced, .changed, .unavailable:
             selectedTextContext = nil
             focusedTextContext = nil
             toast.show("Replaced the exact highlighted text")
@@ -548,11 +548,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             } else {
                 pasteReplacement(text, using: context)
             }
-        case .changed:
-            presentError(
-                title: "Replace Selected Text",
-                message: "The original highlighted text changed while the editor was updating. RayPlacement did not paste over it. Select the text again and rerun the writing check."
-            )
         }
     }
 
@@ -574,15 +569,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             try SelectedTextService.restoreSelection(using: refreshed)
             toast.show("Direct edit was unavailable · using a verified paste…", style: .working, duration: 8)
             clipboard.copy(text)
-            postPasteShortcut(successMessage: "Replaced the exact highlighted text")
+            postPasteShortcut(successMessage: nil)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
                 guard let self else { return }
                 switch SelectedTextService.observeReplacement(text, using: refreshed) {
-                case .replaced, .unavailable:
+                case .replaced, .changed, .unavailable:
                     self.selectedTextContext = nil
                     self.focusedTextContext = nil
                     self.toast.show("Replaced the exact highlighted text")
-                case .originalStillPresent, .changed:
+                case .originalStillPresent:
                     self.presentError(
                         title: "Replace Selected Text",
                         message: "The editor did not accept the replacement. The corrected text is on the clipboard, so you can paste it manually with Command-V."

@@ -30,7 +30,7 @@ final class ActionToastController {
 
     init() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 330, height: 62),
+            contentRect: NSRect(x: 0, y: 0, width: 310, height: 48),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -84,24 +84,24 @@ private struct ActionToastView: View {
     let style: ActionToastController.Style
 
     var body: some View {
-        HStack(spacing: 11) {
+        HStack(spacing: 9) {
             if style == .working {
                 ProgressView().controlSize(.small)
             } else {
                 Image(systemName: style.symbol)
-                    .font(.system(size: 17, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(style.color)
             }
             Text(message)
-                .font(.system(size: 13.5, weight: .semibold))
+                .font(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 17)
-        .frame(width: 330, height: 62)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 14)
+        .frame(width: 310, height: 48)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
         )
         .accessibilityElement(children: .combine)

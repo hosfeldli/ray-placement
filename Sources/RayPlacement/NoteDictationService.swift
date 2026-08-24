@@ -96,6 +96,13 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
     }
 
+    var inputSignalText: String {
+        guard phase == .recording else { return "" }
+        if audioLevel < 0.10 { return "Listening for room audio" }
+        if audioLevel < 0.28 { return "Quiet speech detected" }
+        return "Speech detected"
+    }
+
     func performPrimaryAction(destinationNoteID: UUID?, destinationNoteTitle: String? = nil) {
         switch phase {
         case .idle:
@@ -188,10 +195,13 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 .appendingPathComponent("note-dictation-\(UUID().uuidString).m4a")
             let settings: [String: Any] = [
                 AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 16_000,
+                // Preserve distant voices and consonants that were easily lost by
+                // the previous low-bandwidth voice recording. Recognition still
+                // happens only after Stop, so this does not add live model load.
+                AVSampleRateKey: 48_000,
                 AVNumberOfChannelsKey: 1,
-                AVEncoderBitRateKey: 32_000,
-                AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue
+                AVEncoderBitRateKey: 96_000,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
             ]
             let recorder = try AVAudioRecorder(url: url, settings: settings)
             recorder.delegate = self
@@ -508,8 +518,18 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 guard let self, self.phase == .recording, let recorder = self.recorder else { return }
                 recorder.updateMeters()
                 self.recordingElapsed = recorder.currentTime
-                let decibels = Double(recorder.averagePower(forChannel: 0))
-                self.audioLevel = min(1, max(0, (decibels + 55) / 55))
+                let average = Self.normalizedLevel(
+                    decibels: Double(recorder.averagePower(forChannel: 0)),
+                    floor: -68,
+                    ceiling: -8
+                )
+                let peak = Self.normalizedLevel(
+                    decibels: Double(recorder.peakPower(forChannel: 0)),
+                    floor: -62,
+                    ceiling: -3
+                )
+                let detected = max(average, peak * 0.78)
+                self.audioLevel = (self.audioLevel * 0.68) + (detected * 0.32)
             }
         }
         meterTimer = timer
@@ -520,6 +540,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         meterTimer?.invalidate()
         meterTimer = nil
         audioLevel = 0
+    }
+
+    private static func normalizedLevel(decibels: Double, floor: Double, ceiling: Double) -> Double {
+        guard ceiling > floor else { return 0 }
+        return min(1, max(0, (decibels - floor) / (ceiling - floor)))
     }
 
     private static func cleanDestinationTitle(_ title: String?) -> String {

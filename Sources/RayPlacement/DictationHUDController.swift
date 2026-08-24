@@ -12,7 +12,7 @@ final class DictationHUDController {
         openNotes: @escaping () -> Void
     ) {
         panel = DictationHUDPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 94)
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 68)
         )
         panel.contentView = NSHostingView(rootView: DictationHUDView(
             dictation: dictation,
@@ -85,16 +85,16 @@ private struct DictationHUDView: View {
     let cancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 11) {
             activityIndicator
-                .frame(width: 64, height: 44)
+                .frame(width: 44, height: 32)
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(primaryText)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .lineLimit(1)
                 Text(secondaryText)
-                    .font(.system(size: 12))
+                    .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -109,18 +109,23 @@ private struct DictationHUDView: View {
             .accessibilityLabel("Open destination note")
 
             if dictation.phase == .recording {
-                Button("Stop & Transcribe", action: stop)
+                Button("Stop", systemImage: "stop.fill", action: stop)
                     .buttonStyle(.borderedProminent)
                     .tint(.red)
             }
 
-            Button("Cancel", action: cancel)
+            Button(action: cancel) {
+                Image(systemName: "xmark")
+                    .frame(width: 16, height: 16)
+            }
+            .buttonStyle(.borderless)
+            .accessibilityLabel("Cancel dictation")
         }
-        .padding(.horizontal, 16)
-        .frame(width: 500, height: 94)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .padding(.horizontal, 13)
+        .frame(width: 440, height: 68)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
                 .stroke(Color.white.opacity(0.16), lineWidth: 1)
         )
         .accessibilityElement(children: .contain)
@@ -158,7 +163,7 @@ private struct DictationHUDView: View {
         case .requestingPermission:
             return "Approve Microphone and Speech Recognition if prompted"
         case .recording:
-            return "\(Self.clock(dictation.recordingElapsed)) · Recording continues when Notes is closed"
+            return "\(Self.clock(dictation.recordingElapsed)) · \(dictation.inputSignalText)"
         case .transcribing:
             return dictation.transcriptionProgress ?? "Processing the recording on this Mac…"
         case .idle:
@@ -183,18 +188,18 @@ private struct DictationHUDView: View {
 
 private struct SpeechLevelView: View {
     let level: Double
-    private let multipliers: [Double] = [0.42, 0.70, 1.0, 0.82, 0.58, 0.92, 0.50]
+    private let multipliers: [Double] = [0.48, 0.78, 1.0, 0.72, 0.54]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 4) {
+        HStack(alignment: .center, spacing: 3) {
             ForEach(Array(multipliers.enumerated()), id: \.offset) { _, multiplier in
                 Capsule()
                     .fill(Color.red)
-                    .frame(width: 4, height: 8 + 30 * max(0.08, level) * multiplier)
+                    .frame(width: 3, height: 5 + 20 * max(0.08, level) * multiplier)
             }
         }
-        .frame(width: 58, height: 44)
-        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .frame(width: 40, height: 30)
+        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .animation(.linear(duration: 0.08), value: level)
         .accessibilityHidden(true)
     }
