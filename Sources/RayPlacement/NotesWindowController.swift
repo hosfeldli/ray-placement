@@ -796,14 +796,32 @@ private struct NotesView: View {
 
             HStack(spacing: 9) {
                 HStack(spacing: 1) {
-                    MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)") { store.appendMarkdown("**bold text**") }
-                    MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)") { store.appendMarkdown("*italic text*") }
-                    MarkdownInsertButton(symbol: "list.bullet", help: "Insert list item") { store.appendMarkdown("- List item") }
-                    MarkdownInsertButton(symbol: "checklist", help: "Insert task") { store.appendMarkdown("- [ ] Task") }
-                    MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert code block") {
-                        store.appendMarkdown("```\ncode\n```")
+                    Menu {
+                        Button("Heading 1") { MarkdownEditorActions.heading(1) }
+                        Button("Heading 2") { MarkdownEditorActions.heading(2) }
+                        Button("Heading 3") { MarkdownEditorActions.heading(3) }
+                        Divider()
+                        Button("Quote") { MarkdownEditorActions.insert("> Quote") }
+                        Button("Divider") { MarkdownEditorActions.insert("---") }
+                        Button("Table") { MarkdownEditorActions.table() }
+                    } label: {
+                        Image(systemName: "textformat")
+                            .font(.system(size: 11, weight: .semibold))
+                            .frame(width: 25, height: 24)
                     }
-                    MarkdownInsertButton(symbol: "link", help: "Link (Command-K)") { store.appendMarkdown("[link title](https://example.com)") }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 28)
+                    .help("Headings, quote, divider, or table")
+                    .accessibilityLabel("Insert formatted block")
+
+                    MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)", action: MarkdownEditorActions.bold)
+                    MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)", action: MarkdownEditorActions.italic)
+                    MarkdownInsertButton(symbol: "list.bullet", help: "Insert list item") { MarkdownEditorActions.insert("- List item") }
+                    MarkdownInsertButton(symbol: "checklist", help: "Insert task") { MarkdownEditorActions.insert("- [ ] Task") }
+                    MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert formatted code block") {
+                        MarkdownEditorActions.insert("```\ncode\n```")
+                    }
+                    MarkdownInsertButton(symbol: "link", help: "Link (Command-K)", action: MarkdownEditorActions.link)
                 }
                 .padding(3)
                 .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.055)))

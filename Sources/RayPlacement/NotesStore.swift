@@ -24,9 +24,9 @@ final class NotesStore: ObservableObject {
                 content: """
                 # Welcome to RayPlacement Notes
 
-                Notes are private, local, and written in Markdown.
+                Notes are private, local, and saved as portable Markdown.
 
-                - Use **bold**, *italic*, links, lists, and fenced code blocks.
+                - Build clean headings, **bold**, *italic*, links, lists, tables, and code blocks without source punctuation clutter.
                 - Pin active notes or favorite the ones you want to keep close.
                 - Search titles and content from the sidebar.
                 - Dictation records first and transcribes only after you stop.

@@ -82,7 +82,14 @@ public enum MarkdownBlock: Equatable, Sendable {
     case task(checked: Bool, text: String)
     case quote(String)
     case code(language: String?, text: String)
+    case table(headers: [String], alignments: [MarkdownTableAlignment], rows: [[String]])
     case divider
+}
+
+public enum MarkdownTableAlignment: String, Equatable, Sendable {
+    case leading
+    case center
+    case trailing
 }
 
 public enum MarkdownBlockParser {
@@ -101,7 +108,9 @@ public enum MarkdownBlockParser {
             paragraphLines.removeAll(keepingCapacity: true)
         }
 
-        for line in lines {
+        var lineIndex = 0
+        while lineIndex < lines.count {
+            let line = lines[lineIndex]
             let trimmed = line.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") {
                 if insideCode {
@@ -115,47 +124,86 @@ public enum MarkdownBlockParser {
                     codeLanguage = language.isEmpty ? nil : language
                     insideCode = true
                 }
+                lineIndex += 1
                 continue
             }
             if insideCode {
                 codeLines.append(line)
+                lineIndex += 1
                 continue
             }
             if trimmed.isEmpty {
                 flushParagraph()
+                lineIndex += 1
+                continue
+            }
+            if lineIndex + 1 < lines.count,
+               let tableHeader = tableHeader(
+                   headerLine: line,
+                   delimiterLine: lines[lineIndex + 1]
+               ) {
+                flushParagraph()
+                var rows: [[String]] = []
+                lineIndex += 2
+                while lineIndex < lines.count {
+                    let candidate = lines[lineIndex]
+                    guard !candidate.trimmingCharacters(in: .whitespaces).isEmpty,
+                          candidate.contains("|") else { break }
+                    var cells = tableCells(from: candidate)
+                    guard !cells.isEmpty else { break }
+                    if cells.count < tableHeader.headers.count {
+                        cells += Array(repeating: "", count: tableHeader.headers.count - cells.count)
+                    } else if cells.count > tableHeader.headers.count {
+                        cells = Array(cells.prefix(tableHeader.headers.count))
+                    }
+                    rows.append(cells)
+                    lineIndex += 1
+                }
+                blocks.append(.table(
+                    headers: tableHeader.headers,
+                    alignments: tableHeader.alignments,
+                    rows: rows
+                ))
                 continue
             }
             if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 flushParagraph()
                 blocks.append(.divider)
+                lineIndex += 1
                 continue
             }
             if let heading = heading(from: trimmed) {
                 flushParagraph()
                 blocks.append(heading)
+                lineIndex += 1
                 continue
             }
             if let task = task(from: trimmed) {
                 flushParagraph()
                 blocks.append(task)
+                lineIndex += 1
                 continue
             }
             if let numbered = numbered(from: trimmed) {
                 flushParagraph()
                 blocks.append(numbered)
+                lineIndex += 1
                 continue
             }
             if trimmed.hasPrefix("- ") || trimmed.hasPrefix("* ") || trimmed.hasPrefix("+ ") {
                 flushParagraph()
                 blocks.append(.bullet(String(trimmed.dropFirst(2))))
+                lineIndex += 1
                 continue
             }
             if trimmed.hasPrefix("> ") {
                 flushParagraph()
                 blocks.append(.quote(String(trimmed.dropFirst(2))))
+                lineIndex += 1
                 continue
             }
             paragraphLines.append(line)
+            lineIndex += 1
         }
         if insideCode {
             blocks.append(.code(language: codeLanguage, text: codeLines.joined(separator: "\n")))
@@ -190,5 +238,56 @@ public enum MarkdownBlockParser {
         let afterDelimiter = line.index(after: delimiter)
         guard afterDelimiter < line.endIndex, line[afterDelimiter] == " " else { return nil }
         return .numbered(number: number, text: String(line[line.index(after: afterDelimiter)...]))
+    }
+
+    private static func tableHeader(
+        headerLine: String,
+        delimiterLine: String
+    ) -> (headers: [String], alignments: [MarkdownTableAlignment])? {
+        guard headerLine.contains("|"), delimiterLine.contains("|") else { return nil }
+        let headers = tableCells(from: headerLine)
+        let delimiters = tableCells(from: delimiterLine)
+        guard !headers.isEmpty, headers.count == delimiters.count else { return nil }
+        var alignments: [MarkdownTableAlignment] = []
+        for rawDelimiter in delimiters {
+            let delimiter = rawDelimiter.trimmingCharacters(in: .whitespaces)
+            let leadingColon = delimiter.hasPrefix(":")
+            let trailingColon = delimiter.hasSuffix(":")
+            let dashes = delimiter.trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+            guard dashes.count >= 3, dashes.allSatisfy({ $0 == "-" }) else { return nil }
+            if leadingColon && trailingColon {
+                alignments.append(.center)
+            } else if trailingColon {
+                alignments.append(.trailing)
+            } else {
+                alignments.append(.leading)
+            }
+        }
+        return (headers, alignments)
+    }
+
+    private static func tableCells(from line: String) -> [String] {
+        var source = line.trimmingCharacters(in: .whitespaces)
+        if source.hasPrefix("|") { source.removeFirst() }
+        if source.hasSuffix("|") { source.removeLast() }
+        var cells: [String] = []
+        var current = ""
+        var escaping = false
+        for character in source {
+            if escaping {
+                current.append(character)
+                escaping = false
+            } else if character == "\\" {
+                escaping = true
+            } else if character == "|" {
+                cells.append(current.trimmingCharacters(in: .whitespaces))
+                current = ""
+            } else {
+                current.append(character)
+            }
+        }
+        if escaping { current.append("\\") }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
     }
 }

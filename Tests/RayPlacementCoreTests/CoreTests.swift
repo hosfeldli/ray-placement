@@ -155,6 +155,10 @@ import Testing
     2. Verify preview
     > Local and private
 
+    | Owner | Status | Target |
+    | :--- | :---: | ---: |
+    | Maya | Ready | Friday |
+
     ```swift
     let ready = true
     ```
@@ -165,6 +169,11 @@ import Testing
     #expect(blocks.contains(.bullet("Regular item")))
     #expect(blocks.contains(.numbered(number: 2, text: "Verify preview")))
     #expect(blocks.contains(.quote("Local and private")))
+    #expect(blocks.contains(.table(
+        headers: ["Owner", "Status", "Target"],
+        alignments: [.leading, .center, .trailing],
+        rows: [["Maya", "Ready", "Friday"]]
+    )))
     #expect(blocks.contains(.code(language: "swift", text: "let ready = true")))
 }
 
