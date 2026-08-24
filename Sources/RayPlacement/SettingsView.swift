@@ -767,16 +767,18 @@ private struct ExtensionShortcutRow: View {
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 10)
-            Toggle(
-                "Hotkey",
-                isOn: Binding(
-                    get: { settings.isHotkeyEnabled(loaded) },
-                    set: { settings.setHotkeyEnabled($0, for: loaded) }
-                )
-            )
+            Toggle(isOn: Binding(
+                get: { settings.isHotkeyEnabled(loaded) },
+                set: { settings.setHotkeyEnabled($0, for: loaded) }
+            )) {
+                Image(systemName: "command")
+                    .font(.system(size: 9, weight: .bold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
             .toggleStyle(.checkbox)
-            .font(.caption2)
             .fixedSize()
+            .accessibilityLabel("Enable \(loaded.command.title) hotkey")
             ShortcutRecorder(
                 shortcut: Binding(
                     get: { settings.effectiveShortcut(for: loaded) ?? "" },
