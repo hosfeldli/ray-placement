@@ -360,7 +360,7 @@ struct LauncherView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(review.issues.isEmpty ? "Your writing is ready" : "AI correction ready")
                         .font(.system(size: 16, weight: .bold))
-                    Text("\(review.sourceText.count) selected characters · reviewed locally")
+                    Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -375,7 +375,7 @@ struct LauncherView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(RayColors.indigo)
-                .accessibilityHint("Replaces the original selection without using the clipboard")
+                .accessibilityHint("Revalidates and replaces the exact original selection")
                 .keyboardShortcut(.return, modifiers: [])
             }
 
@@ -393,20 +393,34 @@ struct LauncherView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 7) {
-                        Text(review.hasSuggestedChanges ? "Suggested text" : "Checked text")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                        Text(review.hasSuggestedChanges ? review.suggestedText : review.sourceText)
-                            .font(.system(size: 13))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(alignment: .top, spacing: 12) {
+                        writingComparisonPanel(
+                            title: "ORIGINAL SELECTION",
+                            text: review.sourceText,
+                            color: .secondary,
+                            symbol: "text.quote"
+                        )
+                        writingComparisonPanel(
+                            title: review.hasSuggestedChanges ? "CORRECTED TEXT" : "CHECKED TEXT",
+                            text: review.hasSuggestedChanges ? review.suggestedText : review.sourceText,
+                            color: review.hasSuggestedChanges ? RayColors.violet : .green,
+                            symbol: review.hasSuggestedChanges ? "wand.and.stars" : "checkmark.circle.fill"
+                        )
                     }
-                    .padding(15)
-                    .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 14).stroke(RayColors.violet.opacity(0.2)))
 
-                    ForEach(review.issues) { issue in
+                    if review.hasSuggestedChanges {
+                        HStack(spacing: 8) {
+                            StatusCapsule(text: "LOCAL AI", color: RayColors.violet)
+                            Label("Complete-passage correction", systemImage: "text.badge.checkmark")
+                            Spacer()
+                            Text("The original capture is revalidated before replacement")
+                                .foregroundStyle(.secondary)
+                        }
+                        .font(.caption.weight(.medium))
+                        .padding(.horizontal, 4)
+                    }
+
+                    if let issue = review.issues.first {
                         WritingIssueRow(issue: issue)
                     }
                 }
@@ -415,6 +429,34 @@ struct LauncherView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private func writingComparisonPanel(
+        title: String,
+        text: String,
+        color: Color,
+        symbol: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 9) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .tracking(0.8)
+                .foregroundStyle(color)
+            Text(text)
+                .font(.system(size: 13.5))
+                .lineSpacing(3)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(15)
+        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
+        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.24), lineWidth: 1))
+    }
+
+    private var activeWritingModelTitle: String {
+        let identifier = SettingsStore.shared.selectedModel(for: .writing)
+        return LocalModelCatalog.descriptor(identifier).title
     }
 
     private var footer: some View {

@@ -96,6 +96,7 @@ Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) 
 | `convertTimezones` | Opens RayPlacement's native two-column offline timezone converter | Empty string |
 | `forceQuitApplications` | Opens a searchable running-app picker with a destructive-action confirmation | Empty string |
 | `forceQuitAllApplications` | Confirms, then force quits all foreground apps except RayPlacement | Empty string |
+| `openFormatterWorkspace` | Opens RayPlacement's temporary native EDI/JSON/XML formatter note | Empty string |
 | `shell` | Runs an executable directly | Absolute or extension-relative executable path |
 
 For `shell`, `arguments` is an array passed directly to the process. RayPlacement never builds a shell command and never expands variables inside an argument. Put conditional logic and safe path expansion in the executable itself. `workingDirectory` is optional.
@@ -119,8 +120,8 @@ An extension that starts an AI model or another expensive worker must obey RayPl
 
 1. Read `RAYPLACEMENT_THREAD_LIMIT` and configure every model/runtime thread pool to that number or lower.
 2. Honor `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`, and `TOKENIZERS_PARALLELISM` rather than overwriting them.
-3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` (`eco`, `balanced`, `high`, `turbo`, or `maximum`) only to choose documented quality-versus-speed behavior; never silently download a larger model. Beta Dynamic may select a lower active value than the slider ceiling, so read it fresh for every run.
-4. Finish before `RAYPLACEMENT_TIMEOUT_SECONDS`. RayPlacement will terminate the process at that deadline, so keep partial writes atomic.
+3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` (`eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded`) only to choose documented quality-versus-speed behavior; never silently download a larger model. Beta Dynamic may select a lower active value than the slider ceiling, so read it fresh for every run.
+4. Finish before `RAYPLACEMENT_TIMEOUT_SECONDS`. RayPlacement will terminate the process at that deadline, so keep partial writes atomic. A value of `0` is the user's explicit Unbounded choice and means RayPlacement applies no wall-clock deadline; the extension must still exit when its requested work is complete.
 5. Load the model only after command invocation and release it by exiting. Do not leave daemons, launch agents, background watchers, or live dictation sessions running.
 6. Avoid GPU use by default. If GPU acceleration is genuinely necessary, state that in the manifest documentation and provide a CPU mode.
 7. Bound input, output, model context, and temporary files. RayPlacement stores only the first 1 MB of process output, but the extension remains responsible for its own memory and disk usage.
@@ -158,6 +159,7 @@ Before presenting an extension as complete, an AI agent should:
 - `Extensions/writing-tools` demonstrates native actions (`pastePlainText` and `checkWriting`).
 - `Extensions/vscode-directories` demonstrates the native interactive `openInVSCode` action.
 - `Extensions/productivity-tools` demonstrates native interactive `convertTimezones`, `forceQuitApplications`, and `forceQuitAllApplications` actions.
+- `Extensions/document-formatter` demonstrates the native temporary-workspace `openFormatterWorkspace` action. Its native implementation keeps deterministic parsing and validation separate from reviewable AI proposals.
 - `Examples/project-tools` demonstrates URL, file, and shell commands.
 
 When future functionality requires parameters, interactive forms, streaming, or richer command results, evolve the schema version deliberately instead of hiding a new protocol inside existing fields.

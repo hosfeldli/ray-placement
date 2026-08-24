@@ -65,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         launcher?.shutdown()
+        UsageMonitor.shared.flush()
         hotKeys.unregisterAll()
         observers.forEach(NotificationCenter.default.removeObserver)
     }

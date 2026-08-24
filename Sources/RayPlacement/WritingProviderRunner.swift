@@ -49,6 +49,7 @@ final class WritingProviderRunner {
     private let reviewer = WritingCheckService()
     private var activeProcess: Process?
     private var modelLease: UUID?
+    private var usageTaskID: UUID?
 
     func cancel() {
         if activeProcess?.isRunning == true {
@@ -58,6 +59,10 @@ final class WritingProviderRunner {
             return
         }
         activeProcess = nil
+        if let usageTaskID {
+            UsageMonitor.shared.finish(usageTaskID, succeeded: false, detail: "Cancelled by user")
+            self.usageTaskID = nil
+        }
         releaseModelLease()
     }
 
@@ -72,9 +77,10 @@ final class WritingProviderRunner {
             completion(.failure(WritingCheckService.CheckError.emptyText))
             return
         }
+        let selectedModel = SettingsStore.shared.selectedModel(for: .summary)
         guard resourceURL("llama-cli", in: "Qwen/runtime") != nil,
-              resourceURL("Qwen3-1.7B-Q8_0.gguf", in: "Qwen") != nil else {
-            completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
+              LocalModelCatalog.url(for: selectedModel) != nil else {
+            completion(.failure(RunnerError.missingResource(LocalModelCatalog.descriptor(selectedModel).title)))
             return
         }
         guard acquireModelLease() else {
@@ -84,14 +90,24 @@ final class WritingProviderRunner {
 
         let chunks = NoteSummaryPlan.chunks(cleanText)
         let summaryTokenLimit = SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit
+        let modelTitle = LocalModelCatalog.descriptor(selectedModel).title
+        usageTaskID = UsageMonitor.shared.begin(
+            category: .summary,
+            operation: "Summarize note",
+            model: modelTitle,
+            performance: SettingsStore.shared.runtimeWritingPerformance,
+            inputCharacters: cleanText.count
+        )
         if chunks.count == 1, let onlyChunk = chunks.first {
-            progress("Summarizing this note with Qwen…")
+            progress("Summarizing this note with \(modelTitle)…")
             runQwenText(
                 prompt: wrappedSummaryPrompt(onlyChunk),
                 systemPrompt: finalSummarySystemPrompt,
-                predict: summaryTokenLimit
+                predict: summaryTokenLimit,
+                task: .summary
             ) { [weak self] result in
                 self?.releaseModelLease()
+                self?.finishUsage(result)
                 completion(result)
             }
             return
@@ -101,11 +117,13 @@ final class WritingProviderRunner {
             switch result {
             case .failure(let error):
                 self.releaseModelLease()
+                self.finishUsage(.failure(error) as Result<String, Error>)
                 completion(.failure(error))
             case .success(let sectionSummaries):
                 self.reduceSummaries(sectionSummaries, pass: 1, progress: progress) { [weak self] reduced in
                     guard let self else { return }
                     self.releaseModelLease()
+                    self.finishUsage(reduced)
                     completion(reduced)
                 }
             }
@@ -131,6 +149,63 @@ final class WritingProviderRunner {
         // rule-based post-processing pass.
         progress("Loading Qwen for a complete AI grammar correction…")
         runQwenDeep(text, progress: progress, completion: completion)
+    }
+
+    func proposeDocumentCorrection(
+        source: String,
+        kind: FormatterDocumentKind,
+        diagnostics: [FormatterDiagnostic],
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        cancel()
+        let cleanSource = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanSource.isEmpty else {
+            completion(.failure(WritingCheckService.CheckError.emptyText))
+            return
+        }
+        guard acquireModelLease() else {
+            completion(.failure(RunnerError.modelBusy))
+            return
+        }
+        let selected = SettingsStore.shared.selectedModel(for: .formatter)
+        let descriptor = LocalModelCatalog.descriptor(selected)
+        progress("\(descriptor.title) is reviewing the validation findings…")
+        usageTaskID = UsageMonitor.shared.begin(
+            category: .formatterAI,
+            operation: "Propose \(kind.title) corrections",
+            model: descriptor.title,
+            performance: SettingsStore.shared.runtimeWritingPerformance,
+            inputCharacters: cleanSource.count
+        )
+        let issueText = diagnostics.map { "- [\($0.severity.rawValue)] \($0.location.map { "\($0): " } ?? "")\($0.message)" }
+            .joined(separator: "\n")
+        let prompt = """
+        # Document type
+        \(kind.title)
+
+        # Deterministic validation findings
+        \(issueText.isEmpty ? "- No deterministic findings." : issueText)
+
+        # Document
+        \(cleanSource)
+
+        Correct every deterministic error listed above. For EDI, copy an ST02 control number into its matching SE02 and replace SE01 with the exact counted value named in the finding. Preserve all other control numbers and business values. Do not return an unchanged document when an error has an explicit correction. Never invent trading-partner data. Return only the corrected complete document.
+        """
+        let systemPrompt = """
+        You correct structured EDI, JSON, and XML documents using deterministic validation findings. Apply every correction whose exact expected value is stated. Preserve unrelated business data and delimiters. Return the complete corrected document without Markdown fences, labels, or explanation.
+
+        Example:
+        Findings: SE02 should equal ST02 (A), but it is B. SE01 should report 3 segments, but it is 9.
+        Input: ST*990*A~B1*X*Y~SE*9*B~
+        Output: ST*990*A~B1*X*Y~SE*3*A~
+        """
+        runQwenText(prompt: prompt, systemPrompt: systemPrompt, predict: 2_048, task: .formatter) { [weak self] result in
+            guard let self else { return }
+            self.releaseModelLease()
+            self.finishUsage(result)
+            completion(result)
+        }
     }
 
     private func runHarper(
@@ -259,9 +334,11 @@ final class WritingProviderRunner {
             completion(.failure(RunnerError.textTooLong(provider: .qwen3Deep, limit: limit)))
             return
         }
+        let selectedModel = SettingsStore.shared.selectedModel(for: .writing)
+        let descriptor = LocalModelCatalog.descriptor(selectedModel)
         guard let executable = resourceURL("llama-cli", in: "Qwen/runtime"),
-              let model = resourceURL("Qwen3-1.7B-Q8_0.gguf", in: "Qwen") else {
-            completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
+              let model = LocalModelCatalog.url(for: selectedModel) else {
+            completion(.failure(RunnerError.missingResource(descriptor.title)))
             return
         }
 
@@ -269,21 +346,31 @@ final class WritingProviderRunner {
             customInstructions: SettingsStore.shared.writingInstructions
         )
         let performance = SettingsStore.shared.runtimeWritingPerformance
-        progress("Qwen is correcting the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
+        progress("\(descriptor.title) is correcting the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
         guard acquireModelLease() else {
             completion(.failure(RunnerError.modelBusy))
             return
         }
+        usageTaskID = UsageMonitor.shared.begin(
+            category: .writing,
+            operation: "Correct selected text",
+            model: descriptor.title,
+            performance: performance,
+            inputCharacters: text.count
+        )
         let threads = String(performance.threadLimit)
+        let grammarPredictionLimit = performance.isUnbounded ? 4_096 : min(2_048, max(512, text.count))
+        let batchSize = performance.isUnbounded ? "512" : "128"
+        let microBatchSize = performance.isUnbounded ? "256" : "64"
         let arguments = [
             "-m", model.path,
             "--conversation", "--single-turn", "--reasoning", "off",
             "--system-prompt", systemPrompt,
             "--prompt", text,
             "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", "768", "--temp", "0", "--ctx-size", "4096",
+            "--predict", String(grammarPredictionLimit), "--temp", "0.2", "--ctx-size", "8192",
             "--threads", threads, "--threads-batch", threads,
-            "--batch-size", "128", "--ubatch-size", "64",
+            "--batch-size", batchSize, "--ubatch-size", microBatchSize,
             "--prio", "-1", "--prio-batch", "0",
             "--gpu-layers", "0", "--no-warmup"
         ]
@@ -297,25 +384,30 @@ final class WritingProviderRunner {
             self.releaseModelLease()
             switch result {
             case .failure(let error):
+                self.finishUsage(.failure(error) as Result<String, Error>)
                 completion(.failure(error))
             case .success(let output):
                 guard output.status == 0 else {
+                    self.finishUsage(.failure(RunnerError.processFailed(output.stderr)) as Result<String, Error>)
                     completion(.failure(RunnerError.processFailed(output.stderr)))
                     return
                 }
                 let console = String(decoding: output.stdout, as: UTF8.self)
                 guard let rewritten = self.extractQwenResponse(from: console, prompt: text) else {
+                    self.finishUsage(.failure(RunnerError.processFailed("The model returned an unreadable response.")) as Result<String, Error>)
                     completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
                     return
                 }
                 do {
                     let cleaned = AIWritingPrompt.cleanResponse(rewritten, preservingBoundaryFrom: text)
+                    self.finishUsage(.success(cleaned))
                     completion(.success(try self.reviewer.review(
                         sourceText: text,
                         rewrittenText: cleaned,
-                        providerTitle: WritingProvider.qwen3Deep.title
+                        providerTitle: descriptor.title
                     )))
                 } catch {
+                    self.finishUsage(.failure(error) as Result<String, Error>)
                     completion(.failure(error))
                 }
             }
@@ -336,7 +428,7 @@ final class WritingProviderRunner {
         progress("Summarizing section \(index + 1) of \(chunks.count) with Qwen…")
         let systemPrompt = "Summarize one section of Markdown notes. Preserve concrete facts, names, dates, decisions, action items, risks, and open questions. Return concise Markdown bullets only. Do not invent information."
         let predict = min(320, SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit)
-        runQwenText(prompt: wrappedSummaryPrompt(chunks[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
+        runQwenText(prompt: wrappedSummaryPrompt(chunks[index]), systemPrompt: systemPrompt, predict: predict, task: .summary) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -365,7 +457,7 @@ final class WritingProviderRunner {
             progress("Building the final Qwen summary…")
             let prompt = String(combined.prefix(8_000))
             let predict = SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit
-            runQwenText(prompt: wrappedSummaryPrompt(prompt), systemPrompt: finalSummarySystemPrompt, predict: predict, completion: completion)
+            runQwenText(prompt: wrappedSummaryPrompt(prompt), systemPrompt: finalSummarySystemPrompt, predict: predict, task: .summary, completion: completion)
             return
         }
 
@@ -389,7 +481,7 @@ final class WritingProviderRunner {
         progress("Condensing summary group \(index + 1) of \(groups.count)…")
         let systemPrompt = "Condense these partial Markdown summaries. Keep all distinct decisions, action items, names, dates, risks, and open questions. Remove repetition. Return Markdown bullets only and do not invent facts."
         let predict = min(320, SettingsStore.shared.runtimeWritingPerformance.summaryTokenLimit)
-        runQwenText(prompt: wrappedSummaryPrompt(groups[index]), systemPrompt: systemPrompt, predict: predict) { [weak self] result in
+        runQwenText(prompt: wrappedSummaryPrompt(groups[index]), systemPrompt: systemPrompt, predict: predict, task: .summary) { [weak self] result in
             guard let self else { return }
             switch result {
             case .failure(let error):
@@ -411,24 +503,29 @@ final class WritingProviderRunner {
         prompt: String,
         systemPrompt: String,
         predict: Int,
+        task: LocalModelTask,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
+        let selected = SettingsStore.shared.selectedModel(for: task)
+        let descriptor = LocalModelCatalog.descriptor(selected)
         guard let executable = resourceURL("llama-cli", in: "Qwen/runtime"),
-              let model = resourceURL("Qwen3-1.7B-Q8_0.gguf", in: "Qwen") else {
-            completion(.failure(RunnerError.missingResource("Qwen3 Deep")))
+              let model = LocalModelCatalog.url(for: selected) else {
+            completion(.failure(RunnerError.missingResource(descriptor.title)))
             return
         }
         let performance = SettingsStore.shared.runtimeWritingPerformance
         let threads = String(performance.threadLimit)
+        let batchSize = performance.isUnbounded ? "512" : "128"
+        let microBatchSize = performance.isUnbounded ? "256" : "64"
         let arguments = [
             "-m", model.path,
             "--conversation", "--single-turn", "--reasoning", "off",
             "--system-prompt", systemPrompt,
             "--prompt", prompt,
             "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", String(predict), "--temp", "0", "--ctx-size", "4096",
+            "--predict", String(predict), "--temp", "0.2", "--ctx-size", "8192",
             "--threads", threads, "--threads-batch", threads,
-            "--batch-size", "128", "--ubatch-size", "64",
+            "--batch-size", batchSize, "--ubatch-size", microBatchSize,
             "--prio", "-1", "--prio-batch", "0",
             "--gpu-layers", "0", "--no-warmup"
         ]
@@ -449,7 +546,7 @@ final class WritingProviderRunner {
                 }
                 let console = String(decoding: output.stdout, as: UTF8.self)
                 guard let response = self.extractQwenResponse(from: console, prompt: prompt) else {
-                    completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable summary.")))
+                    completion(.failure(RunnerError.processFailed("The local model returned an unreadable response.")))
                     return
                 }
                 completion(.success(response.trimmingCharacters(in: .whitespacesAndNewlines)))
@@ -478,18 +575,19 @@ final class WritingProviderRunner {
         self.modelLease = nil
     }
 
+    private func finishUsage(_ result: Result<String, Error>) {
+        guard let usageTaskID else { return }
+        self.usageTaskID = nil
+        switch result {
+        case .success(let output):
+            UsageMonitor.shared.finish(usageTaskID, succeeded: true, outputCharacters: output.count)
+        case .failure(let error):
+            UsageMonitor.shared.finish(usageTaskID, succeeded: false, detail: error.localizedDescription)
+        }
+    }
+
     private func extractQwenResponse(from console: String, prompt: String) -> String? {
-        let promptMarker = "\n> \(prompt)\n"
-        guard let promptRange = console.range(of: promptMarker, options: .backwards) else { return nil }
-        let responseStart = promptRange.upperBound
-        let remaining = console[responseStart...]
-        let endMarkers = ["\n\n[ Prompt:", "\n[ Prompt:", "\n\nExiting..."]
-        let responseEnd = endMarkers
-            .compactMap { remaining.range(of: $0)?.lowerBound }
-            .min() ?? console.endIndex
-        let response = console[responseStart..<responseEnd]
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return response.isEmpty ? nil : response
+        QwenConsoleParser.response(from: console, prompt: prompt)
     }
 
     private func run(
@@ -531,17 +629,20 @@ final class WritingProviderRunner {
 
         let stateLock = NSLock()
         var didTimeOut = false
-        let timeoutWorkItem = DispatchWorkItem {
+        let effectiveTimeout = timeoutSeconds ?? performance.writingTimeout
+        let timeoutWorkItem: DispatchWorkItem? = effectiveTimeout > 0 ? DispatchWorkItem {
             guard process.isRunning else { return }
             stateLock.lock()
             didTimeOut = true
             stateLock.unlock()
             process.terminate()
+        } : nil
+        if let timeoutWorkItem {
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + effectiveTimeout,
+                execute: timeoutWorkItem
+            )
         }
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + (timeoutSeconds ?? performance.writingTimeout),
-            execute: timeoutWorkItem
-        )
 
         DispatchQueue.global(qos: .utility).async {
             standardInput.fileHandleForWriting.write(Data(input.utf8))
@@ -564,7 +665,7 @@ final class WritingProviderRunner {
             }
             process.waitUntilExit()
             group.wait()
-            timeoutWorkItem.cancel()
+            timeoutWorkItem?.cancel()
 
             stateLock.lock()
             let timedOut = didTimeOut

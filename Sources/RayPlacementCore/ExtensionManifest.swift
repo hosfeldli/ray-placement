@@ -52,6 +52,7 @@ public struct ExtensionAction: Codable, Sendable {
         case convertTimezones
         case forceQuitApplications
         case forceQuitAllApplications
+        case openFormatterWorkspace
     }
 
     public var type: ActionType

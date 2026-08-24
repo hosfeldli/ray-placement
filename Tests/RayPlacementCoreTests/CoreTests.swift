@@ -161,3 +161,53 @@ import Testing
     #expect(chunks.allSatisfy { $0.count <= NoteSummaryPlan.maximumChunkCharacters })
     #expect(chunks.joined().replacingOccurrences(of: "\n\n", with: "") == source.replacingOccurrences(of: "\n\n", with: ""))
 }
+
+@Test func documentFormatterPrettyPrintsAndInspectsJSON() throws {
+    let result = try DocumentFormatterService.format(#"{"b":2,"a":{"ready":true}}"#, kind: .json)
+    #expect(result.isValid)
+    #expect(result.output.contains("\n"))
+    #expect(result.output.range(of: #""a""#)!.lowerBound < result.output.range(of: #""b""#)!.lowerBound)
+    #expect(result.inspection.contains { $0.contains("$.a.ready") })
+    #expect(DocumentFormatterService.search("ready", in: result.output) == [3])
+}
+
+@Test func documentFormatterValidatesAndMinifiesXML() throws {
+    let result = try DocumentFormatterService.format("<root>\n  <item id=\"1\">x</item>\n</root>", kind: .xml, style: .minified)
+    #expect(result.isValid)
+    #expect(result.output.contains("<item id=\"1\">x</item>"))
+    #expect(!result.output.contains("\n  "))
+    #expect(result.inspection.contains { $0.contains("/root/item[1]") })
+}
+
+@Test func ediFormatterDetectsDelimitersFieldsAndEnvelopeErrors() throws {
+    let edi = "ST*214*0001~B10*REF*SHIP*CARRIER~AT7*X3*NS***20260823*1200*ET~SE*4*0001~"
+    let result = try DocumentFormatterService.format(edi, kind: .edi, ediSegmentDelimiter: "\n")
+    #expect(result.kind == .edi)
+    #expect(result.edi?.elementDelimiter == "*")
+    #expect(result.edi?.segmentDelimiter == "~")
+    #expect(result.edi?.transactionSets == ["214"])
+    #expect(result.output.components(separatedBy: "\n").count == 4)
+    #expect(result.edi?.fields.contains { $0.path == "B1001" && $0.value == "REF" } == true)
+    #expect(result.diagnostics.contains { $0.message.contains("passed") })
+}
+
+@Test func ediFormatterReportsControlAndCountProblems() throws {
+    let edi = "ST*990*A~B1*X*Y~SE*9*B~"
+    let result = try DocumentFormatterService.format(edi, kind: .edi)
+    #expect(!result.isValid)
+    #expect(result.diagnostics.contains { $0.location == "ST02 / SE02" })
+    #expect(result.diagnostics.contains { $0.location == "SE01" })
+    #expect(result.diagnostics.contains { $0.message.contains("(A)") && $0.message.contains("B") })
+    #expect(result.diagnostics.contains { $0.message.contains("3 segments") && $0.message.contains("9") })
+}
+
+@Test func documentFormatterManifestDecodes() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/document-formatter/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.id == "local.document-formatter")
+    #expect(manifest.commands.map(\.action.type) == [.openFormatterWorkspace])
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "local.document-formatter",
+  "name": "Document Formatter",
+  "version": "1.0.0",
+  "description": "Inspect, validate, search, pretty-print, and minify EDI, JSON, and XML in a temporary Notes workspace.",
+  "commands": [
+    {
+      "id": "open-workspace",
+      "title": "EDI / JSON / XML Formatter",
+      "subtitle": "Open a temporary formatter workspace in Notes",
+      "keywords": ["edi", "204", "210", "214", "990", "997", "json", "xml", "pretty", "minify", "validate", "inspect"],
+      "icon": "curlybraces.square.fill",
+      "action": {
+        "type": "openFormatterWorkspace",
+        "value": ""
+      }
+    }
+  ]
+}

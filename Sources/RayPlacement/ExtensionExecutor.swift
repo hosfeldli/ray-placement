@@ -9,12 +9,16 @@ final class ExtensionExecutor {
     private var cancelledProcesses = Set<UUID>()
     private var timedOutProcesses = Set<UUID>()
     private var timeoutWorkItems: [UUID: DispatchWorkItem] = [:]
+    private var usageTasks: [UUID: UUID] = [:]
 
     func cancelAll() {
         for (identifier, process) in activeProcesses {
             cancelledProcesses.insert(identifier)
             timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
             if process.isRunning { process.terminate() }
+            if let usage = usageTasks.removeValue(forKey: identifier) {
+                UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
+            }
         }
     }
 
@@ -76,6 +80,9 @@ final class ExtensionExecutor {
         case .forceQuitAllApplications:
             completion(.success("__FORCE_QUIT_ALL_APPLICATIONS__"))
 
+        case .openFormatterWorkspace:
+            completion(.success("__OPEN_FORMATTER_WORKSPACE__"))
+
         case .shell:
             run(action, relativeTo: loaded.directory, completion: completion)
         }
@@ -125,25 +132,32 @@ final class ExtensionExecutor {
         do {
             try task.run()
             activeProcesses[identifier] = task
+            usageTasks[identifier] = UsageMonitor.shared.begin(
+                category: .extensionCommand,
+                operation: executable.lastPathComponent,
+                performance: performance
+            )
         } catch {
             completion(.failure(error))
             return
         }
 
-        let timeout = DispatchWorkItem { [weak self] in
-            DispatchQueue.main.async {
-                guard let self,
-                      let running = self.activeProcesses[identifier],
-                      running.isRunning else { return }
-                self.timedOutProcesses.insert(identifier)
-                running.terminate()
+        if performance.extensionTimeout > 0 {
+            let timeout = DispatchWorkItem { [weak self] in
+                DispatchQueue.main.async {
+                    guard let self,
+                          let running = self.activeProcesses[identifier],
+                          running.isRunning else { return }
+                    self.timedOutProcesses.insert(identifier)
+                    running.terminate()
+                }
             }
+            timeoutWorkItems[identifier] = timeout
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + performance.extensionTimeout,
+                execute: timeout
+            )
         }
-        timeoutWorkItems[identifier] = timeout
-        DispatchQueue.global(qos: .utility).asyncAfter(
-            deadline: .now() + performance.extensionTimeout,
-            execute: timeout
-        )
 
         let executionQueue = DispatchQueue.global(qos: performance.dispatchQoS)
         executionQueue.async {
@@ -170,10 +184,19 @@ final class ExtensionExecutor {
                         return
                     }
                     if self.timedOutProcesses.remove(identifier) != nil {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Timed out")
+                        }
                         completion(.failure(ExecutionError.timedOut(Int(performance.extensionTimeout))))
                     } else if task.terminationStatus == 0 {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: true, outputCharacters: outputText.count)
+                        }
                         completion(.success(outputText.isEmpty ? nil : outputText))
                     } else {
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Exit \(task.terminationStatus)")
+                        }
                         completion(.failure(ExecutionError.processFailed(task.terminationStatus, outputText)))
                     }
                 }
@@ -183,6 +206,9 @@ final class ExtensionExecutor {
                     self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
                     if self.cancelledProcesses.remove(identifier) == nil {
                         self.timedOutProcesses.remove(identifier)
+                        if let usage = self.usageTasks.removeValue(forKey: identifier) {
+                            UsageMonitor.shared.finish(usage, succeeded: false, detail: error.localizedDescription)
+                        }
                         completion(.failure(error))
                     } else {
                         self.timedOutProcesses.remove(identifier)

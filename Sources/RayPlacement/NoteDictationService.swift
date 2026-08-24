@@ -65,6 +65,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var currentChunkRetryCount = 0
     private var chunkTranscripts: [String] = []
     private var skippedChunkCount = 0
+    private var usageTaskID: UUID?
 
     init(onTranscript: @escaping (String, UUID?) -> Void) {
         self.onTranscript = onTranscript
@@ -121,6 +122,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         transcriptionTimeout?.cancel()
         transcriptionTimeout = nil
         cleanupAudioFiles()
+        finishUsage(succeeded: false, detail: "Cancelled by user")
         resetJobState()
         phase = .idle
     }
@@ -204,6 +206,12 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             recordingElapsed = 0
             audioLevel = 0
             phase = .recording
+            usageTaskID = UsageMonitor.shared.begin(
+                category: .dictation,
+                operation: "Record and transcribe note",
+                model: "Apple on-device speech recognition",
+                performance: performance
+            )
             startMetering()
         } catch {
             fail(error)
@@ -335,10 +343,12 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 )
             }
         }
-        transcriptionTimeout = timeout
         let timeoutSeconds = activePerformance?.dictationTranscriptionTimeout
             ?? SettingsStore.shared.runtimeDictationPerformance.dictationTranscriptionTimeout
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
+        if timeoutSeconds > 0 {
+            transcriptionTimeout = timeout
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeoutSeconds, execute: timeout)
+        }
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor in
@@ -405,6 +415,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             ? "Dictation completed, but \(skippedChunkCount) audio segment\(skippedChunkCount == 1 ? "" : "s") could not be recognized. Markers were added to the note."
             : nil
         cleanupAudioFiles()
+        finishUsage(succeeded: true, outputCharacters: transcript.count, detail: "Recorded \(Int(recordedDuration)) seconds")
         resetJobState()
         phase = .idle
         lastError = warning
@@ -445,6 +456,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         transcriptionTimeout = nil
         lastError = error.localizedDescription
         cleanupAudioFiles()
+        finishUsage(succeeded: false, detail: error.localizedDescription)
         resetJobState()
         phase = .idle
     }
@@ -476,6 +488,17 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         destinationNoteID = nil
         audioLevel = 0
         recordingElapsed = 0
+    }
+
+    private func finishUsage(succeeded: Bool, outputCharacters: Int = 0, detail: String? = nil) {
+        guard let usageTaskID else { return }
+        self.usageTaskID = nil
+        UsageMonitor.shared.finish(
+            usageTaskID,
+            succeeded: succeeded,
+            outputCharacters: outputCharacters,
+            detail: detail
+        )
     }
 
     private func startMetering() {

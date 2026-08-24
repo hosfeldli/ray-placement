@@ -7,6 +7,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let store: NotesStore
     let dictation: NoteDictationService
     let summarizer: NoteSummaryService
+    let formatter: FormatterWorkspaceModel
     private var window: NSWindow?
     private var dictationHUD: DictationHUDController!
 
@@ -17,6 +18,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             store?.appendDictation(transcript, to: destinationNoteID)
         }
         self.summarizer = NoteSummaryService()
+        self.formatter = FormatterWorkspaceModel()
         super.init()
         self.dictationHUD = DictationHUDController(dictation: dictation) { [weak self] in
             self?.present()
@@ -40,14 +42,22 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         )
     }
 
+    func presentFormatterWorkspace() {
+        store.openFormatterWorkspace()
+        present()
+    }
+
     func shutdown() {
         dictation.cancel()
         summarizer.cancel()
+        formatter.reset()
         store.flush()
     }
 
     func windowWillClose(_ notification: Notification) {
         summarizer.cancel()
+        formatter.reset()
+        store.closeFormatterWorkspace()
         store.flush()
     }
 
@@ -68,7 +78,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.contentView = NSHostingView(rootView: NotesView(
             store: store,
             dictation: dictation,
-            summarizer: summarizer
+            summarizer: summarizer,
+            formatter: formatter
         ))
         return window
     }
@@ -78,6 +89,7 @@ private struct NotesView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var dictation: NoteDictationService
     @ObservedObject var summarizer: NoteSummaryService
+    @ObservedObject var formatter: FormatterWorkspaceModel
     @State private var searchQuery = ""
     @State private var confirmDelete = false
 
@@ -136,12 +148,36 @@ private struct NotesView: View {
                 .buttonStyle(.borderless)
                 .help("New Note (Command-N)")
                 .keyboardShortcut("n", modifiers: .command)
+                Button {
+                    store.openFormatterWorkspace()
+                } label: {
+                    Image(systemName: "curlybraces.square")
+                }
+                .buttonStyle(.borderless)
+                .help("Open Temporary EDI / JSON / XML Formatter")
             }
             .padding(12)
 
             Divider()
 
             List(selection: $store.selectedNoteID) {
+                if store.formatterWorkspaceOpen && (
+                    searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || "formatter edi json xml temporary".contains(searchQuery.lowercased())
+                ) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "curlybraces.square.fill")
+                            .foregroundStyle(Color.accentColor)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Formatter Workspace").font(.headline)
+                            Text("EDI · JSON · XML").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text("TEMP").font(.caption2.bold()).foregroundStyle(.orange)
+                    }
+                    .tag(NotesStore.formatterWorkspaceID)
+                    .accessibilityLabel("Formatter Workspace, temporary EDI JSON and XML note")
+                }
                 ForEach(filteredNotes) { note in
                     NoteListRow(note: note)
                         .tag(note.id)
@@ -167,7 +203,9 @@ private struct NotesView: View {
 
     @ViewBuilder
     private var editor: some View {
-        if let note = store.selectedNote {
+        if store.isFormatterSelected {
+            FormatterWorkspaceView(model: formatter)
+        } else if let note = store.selectedNote {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     TextField(

@@ -28,8 +28,8 @@ MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDe
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.8.2" ]]
-[[ "$BUILD_NUMBER" == "14" ]]
+[[ "$VERSION" == "1.9.0" ]]
+[[ "$BUILD_NUMBER" == "15" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
@@ -81,14 +81,14 @@ QWEN_CONSOLE="$(
         --conversation \
         --single-turn \
         --reasoning off \
-        --system-prompt "You are an exacting English copy editor. Correct the entire supplied passage, not only one error. Fix every spelling, grammar, verb-tense, word-choice, agreement, capitalization, sentence-structure, and punctuation problem. Repair obvious fragments and dangling articles using the smallest natural change that preserves the likely meaning. Preserve formatting and line breaks. Produce complete, idiomatic sentences, not merely text that is technically parseable. Return only the fully corrected passage with no explanation, labels, preamble, or quotation marks. Examples: Input: u really is a great Output: You really are great. Input: Hi; whot where you thinking, about Output: Hi, what were you thinking about? User correction requirements: Preserve names, product terms, acronyms, Markdown, and intentional capitalization. Use clear, concise, professional English." \
+        --system-prompt "You are an exacting English copy editor. The user's text may contain several interacting mistakes. Silently review the entire passage twice: first for spelling and word choice, then for grammar, agreement, tense, sentence structure, capitalization, and punctuation. Correct every error you can identify, not only the first or most obvious one. Repair fragments, missing words, wrong homophones, and dangling prepositions when the intended meaning is clear. Do not preserve a mistake merely because it could be read as slang. Return only the fully corrected passage with no explanation, labels, preamble, alternatives, or quotation marks. Examples: Input: u really is a great Output: You really are great. Input: Hi; whot where you thinking, about Output: Hi, what were you thinking about? Input: Their going too meet us tommorow, but nobody know where. Output: They're going to meet us tomorrow, but nobody knows where. User correction requirements: Preserve names, product terms, acronyms, Markdown, and intentional capitalization. Use clear, concise, professional English." \
         --prompt "Hi; whot where you thinking, about" \
         --simple-io \
         --no-display-prompt \
         --log-disable \
-        --predict 128 \
-        --temp 0 \
-        --ctx-size 2048 \
+        --predict 512 \
+        --temp 0.2 \
+        --ctx-size 8192 \
         --threads 1 \
         --threads-batch 1 \
         --batch-size 128 \

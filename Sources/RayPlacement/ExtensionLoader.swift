@@ -87,8 +87,9 @@ final class ExtensionLoader {
     RAYPLACEMENT EXTENSIONS
 
     Add a folder here with a manifest.json file. Commands can open a URL, file, or app;
-    copy or paste text; or run a local executable script. Reload Extensions from the
-    launcher after editing. Scripts run locally with your user account's permissions.
+    copy or paste text; open native tools such as the formatter; or run a local
+    executable script. Reload Extensions from the launcher after editing. Scripts
+    run locally with your user account's permissions.
 
     See the project's Examples folder for a complete manifest and script.
     """

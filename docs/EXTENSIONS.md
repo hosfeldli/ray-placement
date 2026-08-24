@@ -46,6 +46,7 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 | `convertTimezones` | Opens the offline, two-column timezone converter | `value` is ignored |
 | `forceQuitApplications` | Opens a searchable running-app picker and requires confirmation before force quitting | `value` is ignored |
 | `forceQuitAllApplications` | Confirms, then force quits every foreground app except RayPlacement | `value` is ignored |
+| `openFormatterWorkspace` | Opens the temporary Notes workspace for EDI, JSON, and XML formatting, validation, inspection, search, and optional local-AI proposals | `value` is ignored |
 | `shell` | Absolute or extension-relative executable path | `arguments`, `workingDirectory` |
 
 Arguments are passed directly to the executable—RayPlacement does not assemble a shell command. Put shell logic in a script with a shebang, then mark it executable:
@@ -62,9 +63,9 @@ Every executable command receives the user's current **Settings → Performance 
 
 | Variable | Meaning |
 | --- | --- |
-| `RAYPLACEMENT_PERFORMANCE_SCALE` | Active runtime level: `eco`, `balanced`, `high`, `turbo`, or `maximum` |
-| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads, from `1` through the available CPU count (capped at `12`) |
-| `RAYPLACEMENT_TIMEOUT_SECONDS` | Hard wall-clock timeout applied by RayPlacement |
+| `RAYPLACEMENT_PERFORMANCE_SCALE` | Active runtime level: `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
+| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads; Unbounded supplies every logical CPU exposed by macOS |
+| `RAYPLACEMENT_TIMEOUT_SECONDS` | Hard wall-clock timeout applied by RayPlacement; `0` means the user explicitly selected no timeout |
 | `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native numerical-library thread limits |
 | `TOKENIZERS_PARALLELISM` | Always `false` |
 
@@ -74,7 +75,7 @@ RayPlacement assigns the child process background, utility, or foreground priori
 
 Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` reads only the current selection from the previously focused app and never uses the clipboard as its source. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. Performance limits do not turn untrusted executable code into a security sandbox.
 
-The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
+The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 
 For a precise AI-oriented build and verification contract, see [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md). A JSON Schema is available at [extension-manifest.schema.json](extension-manifest.schema.json).
 

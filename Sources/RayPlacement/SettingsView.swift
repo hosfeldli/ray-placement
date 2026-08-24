@@ -9,7 +9,7 @@ private extension LoadedExtensionCommand {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, clipboard, writing, performance, extensions, about
+    case general, clipboard, writing, performance, usage, extensions, about
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
@@ -19,6 +19,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .clipboard: return "clipboard.fill"
         case .writing: return "wand.and.stars"
         case .performance: return "gauge.with.dots.needle.67percent"
+        case .usage: return "chart.xyaxis.line"
         case .extensions: return "puzzlepiece.extension.fill"
         case .about: return "info.circle.fill"
         }
@@ -29,6 +30,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .clipboard: return "Private, on-device clipboard history"
         case .writing: return "Local AI correction behavior"
         case .performance: return "Control speed and system impact"
+        case .usage: return "Live local work and private activity logs"
         case .extensions: return "Commands, integrations, and hotkeys"
         case .about: return "Version, updates, and project information"
         }
@@ -50,9 +52,13 @@ struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var updateService: UpdateService
+    @ObservedObject private var usageMonitor = UsageMonitor.shared
+    @ObservedObject private var modelDownloads = ModelDownloadService.shared
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
+    @State private var confirmUsageClear = false
+    @State private var modelToRemove: LocalModelID?
     let reloadExtensions: () -> Void
 
     var body: some View {
@@ -96,6 +102,24 @@ struct SettingsView: View {
             }
         )
         .animation(.easeOut(duration: 0.16), value: selectedSection)
+        .alert("Clear usage log?", isPresented: $confirmUsageClear) {
+            Button("Cancel", role: .cancel) {}
+            Button("Clear Log", role: .destructive) { usageMonitor.clear() }
+        } message: {
+            Text("This permanently removes RayPlacement's local task history. It never contains your selected text or document contents.")
+        }
+        .alert("Remove optional model?", isPresented: Binding(
+            get: { modelToRemove != nil },
+            set: { if !$0 { modelToRemove = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { modelToRemove = nil }
+            Button("Remove Model", role: .destructive) {
+                if let modelToRemove { modelDownloads.remove(modelToRemove) }
+                modelToRemove = nil
+            }
+        } message: {
+            Text(modelToRemove.map { "This removes \(LocalModelCatalog.descriptor($0).title) from this Mac. You can download it again later." } ?? "")
+        }
     }
 
     private var settingsSidebar: some View {
@@ -157,6 +181,7 @@ struct SettingsView: View {
         case .clipboard: clipboardTab
         case .writing: writingTab
         case .performance: performanceTab
+        case .usage: usageTab
         case .extensions: extensionsTab
         case .about: aboutTab
         }
@@ -184,14 +209,19 @@ struct SettingsView: View {
                 )
                 LabeledContent(
                     "Active Qwen budget",
-                    value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.runtimeWritingPerformance.writingTimeout))s timeout"
+                    value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeWritingPerformance.timeoutDescription(settings.runtimeWritingPerformance.writingTimeout))"
                 )
                 Text("Models load only for a requested writing check or note summary and exit afterward. Qwen remains CPU-only so it cannot compete with the desktop for GPU resources.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("Qwen uses about 2 GB of memory only while a correction or summary is running because the model must be loaded, then releases it when finished.")
+                Text("Memory follows the selected task model (about 639 MB to 2.5 GB on disk). It is loaded only while work is running and released when the task finishes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if settings.writingPerformance == .unbounded {
+                    Label("Unbounded uses every CPU core and removes the task timeout. The model still exits as soon as the requested work is complete.", systemImage: "bolt.trianglebadge.exclamationmark.fill")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.orange)
+                }
             }
 
             Section("Note dictation") {
@@ -202,7 +232,7 @@ struct SettingsView: View {
                 )
                 LabeledContent(
                     "Work limit",
-                    value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; \(Int(settings.runtimeDictationPerformance.dictationTranscriptionTimeout))s per segment"
+                    value: "Record \(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) min; \(settings.runtimeDictationPerformance.timeoutDescription(settings.runtimeDictationPerformance.dictationTranscriptionTimeout)) per segment"
                 )
                 Text("Dictation never listens in the background. After Stop, long meetings are processed sequentially in small on-device segments so memory stays bounded. High allows a full 60-minute meeting.")
                     .font(.caption)
@@ -217,7 +247,7 @@ struct SettingsView: View {
                 )
                 LabeledContent(
                     "Process budget",
-                    value: "\(settings.runtimeExtensionPerformance.threadLimit) cooperative thread\(settings.runtimeExtensionPerformance.threadLimit == 1 ? "" : "s"), \(Int(settings.runtimeExtensionPerformance.extensionTimeout))s timeout"
+                    value: "\(settings.runtimeExtensionPerformance.threadLimit) cooperative thread\(settings.runtimeExtensionPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeExtensionPerformance.timeoutDescription(settings.runtimeExtensionPerformance.extensionTimeout))"
                 )
                 Text("RayPlacement enforces process priority and timeouts and supplies common AI thread-limit environment variables. Third-party executables can ignore cooperative thread variables, so only install extensions you trust.")
                     .font(.caption)
@@ -252,7 +282,7 @@ struct SettingsView: View {
             HStack {
                 Text("Eco")
                 Spacer()
-                Text("Maximum")
+                Text("Unbounded")
             }
             .font(.caption2)
             .foregroundStyle(.tertiary)
@@ -263,17 +293,34 @@ struct SettingsView: View {
 
     private var writingTab: some View {
         Form {
-            Section("Grammar correction model") {
-                LabeledContent("Active model", value: "Qwen3 1.7B Q8 (Deep)")
-                Label("Every writing check is corrected directly by the bundled local AI model.", systemImage: "wand.and.stars")
+            Section("Model assignment") {
+                modelPicker("Grammar correction", selection: $settings.writingModel)
+                modelPicker("Note summaries", selection: $settings.summaryModel)
+                modelPicker("Formatter proposals", selection: $settings.formatterModel)
+                Label("Every task runs directly through the selected local AI model.", systemImage: "wand.and.stars")
                     .font(.callout.weight(.medium))
                     .foregroundStyle(Color.accentColor)
                 Label("No rule-based or system spell checker runs before or after the model.", systemImage: "checkmark.shield.fill")
                     .font(.caption)
                     .foregroundStyle(.green)
-                Text("Qwen loads only after you request a check, follows the Writing limit in Performance settings, and exits when the correction finishes.")
+                Text("Models load only after you request work, follow the Writing limit in Performance, and exit when the task finishes. If an optional selection is removed, RayPlacement safely falls back to the bundled Balanced model.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            }
+
+            Section("Local model library") {
+                ForEach(LocalModelCatalog.models) { model in
+                    modelRow(model)
+                }
+                if modelDownloads.downloading != nil {
+                    ProgressView(value: modelDownloads.progress)
+                }
+                Text(modelDownloads.status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("Optional models come from the official Qwen repositories over HTTPS and are SHA-256 verified before installation. They remain local after download.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Your correction instructions") {
@@ -302,6 +349,116 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    private func modelPicker(_ title: String, selection: Binding<LocalModelID>) -> some View {
+        LabeledContent(title) {
+            Picker(title, selection: selection) {
+                ForEach(LocalModelCatalog.models) { model in
+                    Text("\(model.title)\(LocalModelCatalog.isInstalled(model.id) ? "" : " · Not installed")")
+                        .tag(model.id)
+                        .disabled(!LocalModelCatalog.isInstalled(model.id))
+                }
+            }
+            .labelsHidden()
+            .frame(width: 245)
+            .id(modelDownloads.installedGeneration)
+        }
+    }
+
+    private func modelRow(_ model: LocalModelDescriptor) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: model.bundled ? "shippingbox.fill" : "cpu.fill")
+                .foregroundStyle(model.bundled ? SettingsColors.indigo : SettingsColors.cyan)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.title).font(.callout.weight(.semibold))
+                Text("\(model.detail) · \(model.sizeLabel)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            if model.bundled {
+                Text("BUNDLED").font(.caption2.bold()).foregroundStyle(.green)
+            } else if modelDownloads.downloading == model.id {
+                Button("Cancel", action: modelDownloads.cancel)
+            } else if LocalModelCatalog.isInstalled(model.id) {
+                Button("Remove…") { modelToRemove = model.id }
+            } else {
+                Button("Install") { modelDownloads.install(model.id) }
+                    .disabled(modelDownloads.downloading != nil)
+            }
+        }
+    }
+
+    private var usageTab: some View {
+        let summary = usageMonitor.summary
+        return Form {
+            Section("Live activity") {
+                if usageMonitor.activeTasks.isEmpty {
+                    Label("No local AI or extension process is running", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                } else {
+                    ForEach(usageMonitor.activeTasks) { task in
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.operation).font(.callout.weight(.semibold))
+                                Text("\(task.model ?? task.category.rawValue) · \(task.performance.title) · \(task.threads) threads")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(task.startedAt, style: .timer).font(.caption.monospacedDigit())
+                        }
+                    }
+                }
+            }
+
+            Section("Today") {
+                LabeledContent("Completed tasks", value: summary.completedToday.formatted())
+                LabeledContent("Failed or cancelled", value: summary.failedToday.formatted())
+                LabeledContent("Local model time", value: durationLabel(summary.modelSecondsToday))
+                LabeledContent("Characters processed", value: summary.inputCharactersToday.formatted())
+                LabeledContent("Characters produced", value: summary.outputCharactersToday.formatted())
+            }
+
+            Section("Recent work") {
+                if usageMonitor.events.isEmpty {
+                    Text("Completed AI and executable-extension tasks will appear here.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(usageMonitor.events.prefix(20)) { event in
+                        HStack(spacing: 10) {
+                            Image(systemName: event.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
+                                .foregroundStyle(event.succeeded ? .green : .orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(event.operation).font(.callout.weight(.medium))
+                                Text("\(event.model ?? event.category.rawValue) · \(event.performance) · \(event.threads) threads · \(durationLabel(event.duration))")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Text(event.startedAt, style: .relative).font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                }
+                HStack {
+                    Button("Reveal Log", action: usageMonitor.revealLog)
+                        .disabled(usageMonitor.events.isEmpty)
+                    Button("Clear Log…", role: .destructive) { confirmUsageClear = true }
+                        .disabled(usageMonitor.events.isEmpty)
+                }
+                Label("The log stays on this Mac and records task names, model, limits, duration, counts, and success—not selected text, note contents, prompts, or document data.", systemImage: "hand.raised.fill")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+    }
+
+    private func durationLabel(_ seconds: TimeInterval) -> String {
+        if seconds < 1 { return "<1s" }
+        if seconds < 60 { return "\(Int(seconds.rounded()))s" }
+        let minutes = Int(seconds) / 60
+        let remaining = Int(seconds) % 60
+        return "\(minutes)m \(remaining)s"
     }
 
     private var generalTab: some View {

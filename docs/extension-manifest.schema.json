@@ -37,7 +37,7 @@
       "required": ["type", "value"],
       "properties": {
         "type": {
-          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openInVSCode", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications"]
+          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openInVSCode", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace"]
         },
         "value": { "type": "string" },
         "arguments": { "type": "array", "items": { "type": "string" } },

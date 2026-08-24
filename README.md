@@ -36,10 +36,13 @@ After the first install, add that exact app once in **System Settings → Privac
 - JSON extensions for URLs, files, apps, copy/paste actions, and local executable scripts
 - Included local Writing Tools extension with plain-text paste and model-only Qwen grammar correction
 - Included VS Code extension with an interactive Spotlight search for opening any indexed file or directory
+- Included Document Formatter extension with a temporary Notes workspace for EDI, JSON, and XML; it supports file open/save, search, pretty/minified output, structure inspection, EDI delimiter conversion and field analysis, deterministic validation, and reviewable AI correction proposals
 - A separate Markdown Notes window with local autosave, search, pinned notes, and a single inline-formatted Markdown editor
 - On-demand Qwen note summaries with review, copy, and insert-at-top actions
 - Batch note dictation: it records only after you press Dictate, stops before transcription, requires on-device recognition, and deletes the temporary audio
-- Independent five-level performance sliders for writing models, dictation, and executable extensions, plus an opt-in Beta Dynamic mode
+- Independent six-level performance sliders for writing models, dictation, and executable extensions—including an explicit Unbounded mode—plus an opt-in Beta Dynamic mode
+- A private Usage settings tab with live tasks, effective model/thread/scale details, daily totals, bounded local history, Reveal Log, and Clear Log controls; content and prompts are never logged
+- Per-task local model assignment, with the bundled Qwen3 1.7B Balanced model plus SHA-256-verified optional [Qwen3 0.6B Fast](https://huggingface.co/Qwen/Qwen3-0.6B-GGUF) and [Qwen3 4B Quality](https://huggingface.co/Qwen/Qwen3-4B-GGUF) downloads from the official Qwen repositories
 - Clear Working, Done, and Error states, stage-by-stage writing progress, keyboard action labels, and brief completion confirmations
 - A fast, offline two-column timezone converter plus confirmed single-app and all-app Force Quit controls (RayPlacement is always excluded)
 - Startup GitHub Release checks with a user-confirmed, SHA-256-verified, locally signed self-update path
@@ -57,7 +60,7 @@ Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop
 
 ## Performance controls
 
-**Settings → Performance** has separate sliders for Writing, Dictation, and AI-capable Extensions. Each slider ranges from **Eco** through **Maximum**. **Beta Dynamic Performance** turns those slider values into ceilings: RayPlacement chooses the fastest level under each ceiling while the Mac is cool, and automatically backs down for Low Power Mode or elevated thermal pressure.
+**Settings → Performance** has separate sliders for Writing, Dictation, and AI-capable Extensions. Each slider ranges from **Eco** through **Unbounded**. **Beta Dynamic Performance** turns those slider values into ceilings: RayPlacement chooses the fastest safe level under each ceiling while the Mac is cool, and automatically backs down for Low Power Mode or elevated thermal pressure. Dynamic mode never chooses Unbounded on its own.
 
 | Scale | Writing | Dictation | Executable extensions |
 | --- | --- | --- | --- |
@@ -66,8 +69,11 @@ Dictation is deliberately not live. Press **Dictate**, speak, then choose **Stop
 | High | 4 foreground CPU threads; 180-second limit; 512-token summaries | 60-minute meeting; 180 seconds per segment | foreground priority; cooperative 4-thread limit; 600-second hard timeout |
 | Turbo | Up to 6 foreground CPU threads; 300-second limit; 768-token summaries | 60-minute meeting; 300 seconds per segment | foreground priority; up to 6 cooperative threads; 1,200-second hard timeout |
 | Maximum | Up to 12 CPU threads, never more than the Mac exposes; 600-second limit; 1,024-token summaries | 60-minute meeting; 600 seconds per segment | foreground priority; up to 12 cooperative threads; 3,600-second hard timeout |
+| Unbounded | Every logical CPU exposed by macOS; no wall-clock timeout; 2,048-token summaries | 60-minute recording; no per-segment timeout | highest process priority; every logical CPU supplied cooperatively; no RayPlacement wall-clock timeout |
 
-Qwen is CPU-only, never uses the GPU, launches only for a requested writing check or note summary, and exits when the job completes or times out. Its 1.7B-parameter model temporarily uses about 2 GB of memory while loaded. Apple controls the internal scheduling of its on-device speech recognizer, so the dictation scale bounds meeting duration and each sequential segment rather than claiming an exact CPU-thread cap. RayPlacement enforces extension priority, output size, and wall-clock time; it also supplies common AI thread-limit environment variables, but an untrusted third-party executable can ignore those cooperative variables.
+Qwen is CPU-only, never uses the GPU, launches only for a requested grammar check, summary, or formatter proposal, and exits when the job completes or times out. Memory depends on the selected model: Fast is about 639 MB on disk, Balanced about 1.8 GB, and Quality about 2.5 GB. Apple controls the internal scheduling of its on-device speech recognizer, so the dictation scale bounds meeting duration and each sequential segment rather than claiming an exact CPU-thread cap. RayPlacement enforces extension priority, output size, and wall-clock time except when the user explicitly chooses Unbounded; it also supplies common AI thread-limit environment variables, but an untrusted third-party executable can ignore those cooperative variables.
+
+**Settings → Usage** makes this work visible without adding analytics. It shows active local tasks and their elapsed time, model, effective scale, and thread count; keeps a bounded history of durations, character counts, and success/failure; and can reveal or clear `~/Library/Application Support/RayPlacement/Usage/usage-log.json`. Selected text, note contents, document data, prompts, and model output are not written to this log.
 
 ## Accessibility that survives rebuilds
 
@@ -77,7 +83,9 @@ Qwen is CPU-only, never uses the GPU, launches only for a requested writing chec
 
 Choose **Open Extensions Folder** in the launcher and add a folder containing `manifest.json`. The complete format is in [docs/EXTENSIONS.md](docs/EXTENSIONS.md), [docs/EXTENSION_AUTHORING_FOR_AI.md](docs/EXTENSION_AUTHORING_FOR_AI.md) gives future AI agents an exact build-and-verification workflow, and [Examples/project-tools](Examples/project-tools) is a working example.
 
-The included [Extensions/writing-tools](Extensions/writing-tools) extension adds **Paste as Plain Text** (`Control-Option-V`) and **Check Spelling & Grammar** (`Control-Option-G`). Grammar correction now goes directly to the bundled Qwen3 1.7B Q8 model. No Harper, NSSpellChecker, or deterministic grammar pass changes the text before or after Qwen. **Settings → Writing** includes persistent correction instructions for protected names and terms, capitalization, dialect, tone, and preferred style.
+The included [Extensions/writing-tools](Extensions/writing-tools) extension adds **Paste as Plain Text** (`Control-Option-V`) and **Check Spelling & Grammar** (`Control-Option-G`). Grammar correction goes directly to the local Qwen model assigned in **Settings → Writing** and falls back to the bundled Qwen3 1.7B Q8 model if an optional model is unavailable. No Harper, NSSpellChecker, or deterministic grammar pass changes the text before or after Qwen. The same settings page includes persistent correction instructions for protected names and terms, capitalization, dialect, tone, and preferred style.
+
+[Extensions/document-formatter](Extensions/document-formatter) adds **EDI / JSON / XML Formatter**. It opens as a special temporary item in the Notes sidebar and is discarded when the Notes window closes. JSON and XML can be validated, pretty-printed, minified, searched, and structurally inspected. EDI detects element, component, and segment delimiters; can rewrite segment endings; breaks every segment and field into inspectable paths; and performs basic envelope, control-number, segment-count, and 204/210/214/990/997 checks. **AI Propose Corrections** uses the selected local Formatter model and always presents a reviewable full-document proposal before applying it.
 
 Writing checks snapshot the exact highlighted text, Accessibility element, and range when RayPlacement opens; they never use clipboard contents as the source. The launcher reports capture, model, completion, and error stages. Press **Return** or **Replace Selection** to replace the original highlight. RayPlacement first validates that the original text is still present and attempts a direct Accessibility replacement. If the editor allows reading but refuses direct replacement, RayPlacement restores the verified exact range and uses a normal paste event. If the source changed during review, it stops instead of modifying the wrong text.
 
@@ -111,7 +119,7 @@ The packaged app is written to `build/RayPlacement.app`. Without local-signing s
 
 RayPlacement checks the repository's latest GitHub Release after startup and also provides **Check for Updates** in the menu bar and **Settings → About**. It never installs silently. When a newer semantic version is available, the app shows the release notes and asks first. A dedicated progress window then stays visible while RayPlacement downloads the small model-free update kit, verifies GitHub's SHA-256 digest, reuses the installed Qwen model, rebuilds with this Mac's stable signing identity, and verifies the result. Only then does RayPlacement close briefly for the final app swap and reopen with a success report. A failed build leaves the current app running; a failed final swap restores the previous app. The detailed helper output is retained at `~/Library/Application Support/RayPlacement/Updates/update.log` so the build never disappears into an unexplained close. After a successful install, the updater deletes its validated temporary build so it does not leave another multi-gigabyte model copy behind.
 
-Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.8.2` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The updater remains compatible with the older five-argument helper call used by RayPlacement 1.7.x. The full Desktop installer remains the recovery path if a local model or build tool is missing.
+Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pushing a matching version tag such as `v1.9.0` runs `.github/workflows/release-update.yml`, tests the source, and publishes the update assets. The updater remains compatible with the older five-argument helper call used by RayPlacement 1.7.x. The full Desktop installer remains the recovery path if a local model or build tool is missing.
 
 ## Project layout
 
@@ -121,7 +129,7 @@ Maintainers create the update kit with `./scripts/create_update_archive.sh`. Pus
 - `Sources/RayPlacement/NotesStore.swift`, `InlineMarkdownEditor.swift`, and `NotesWindowController.swift` — bounded local Markdown notes and inline styling
 - `Sources/RayPlacement/NoteSummaryService.swift` — bounded on-demand Qwen summary workflow
 - `Sources/RayPlacement/NoteDictationService.swift` — explicit record-then-transcribe on-device dictation
-- `Extensions` — bundled Writing Tools, VS Code Directories, and Productivity Tools extensions
+- `Extensions` — bundled Writing Tools, VS Code Directories, Productivity Tools, and Document Formatter extensions
 - `docs/extension-manifest.schema.json` — machine-readable extension manifest contract
 - `Tests` — core behavior tests
 - `Examples` — example user extension

@@ -9,6 +9,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
     case high
     case turbo
     case maximum
+    case unbounded
 
     var id: String { rawValue }
 
@@ -19,6 +20,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return "High"
         case .turbo: return "Turbo"
         case .maximum: return "Maximum"
+        case .unbounded: return "Unbounded"
         }
     }
 
@@ -41,6 +43,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return 4
         case .turbo: return min(6, max(1, ProcessInfo.processInfo.activeProcessorCount))
         case .maximum: return min(12, max(1, ProcessInfo.processInfo.activeProcessorCount))
+        case .unbounded: return max(1, ProcessInfo.processInfo.activeProcessorCount)
         }
     }
 
@@ -49,6 +52,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .eco: return .background
         case .balanced: return .utility
         case .high, .turbo, .maximum: return .userInitiated
+        case .unbounded: return .userInteractive
         }
     }
 
@@ -57,6 +61,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .eco: return .background
         case .balanced: return .utility
         case .high, .turbo, .maximum: return .userInitiated
+        case .unbounded: return .userInteractive
         }
     }
 
@@ -67,6 +72,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return 180
         case .turbo: return 300
         case .maximum: return 600
+        case .unbounded: return 0
         }
     }
 
@@ -77,6 +83,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return 512
         case .turbo: return 768
         case .maximum: return 1_024
+        case .unbounded: return 2_048
         }
     }
 
@@ -84,7 +91,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         switch self {
         case .eco: return 15 * 60
         case .balanced: return 30 * 60
-        case .high, .turbo, .maximum: return MeetingDictationPlan.maximumDuration
+        case .high, .turbo, .maximum, .unbounded: return MeetingDictationPlan.maximumDuration
         }
     }
 
@@ -95,6 +102,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return 180
         case .turbo: return 300
         case .maximum: return 600
+        case .unbounded: return 0
         }
     }
 
@@ -105,7 +113,14 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         case .high: return 600
         case .turbo: return 1_200
         case .maximum: return 3_600
+        case .unbounded: return 0
         }
+    }
+
+    var isUnbounded: Bool { self == .unbounded }
+
+    func timeoutDescription(_ seconds: TimeInterval) -> String {
+        seconds <= 0 ? "no timeout" : "\(Int(seconds))s timeout"
     }
 }
 
@@ -121,11 +136,16 @@ enum ApplicationPaths {
     static let notes = applicationSupport.appendingPathComponent("notes.json")
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
+    static let models = applicationSupport.appendingPathComponent("Models", isDirectory: true)
+    static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
+    static let usageLog = usage.appendingPathComponent("usage-log.json")
 
     static func prepare() throws {
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
     }
 }
 
@@ -148,6 +168,9 @@ final class SettingsStore: ObservableObject {
         static let dictationPerformance = "dictationPerformance"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
+        static let writingModel = "writingModel"
+        static let summaryModel = "summaryModel"
+        static let formatterModel = "formatterModel"
     }
 
     private let defaults = UserDefaults.standard
@@ -232,6 +255,18 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dynamicPerformance, forKey: Key.dynamicPerformance) }
     }
 
+    @Published var writingModel: LocalModelID {
+        didSet { defaults.set(writingModel.rawValue, forKey: Key.writingModel) }
+    }
+
+    @Published var summaryModel: LocalModelID {
+        didSet { defaults.set(summaryModel.rawValue, forKey: Key.summaryModel) }
+    }
+
+    @Published var formatterModel: LocalModelID {
+        didSet { defaults.set(formatterModel.rawValue, forKey: Key.formatterModel) }
+    }
+
     @Published private(set) var extensionShortcutOverrides: [String: String]
 
     @Published private(set) var launchAtLogin: Bool
@@ -251,6 +286,9 @@ final class SettingsStore: ObservableObject {
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
+        writingModel = LocalModelID(rawValue: defaults.string(forKey: Key.writingModel) ?? "") ?? .qwen3Balanced
+        summaryModel = LocalModelID(rawValue: defaults.string(forKey: Key.summaryModel) ?? "") ?? .qwen3Balanced
+        formatterModel = LocalModelID(rawValue: defaults.string(forKey: Key.formatterModel) ?? "") ?? .qwen3Balanced
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -281,6 +319,16 @@ final class SettingsStore: ObservableObject {
         @unknown default:
             return "Beta Dynamic is using a conservative active level."
         }
+    }
+
+    func selectedModel(for task: LocalModelTask) -> LocalModelID {
+        let selected: LocalModelID
+        switch task {
+        case .writing: selected = writingModel
+        case .summary: selected = summaryModel
+        case .formatter: selected = formatterModel
+        }
+        return LocalModelCatalog.isInstalled(selected) ? selected : .qwen3Balanced
     }
 
     private func resolvedPerformance(cappedAt cap: PerformanceScale) -> PerformanceScale {

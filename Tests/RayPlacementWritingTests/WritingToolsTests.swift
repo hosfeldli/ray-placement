@@ -97,3 +97,42 @@ private final class FakePasteboard: PlainTextPasteboard {
     )
     #expect(cleaned == source)
 }
+
+@Test func qwenConsoleParserHandlesTruncatedLongPromptEcho() {
+    let prompt = """
+    # Document
+    ST*990*A~B1*X*Y~SE*9*B~
+
+    Correct every deterministic error and return only the complete corrected document.
+    """
+    let console = """
+    Loading model...
+
+    > # Document
+    ST*990*A~B1*X*Y~SE*9*B~
+
+    Correct every deterministic error and retu ... (truncated)
+    ST*990*A~B1*X*Y~SE*3*A~
+
+    [ Prompt: 190.0 t/s | Generation: 33.0 t/s ]
+
+    Exiting...
+    """
+
+    #expect(QwenConsoleParser.response(from: console, prompt: prompt) == "ST*990*A~B1*X*Y~SE*3*A~")
+}
+
+@Test func qwenConsoleParserPreservesMultilineGeneratedDocument() {
+    let prompt = "Format this JSON"
+    let console = """
+    > Format this JSON
+    {
+      "a": 1,
+      "b": 2
+    }
+
+    [ Prompt: 100.0 t/s | Generation: 20.0 t/s ]
+    """
+
+    #expect(QwenConsoleParser.response(from: console, prompt: prompt) == "{\n  \"a\": 1,\n  \"b\": 2\n}")
+}

@@ -108,14 +108,16 @@ if [[ "${RAYPLACEMENT_SKIP_LAUNCH:-0}" != "1" ]]; then
 fi
 
 echo
-echo "RayPlacement, Notes, Writing Tools, VS Code Directories, and Productivity Tools are installed."
+echo "RayPlacement, Notes, Writing Tools, VS Code Directories, Productivity Tools, and Document Formatter are installed."
 echo "App: $INSTALLED_APP"
 echo "Plain-text paste: Control-Option-V"
 echo "Writing check: Control-Option-G"
 echo "Configure any extension shortcut in Settings → Extensions."
 echo "Productivity Tools: offline timezone conversion and confirmed single/all-app force quit (RayPlacement stays open)."
-echo "Choose AI and dictation limits in Settings → Performance."
+echo "Choose local models in Settings → Writing and bounded, Dynamic, or Unbounded limits in Settings → Performance."
+echo "Monitor local AI and extension work in Settings → Usage."
 echo "Notes use inline Markdown and can be summarized locally with Qwen."
+echo "Document Formatter opens as a temporary Notes workspace for EDI, JSON, and XML."
 echo "Uninstaller: $SCRIPT_DIRECTORY/Uninstall RayPlacement.command"
 echo "Check selected-text access in Settings → General → Accessibility."
 echo

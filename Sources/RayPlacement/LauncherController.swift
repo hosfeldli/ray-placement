@@ -322,6 +322,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     if !self.panel.isVisible { self.presentPanel() }
                 } else if output == "__FORCE_QUIT_ALL_APPLICATIONS__" {
                     self.confirmForceQuitAllApplications()
+                } else if output == "__OPEN_FORMATTER_WORKSPACE__" {
+                    self.notesWindow.presentFormatterWorkspace()
                 } else if let output {
                     self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                     if !self.panel.isVisible { self.presentPanel() }
@@ -403,11 +405,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func showWritingReview(for text: String) {
         let provider = WritingProvider.qwen3Deep
+        let modelTitle = LocalModelCatalog.descriptor(SettingsStore.shared.selectedModel(for: .writing)).title
         let taskID = UUID()
         writingTaskID = taskID
         viewModel.showOutput(
             title: "Check Spelling & Grammar",
-            text: "Captured \(text.count) highlighted characters. Starting \(provider.title)…",
+            text: "Captured \(text.count) highlighted characters. Starting \(modelTitle)…",
             state: .running(canCancel: true)
         )
         if !panel.isVisible { presentPanel() }
@@ -486,7 +489,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func replaceSelectedText(_ text: String) {
         hide()
-        toast.show("Replacing the original highlight…", style: .working, duration: 8)
+        toast.show("Reconnecting to the original highlight…", style: .working, duration: 12)
         guard let previousApplication else {
             presentError(title: "Replace Selected Text", message: "The app containing the original selection is no longer available.")
             return
@@ -499,16 +502,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
             guard let self else { return }
             do {
-                let context: SelectedTextService.SelectionContext
-                if let selectedTextContext = self.selectedTextContext,
-                   selectedTextContext.processIdentifier == previousApplication.processIdentifier {
-                    context = selectedTextContext
-                } else {
-                    context = try SelectedTextService.selectionContext(in: previousApplication.processIdentifier)
-                }
+                let context = try self.replacementContext(in: previousApplication)
+                self.selectedTextContext = context
+                self.toast.show("Selection found · replacing text…", style: .working, duration: 10)
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
-                    self?.finishDirectReplacement(text, using: context)
+                    self?.finishDirectReplacement(text, using: context, retryCount: 0)
                 }
             } catch SelectedTextService.SelectionError.replacementUnavailable {
                 self.pasteReplacementFallback(text, in: previousApplication)
@@ -520,7 +519,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func finishDirectReplacement(
         _ text: String,
-        using context: SelectedTextService.SelectionContext
+        using context: SelectedTextService.SelectionContext,
+        retryCount: Int
     ) {
         switch SelectedTextService.observeReplacement(text, using: context) {
         case .replaced, .unavailable:
@@ -528,7 +528,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             focusedTextContext = nil
             toast.show("Replaced the exact highlighted text")
         case .originalStillPresent:
-            pasteReplacement(text, using: context)
+            if retryCount == 0 {
+                toast.show("The editor delayed the change · retrying once…", style: .working, duration: 8)
+                do {
+                    let refreshed = try SelectedTextService.reconnectedContext(using: context)
+                    selectedTextContext = refreshed
+                    try SelectedTextService.replaceSelectedText(text, using: refreshed)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
+                        self?.finishDirectReplacement(text, using: refreshed, retryCount: 1)
+                    }
+                } catch {
+                    pasteReplacement(text, using: context)
+                }
+            } else {
+                pasteReplacement(text, using: context)
+            }
         case .changed:
             presentError(
                 title: "Replace Selected Text",
@@ -539,13 +553,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func pasteReplacementFallback(_ text: String, in application: NSRunningApplication) {
         do {
-            let context: SelectedTextService.SelectionContext
-            if let selectedTextContext,
-               selectedTextContext.processIdentifier == application.processIdentifier {
-                context = selectedTextContext
-            } else {
-                context = try SelectedTextService.selectionContext(in: application.processIdentifier)
-            }
+            let context = try replacementContext(in: application)
             pasteReplacement(text, using: context)
         } catch {
             presentError(title: "Replace Selected Text", error: error)
@@ -557,12 +565,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         using context: SelectedTextService.SelectionContext
     ) {
         do {
-            try SelectedTextService.restoreSelection(using: context)
+            let refreshed = (try? SelectedTextService.reconnectedContext(using: context)) ?? context
+            try SelectedTextService.restoreSelection(using: refreshed)
+            toast.show("Direct edit was unavailable · using a verified paste…", style: .working, duration: 8)
             clipboard.copy(text)
             postPasteShortcut(successMessage: "Replaced the exact highlighted text")
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
                 guard let self else { return }
-                switch SelectedTextService.observeReplacement(text, using: context) {
+                switch SelectedTextService.observeReplacement(text, using: refreshed) {
                 case .replaced, .unavailable:
                     self.selectedTextContext = nil
                     self.focusedTextContext = nil
@@ -577,6 +587,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         } catch {
             presentError(title: "Replace Selected Text", error: error)
         }
+    }
+
+    private func replacementContext(in application: NSRunningApplication) throws -> SelectedTextService.SelectionContext {
+        if let captured = selectedTextContext,
+           captured.processIdentifier == application.processIdentifier {
+            return try SelectedTextService.reconnectedContext(using: captured)
+        }
+        return try SelectedTextService.selectionContext(in: application.processIdentifier)
     }
 
     private func openInVSCode(_ url: URL, title: String) {

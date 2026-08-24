@@ -165,6 +165,51 @@ enum SelectedTextService {
         try replaceSelectedText(replacement, using: selectionContext(in: processIdentifier))
     }
 
+    /// Reconnects a captured selection after focus/window changes. It never
+    /// guesses between repeated matches: the original range must still match,
+    /// the current selection must be exact, or the source text must occur only
+    /// once in the focused editor.
+    static func reconnectedContext(using context: SelectionContext) throws -> SelectionContext {
+        guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
+        let candidates = focusedElementCandidates(in: context.processIdentifier)
+        for element in candidates where elementBelongsToProcess(element, context.processIdentifier) {
+            if let current = selection(in: element), current.text == context.text {
+                return SelectionContext(
+                    processIdentifier: context.processIdentifier,
+                    text: context.text,
+                    element: element,
+                    range: current.range
+                )
+            }
+            if let originalRange = context.range,
+               string(in: originalRange, from: element) == context.text,
+               setSelectedRange(originalRange, in: element) {
+                return SelectionContext(
+                    processIdentifier: context.processIdentifier,
+                    text: context.text,
+                    element: element,
+                    range: originalRange
+                )
+            }
+            guard let fullText = value(in: element) else { continue }
+            let source = fullText as NSString
+            let first = source.range(of: context.text)
+            guard first.location != NSNotFound else { continue }
+            let remainingLocation = NSMaxRange(first)
+            let remaining = NSRange(location: remainingLocation, length: source.length - remainingLocation)
+            guard source.range(of: context.text, options: [], range: remaining).location == NSNotFound else { continue }
+            let uniqueRange = CFRange(location: first.location, length: first.length)
+            guard setSelectedRange(uniqueRange, in: element) else { continue }
+            return SelectionContext(
+                processIdentifier: context.processIdentifier,
+                text: context.text,
+                element: element,
+                range: uniqueRange
+            )
+        }
+        throw SelectionError.selectionChanged
+    }
+
     private static func focusedElementCandidates(in processIdentifier: pid_t) -> [AXUIElement] {
         let application = AXUIElementCreateApplication(processIdentifier)
         let systemWide = AXUIElementCreateSystemWide()
@@ -316,6 +361,18 @@ enum SelectedTextService {
               range.length <= source.length,
               range.location <= source.length - range.length else { return nil }
         return source.substring(with: NSRange(location: range.location, length: range.length))
+    }
+
+    private static func value(in element: AXUIElement) -> String? {
+        var rawValue: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(
+            element,
+            kAXValueAttribute as CFString,
+            &rawValue
+        ) == .success else { return nil }
+        if let text = rawValue as? String { return text }
+        if let attributed = rawValue as? NSAttributedString { return attributed.string }
+        return nil
     }
 
     private static func setSelectedRange(_ range: CFRange, in element: AXUIElement) -> Bool {
