@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rayplacement.local/schemas/extension-manifest-v1.json",
+  "$id": "https://rayplacement.local/schemas/extension-manifest-v2.json",
   "title": "RayPlacement Extension Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "id", "name", "commands"],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "enum": [1, 2] },
     "id": { "type": "string", "minLength": 1 },
     "name": { "type": "string", "minLength": 1 },
     "version": { "type": "string" },
@@ -28,6 +28,7 @@
         "keywords": { "type": "array", "items": { "type": "string" } },
         "icon": { "type": "string" },
         "hotkey": { "type": "string", "minLength": 3 },
+        "runInBackground": { "type": "boolean" },
         "action": { "$ref": "#/$defs/action" }
       }
     },
@@ -37,11 +38,53 @@
       "required": ["type", "value"],
       "properties": {
         "type": {
-          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openInVSCode", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace", "openEmojiPicker"]
+          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openInVSCode", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace", "openEmojiPicker", "form"]
         },
         "value": { "type": "string" },
         "arguments": { "type": "array", "items": { "type": "string" } },
-        "workingDirectory": { "type": "string" }
+        "workingDirectory": { "type": "string" },
+        "form": { "$ref": "#/$defs/form" }
+      }
+    },
+    "form": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fields", "execution"],
+      "properties": {
+        "title": { "type": "string" },
+        "submitLabel": { "type": "string" },
+        "fields": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/field" } },
+        "execution": { "$ref": "#/$defs/execution" }
+      }
+    },
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "type"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "type": { "enum": ["text", "secure", "multiline", "number", "toggle", "picker"] },
+        "placeholder": { "type": "string" },
+        "defaultValue": { "type": "string" },
+        "options": { "type": "array", "items": { "type": "string" } },
+        "required": { "type": "boolean" }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "enum": ["httpRequest", "shell"] },
+        "method": { "type": "string" },
+        "url": { "type": "string" },
+        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
+        "body": { "type": "string" },
+        "executable": { "type": "string" },
+        "arguments": { "type": "array", "items": { "type": "string" } },
+        "workingDirectory": { "type": "string" },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 }
       }
     }
   }

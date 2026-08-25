@@ -83,6 +83,7 @@ enum SystemAction {
     case openNotes
     case openQuickNote
     case toggleNoteDictation
+    case openTerminal
     case openSettings
     case quit
 }

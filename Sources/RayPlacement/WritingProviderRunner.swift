@@ -29,6 +29,7 @@ final class WritingProviderRunner {
     enum RunnerError: LocalizedError {
         case missingResource(String)
         case processFailed(String)
+        case invalidModelResponse
         case textTooLong(provider: WritingProvider, limit: Int)
         case modelBusy
 
@@ -38,6 +39,8 @@ final class WritingProviderRunner {
                 return "The bundled \(name) resource is missing. Reinstall RayPlacement."
             case .processFailed(let message):
                 return message.isEmpty ? "The local writing engine failed." : message
+            case .invalidModelResponse:
+                return "The local model returned an incomplete response twice. No text was changed."
             case .textTooLong(let provider, let limit):
                 return "\(provider.title) checks are limited to \(limit.formatted()) characters at a time."
             case .modelBusy:
@@ -342,11 +345,10 @@ final class WritingProviderRunner {
             return
         }
 
-        let systemPrompt = AIWritingPrompt.systemPrompt(
-            customInstructions: SettingsStore.shared.writingInstructions
-        )
+        let customInstructions = SettingsStore.shared.writingInstructions
+        let systemPrompt = AIWritingPrompt.systemPrompt(customInstructions: customInstructions)
         let performance = SettingsStore.shared.runtimeWritingPerformance
-        progress("\(descriptor.title) is correcting the full selection on \(performance.threadLimit) CPU thread\(performance.threadLimit == 1 ? "" : "s")…")
+        progress("\(descriptor.title) is correcting the full selection…")
         guard acquireModelLease() else {
             completion(.failure(RunnerError.modelBusy))
             return
@@ -358,60 +360,143 @@ final class WritingProviderRunner {
             performance: performance,
             inputCharacters: text.count
         )
-        let threads = String(performance.threadLimit)
         let grammarPredictionLimit = performance.isUnbounded ? 4_096 : min(2_048, max(512, text.count))
-        let batchSize = performance.isUnbounded ? "512" : "128"
-        let microBatchSize = performance.isUnbounded ? "256" : "64"
-        let arguments = [
-            "-m", model.path,
-            "--conversation", "--single-turn", "--reasoning", "off",
-            "--system-prompt", systemPrompt,
-            "--prompt", text,
-            "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", String(grammarPredictionLimit), "--temp", "0.2", "--ctx-size", "8192",
-            "--threads", threads, "--threads-batch", threads,
-            "--batch-size", batchSize, "--ubatch-size", microBatchSize,
-            "--prio", "-1", "--prio-batch", "0",
-            "--gpu-layers", "0", "--no-warmup"
-        ]
-        run(
+        runGrammarPass(
             executable: executable,
-            arguments: arguments,
-            input: "",
-            timeoutSeconds: performance.writingTimeout
+            model: model,
+            prompt: text,
+            systemPrompt: systemPrompt,
+            predictionLimit: grammarPredictionLimit,
+            performance: performance,
+            attempt: 0,
+            progress: progress
         ) { [weak self] result in
             guard let self else { return }
-            self.releaseModelLease()
             switch result {
             case .failure(let error):
+                self.releaseModelLease()
                 self.finishUsage(.failure(error) as Result<String, Error>)
                 completion(.failure(error))
-            case .success(let output):
-                guard output.status == 0 else {
-                    self.finishUsage(.failure(RunnerError.processFailed(output.stderr)) as Result<String, Error>)
-                    completion(.failure(RunnerError.processFailed(output.stderr)))
-                    return
-                }
-                let console = String(decoding: output.stdout, as: UTF8.self)
-                guard let rewritten = self.extractQwenResponse(from: console, prompt: text) else {
-                    self.finishUsage(.failure(RunnerError.processFailed("The model returned an unreadable response.")) as Result<String, Error>)
-                    completion(.failure(RunnerError.processFailed("Qwen3 returned an unreadable response.")))
-                    return
-                }
-                do {
-                    let cleaned = AIWritingPrompt.cleanResponse(rewritten, preservingBoundaryFrom: text)
-                    self.finishUsage(.success(cleaned))
-                    completion(.success(try self.reviewer.review(
-                        sourceText: text,
-                        rewrittenText: cleaned,
-                        providerTitle: descriptor.title
-                    )))
-                } catch {
-                    self.finishUsage(.failure(error) as Result<String, Error>)
-                    completion(.failure(error))
+            case .success(let draft):
+                progress("Auditing every correction before it is offered…")
+                self.runGrammarPass(
+                    executable: executable,
+                    model: model,
+                    prompt: AIWritingPrompt.auditPrompt(original: text, draft: draft),
+                    systemPrompt: AIWritingPrompt.auditSystemPrompt(customInstructions: customInstructions),
+                    predictionLimit: grammarPredictionLimit,
+                    performance: performance,
+                    attempt: 0,
+                    progress: progress
+                ) { [weak self] auditResult in
+                    guard let self else { return }
+                    self.releaseModelLease()
+                    // A valid first pass remains safer than discarding the entire
+                    // correction if an audit process is interrupted after it runs.
+                    let finalText = (try? auditResult.get()) ?? draft
+                    do {
+                        let cleaned = AIWritingPrompt.cleanResponse(finalText, preservingBoundaryFrom: text)
+                        self.finishUsage(.success(cleaned))
+                        completion(.success(try self.reviewer.review(
+                            sourceText: text,
+                            rewrittenText: cleaned,
+                            providerTitle: "\(descriptor.title) · Verified"
+                        )))
+                    } catch {
+                        self.finishUsage(.failure(error) as Result<String, Error>)
+                        completion(.failure(error))
+                    }
                 }
             }
         }
+    }
+
+    private func runGrammarPass(
+        executable: URL,
+        model: URL,
+        prompt: String,
+        systemPrompt: String,
+        predictionLimit: Int,
+        performance: PerformanceScale,
+        attempt: Int,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let mode = SettingsStore.shared.aiComputeMode
+        let useCPU = mode == .cpu || (mode == .automatic && attempt > 0)
+        let arguments = localModelArguments(
+            model: model,
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            predictionLimit: predictionLimit,
+            performance: performance,
+            useCPU: useCPU,
+            seed: attempt + 1
+        )
+        run(executable: executable, arguments: arguments, input: "", timeoutSeconds: performance.writingTimeout) { [weak self] result in
+            guard let self else { return }
+            let parsed: Result<String, Error>
+            switch result {
+            case .failure(let error):
+                parsed = .failure(error)
+            case .success(let output):
+                if output.status != 0 {
+                    parsed = .failure(RunnerError.processFailed(output.stderr))
+                } else {
+                    let console = String(decoding: output.stdout, as: UTF8.self)
+                    let response = self.extractQwenResponse(from: console, prompt: prompt) ?? console
+                    if let corrected = AIWritingPrompt.taggedResponse(response),
+                       AIWritingPrompt.isPlausibleCorrection(corrected, for: prompt) {
+                        parsed = .success(corrected)
+                    } else {
+                        parsed = .failure(RunnerError.invalidModelResponse)
+                    }
+                }
+            }
+            if case .failure = parsed, attempt == 0 {
+                progress(mode == .automatic
+                    ? "Retrying the correction safely on CPU…"
+                    : "The first response was incomplete. Retrying once…")
+                self.runGrammarPass(
+                    executable: executable,
+                    model: model,
+                    prompt: prompt,
+                    systemPrompt: systemPrompt,
+                    predictionLimit: predictionLimit,
+                    performance: performance,
+                    attempt: 1,
+                    progress: progress,
+                    completion: completion
+                )
+                return
+            }
+            completion(parsed)
+        }
+    }
+
+    private func localModelArguments(
+        model: URL,
+        prompt: String,
+        systemPrompt: String,
+        predictionLimit: Int,
+        performance: PerformanceScale,
+        useCPU: Bool,
+        seed: Int
+    ) -> [String] {
+        let threads = String(performance.threadLimit)
+        return [
+            "-m", model.path,
+            "--conversation", "--single-turn", "--reasoning", "off",
+            "--system-prompt", systemPrompt,
+            "--prompt", prompt,
+            "--simple-io", "--no-display-prompt", "--log-disable",
+            "--predict", String(predictionLimit), "--temp", "0", "--seed", String(seed), "--ctx-size", "8192",
+            "--threads", threads, "--threads-batch", threads,
+            "--batch-size", performance.isUnbounded ? "512" : "128",
+            "--ubatch-size", performance.isUnbounded ? "256" : "64",
+            "--prio", "-1", "--prio-batch", "0",
+            "--gpu-layers", useCPU ? "0" : "all", "--no-warmup"
+        ]
     }
 
     private func summarizeSections(
@@ -513,45 +598,89 @@ final class WritingProviderRunner {
             completion(.failure(RunnerError.missingResource(descriptor.title)))
             return
         }
-        let performance = SettingsStore.shared.runtimeWritingPerformance
-        let threads = String(performance.threadLimit)
-        let batchSize = performance.isUnbounded ? "512" : "128"
-        let microBatchSize = performance.isUnbounded ? "256" : "64"
-        let arguments = [
-            "-m", model.path,
-            "--conversation", "--single-turn", "--reasoning", "off",
-            "--system-prompt", systemPrompt,
-            "--prompt", prompt,
-            "--simple-io", "--no-display-prompt", "--log-disable",
-            "--predict", String(predict), "--temp", "0.2", "--ctx-size", "8192",
-            "--threads", threads, "--threads-batch", threads,
-            "--batch-size", batchSize, "--ubatch-size", microBatchSize,
-            "--prio", "-1", "--prio-batch", "0",
-            "--gpu-layers", "0", "--no-warmup"
-        ]
-        run(
+        runQwenTextAttempt(
             executable: executable,
-            arguments: arguments,
-            input: "",
-            timeoutSeconds: performance.writingTimeout
-        ) { [weak self] result in
+            model: model,
+            prompt: prompt,
+            systemPrompt: systemPrompt,
+            predict: predict,
+            attempt: 0,
+            completion: completion
+        )
+    }
+
+    private func runQwenTextAttempt(
+        executable: URL,
+        model: URL,
+        prompt: String,
+        systemPrompt: String,
+        predict: Int,
+        attempt: Int,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        let performance = SettingsStore.shared.runtimeWritingPerformance
+        let mode = SettingsStore.shared.aiComputeMode
+        let useCPU = mode == .cpu || (mode == .automatic && attempt > 0)
+        let taggedSystemPrompt = """
+        \(systemPrompt)
+
+        Return exactly <RP_RESULT> followed by the complete requested output and then <RP_END>. Do not put any text outside those tags.
+        """
+        let arguments = localModelArguments(
+            model: model,
+            prompt: prompt,
+            systemPrompt: taggedSystemPrompt,
+            predictionLimit: predict,
+            performance: performance,
+            useCPU: useCPU,
+            seed: attempt + 1
+        )
+        run(executable: executable, arguments: arguments, input: "", timeoutSeconds: performance.writingTimeout) { [weak self] result in
             guard let self else { return }
+            let parsed: Result<String, Error>
             switch result {
             case .failure(let error):
-                completion(.failure(error))
+                parsed = .failure(error)
             case .success(let output):
-                guard output.status == 0 else {
-                    completion(.failure(RunnerError.processFailed(output.stderr)))
-                    return
+                if output.status != 0 {
+                    parsed = .failure(RunnerError.processFailed(output.stderr))
+                } else {
+                    let console = String(decoding: output.stdout, as: UTF8.self)
+                    let response = self.extractQwenResponse(from: console, prompt: prompt) ?? console
+                    if let value = Self.extractTaggedResult(response), !value.isEmpty {
+                        parsed = .success(value)
+                    } else {
+                        parsed = .failure(RunnerError.invalidModelResponse)
+                    }
                 }
-                let console = String(decoding: output.stdout, as: UTF8.self)
-                guard let response = self.extractQwenResponse(from: console, prompt: prompt) else {
-                    completion(.failure(RunnerError.processFailed("The local model returned an unreadable response.")))
-                    return
-                }
-                completion(.success(response.trimmingCharacters(in: .whitespacesAndNewlines)))
+            }
+            if case .failure = parsed, attempt == 0 {
+                self.runQwenTextAttempt(
+                    executable: executable,
+                    model: model,
+                    prompt: prompt,
+                    systemPrompt: systemPrompt,
+                    predict: predict,
+                    attempt: 1,
+                    completion: completion
+                )
+            } else {
+                completion(parsed)
             }
         }
+    }
+
+    private static func extractTaggedResult(_ response: String) -> String? {
+        guard let start = response.range(of: "<RP_RESULT>", options: .backwards),
+              let end = response.range(of: "<RP_END>", range: start.upperBound..<response.endIndex) else { return nil }
+        var value = String(response[start.upperBound..<end.lowerBound])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasSuffix("</RP_RESULT>") {
+            value.removeLast("</RP_RESULT>".count)
+            value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !value.contains("<RP_"), !value.contains("</RP_") else { return nil }
+        return value
     }
 
     private var finalSummarySystemPrompt: String {

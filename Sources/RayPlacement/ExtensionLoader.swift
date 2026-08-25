@@ -46,7 +46,7 @@ final class ExtensionLoader {
         for (file, directory) in manifestFiles {
             do {
                 let manifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: file))
-                guard manifest.schemaVersion == 1 else {
+                guard (1...2).contains(manifest.schemaVersion) else {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Unsupported schema version \(manifest.schemaVersion)."))
                     continue
                 }
@@ -67,6 +67,18 @@ final class ExtensionLoader {
                     guard seenCommandIDs.insert(compositeID).inserted else {
                         issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Duplicate command id: \(command.id)"))
                         continue
+                    }
+                    if command.action.type == .form {
+                        guard let form = command.action.form, !form.fields.isEmpty else {
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                            continue
+                        }
+                        let fieldIDs = form.fields.map(\.id)
+                        guard Set(fieldIDs).count == fieldIDs.count,
+                              fieldIDs.allSatisfy({ !$0.isEmpty }) else {
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
+                            continue
+                        }
                     }
                     loaded.append(LoadedExtensionCommand(
                         extensionID: manifest.id,

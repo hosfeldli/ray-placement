@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 2,
+  "id": "local.endpoint-tester",
+  "name": "Endpoint Tester",
+  "version": "1.0.0",
+  "description": "Build and run reusable HTTP request workflows in a native input/output window.",
+  "commands": [
+    {
+      "id": "request",
+      "title": "Test an HTTP Endpoint",
+      "subtitle": "Send a request and inspect status, timing, headers, and response",
+      "keywords": ["api", "http", "endpoint", "request", "rest", "test", "json"],
+      "icon": "network",
+      "action": {
+        "type": "form",
+        "value": "",
+        "form": {
+          "title": "Endpoint Tester",
+          "submitLabel": "Send Request",
+          "fields": [
+            {
+              "id": "method",
+              "label": "Method",
+              "type": "picker",
+              "defaultValue": "GET",
+              "options": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"]
+            },
+            {
+              "id": "url",
+              "label": "Endpoint",
+              "type": "text",
+              "placeholder": "https://api.example.com/health",
+              "required": true
+            },
+            {
+              "id": "authorization",
+              "label": "Authorization header",
+              "type": "secure",
+              "placeholder": "Bearer …"
+            },
+            {
+              "id": "contentType",
+              "label": "Content-Type",
+              "type": "picker",
+              "defaultValue": "application/json",
+              "options": ["application/json", "text/plain", "application/xml"]
+            },
+            {
+              "id": "body",
+              "label": "Request body",
+              "type": "multiline",
+              "placeholder": "{\n  \"key\": \"value\"\n}"
+            }
+          ],
+          "execution": {
+            "type": "httpRequest",
+            "method": "{{method}}",
+            "url": "{{url}}",
+            "headers": {
+              "Authorization": "{{authorization}}",
+              "Content-Type": "{{contentType}}"
+            },
+            "body": "{{body}}",
+            "timeoutSeconds": 30
+          }
+        }
+      }
+    }
+  ]
+}

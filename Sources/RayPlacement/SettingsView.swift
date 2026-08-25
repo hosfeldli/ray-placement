@@ -82,6 +82,7 @@ struct SettingsView: View {
         }
         .frame(width: 820, height: 590)
         .tint(settings.accentTheme.primary)
+        .preferredColorScheme(.dark)
         .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.88), value: selectedSection)
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
@@ -195,13 +196,21 @@ struct SettingsView: View {
             }
 
             Section("Writing and note summaries") {
+                Picker("AI compute", selection: $settings.aiComputeMode) {
+                    ForEach(AIComputeMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Text(settings.aiComputeMode.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 performanceSlider(
                     "Writing",
                     selection: $settings.writingPerformance,
                     active: settings.runtimeWritingPerformance
                 )
                 LabeledContent(
-                    "Active Qwen budget",
+                    "Active local-AI budget",
                     value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeWritingPerformance.timeoutDescription(settings.runtimeWritingPerformance.writingTimeout))"
                 )
                 if settings.runtimeWritingPerformance == .unbounded {
@@ -319,7 +328,7 @@ struct SettingsView: View {
             }
 
             Section("Your correction instructions") {
-                Text("Tell Qwen which names, terms, capitalization, tone, or grammar style it must preserve. These instructions apply to every grammar check.")
+                Text("Tell the selected local AI which names, terms, capitalization, tone, or grammar style it must preserve. These instructions apply to every grammar check.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $settings.writingInstructions)
@@ -367,7 +376,7 @@ struct SettingsView: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.title).font(.callout.weight(.semibold))
-                Text("\(model.detail) · \(model.sizeLabel)")
+                Text("\(model.vendor) · \(model.detail) · \(model.sizeLabel)")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -377,11 +386,27 @@ struct SettingsView: View {
                 Button("Cancel", action: modelDownloads.cancel)
             } else if LocalModelCatalog.isInstalled(model.id) {
                 Button("Remove…") { modelToRemove = model.id }
+            } else if model.downloadURL == nil {
+                Button("Model Page") {
+                    if let url = model.modelPageURL { NSWorkspace.shared.open(url) }
+                }
+                Button("Import…") { importModel(model.id) }
             } else {
                 Button("Install") { modelDownloads.install(model.id) }
                     .disabled(modelDownloads.downloading != nil)
             }
         }
+    }
+
+    private func importModel(_ identifier: LocalModelID) {
+        let panel = NSOpenPanel()
+        panel.title = "Import \(LocalModelCatalog.descriptor(identifier).title)"
+        panel.message = "Choose the exact official GGUF file. RayPlacement verifies it before installation."
+        panel.allowedContentTypes = [.data]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        modelDownloads.importModel(identifier, from: url)
     }
 
     private var usageTab: some View {
@@ -487,6 +512,18 @@ struct SettingsView: View {
                     symbol: "mic.fill",
                     enabled: $settings.dictationHotkeyEnabled,
                     shortcut: $settings.dictationShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Dock Notes Left",
+                    symbol: "rectangle.lefthalf.inset.filled",
+                    enabled: $settings.notesDockLeftHotkeyEnabled,
+                    shortcut: $settings.notesDockLeftShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Dock Notes Right",
+                    symbol: "rectangle.righthalf.inset.filled",
+                    enabled: $settings.notesDockRightHotkeyEnabled,
+                    shortcut: $settings.notesDockRightShortcut
                 )
             }
 

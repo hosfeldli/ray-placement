@@ -23,7 +23,7 @@ The source tree keeps bundled extensions under `Extensions/`. The top-level inst
 
 ## Stable identity rules
 
-- `schemaVersion` must be `1`.
+- Use `schemaVersion: 1` for simple commands and `schemaVersion: 2` when using native forms.
 - Give the extension a globally distinctive, stable `id`, such as `local.company.project-tools`.
 - Every command `id` must be unique inside that extension and must remain stable across updates.
 - RayPlacement persists shortcut overrides using `<extension id>.<command id>`. Renaming either ID intentionally creates a new command and leaves the previous preference orphaned.
@@ -78,6 +78,7 @@ Required fields are `id`, `title`, and `action`. Optional fields are:
 - `keywords`: search terms that do not repeat the title.
 - `icon`: an SF Symbols name available on macOS 13 or later.
 - `hotkey`: a default global shortcut. Users can replace, clear, restore, or independently disable it in **Settings → Extensions**. Users can also disable the containing extension or function without losing settings.
+- `runInBackground`: optional for `shell`; when true, shows compact bottom progress instead of taking over the launcher.
 
 Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) plus one supported key, joined by `+`. Example: `control+option+p`. `command+command` is the dedicated double-tap Command gesture; it ignores Command presses used with another key. Defaults should be rare to avoid collisions. Prefer leaving `hotkey` out and letting the user choose one in Settings.
 
@@ -99,8 +100,20 @@ Hotkeys contain one or more modifiers (`command`, `option`, `control`, `shift`) 
 | `openFormatterWorkspace` | Opens RayPlacement's temporary native EDI/JSON/XML formatter note | Empty string |
 | `openEmojiPicker` | Opens RayPlacement's native searchable emoji selector and pastes the selection into the source app | Empty string |
 | `shell` | Runs an executable directly | Absolute or extension-relative executable path |
+| `form` | Opens a native input/output workflow | Empty string; add a `form` definition |
 
 For `shell`, `arguments` is an array passed directly to the process. RayPlacement never builds a shell command and never expands variables inside an argument. Put conditional logic and safe path expansion in the executable itself. `workingDirectory` is optional.
+
+## Schema-v2 form workflows
+
+Use a form when a command needs parameters, secrets, repeatable input, and an inspectable result. Supported fields are `text`, `secure`, `multiline`, `number`, `toggle`, and `picker`. Field IDs must be unique. Mark important values with `required: true`; picker choices go in `options`. RayPlacement generates the UI, including keyboard access, dark-glass styling, progress, errors, copying, and the input/output layout.
+
+Execution types:
+
+- `httpRequest`: `method`, `url`, `headers`, `body`, and `timeoutSeconds`. Only HTTP(S) is allowed. JSON responses are pretty-printed. Secure-field values remain in memory.
+- `shell`: `executable`, `arguments`, and `workingDirectory`. The same executable trust and resource rules apply as a normal shell action.
+
+Insert fields with exact placeholders such as `{{url}}`. Substitution happens per argument or request component; it is never evaluated as a shell command. See `Extensions/endpoint-tester/manifest.json` for a complete flow.
 
 ## Script requirements
 
@@ -124,7 +137,7 @@ An extension that starts an AI model or another expensive worker must obey RayPl
 3. Use `RAYPLACEMENT_PERFORMANCE_SCALE` (`eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded`) only to choose documented quality-versus-speed behavior; never silently download a larger model. Beta Dynamic may select a lower active value than the slider ceiling, so read it fresh for every run.
 4. Finish before `RAYPLACEMENT_TIMEOUT_SECONDS`. RayPlacement will terminate the process at that deadline, so keep partial writes atomic. A value of `0` is the user's explicit Unbounded choice and means RayPlacement applies no wall-clock deadline; the extension must still exit when its requested work is complete.
 5. Load the model only after command invocation and release it by exiting. Do not leave daemons, launch agents, background watchers, or live dictation sessions running.
-6. Avoid GPU use by default. If GPU acceleration is genuinely necessary, state that in the manifest documentation and provide a CPU mode.
+6. GPU use must follow the user's AI compute choice when the extension can integrate it. Document GPU memory needs and provide a CPU path; never leave a model resident after the task.
 7. Bound input, output, model context, and temporary files. RayPlacement stores only the first 1 MB of process output, but the extension remains responsible for its own memory and disk usage.
 8. Document approximate model download size, peak memory, network behavior, data destination, and whether the thread variables are fully enforced by the runtime.
 
@@ -162,6 +175,7 @@ Before presenting an extension as complete, an AI agent should:
 - `Extensions/productivity-tools` demonstrates native interactive `convertTimezones`, `forceQuitApplications`, and `forceQuitAllApplications` actions.
 - `Extensions/document-formatter` demonstrates the native temporary-workspace `openFormatterWorkspace` action. Its native implementation keeps deterministic parsing and validation separate from reviewable AI proposals.
 - `Extensions/emoji-picker` demonstrates the native interactive `openEmojiPicker` action and special `command+command` default gesture.
+- `Extensions/endpoint-tester` demonstrates the schema-v2 form, secure inputs, request templates, and native response viewer.
 - `Examples/project-tools` demonstrates URL, file, and shell commands.
 
-When future functionality requires parameters, interactive forms, streaming, or richer command results, evolve the schema version deliberately instead of hiding a new protocol inside existing fields.
+For richer multi-step flows, add fields and template-driven executions to schema v2 before adding app-specific code. Evolve the schema deliberately if a workflow needs streaming, branching, or persistent state; never hide an undocumented protocol inside existing fields.

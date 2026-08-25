@@ -116,6 +116,33 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
     }
 }
 
+enum AIComputeMode: String, CaseIterable, Identifiable {
+    case automatic
+    case metal
+    case cpu
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .automatic: return "Auto · Metal with CPU fallback"
+        case .metal: return "Apple GPU · Metal"
+        case .cpu: return "CPU only"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .automatic:
+            return "Uses the Apple GPU when available and retries safely on the CPU if Metal cannot start."
+        case .metal:
+            return "Offloads all supported model layers to the Apple GPU for the lowest latency."
+        case .cpu:
+            return "Keeps local AI on CPU cores. Slower, but useful when GPU memory is constrained."
+        }
+    }
+}
+
 enum DictationEngine: String, CaseIterable, Identifiable {
     case localWhisper
     case appleSpeech
@@ -179,6 +206,10 @@ final class SettingsStore: ObservableObject {
         static let quickNoteHotkeyEnabled = "quickNoteHotkeyEnabled"
         static let dictationShortcut = "dictationShortcut"
         static let dictationHotkeyEnabled = "dictationHotkeyEnabled"
+        static let notesDockLeftShortcut = "notesDockLeftShortcut"
+        static let notesDockLeftHotkeyEnabled = "notesDockLeftHotkeyEnabled"
+        static let notesDockRightShortcut = "notesDockRightShortcut"
+        static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
         static let accentTheme = "accentTheme"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
@@ -195,6 +226,7 @@ final class SettingsStore: ObservableObject {
         static let dictationTranscribeWhileRecording = "dictationTranscribeWhileRecording"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
+        static let aiComputeMode = "aiComputeMode"
         static let writingModel = "writingModel"
         static let summaryModel = "summaryModel"
         static let formatterModel = "formatterModel"
@@ -270,6 +302,34 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var notesDockLeftShortcut: String {
+        didSet {
+            defaults.set(notesDockLeftShortcut, forKey: Key.notesDockLeftShortcut)
+            if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
+        }
+    }
+
+    @Published var notesDockLeftHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(notesDockLeftHotkeyEnabled, forKey: Key.notesDockLeftHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var notesDockRightShortcut: String {
+        didSet {
+            defaults.set(notesDockRightShortcut, forKey: Key.notesDockRightShortcut)
+            if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
+        }
+    }
+
+    @Published var notesDockRightHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(notesDockRightHotkeyEnabled, forKey: Key.notesDockRightHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
     @Published var accentTheme: AppAccentTheme {
         didSet {
             defaults.set(accentTheme.rawValue, forKey: Key.accentTheme)
@@ -334,6 +394,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dynamicPerformance, forKey: Key.dynamicPerformance) }
     }
 
+    @Published var aiComputeMode: AIComputeMode {
+        didSet { defaults.set(aiComputeMode.rawValue, forKey: Key.aiComputeMode) }
+    }
+
     @Published var writingModel: LocalModelID {
         didSet { defaults.set(writingModel.rawValue, forKey: Key.writingModel) }
     }
@@ -362,6 +426,10 @@ final class SettingsStore: ObservableObject {
         quickNoteHotkeyEnabled = defaults.object(forKey: Key.quickNoteHotkeyEnabled) as? Bool ?? true
         dictationShortcut = defaults.string(forKey: Key.dictationShortcut) ?? "control+option+d"
         dictationHotkeyEnabled = defaults.object(forKey: Key.dictationHotkeyEnabled) as? Bool ?? true
+        notesDockLeftShortcut = defaults.string(forKey: Key.notesDockLeftShortcut) ?? "command+option+left"
+        notesDockLeftHotkeyEnabled = defaults.object(forKey: Key.notesDockLeftHotkeyEnabled) as? Bool ?? false
+        notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
+        notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
@@ -375,6 +443,7 @@ final class SettingsStore: ObservableObject {
         dictationTranscribeWhileRecording = defaults.object(forKey: Key.dictationTranscribeWhileRecording) as? Bool ?? false
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
+        aiComputeMode = AIComputeMode(rawValue: defaults.string(forKey: Key.aiComputeMode) ?? "") ?? .automatic
         writingModel = LocalModelID(rawValue: defaults.string(forKey: Key.writingModel) ?? "") ?? .qwen3Balanced
         summaryModel = LocalModelID(rawValue: defaults.string(forKey: Key.summaryModel) ?? "") ?? .qwen3Balanced
         formatterModel = LocalModelID(rawValue: defaults.string(forKey: Key.formatterModel) ?? "") ?? .qwen3Balanced
@@ -493,6 +562,18 @@ final class SettingsStore: ObservableObject {
     func restoreDictationShortcut(_ shortcut: String) {
         isRestoringActionShortcut = true
         dictationShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreNotesDockLeftShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        notesDockLeftShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreNotesDockRightShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        notesDockRightShortcut = shortcut
         isRestoringActionShortcut = false
     }
 

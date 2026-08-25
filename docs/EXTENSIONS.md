@@ -58,6 +58,14 @@ chmod +x bin/my-command
 
 Script output is shown inside the launcher. Output is limited to 1 MB. Nonzero exit status is shown as an error.
 
+Set `runInBackground` to `true` on a shell command to keep the launcher out of the way while it runs. RayPlacement shows a compact bottom status capsule and records the result in Usage. Leave it off when stdout is the command's primary result.
+
+## Native input/output workflows
+
+Schema version 2 adds a `form` action for extensions that need a real UI without app-specific Swift code. Forms support `text`, `secure`, `multiline`, `number`, `toggle`, and `picker` fields. An execution can send an `httpRequest` or invoke a trusted executable. Use `{{fieldID}}` placeholders in URL, method, headers, body, executable path, arguments, or working directory. Values stay in memory; secure values are not persisted.
+
+The bundled `Extensions/endpoint-tester` is a complete example. It opens a native glass workspace, accepts request inputs, then displays HTTP status, elapsed time, headers, and a pretty-printed JSON response in the same window. Only HTTP(S) endpoints are accepted, response capture is capped at 1 MB, and the user's extension timeout remains the upper bound.
+
 ## Performance contract for local AI
 
 Every executable command receives the user's current **Settings → Performance → Extensions** choice through these environment variables:
@@ -76,7 +84,7 @@ RayPlacement assigns the child process background, utility, or foreground priori
 
 Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` sends the standard Copy command to the previously focused app so it works in browsers, Electron, Office, and custom editors; RayPlacement reads only the resulting text and immediately restores the prior clipboard when no other app changed it. Accessibility selection is the fallback. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. The special double-Command gesture is observed only while its hotkey is enabled and ignores Command when used in a chord. Performance limits do not turn untrusted executable code into a security sandbox.
 
-The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/emoji-picker` adds the searchable emoji selector with double Command as its default gesture. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
+The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/endpoint-tester` demonstrates a native form flow. `Extensions/emoji-picker` adds the searchable emoji selector with double Command as its default gesture. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
 
 For a precise AI-oriented build and verification contract, see [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md). A JSON Schema is available at [extension-manifest.schema.json](extension-manifest.schema.json).
 

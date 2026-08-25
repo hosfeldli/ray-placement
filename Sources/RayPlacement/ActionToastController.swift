@@ -30,7 +30,7 @@ final class ActionToastController {
 
     init() {
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 310, height: 48),
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 44),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -52,7 +52,7 @@ final class ActionToastController {
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
                 x: visibleFrame.midX - panel.frame.width / 2,
-                y: visibleFrame.maxY - panel.frame.height - 42
+                y: visibleFrame.minY + 30
             ))
         }
         panel.alphaValue = 0
@@ -98,12 +98,13 @@ private struct ActionToastView: View {
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 14)
-        .frame(width: 310, height: 48)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .frame(width: 360, height: 44)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(Color.white.opacity(0.15), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 15, style: .continuous)
+                .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
         )
+        .shadow(color: style.color.opacity(0.16), radius: 18, y: 8)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(message)
     }

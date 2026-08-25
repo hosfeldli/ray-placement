@@ -71,6 +71,21 @@ import Testing
     #expect(manifest.commands.contains { $0.action.type == .shell })
 }
 
+@Test func endpointFormManifestDecodesAndRendersTemplates() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/endpoint-tester/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    let command = try #require(manifest.commands.first)
+    let form = try #require(command.action.form)
+    #expect(manifest.schemaVersion == 2)
+    #expect(command.action.type == .form)
+    #expect(form.fields.contains { $0.id == "url" && $0.required == true })
+    #expect(ExtensionTemplate.render("{{method}} {{url}}", values: ["method": "GET", "url": "https://example.com"]) == "GET https://example.com")
+}
+
 @Test func writingToolsManifestDecodes() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

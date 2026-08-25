@@ -16,6 +16,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesShortcut: ShortcutSpec?
     private var registeredQuickNoteShortcut: ShortcutSpec?
     private var registeredDictationShortcut: ShortcutSpec?
+    private var registeredNotesDockLeftShortcut: ShortcutSpec?
+    private var registeredNotesDockRightShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -26,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         try? ApplicationPaths.prepare()
+        NSApp.appearance = NSAppearance(named: .darkAqua)
         NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
         launcher = LauncherController(updateService: updateService)
         launcher.onExtensionsChanged = { [weak self] in self?.registerExtensionHotkeys() }
@@ -137,6 +140,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore: SettingsStore.shared.restoreQuickNoteShortcut
         ) { [weak self] in
             self?.launcher.showQuickNote()
+        }
+        registerActionHotkey(
+            identifier: "builtin.notes-dock-left",
+            displayName: "Dock Notes Left",
+            enabled: SettingsStore.shared.notesDockLeftHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.notesDockLeftShortcut,
+            previous: &registeredNotesDockLeftShortcut,
+            restore: SettingsStore.shared.restoreNotesDockLeftShortcut
+        ) { [weak self] in
+            self?.launcher.dockNotesLeft()
+        }
+        registerActionHotkey(
+            identifier: "builtin.notes-dock-right",
+            displayName: "Dock Notes Right",
+            enabled: SettingsStore.shared.notesDockRightHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.notesDockRightShortcut,
+            previous: &registeredNotesDockRightShortcut,
+            restore: SettingsStore.shared.restoreNotesDockRightShortcut
+        ) { [weak self] in
+            self?.launcher.dockNotesRight()
         }
     }
 

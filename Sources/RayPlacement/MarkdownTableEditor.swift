@@ -3,15 +3,18 @@ import RayPlacementCore
 
 @MainActor
 final class MarkdownTableData {
+    var title: String
     var headers: [String]
     var alignments: [MarkdownTableAlignment]
     var rows: [[String]]
 
     init(
+        title: String = "",
         headers: [String],
         alignments: [MarkdownTableAlignment],
         rows: [[String]]
     ) {
+        self.title = title
         let columnCount = max(1, headers.count)
         self.headers = Self.normalized(headers, count: columnCount, defaultValue: "Column")
         self.alignments = Self.normalized(alignments, count: columnCount, defaultValue: .leading)
@@ -26,7 +29,11 @@ final class MarkdownTableData {
         var lines = [markdownRow(headers)]
         lines.append("| " + alignments.map(Self.delimiter).joined(separator: " | ") + " |")
         lines.append(contentsOf: rows.map(markdownRow))
-        return lines.joined(separator: "\n")
+        let tableMarkdown = lines.joined(separator: "\n")
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanTitle.isEmpty,
+              let encoded = cleanTitle.data(using: .utf8)?.base64EncodedString() else { return tableMarkdown }
+        return "<!-- rayplacement-table-title:\(encoded) -->\n" + tableMarkdown
     }
 
     func addRow() {
@@ -54,6 +61,20 @@ final class MarkdownTableData {
     func ensureSize(rowCount: Int, columnCount: Int) {
         while self.columnCount < columnCount { addColumn() }
         while rows.count < rowCount { addRow() }
+    }
+
+    func sortRows(column: Int, ascending: Bool) {
+        guard headers.indices.contains(column) else { return }
+        rows.sort { lhs, rhs in
+            let left = lhs[column].trimmingCharacters(in: .whitespacesAndNewlines)
+            let right = rhs[column].trimmingCharacters(in: .whitespacesAndNewlines)
+            if left.isEmpty != right.isEmpty { return !left.isEmpty }
+            if let leftNumber = Decimal(string: left), let rightNumber = Decimal(string: right), leftNumber != rightNumber {
+                return ascending ? leftNumber < rightNumber : leftNumber > rightNumber
+            }
+            let comparison = left.localizedStandardCompare(right)
+            return ascending ? comparison == .orderedAscending : comparison == .orderedDescending
+        }
     }
 
     private func markdownRow(_ cells: [String]) -> String {
@@ -145,6 +166,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private var fields: [MarkdownTableField] = []
     private var cellAppearances: [(view: NSView, header: Bool, alternate: Bool)] = []
     private weak var toolbarIcon: NSImageView?
+    private weak var titleField: NSTextField?
     private var isSizingColumns = false
     private var accentObserver: NSObjectProtocol?
 
@@ -219,9 +241,17 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         toolbarIcon = icon
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
-        let title = NSTextField(labelWithString: "Table")
+        let title = NSTextField(string: table.title)
+        titleField = title
+        title.delegate = self
+        title.isBordered = false
+        title.drawsBackground = false
+        title.focusRingType = .none
+        title.placeholderString = "Untitled table"
         title.font = .systemFont(ofSize: 12, weight: .semibold)
-        title.textColor = .secondaryLabelColor
+        title.textColor = .labelColor
+        title.setAccessibilityLabel("Table name")
+        title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
@@ -376,17 +406,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
-        let isDark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
         let accent = SettingsStore.shared.accentTheme.nsPrimary
-        let background = isDark
-            ? NSColor(calibratedWhite: 0.105, alpha: 0.98)
-            : NSColor(calibratedWhite: 0.995, alpha: 0.99)
-        let border = isDark
-            ? NSColor.white.withAlphaComponent(0.19)
-            : NSColor(calibratedWhite: 0.48, alpha: 0.55)
-        let separator = isDark
-            ? NSColor.white.withAlphaComponent(0.16)
-            : NSColor(calibratedWhite: 0.68, alpha: 0.72)
+        let background = NSColor(calibratedWhite: 0.105, alpha: 0.98)
+        let border = NSColor.white.withAlphaComponent(0.22)
+        let separator = NSColor.white.withAlphaComponent(0.16)
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
         gridView?.layer?.backgroundColor = separator.cgColor
@@ -395,15 +418,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         for item in cellAppearances {
             let color: NSColor
             if item.header {
-                color = background.blended(withFraction: isDark ? 0.30 : 0.20, of: accent) ?? background
+                color = background.blended(withFraction: 0.30, of: accent) ?? background
             } else if item.alternate {
-                color = isDark
-                    ? NSColor(calibratedWhite: 0.17, alpha: 0.98)
-                    : NSColor(calibratedWhite: 0.945, alpha: 1)
+                color = NSColor(calibratedWhite: 0.17, alpha: 0.98)
             } else {
-                color = isDark
-                    ? NSColor(calibratedWhite: 0.135, alpha: 0.98)
-                    : NSColor.white
+                color = NSColor(calibratedWhite: 0.135, alpha: 0.98)
             }
             item.view.layer?.backgroundColor = color.cgColor
         }
@@ -412,6 +431,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private var isViewLoadedForStyling: Bool { layer != nil }
 
     func controlTextDidChange(_ notification: Notification) {
+        if let field = notification.object as? NSTextField, field === titleField {
+            table.title = field.stringValue
+            onChange?()
+            return
+        }
         guard let field = notification.object as? MarkdownTableField else { return }
         switch field.coordinate {
         case .header(let column):
@@ -512,6 +536,24 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         removeColumn.target = self
         removeColumn.isEnabled = table.columnCount > 1
         menu.addItem(removeColumn)
+        let sortMenu = NSMenu(title: "Sort Rows")
+        for (column, header) in table.headers.enumerated() {
+            let columnItem = NSMenuItem(title: header.isEmpty ? "Column \(column + 1)" : header, action: nil, keyEquivalent: "")
+            let directions = NSMenu(title: columnItem.title)
+            let ascending = NSMenuItem(title: "Ascending", action: #selector(sortRows(_:)), keyEquivalent: "")
+            ascending.target = self
+            ascending.tag = column + 1
+            directions.addItem(ascending)
+            let descending = NSMenuItem(title: "Descending", action: #selector(sortRows(_:)), keyEquivalent: "")
+            descending.target = self
+            descending.tag = -(column + 1)
+            directions.addItem(descending)
+            columnItem.submenu = directions
+            sortMenu.addItem(columnItem)
+        }
+        let sortItem = NSMenuItem(title: "Sort Rows", action: nil, keyEquivalent: "")
+        sortItem.submenu = sortMenu
+        menu.addItem(sortItem)
         menu.addItem(.separator())
         let delete = NSMenuItem(title: "Delete Table", action: #selector(deleteTable), keyEquivalent: "")
         delete.target = self
@@ -531,6 +573,13 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         rebuildGrid()
         onChange?()
         onSizeChange?()
+    }
+
+    @objc private func sortRows(_ sender: NSMenuItem) {
+        let column = abs(sender.tag) - 1
+        table.sortRows(column: column, ascending: sender.tag > 0)
+        rebuildGrid()
+        onChange?()
     }
 
     @objc private func deleteTable() {
@@ -696,14 +745,21 @@ enum MarkdownTableDocumentCodec {
                 rows.append(cells)
                 end += 1
             }
+            var title = ""
+            var regionStartIndex = index
+            if index > 0, let decoded = tableTitle(from: lines[index - 1].text) {
+                title = decoded
+                regionStartIndex = index - 1
+            }
             let finalLine = lines[max(index + 1, end - 1)]
             let range = NSRange(
-                location: lines[index].contentRange.location,
-                length: NSMaxRange(finalLine.contentRange) - lines[index].contentRange.location
+                location: lines[regionStartIndex].contentRange.location,
+                length: NSMaxRange(finalLine.contentRange) - lines[regionStartIndex].contentRange.location
             )
             regions.append(Region(
                 range: range,
                 table: MarkdownTableData(
+                    title: title,
                     headers: header.headers,
                     alignments: header.alignments,
                     rows: rows
@@ -712,6 +768,19 @@ enum MarkdownTableDocumentCodec {
             index = end
         }
         return regions
+    }
+
+    private static func tableTitle(from line: String) -> String? {
+        let prefix = "<!-- rayplacement-table-title:"
+        let suffix = " -->"
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix(prefix), trimmed.hasSuffix(suffix) else { return nil }
+        let start = trimmed.index(trimmed.startIndex, offsetBy: prefix.count)
+        let end = trimmed.index(trimmed.endIndex, offsetBy: -suffix.count)
+        guard start <= end,
+              let data = Data(base64Encoded: String(trimmed[start..<end])),
+              let title = String(data: data, encoding: .utf8) else { return nil }
+        return title
     }
 
     private static func tableHeader(

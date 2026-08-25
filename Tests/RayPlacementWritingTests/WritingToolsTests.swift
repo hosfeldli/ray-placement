@@ -86,7 +86,16 @@ private final class FakePasteboard: PlainTextPasteboard {
     )
     #expect(prompt.contains("Correct the entire supplied passage"))
     #expect(prompt.contains("Keep RayPlacement and Qwen capitalized"))
-    #expect(prompt.contains("Return only the fully corrected passage"))
+    #expect(prompt.contains("<RP_CORRECTED>"))
+    #expect(prompt.contains("<RP_END>"))
+}
+
+@Test func aiTaggedCorrectionRejectsIncompleteOrRefusalResponses() {
+    #expect(AIWritingPrompt.taggedResponse("noise <RP_CORRECTED>You really are great.<RP_END>") == "You really are great.")
+    #expect(AIWritingPrompt.taggedResponse("<RP_CORRECTED>You really are great.</RP_CORRECTED><RP_END>") == "You really are great.")
+    #expect(AIWritingPrompt.taggedResponse("You really are great.") == nil)
+    #expect(AIWritingPrompt.isPlausibleCorrection("You really are great.", for: "u really is a great"))
+    #expect(!AIWritingPrompt.isPlausibleCorrection("As an AI, I cannot do that.", for: "text"))
 }
 
 @Test func aiResponseCleanupDoesNotApplyRuleBasedGrammarEdits() {

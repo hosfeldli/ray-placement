@@ -84,29 +84,27 @@ enum LiquidGlassDepth {
 
 struct LiquidGlassBackdrop: View {
     @ObservedObject private var settings = SettingsStore.shared
-    @Environment(\.colorScheme) private var colorScheme
     var material: NSVisualEffectView.Material = .underWindowBackground
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
 
     var body: some View {
         ZStack {
             VisualEffectView(material: material, blendingMode: blendingMode)
-            Color(colorScheme == .dark ? .black : .white)
-                .opacity(colorScheme == .dark ? 0.22 : 0.18)
+            Color.black.opacity(0.32)
             RadialGradient(
-                colors: [settings.accentTheme.primary.opacity(colorScheme == .dark ? 0.20 : 0.13), .clear],
+                colors: [settings.accentTheme.primary.opacity(0.24), .clear],
                 center: .topLeading,
                 startRadius: 4,
                 endRadius: 520
             )
             RadialGradient(
-                colors: [settings.accentTheme.secondary.opacity(colorScheme == .dark ? 0.14 : 0.085), .clear],
+                colors: [settings.accentTheme.secondary.opacity(0.17), .clear],
                 center: .bottomTrailing,
                 startRadius: 8,
                 endRadius: 470
             )
             LinearGradient(
-                colors: [Color.white.opacity(colorScheme == .dark ? 0.025 : 0.16), .clear, Color.black.opacity(colorScheme == .dark ? 0.10 : 0.025)],
+                colors: [Color.white.opacity(0.045), .clear, Color.black.opacity(0.16)],
                 startPoint: .top,
                 endPoint: .bottom
             )
@@ -117,28 +115,24 @@ struct LiquidGlassBackdrop: View {
 
 private struct LiquidGlassSurfaceModifier: ViewModifier {
     @ObservedObject private var settings = SettingsStore.shared
-    @Environment(\.colorScheme) private var colorScheme
     let cornerRadius: CGFloat
     let depth: LiquidGlassDepth
     let selected: Bool
     let accentOpacity: Double
 
     private var baseOpacity: Double {
-        switch (depth, colorScheme) {
-        case (.recessed, .dark): return 0.12
-        case (.recessed, _): return 0.27
-        case (.raised, .dark): return 0.20
-        case (.raised, _): return 0.46
-        case (.floating, .dark): return 0.27
-        case (.floating, _): return 0.56
+        switch depth {
+        case .recessed: return 0.18
+        case .raised: return 0.26
+        case .floating: return 0.34
         }
     }
 
     private var shadow: (color: Color, radius: CGFloat, y: CGFloat) {
         switch depth {
         case .recessed: return (.clear, 0, 0)
-        case .raised: return (.black.opacity(colorScheme == .dark ? 0.18 : 0.09), 15, 7)
-        case .floating: return (.black.opacity(colorScheme == .dark ? 0.30 : 0.15), 28, 14)
+        case .raised: return (.black.opacity(0.28), 18, 8)
+        case .floating: return (.black.opacity(0.42), 32, 15)
         }
     }
 
@@ -148,12 +142,12 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             .background {
                 ZStack {
                     shape.fill(.ultraThinMaterial)
-                    shape.fill(Color(colorScheme == .dark ? .black : .white).opacity(baseOpacity))
+                    shape.fill(Color.black.opacity(baseOpacity))
                     shape.fill(
                         LinearGradient(
                             colors: [
-                                Color.white.opacity(colorScheme == .dark ? 0.055 : 0.26),
-                                settings.accentTheme.primary.opacity((selected ? 0.17 : accentOpacity) * (colorScheme == .dark ? 1.0 : 0.72)),
+                                Color.white.opacity(0.085),
+                                settings.accentTheme.primary.opacity(selected ? 0.20 : accentOpacity),
                                 settings.accentTheme.secondary.opacity(selected ? 0.105 : accentOpacity * 0.40),
                                 Color.clear
                             ],
@@ -167,10 +161,10 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(colorScheme == .dark ? 0.26 : 0.78),
-                            settings.accentTheme.primary.opacity(selected ? 0.50 : 0.20),
-                            Color.white.opacity(colorScheme == .dark ? 0.06 : 0.24),
-                            Color.black.opacity(colorScheme == .dark ? 0.30 : 0.10)
+                            Color.white.opacity(0.34),
+                            settings.accentTheme.primary.opacity(selected ? 0.58 : 0.24),
+                            Color.white.opacity(0.075),
+                            Color.black.opacity(0.38)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -178,9 +172,19 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                     lineWidth: selected ? 1.2 : 0.8
                 )
             }
+            .overlay(alignment: .top) {
+                Capsule()
+                    .fill(LinearGradient(
+                        colors: [.clear, Color.white.opacity(selected ? 0.28 : 0.16), .clear],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    ))
+                    .frame(height: 0.8)
+                    .padding(.horizontal, cornerRadius * 0.72)
+            }
             .shadow(color: shadow.color, radius: shadow.radius, y: shadow.y)
             .shadow(
-                color: selected ? settings.accentTheme.primary.opacity(colorScheme == .dark ? 0.20 : 0.12) : .clear,
+                color: selected ? settings.accentTheme.primary.opacity(0.24) : .clear,
                 radius: selected ? 16 : 0,
                 y: selected ? 7 : 0
             )
@@ -204,7 +208,6 @@ extension View {
 }
 
 struct LiquidGlassIconButtonStyle: ButtonStyle {
-    @Environment(\.colorScheme) private var colorScheme
     var size: CGFloat = 30
     var prominent = false
 
@@ -217,7 +220,7 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
             }
             .overlay {
                 Circle().strokeBorder(
-                    Color.white.opacity(colorScheme == .dark ? 0.22 : 0.62),
+                    Color.white.opacity(0.27),
                     lineWidth: 0.75
                 )
             }
@@ -229,11 +232,9 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
 }
 
 struct GlassHairline: View {
-    @Environment(\.colorScheme) private var colorScheme
-
     var body: some View {
         LinearGradient(
-            colors: [.clear, Color.primary.opacity(colorScheme == .dark ? 0.16 : 0.10), .clear],
+            colors: [.clear, Color.white.opacity(0.18), .clear],
             startPoint: .leading,
             endPoint: .trailing
         )

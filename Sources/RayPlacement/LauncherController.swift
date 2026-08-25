@@ -16,8 +16,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let panel: LauncherPanel
     private let toast = ActionToastController()
     private let extensionExecutor = ExtensionExecutor()
+    private lazy var extensionFormWindow = ExtensionFormWindowController()
     private let writingRunner = WritingProviderRunner()
     private lazy var notesWindow = NotesWindowController()
+    private lazy var terminalWindow = DeveloperTerminalWindowController()
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -91,6 +93,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func showQuickNote() {
         hide()
         notesWindow.presentQuickNote()
+    }
+
+    func dockNotesLeft() {
+        hide()
+        notesWindow.presentDockedLeft()
+    }
+
+    func dockNotesRight() {
+        hide()
+        notesWindow.presentDockedRight()
     }
 
     func showNotesAndToggleDictation() {
@@ -299,8 +311,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func executeExtension(_ command: LoadedExtensionCommand) {
+        if command.command.action.type == .form {
+            hide()
+            extensionFormWindow.present(command: command) { [weak self] values, completion in
+                self?.extensionExecutor.executeForm(command, values: values, completion: completion)
+            }
+            return
+        }
         let isShell = command.command.action.type == .shell
-        if isShell {
+        let runsInBackground = isShell && command.command.runInBackground == true
+        if runsInBackground {
+            hide()
+            toast.show("\(command.command.title) is running", style: .working, duration: 3_600)
+        } else if isShell {
             viewModel.showOutput(
                 title: command.command.title,
                 text: "Running extension with the configured performance budget…",
@@ -336,13 +359,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.viewModel.enter(.emojiPicker)
                     if !self.panel.isVisible { self.presentPanel() }
                 } else if let output {
-                    self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
-                    if !self.panel.isVisible { self.presentPanel() }
+                    if runsInBackground {
+                        self.toast.show("\(command.command.title) completed", style: .success)
+                    } else {
+                        self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
+                        if !self.panel.isVisible { self.presentPanel() }
+                    }
                 } else if isShell {
-                    self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
+                    if runsInBackground {
+                        self.toast.show("\(command.command.title) completed", style: .success)
+                    } else {
+                        self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
+                    }
                 }
             case .failure(let error):
-                self.presentError(title: command.command.title, error: error)
+                if runsInBackground {
+                    self.toast.show("\(command.command.title) failed · \(error.localizedDescription)", style: .error, duration: 5)
+                } else {
+                    self.presentError(title: command.command.title, error: error)
+                }
             }
         }
     }
@@ -432,28 +467,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let modelTitle = LocalModelCatalog.descriptor(SettingsStore.shared.selectedModel(for: .writing)).title
         let taskID = UUID()
         writingTaskID = taskID
-        viewModel.showOutput(
-            title: "Check Spelling & Grammar",
-            text: "Captured \(text.count) highlighted characters. Starting \(modelTitle)…",
-            state: .running(canCancel: true)
-        )
-        if !panel.isVisible { presentPanel() }
+        hide()
+        toast.show("Correcting \(text.count) characters with \(modelTitle)…", style: .working, duration: 3_600)
         writingRunner.check(text, provider: provider, progress: { [weak self] message in
             guard let self, self.writingTaskID == taskID else { return }
-            self.viewModel.showOutput(
-                title: "Check Spelling & Grammar",
-                text: message,
-                state: .running(canCancel: true)
-            )
+            self.toast.show(message, style: .working, duration: 3_600)
         }) { [weak self] result in
             guard let self else { return }
             guard self.writingTaskID == taskID else { return }
             self.writingTaskID = nil
             switch result {
             case .success(let review):
+                self.toast.show("Correction verified · opening review", style: .success)
                 self.viewModel.showWritingReview(review)
                 if !self.panel.isVisible { self.presentPanel() }
             case .failure(let error):
+                self.toast.dismiss()
                 self.presentError(title: "Check Spelling & Grammar", error: error)
             }
         }
@@ -803,6 +832,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .toggleNoteDictation:
             showNotesAndToggleDictation()
+
+        case .openTerminal:
+            hide()
+            terminalWindow.present()
 
         case .openSettings:
             showSettings()

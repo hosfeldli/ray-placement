@@ -98,6 +98,21 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true)
     }
 
+    func presentDockedLeft() {
+        presentDocked(.left)
+    }
+
+    func presentDockedRight() {
+        presentDocked(.right)
+    }
+
+    private func presentDocked(_ edge: NotesDockEdge) {
+        store.closeFormatterWorkspace()
+        store.selectMostRecentNote()
+        dock(edge)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func presentMostRecentAndToggleDictation() {
         store.closeFormatterWorkspace()
         store.selectMostRecentNote()
@@ -198,6 +213,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.titlebarAppearsTransparent = true
         window.isOpaque = false
         window.backgroundColor = .clear
+        window.appearance = NSAppearance(named: .darkAqua)
         window.tabbingMode = NSWindow.TabbingMode.disallowed
         window.isReleasedWhenClosed = false
         window.hasShadow = true
@@ -406,6 +422,7 @@ private struct NotesView: View {
             minHeight: 500
         )
         .tint(settings.accentTheme.primary)
+        .preferredColorScheme(.dark)
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }

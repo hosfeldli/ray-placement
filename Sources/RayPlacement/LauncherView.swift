@@ -35,6 +35,7 @@ struct LauncherView: View {
         .shadow(color: RayColors.indigo.opacity(0.16), radius: 42, y: 20)
         .shadow(color: .black.opacity(0.34), radius: 34, y: 19)
         .tint(settings.accentTheme.primary)
+        .preferredColorScheme(.dark)
         .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
         .onAppear { focusSearch() }
         .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }

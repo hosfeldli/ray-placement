@@ -118,17 +118,19 @@ if [[ "${RAYPLACEMENT_SKIP_LAUNCH:-0}" != "1" ]]; then
 fi
 
 echo
-echo "RayPlacement, Notes, Writing Tools, Emoji Picker, VS Code Directories, Productivity Tools, and Document Formatter are installed."
+echo "RayPlacement, Notes, Writing Tools, Endpoint Tester, Emoji Picker, VS Code Directories, Productivity Tools, and Document Formatter are installed."
 echo "App: $INSTALLED_APP"
 echo "Plain-text paste: Control-Option-V"
 echo "Writing check: Control-Option-G"
 echo "Emoji picker: tap Command twice"
 echo "Configure any extension shortcut in Settings → Extensions."
 echo "Productivity Tools: offline timezone conversion and confirmed single/all-app force quit (RayPlacement stays open)."
-echo "Choose local models in Settings → Writing and bounded, Dynamic, or Unbounded limits in Settings → Performance."
+echo "Choose verified local models in Settings → Writing and Auto, Metal, or CPU compute in Settings → Performance."
 echo "Monitor local AI and extension work in Settings → Usage."
 echo "Notes use inline Markdown, can be summarized locally with Qwen, and use Local Whisper for reliable meeting dictation."
 echo "Document Formatter opens as a temporary Notes workspace for EDI, JSON, and XML."
+echo "Developer Terminal includes output filtering plus Vim/Nano shortcut guides."
+echo "Extension schema v2 can build native input/output forms; Endpoint Tester is included."
 echo "Uninstaller: $SCRIPT_DIRECTORY/Uninstall RayPlacement.command"
 echo "Check selected-text access in Settings → General → Accessibility."
 echo
