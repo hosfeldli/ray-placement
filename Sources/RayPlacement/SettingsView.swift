@@ -54,35 +54,35 @@ struct SettingsView: View {
     let reloadExtensions: () -> Void
 
     var body: some View {
-        HStack(spacing: 0) {
-            settingsSidebar
-            Rectangle().fill(Color.primary.opacity(0.1)).frame(width: 1)
-            VStack(spacing: 0) {
-                HStack {
-                    Text(selectedSection.title)
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                    Spacer()
+        ZStack {
+            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            HStack(spacing: 10) {
+                settingsSidebar
+                VStack(spacing: 0) {
+                    HStack(spacing: 10) {
+                        Image(systemName: selectedSection.symbol)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(settings.accentTheme.primary)
+                            .frame(width: 26, height: 26)
+                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 0.6))
+                        Text(selectedSection.title)
+                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                        Spacer()
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    GlassHairline()
+                    selectedContent
+                        .transition(.opacity.combined(with: .scale(scale: 0.992)))
                 }
-                .padding(.horizontal, 18)
-                .frame(height: 50)
-                Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
-                selectedContent
-                    .transition(.opacity.combined(with: .move(edge: .trailing)))
+                .liquidGlass(cornerRadius: 21, depth: .raised, accentOpacity: 0.018)
             }
+            .padding(11)
         }
-        .frame(width: 760, height: 540)
-        .background(
-            ZStack {
-                Color(nsColor: .windowBackgroundColor)
-                LinearGradient(
-                    colors: [SettingsColors.indigo.opacity(0.07), .clear, SettingsColors.cyan.opacity(0.035)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-            }
-        )
+        .frame(width: 820, height: 590)
         .tint(settings.accentTheme.primary)
-        .animation(.easeOut(duration: 0.16), value: selectedSection)
+        .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.88), value: selectedSection)
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
             Button("Clear Log", role: .destructive) { usageMonitor.clear() }
@@ -104,50 +104,70 @@ struct SettingsView: View {
     }
 
     private var settingsSidebar: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 9) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .fill(SettingsColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
-                        .font(.system(size: 17, weight: .bold))
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 32, height: 32)
+                .frame(width: 30, height: 30)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
+                .shadow(color: settings.accentTheme.primary.opacity(0.24), radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("RayPlacement").font(.system(size: 14, weight: .bold))
+                    Text("RayPlacement").font(.system(size: 13.5, weight: .semibold))
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 11)
+            .padding(.top, 13)
+            .padding(.bottom, 10)
 
             ForEach(SettingsSection.allCases) { section in
                 Button { selectedSection = section } label: {
-                    HStack(spacing: 11) {
+                    HStack(spacing: 9) {
                         Image(systemName: section.symbol)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(selectedSection == section ? Color.white : SettingsColors.indigo)
-                            .frame(width: 23)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(selectedSection == section ? settings.accentTheme.primary : Color.secondary)
+                            .frame(width: 21)
                         Text(section.title)
                             .font(.system(size: 13, weight: selectedSection == section ? .semibold : .medium))
                         Spacer()
                     }
-                    .foregroundStyle(selectedSection == section ? Color.white : .primary)
+                    .foregroundStyle(selectedSection == section ? Color.primary : Color.primary.opacity(0.76))
                     .padding(.horizontal, 12)
-                    .frame(height: 34)
-                    .background(selectedSection == section ? SettingsColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .leading, endPoint: .trailing), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                    .shadow(color: selectedSection == section ? SettingsColors.indigo.opacity(0.18) : .clear, radius: 7, y: 3)
+                    .frame(height: 33)
+                    .background {
+                        if selectedSection == section {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.ultraThinMaterial)
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                    .fill(settings.accentTheme.gradient.opacity(0.10))
+                            }
+                        }
+                    }
+                    .overlay {
+                        if selectedSection == section {
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .strokeBorder(Color.white.opacity(0.44), lineWidth: 0.7)
+                        }
+                    }
+                    .shadow(
+                        color: selectedSection == section ? settings.accentTheme.primary.opacity(0.12) : .clear,
+                        radius: 8,
+                        y: 4
+                    )
                 }
                 .buttonStyle(.plain)
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 8)
                 .padding(.vertical, 1)
                 .accessibilityValue(selectedSection == section ? "Selected" : "")
             }
             Spacer()
         }
-        .frame(width: 176)
-        .background(Color.primary.opacity(0.022))
+        .frame(width: 178)
+        .liquidGlass(cornerRadius: 21, depth: .floating, accentOpacity: 0.025)
     }
 
     @ViewBuilder
@@ -240,6 +260,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private func performanceSlider(
@@ -319,6 +341,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private func modelPicker(_ title: String, selection: Binding<LocalModelID>) -> some View {
@@ -421,6 +445,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private func durationLabel(_ seconds: TimeInterval) -> String {
@@ -503,6 +529,8 @@ struct SettingsView: View {
 
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             accessibilityTrusted = AXIsProcessTrusted()
         }
@@ -537,6 +565,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
         .alert("Clear Clipboard History?", isPresented: $confirmClipboardClear) {
             Button("Cancel", role: .cancel) {}
             Button("Clear History", role: .destructive) { viewModel.clipboard.clear() }
@@ -615,7 +645,7 @@ struct SettingsView: View {
                                         .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.42)
                                 }
                             }
-                            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+                            .liquidGlass(cornerRadius: 13, depth: .recessed, accentOpacity: 0.012)
                         }
                     }
                     .padding(.vertical, 2)
@@ -989,12 +1019,17 @@ final class SettingsWindowController: NSWindowController {
         self.settingsStore = settings
         let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 760, height: 540),
+            contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
             styleMask: [.titled, .closable, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.title = "RayPlacement Settings"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = true
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: view)
         window.center()

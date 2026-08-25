@@ -38,7 +38,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
-        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 690, height: 470))
+        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 704, height: 486))
         self.updateService = updateService
         super.init()
 
@@ -188,7 +188,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         panel.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y + (reduceMotion ? 0 : 8)))
         panel.makeKeyAndOrderFront(nil)
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? 0.01 : 0.16
+            context.duration = reduceMotion ? 0.01 : 0.22
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
             panel.animator().setFrameOrigin(finalOrigin)

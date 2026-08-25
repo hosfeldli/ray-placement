@@ -10,43 +10,32 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            VisualEffectView(material: .popover, blendingMode: .behindWindow)
-            LinearGradient(
-                colors: [
-                    RayColors.indigo.opacity(0.105),
-                    Color.clear,
-                    RayColors.cyan.opacity(0.045)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            VStack(spacing: 0) {
+            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
+            VStack(spacing: 7) {
                 searchHeader
-                Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 1)
                 content
                     .id(viewModel.mode.visualIdentity)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
-                Rectangle().fill(Color.primary.opacity(0.09)).frame(height: 1)
+                    .transition(.opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
                 footer
             }
         }
-        .frame(width: 690, height: 470)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .frame(width: 704, height: 486)
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.white.opacity(0.34), RayColors.indigo.opacity(0.25), Color.black.opacity(0.08)],
+                        colors: [Color.white.opacity(0.72), RayColors.indigo.opacity(0.30), Color.white.opacity(0.12), Color.black.opacity(0.18)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 1
+                    lineWidth: 0.9
                 )
         )
-        .shadow(color: RayColors.indigo.opacity(0.14), radius: 28, y: 14)
-        .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
+        .shadow(color: RayColors.indigo.opacity(0.16), radius: 42, y: 20)
+        .shadow(color: .black.opacity(0.34), radius: 34, y: 19)
         .tint(settings.accentTheme.primary)
-        .animation(.easeOut(duration: 0.16), value: viewModel.mode.visualIdentity)
+        .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
         .onAppear { focusSearch() }
         .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }
         .onChange(of: viewModel.mode.visualIdentity) { _ in focusSearch() }
@@ -58,12 +47,13 @@ struct LauncherView: View {
                 ZStack {
                     Circle().fill(RayColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 32, height: 32)
-                .shadow(color: RayColors.indigo.opacity(0.3), radius: 8, y: 3)
-                    .accessibilityHidden(true)
+                .frame(width: 30, height: 30)
+                .overlay(Circle().stroke(Color.white.opacity(0.48), lineWidth: 0.7))
+                .shadow(color: RayColors.indigo.opacity(0.30), radius: 12, y: 5)
+                .accessibilityHidden(true)
             } else {
                 Button {
                     viewModel.enter(.root)
@@ -71,10 +61,9 @@ struct LauncherView: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.primary)
-                        .frame(width: 31, height: 31)
-                        .background(Color.primary.opacity(0.075), in: Circle())
+                        .frame(width: 29, height: 29)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
                 .accessibilityLabel("Back")
                 .help("Back")
             }
@@ -117,8 +106,11 @@ struct LauncherView: View {
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
             }
         }
-        .padding(.horizontal, 18)
-        .frame(height: 58)
+        .padding(.horizontal, 15)
+        .frame(height: 52)
+        .liquidGlass(cornerRadius: 17, depth: .raised, accentOpacity: 0.028)
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
     }
 
     @ViewBuilder
@@ -168,8 +160,8 @@ struct LauncherView: View {
                         }
                     }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
+                .padding(.horizontal, 11)
+                .padding(.vertical, 2)
             }
             .onChange(of: viewModel.selectedIndex) { newIndex in
                 guard viewModel.results.indices.contains(newIndex) else { return }
@@ -200,14 +192,7 @@ struct LauncherView: View {
                     Spacer(minLength: 0)
                 }
                 .padding(13)
-                .background(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(RayColors.cardBackground)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke((isAIOutput(title) ? RayColors.violet : RayColors.cyan).opacity(0.24), lineWidth: 1)
-                )
+                .liquidGlass(cornerRadius: 16, depth: .raised, accentOpacity: 0.030)
                 ActivityTimeline(activeStep: activityStep(for: text), isAI: isAIOutput(title))
             } else {
                 HStack(spacing: 12) {
@@ -234,8 +219,7 @@ struct LauncherView: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(16)
                 }
-                .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.09)))
+                .liquidGlass(cornerRadius: 14, depth: .recessed, accentOpacity: 0.010)
             }
         }
         .padding(16)
@@ -335,11 +319,7 @@ struct LauncherView: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, minHeight: 174, alignment: .topLeading)
-        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke((isSource ? RayColors.indigo : RayColors.cyan).opacity(0.22), lineWidth: 1)
-        )
+        .liquidGlass(cornerRadius: 15, depth: .raised, accentOpacity: isSource ? 0.025 : 0.016)
     }
 
     private func writingReviewView(_ review: WritingReview) -> some View {
@@ -421,8 +401,7 @@ struct LauncherView: View {
         }
         .padding(15)
         .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14).stroke(color.opacity(0.24), lineWidth: 1))
+        .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.020)
     }
 
     private var activeWritingModelTitle: String {
@@ -431,25 +410,29 @@ struct LauncherView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
+        HStack {
             Spacer()
-            if viewModel.mode != .root {
-                KeyHint(keys: "esc", label: outputCanCancel ? "Cancel" : "Back")
+            HStack(spacing: 10) {
+                if viewModel.mode != .root {
+                    KeyHint(keys: "esc", label: outputCanCancel ? "Cancel" : "Back")
+                }
+                if case .writingReview = viewModel.mode {
+                    KeyHint(keys: "⌘C", label: "Copy")
+                    KeyHint(keys: "↩", label: "Replace")
+                }
+                if viewModel.selectedItemIsActionable, !isOutputMode {
+                    KeyHint(keys: "↩", label: primaryActionLabel)
+                }
+                if viewModel.hasActionableResults, !isOutputMode {
+                    KeyHint(keys: "↑↓", label: "Navigate")
+                }
             }
-            if case .writingReview = viewModel.mode {
-                KeyHint(keys: "⌘C", label: "Copy")
-                KeyHint(keys: "↩", label: "Replace")
-            }
-            if viewModel.selectedItemIsActionable, !isOutputMode {
-                KeyHint(keys: "↩", label: primaryActionLabel)
-            }
-            if viewModel.hasActionableResults, !isOutputMode {
-                KeyHint(keys: "↑↓", label: "Navigate")
-            }
+            .padding(.horizontal, 10)
+            .frame(height: 29)
+            .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.018)
         }
-        .padding(.horizontal, 18)
-        .frame(height: 34)
-        .background(Color.primary.opacity(0.018))
+        .padding(.horizontal, 11)
+        .padding(.bottom, 10)
     }
 
     private var isOutputMode: Bool {
@@ -577,8 +560,7 @@ private struct WritingIssueRow: View {
             Spacer(minLength: 0)
         }
         .padding(12)
-        .background(RayColors.cardBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.08)))
+        .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.010)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(issue.kind.rawValue): \(issue.original). \(issue.message)")
     }
@@ -590,67 +572,79 @@ private struct ResultRow: View {
     let actionLabel: String?
 
     var body: some View {
-        HStack(spacing: 0) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(selected ? RayColors.heroGradient : LinearGradient(colors: [.clear], startPoint: .top, endPoint: .bottom))
-                .frame(width: 3, height: 30)
-                .padding(.trailing, 10)
-            HStack(spacing: 13) {
-                LauncherIconView(icon: item.icon, selected: selected)
+        HStack(spacing: 12) {
+            LauncherIconView(icon: item.icon, selected: selected)
                 .frame(width: 30, height: 30)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(item.title)
-                        .font(.system(size: 14.5, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(item.title)
+                    .font(.system(size: 14, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(.primary.opacity(selected ? 1 : 0.88))
+                    .lineLimit(1)
+                if !item.subtitle.isEmpty {
+                    Text(item.subtitle)
+                        .font(.system(size: 11.25, weight: .regular))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
-                    if !item.subtitle.isEmpty {
-                        Text(item.subtitle)
-                            .font(.system(size: 11.5, weight: .medium))
-                            .foregroundStyle(selected ? Color.primary.opacity(0.62) : .secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+                        .truncationMode(.middle)
                 }
-                Spacer(minLength: 10)
-                if let accessory = item.accessory {
-                    Text(accessory)
-                        .font(.system(size: 10.5, weight: .medium))
-                        .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            if let accessory = item.accessory {
+                Text(accessory)
+                    .font(.system(size: 10.5, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+            if let shortcut = item.shortcut {
+                Text(shortcut)
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.20), lineWidth: 0.6))
+            }
+            if selected, let actionLabel {
+                HStack(spacing: 4) {
+                    Text("↩")
+                    Text(actionLabel)
                 }
-                if let shortcut = item.shortcut {
-                    Text(shortcut)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Color.primary.opacity(0.075), in: RoundedRectangle(cornerRadius: 6))
-                }
-                if selected, let actionLabel {
-                    HStack(spacing: 4) {
-                        Text("↩")
-                        Text(actionLabel)
-                    }
-                    .font(.system(size: 10.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(RayColors.heroGradient, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .shadow(color: RayColors.indigo.opacity(0.2), radius: 5, y: 2)
+                .font(.system(size: 10.25, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 9)
+                .padding(.vertical, 5)
+                .background(SettingsStore.shared.accentTheme.gradient, in: Capsule())
+                .overlay(Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.6))
+                .shadow(color: SettingsStore.shared.accentTheme.primary.opacity(0.24), radius: 7, y: 3)
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 46)
+        .background {
+            if selected {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                        .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.09))
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 47)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(selected ? RayColors.selectionBackground : Color.clear)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(selected ? RayColors.indigo.opacity(0.3) : Color.clear, lineWidth: 1)
-        )
-        .shadow(color: selected ? RayColors.indigo.opacity(0.09) : .clear, radius: 10, y: 4)
-        .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.86), value: selected)
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.66), SettingsStore.shared.accentTheme.primary.opacity(0.36), Color.white.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.85
+                    )
+            }
+        }
+        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.10) : .clear, radius: 11, y: 5)
+        .opacity(selected ? 1 : 0.90)
+        .scaleEffect(selected ? 1 : 0.994)
+        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: selected)
     }
 }
 
@@ -666,9 +660,13 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(selected ? RayColors.indigo : RayColors.cyan)
-                    .padding(7)
-                    .background((selected ? RayColors.indigo : RayColors.cyan).opacity(0.1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.primary : Color.secondary)
+                    .padding(7.5)
+                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(selected ? 0.34 : 0.14), lineWidth: 0.65)
+                    )
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url))
                     .resizable()
@@ -822,23 +820,5 @@ private extension LauncherMode {
         case .writingReview: return "writing-review"
         case .output: return "output"
         }
-    }
-}
-
-private struct VisualEffectView: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
     }
 }

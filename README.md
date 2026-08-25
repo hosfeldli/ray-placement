@@ -33,6 +33,7 @@ After the first install, add that exact app once in **System Settings → Privac
 - Independently enabled and configurable global shortcuts for the launcher, Notes, Quick Note, and note dictation
 - Per-extension global command hotkeys, configurable in **Settings → Extensions**
 - Per-extension and per-hotkey enabled controls that preserve each shortcut while disabled
+- An adaptive liquid-glass interface with quiet inactive rows, floating active surfaces, cohesive accent lighting, and compact spring-driven transitions across the launcher, Settings, and Notes
 - Six selectable accent themes shared by the launcher, Notes, tables, and Settings
 - JSON extensions for URLs, files, apps, copy/paste actions, and local executable scripts
 - Included local Writing Tools extension with plain-text paste and model-only Qwen grammar correction

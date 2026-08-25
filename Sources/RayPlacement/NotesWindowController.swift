@@ -196,6 +196,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.setAccessibilityLabel("RayPlacement Notes")
         window.titleVisibility = NSWindow.TitleVisibility.hidden
         window.titlebarAppearsTransparent = true
+        window.isOpaque = false
+        window.backgroundColor = .clear
         window.tabbingMode = NSWindow.TabbingMode.disallowed
         window.isReleasedWhenClosed = false
         window.hasShadow = true
@@ -372,25 +374,37 @@ private struct NotesView: View {
     private var regularNotes: [MarkdownNote] { filteredNotes.filter { !$0.isPinned && !$0.isFavorite } }
 
     var body: some View {
-        VStack(spacing: 0) {
-            windowChrome
-            Divider().opacity(0.7)
-            if presentation.mode.isDocked {
-                quickNoteWorkspace
-            } else if presentation.sidebarVisible && presentation.mode != .fullScreen {
-                HSplitView {
-                    sidebar.frame(minWidth: 210, idealWidth: 250, maxWidth: 280)
-                    editor.frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
+            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            VStack(spacing: 10) {
+                windowChrome
+                    .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.024)
+                if presentation.mode.isDocked {
+                    quickNoteWorkspace
+                        .liquidGlass(cornerRadius: 18, depth: .raised, accentOpacity: 0.014)
+                } else if presentation.sidebarVisible && presentation.mode != .fullScreen {
+                    HStack(spacing: 10) {
+                        sidebar
+                            .frame(width: 246)
+                            .liquidGlass(cornerRadius: 19, depth: .floating, accentOpacity: 0.020)
+                        editor
+                            .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+                            .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
+                    }
+                } else {
+                    editor
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
                 }
-            } else {
-                editor.frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
+            .padding(.top, presentation.mode == .fullScreen ? 10 : 7)
         }
         .frame(
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
         )
-        .background(Color(nsColor: .windowBackgroundColor))
         .tint(settings.accentTheme.primary)
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
@@ -414,8 +428,8 @@ private struct NotesView: View {
                 )
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: presentation.sidebarVisible)
-        .animation(.easeInOut(duration: 0.18), value: presentation.mode)
+        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
+        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
     }
 
     private var windowChrome: some View {
@@ -474,16 +488,8 @@ private struct NotesView: View {
             .keyboardShortcut("f", modifiers: [.command, .control])
         }
         .padding(.leading, presentation.mode == .fullScreen ? 18 : 78)
-        .padding(.trailing, 14)
-        .padding(.top, presentation.mode == .fullScreen ? 8 : 13)
-        .padding(.bottom, 9)
-        .background(
-            LinearGradient(
-                colors: [Color.accentColor.opacity(0.095), Color.purple.opacity(0.035), Color.clear],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
+        .padding(.trailing, 10)
+        .frame(height: 44)
     }
 
     private var sidebar: some View {
@@ -496,7 +502,7 @@ private struct NotesView: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(height: 30)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.055)))
+                .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
                 Button {
                     store.createNote()
@@ -515,45 +521,51 @@ private struct NotesView: View {
             }
             .padding(10)
 
-            Divider().opacity(0.6)
+            GlassHairline()
 
-            List(selection: $store.selectedNoteID) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 5) {
                 if store.formatterWorkspaceOpen && matchesFormatterSearch {
-                    formatterRow
-                        .tag(NotesStore.formatterWorkspaceID)
-                        .listRowBackground(
-                            store.isFormatterSelected ? Color.accentColor.opacity(0.14) : Color.clear
-                        )
+                    Button { store.selectedNoteID = NotesStore.formatterWorkspaceID } label: {
+                        formatterRow
+                            .padding(.horizontal, 8)
+                            .liquidGlass(cornerRadius: 11, depth: .raised, selected: store.isFormatterSelected, accentOpacity: 0)
+                    }
+                    .buttonStyle(.plain)
                 }
 
                 if !pinnedNotes.isEmpty {
-                    Section {
-                        ForEach(pinnedNotes) { note in noteRow(note) }
-                    } header: {
-                        sidebarSectionLabel("Pinned")
+                    sidebarSectionLabel("Pinned")
+                        .padding(.horizontal, 8)
+                        .padding(.top, 3)
+                    ForEach(pinnedNotes) { note in
+                        noteSelectionButton(note)
                     }
                 }
 
                 if !favoriteNotes.isEmpty {
-                    Section {
-                        ForEach(favoriteNotes) { note in noteRow(note) }
-                    } header: {
-                        sidebarSectionLabel("Favorites")
+                    sidebarSectionLabel("Favorites")
+                        .padding(.horizontal, 8)
+                        .padding(.top, 3)
+                    ForEach(favoriteNotes) { note in
+                        noteSelectionButton(note)
                     }
                 }
 
                 if !regularNotes.isEmpty {
-                    Section {
-                        ForEach(regularNotes) { note in noteRow(note) }
-                    } header: {
-                        sidebarSectionLabel(searchQuery.isEmpty ? "Recent" : "Results")
+                    sidebarSectionLabel(searchQuery.isEmpty ? "Recent" : "Results")
+                        .padding(.horizontal, 8)
+                        .padding(.top, 3)
+                    ForEach(regularNotes) { note in
+                        noteSelectionButton(note)
                     }
                 }
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 7)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
 
-            Divider().opacity(0.6)
+            GlassHairline()
             HStack(spacing: 6) {
                 Image(systemName: "lock.fill")
                     .font(.caption2)
@@ -567,7 +579,7 @@ private struct NotesView: View {
             .padding(.horizontal, 12)
             .frame(height: 34)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.56))
+        .background(Color.clear)
     }
 
     private var quickNoteWorkspace: some View {
@@ -650,9 +662,9 @@ private struct NotesView: View {
         } else if let note = store.selectedNote {
             VStack(spacing: 0) {
                 editorHeader(note)
-                Divider().opacity(0.55)
+                GlassHairline()
                 editorCanvas(note)
-                Divider().opacity(0.55)
+                GlassHairline()
                 noteToolbar(note)
             }
         } else {
@@ -724,7 +736,8 @@ private struct NotesView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
-                    .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
+                    .background(.ultraThinMaterial, in: Circle())
+                    .overlay(Circle().stroke(Color.white.opacity(0.24), lineWidth: 0.6))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 30)
@@ -732,7 +745,7 @@ private struct NotesView: View {
         }
         .padding(.horizontal, presentation.mode.isDocked ? 12 : 18)
         .frame(minHeight: presentation.mode.isDocked ? 52 : 62)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.28))
+        .background(Color.clear)
     }
 
     @ViewBuilder
@@ -751,13 +764,13 @@ private struct NotesView: View {
                 Spacer(minLength: 30)
                 markdownEditor
                     .frame(maxWidth: 920)
-                    .background(Color(nsColor: .textBackgroundColor).opacity(0.42))
+                    .liquidGlass(cornerRadius: 16, depth: .recessed, accentOpacity: 0.006)
                 Spacer(minLength: 30)
             }
-            .background(Color(nsColor: .underPageBackgroundColor).opacity(0.5))
+            .background(Color.clear)
         } else {
             markdownEditor
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.25))
+                .background(Color(nsColor: .textBackgroundColor).opacity(0.18))
         }
     }
 
@@ -826,7 +839,7 @@ private struct NotesView: View {
                     MarkdownInsertButton(symbol: "link", help: "Link (Command-K)", action: MarkdownEditorActions.link)
                 }
                 .padding(3)
-                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.055)))
+                .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
                 Spacer(minLength: 5)
 
@@ -836,7 +849,7 @@ private struct NotesView: View {
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.48))
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -930,12 +943,13 @@ private struct NotesView: View {
         .accessibilityLabel("Formatter Workspace, temporary EDI JSON and XML note")
     }
 
-    private func noteRow(_ note: MarkdownNote) -> some View {
-        NoteListRow(note: note, selected: store.selectedNoteID == note.id)
-            .tag(note.id)
-            .listRowBackground(
-                store.selectedNoteID == note.id ? Color.accentColor.opacity(0.13) : Color.clear
-            )
+    private func noteSelectionButton(_ note: MarkdownNote) -> some View {
+        Button {
+            store.selectedNoteID = note.id
+        } label: {
+            NoteListRow(note: note, selected: store.selectedNoteID == note.id)
+        }
+            .buttonStyle(.plain)
             .accessibilityLabel("\(note.displayTitle), \(note.preview)")
     }
 
@@ -969,10 +983,9 @@ private struct NotesChromeButton: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
-                .frame(width: 28, height: 28)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.06)))
+                .frame(width: 27, height: 27)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(LiquidGlassIconButtonStyle(size: 27))
         .help(label)
         .accessibilityLabel(label)
     }
@@ -984,9 +997,6 @@ private struct NoteListRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            RoundedRectangle(cornerRadius: 2)
-                .fill(selected ? Color.accentColor : Color.clear)
-                .frame(width: 3, height: 38)
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(note.displayTitle)
@@ -1014,7 +1024,25 @@ private struct NoteListRow: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .background {
+            if selected {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.ultraThinMaterial)
+                    RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.accentColor.opacity(0.09))
+                }
+            }
+        }
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.38), lineWidth: 0.7)
+            }
+        }
+        .shadow(color: selected ? Color.accentColor.opacity(0.10) : .clear, radius: 8, y: 3)
+        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
 
     private func relativeTimestamp(_ date: Date) -> String {
