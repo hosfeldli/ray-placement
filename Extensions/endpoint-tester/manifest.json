@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "id": "local.endpoint-tester",
   "name": "Endpoint Tester",
-  "version": "1.0.0",
-  "description": "Build and run reusable HTTP request workflows in a native input/output window.",
+  "version": "2.0.0",
+  "description": "Build, send, and inspect HTTP requests in a Postman-style native workspace.",
   "commands": [
     {
       "id": "request",
       "title": "Test an HTTP Endpoint",
-      "subtitle": "Send a request and inspect status, timing, headers, and response",
-      "keywords": ["api", "http", "endpoint", "request", "rest", "test", "json"],
+      "subtitle": "Params, auth, headers, bodies, history, cURL, and response inspection",
+      "keywords": ["api", "http", "endpoint", "request", "rest", "test", "json", "postman", "curl"],
       "icon": "network",
       "action": {
         "type": "form",

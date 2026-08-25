@@ -36,8 +36,8 @@ After the first install, add that exact app once in **System Settings → Privac
 - A clean dark-only liquid-glass interface with refractive edges, restrained accent lighting, quiet inactive rows, floating active surfaces, and compact spring-driven transitions
 - Six selectable accent themes shared by the launcher, Notes, tables, and Settings
 - JSON extensions for URLs, files, apps, copy/paste actions, local executable scripts, background jobs, and schema-v2 native input/output forms
-- A bundled Endpoint Tester form with method, URL, secure authorization, content type, body, timing, status, headers, and formatted response output
-- A glass Developer Terminal with working-directory control, output filtering, cancel/copy/clear actions, and bottom-screen Vim/Nano shortcut guides for real Terminal.app editor sessions
+- A bundled Postman-style Endpoint Tester with query parameters, multiple authorization modes, headers, validated request bodies, cancellation, session history, cURL export, and separate response body/header/raw views
+- A glass Developer Terminal backed by one persistent zsh session, with multiline command blocks, working-directory and environment state, command history, output filtering, cancel/copy/clear actions, and bottom-screen Vim/Nano shortcut guides for real Terminal.app editor sessions
 - Included local Writing Tools extension with plain-text paste and model-only Qwen grammar correction
 - Included VS Code extension with an interactive Spotlight search for opening any indexed file or directory
 - Included Document Formatter extension with a temporary Notes workspace for EDI, JSON, and XML; it supports file open/save, search, pretty/minified output, structure inspection, EDI delimiter conversion and field analysis, deterministic validation, and reviewable AI correction proposals
@@ -103,7 +103,7 @@ Writing checks snapshot the exact highlighted text, Accessibility element, and r
 
 Extensions are deliberately process-based rather than dynamically loaded libraries: a script can be written in any language installed on the Mac, reloaded without rebuilding, and isolated from the launcher's process. Extension scripts still run with your macOS user account's permissions, so only install code you wrote or reviewed.
 
-[Extensions/endpoint-tester](Extensions/endpoint-tester) demonstrates schema-v2 extension UIs. Form manifests can define text, secure, multiline, numeric, toggle, and picker inputs and route them to an HTTP request or trusted executable. RayPlacement supplies the native glass input/output window, validation, progress, error state, result copying, and resource deadline.
+[Extensions/endpoint-tester](Extensions/endpoint-tester) demonstrates schema-v2 extension UIs and opens RayPlacement's dedicated API workspace. It keeps a live request history for the current app session, supports Params, Auth, Headers, and Body editing, validates JSON before transmission, and exposes formatted Body, Headers, and Raw response tabs. Form manifests can still define text, secure, multiline, numeric, toggle, and picker inputs and route them to an HTTP request or trusted executable. RayPlacement supplies the native glass input/output window, validation, progress, error state, result copying, and resource deadline.
 
 ## Build
 

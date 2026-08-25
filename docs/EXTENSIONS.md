@@ -64,7 +64,7 @@ Set `runInBackground` to `true` on a shell command to keep the launcher out of t
 
 Schema version 2 adds a `form` action for extensions that need a real UI without app-specific Swift code. Forms support `text`, `secure`, `multiline`, `number`, `toggle`, and `picker` fields. An execution can send an `httpRequest` or invoke a trusted executable. Use `{{fieldID}}` placeholders in URL, method, headers, body, executable path, arguments, or working directory. Values stay in memory; secure values are not persisted.
 
-The bundled `Extensions/endpoint-tester` is a complete example. It opens a native glass workspace, accepts request inputs, then displays HTTP status, elapsed time, headers, and a pretty-printed JSON response in the same window. Only HTTP(S) endpoints are accepted, response capture is capped at 1 MB, and the user's extension timeout remains the upper bound.
+The bundled `Extensions/endpoint-tester` is a complete example and receives a dedicated Postman-style workspace. It supports GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, editable query parameters and headers, no-auth/Bearer/Basic/API-key authorization, validated JSON/text/XML bodies, cancellation, session request history, cURL export, and separate formatted Body, Headers, and Raw response views. Secrets remain only in memory and are cleared when a history entry is restored. Only HTTP(S) endpoints are accepted, response capture is capped at 2 MB, and the user's extension timeout remains the upper bound.
 
 ## Performance contract for local AI
 

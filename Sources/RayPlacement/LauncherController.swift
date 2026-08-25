@@ -20,6 +20,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let writingRunner = WritingProviderRunner()
     private lazy var notesWindow = NotesWindowController()
     private lazy var terminalWindow = DeveloperTerminalWindowController()
+    private lazy var endpointTesterWindow = EndpointTesterWindowController()
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -78,6 +79,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         toast.dismiss()
         clipboard.flush()
         notesWindow.shutdown()
+        terminalWindow.shutdown()
+        endpointTesterWindow.shutdown()
     }
 
     func showSettings() {
@@ -313,6 +316,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func executeExtension(_ command: LoadedExtensionCommand) {
         if command.command.action.type == .form {
             hide()
+            if command.extensionID == "local.endpoint-tester" {
+                endpointTesterWindow.present()
+                return
+            }
             extensionFormWindow.present(command: command) { [weak self] values, completion in
                 self?.extensionExecutor.executeForm(command, values: values, completion: completion)
             }
