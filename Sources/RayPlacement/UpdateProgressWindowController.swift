@@ -10,7 +10,7 @@ final class UpdateProgressWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "RayPlacement Update"
+        window.title = "LiamFlow Update"
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -55,7 +55,7 @@ private struct UpdateProgressView: View {
                 UpdatePulse()
                     .frame(width: 56, height: 56)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Updating RayPlacement")
+                    Text("Updating LiamFlow")
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                     Text(service.installingVersion.map { "Installing version \($0)" } ?? "Preparing update")
                         .foregroundStyle(.secondary)
@@ -94,7 +94,7 @@ private struct UpdateProgressView: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("RayPlacement stays open during the slow build. It closes only after the replacement is signed and verified, then reopens automatically.")
+                Text("LiamFlow stays open while the verified replacement is prepared, then closes briefly and reopens automatically.")
                 Text("Detailed log: ~/Library/Application Support/RayPlacement/Updates/update.log")
                     .fontDesign(.monospaced)
             }

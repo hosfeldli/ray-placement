@@ -11,7 +11,7 @@ final class LocalWhisperTranscriber {
         var errorDescription: String? {
             switch self {
             case .assetsMissing:
-                return "The bundled Local Whisper runtime is missing. Reinstall RayPlacement to restore meeting transcription."
+                return "The bundled Local Whisper runtime is missing. Reinstall LiamFlow to restore meeting transcription."
             case .processFailed(let detail):
                 return detail.isEmpty ? "Local Whisper could not transcribe the meeting audio." : detail
             case .emptyTranscript:

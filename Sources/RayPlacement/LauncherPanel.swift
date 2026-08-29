@@ -16,8 +16,8 @@ final class LauncherPanel: NSPanel {
         hidesOnDeactivate = false
         isOpaque = false
         backgroundColor = .clear
-        title = "RayPlacement Launcher"
-        setAccessibilityLabel("RayPlacement Launcher")
+        title = "LiamFlow"
+        setAccessibilityLabel("LiamFlow launcher")
         hasShadow = false
         isReleasedWhenClosed = false
         animationBehavior = .utilityWindow

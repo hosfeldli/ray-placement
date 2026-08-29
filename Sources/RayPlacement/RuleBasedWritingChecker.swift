@@ -9,7 +9,7 @@ final class RuleBasedWritingChecker {
 
         var errorDescription: String? {
             switch self {
-            case .missingResources: return "The local grammar resources are missing. Reinstall RayPlacement."
+            case .missingResources: return "The local grammar resources are missing. Reinstall LiamFlow."
             case .processFailed(let detail): return detail.isEmpty ? "The local grammar checker failed." : detail
             }
         }

@@ -103,7 +103,7 @@ struct SettingsView: View {
                 .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
                 .shadow(color: settings.accentTheme.primary.opacity(0.24), radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("RayPlacement").font(.system(size: 13.5, weight: .semibold))
+                    Text("LiamFlow").font(.system(size: 13.5, weight: .semibold))
                 }
             }
             .padding(.horizontal, 14)
@@ -450,7 +450,7 @@ struct SettingsView: View {
             }
 
             Section("Startup") {
-                Toggle("Start RayPlacement when I log in", isOn: Binding(
+                Toggle("Start LiamFlow when I log in", isOn: Binding(
                     get: { settings.launchAtLogin },
                     set: { settings.setLaunchAtLogin($0) }
                 ))
@@ -634,7 +634,7 @@ struct SettingsView: View {
                 .font(.system(size: 56, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.accentColor)
-            Text("RayPlacement").font(.title.bold())
+            Text("LiamFlow").font(.title.bold())
             Text("A fast, local-only macOS command launcher")
                 .foregroundStyle(.secondary)
             Text("Local Python and Harper writing tools. No network requests or analytics.")
@@ -983,7 +983,7 @@ final class SettingsWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "RayPlacement Settings"
+        window.title = "LiamFlow Settings"
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.isOpaque = false

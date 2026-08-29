@@ -17,12 +17,12 @@ RESULT_FILE="$5"
 PROGRESS_FILE="${6:-$(dirname "$RESULT_FILE")/update-progress.txt}"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 USER_APPLICATIONS_DIRECTORY="$USER_HOME_DIRECTORY/Applications"
-INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/RayPlacement.app"
-READY_APP="$SOURCE_ROOT/Prebuilt/RayPlacement.app"
+INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/LiamFlow.app"
+READY_APP="$SOURCE_ROOT/Prebuilt/LiamFlow.app"
 EXTENSIONS_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Extensions"
 UPDATES_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Updates"
-EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/RayPlacementUpdate"
-BACKUP_APP="$USER_APPLICATIONS_DIRECTORY/.RayPlacement.previous-update.$$"
+EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/LiamFlowUpdate"
+BACKUP_APP="$USER_APPLICATIONS_DIRECTORY/.LiamFlow.previous-update.$$"
 
 write_atomic_lines() {
     local destination="$1"
@@ -56,8 +56,7 @@ restore_previous_app() {
     fi
 }
 
-[[ -x "$SOURCE_ROOT/scripts/setup_local_signing.sh" ]] || fail_update "The verified signing setup is missing."
-[[ -d "$READY_APP" ]] || fail_update "The verified prebuilt RayPlacement app is missing."
+[[ -d "$READY_APP" ]] || fail_update "The verified prebuilt LiamFlow app is missing."
 
 CURRENT_MODEL="$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 if [[ -f "$CURRENT_MODEL" ]]; then
@@ -76,29 +75,11 @@ else
     cp "$DOWNLOADED_MODEL" "$READY_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 fi
 
-write_progress working 0.42 "Preparing this Mac's stable RayPlacement signing identity…"
-"$SOURCE_ROOT/scripts/setup_local_signing.sh"
+write_progress working 0.52 "Verifying and preparing LiamFlow $VERSION for this Mac…"
+codesign --force --deep --sign - "$READY_APP" || fail_update "LiamFlow $VERSION could not be prepared for installation."
+"$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified LiamFlow $VERSION app did not pass inspection."
 
-write_progress working 0.52 "Locally signing the verified RayPlacement $VERSION app…"
-LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
-LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
-LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
-[[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]] || fail_update "The local RayPlacement signing identity is unavailable."
-KEYCHAIN_PASSWORD="$(<"$LOCAL_SIGNING_PASSWORD")"
-security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$LOCAL_SIGNING_KEYCHAIN"
-LOCAL_SIGNING_HASH="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | awk -v identity="$LOCAL_SIGNING_IDENTITY" 'index($0, "\\\"" identity "\\\"") { print $2; exit }')"
-[[ -n "$LOCAL_SIGNING_HASH" ]] || fail_update "The local RayPlacement signing identity is not trusted for code signing."
-ORIGINAL_USER_KEYCHAINS=("${(@f)$(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')}")
-security list-keychains -d user -s "$LOCAL_SIGNING_KEYCHAIN" "${ORIGINAL_USER_KEYCHAINS[@]}"
-if ! codesign --force --deep --sign "$LOCAL_SIGNING_HASH" "$READY_APP"; then
-    security list-keychains -d user -s "${ORIGINAL_USER_KEYCHAINS[@]}" >/dev/null
-    fail_update "RayPlacement $VERSION could not be signed with this Mac's stable identity."
-fi
-security list-keychains -d user -s "${ORIGINAL_USER_KEYCHAINS[@]}" >/dev/null
-RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/verify_app.sh" "$READY_APP" || fail_update "The locally signed RayPlacement $VERSION app did not pass verification."
-
-write_progress ready 0.90 "Build verified. RayPlacement will close briefly, install, and reopen…"
+write_progress ready 0.90 "LiamFlow is verified. It will close briefly, install, and reopen…"
 
 for _ in {1..240}; do
     kill -0 "$CURRENT_PID" >/dev/null 2>&1 || break
@@ -133,8 +114,8 @@ if [[ -d "$SOURCE_ROOT/Extensions" ]]; then
 fi
 
 rm -rf "$BACKUP_APP"
-write_result success "RayPlacement $VERSION was downloaded, verified, locally signed, and installed successfully."
-write_progress success 1 "RayPlacement $VERSION is ready."
+write_result success "LiamFlow $VERSION was downloaded, verified, and installed successfully."
+write_progress success 1 "LiamFlow $VERSION is ready."
 # A successful local build temporarily contains another full copy of Whisper.
 # Remove only the updater-owned, exactly validated working directory after the
 # signed app and extensions are safely installed. Failed builds are retained so

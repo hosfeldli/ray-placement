@@ -27,12 +27,13 @@ jobs:
           make test
       - name: Create model-free update kit
         run: |
-          RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_app.sh
+          RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_update_archive.sh dist
+          ./scripts/create_liamflow_dmg.sh dist
       - name: Publish GitHub Release assets
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --title "RayPlacement $GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" dist/RayPlacement-Update.zip dist/RayPlacement-Update.sha256 --clobber
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --title "LiamFlow $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" dist/LiamFlow-Update.zip dist/LiamFlow-Update.sha256 dist/LiamFlow.dmg dist/LiamFlow.dmg.sha256 --clobber

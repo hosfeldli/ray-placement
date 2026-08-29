@@ -280,7 +280,7 @@ struct LauncherView: View {
                     .frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(title).font(.system(size: 16, weight: .bold))
-                        Text(state == .error ? "RayPlacement needs your attention" : "Finished successfully")
+                        Text(state == .error ? "LiamFlow needs your attention" : "Finished successfully")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }

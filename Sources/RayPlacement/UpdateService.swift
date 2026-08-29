@@ -38,7 +38,27 @@ final class UpdateService: ObservableObject {
         }
 
         var versionText: String { tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName }
-        var updateAsset: Asset? { assets.first { $0.name == "RayPlacement-Update.zip" } }
+        var updateAsset: Asset? { assets.first { $0.name == "LiamFlow-Update.zip" } }
+    }
+
+    struct SiteRelease: Decodable {
+        let version: String
+        let publishedAt: Date?
+        let releaseURL: URL
+        let update: URL?
+        let updateDigest: String?
+        let updateSize: Int?
+
+        enum CodingKeys: String, CodingKey {
+            case version, update, updateDigest, updateSize
+            case publishedAt = "publishedAt"
+            case releaseURL = "releaseUrl"
+        }
+
+        func asRelease() -> Release {
+            let assets = update.map { [Release.Asset(name: "LiamFlow-Update.zip", browserDownloadURL: $0, digest: updateDigest, size: updateSize ?? 0)] } ?? []
+            return Release(tagName: version, name: "LiamFlow \(version)", body: nil, htmlURL: releaseURL, assets: assets)
+        }
     }
 
     enum UpdateError: LocalizedError {
@@ -53,10 +73,10 @@ final class UpdateService: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .invalidResponse: return "GitHub returned an unreadable update response."
-            case .noRelease: return "No published RayPlacement update is available yet."
-            case .missingAsset: return "The GitHub Release does not contain a RayPlacement update kit."
-            case .invalidDigest: return "The downloaded update did not match GitHub's SHA-256 digest and was not opened."
+            case .invalidResponse: return "The LiamFlow update source returned an unreadable response."
+            case .noRelease: return "No published LiamFlow update is available yet."
+            case .missingAsset: return "The LiamFlow release does not contain a verified update kit."
+            case .invalidDigest: return "The downloaded update did not match its SHA-256 digest and was not opened."
             case .oversizedAsset: return "The update kit is unexpectedly large and was rejected."
             case .extractionFailed(let message): return message.isEmpty ? "The update kit could not be opened." : message
             case .invalidPackage: return "The update kit is incomplete or its version does not match the GitHub Release."
@@ -67,8 +87,13 @@ final class UpdateService: ObservableObject {
 
     static let repositoryURL = URL(string: "https://github.com/hosfeldli/ray-placement")!
     private static let latestReleaseURL = URL(string: "https://api.github.com/repos/hosfeldli/ray-placement/releases/latest")!
+    private static var siteMetadataURL: URL? {
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "LiamFlowUpdateMetadataURL") as? String,
+              !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        return URL(string: raw)
+    }
 
-    @Published private(set) var statusText = "Updates are checked from GitHub when RayPlacement starts."
+    @Published private(set) var statusText = "Updates are checked from the LiamFlow site when LiamFlow starts."
     @Published private(set) var isBusy = false
     @Published private(set) var latestVersion: String?
     @Published private(set) var isInstalling = false
@@ -112,41 +137,53 @@ final class UpdateService: ObservableObject {
     func checkForUpdates(manual: Bool) {
         guard !isBusy, !isInstalling else { return }
         isBusy = true
-        statusText = "Checking GitHub for updates…"
+        statusText = "Checking for LiamFlow updates…"
 
-        var request = URLRequest(url: Self.latestReleaseURL)
+        let usingSiteMetadata = Self.siteMetadataURL != nil
+        var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("RayPlacement/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("LiamFlow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor in
                 guard let self else { return }
                 self.isBusy = false
                 if let error {
-                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from GitHub when RayPlacement starts."
+                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from the LiamFlow site when LiamFlow starts."
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from GitHub when RayPlacement starts."
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
                     return
                 }
                 if http.statusCode == 404 {
                     self.statusText = manual ? UpdateError.noRelease.localizedDescription : "No published update is available."
                     return
                 }
-                guard (200..<300).contains(http.statusCode), let data,
-                      let release = try? JSONDecoder().decode(Release.self, from: data),
+                guard (200..<300).contains(http.statusCode), let data else {
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
+                    return
+                }
+                let release: Release?
+                if usingSiteMetadata {
+                    let decoder = JSONDecoder()
+                    decoder.dateDecodingStrategy = .iso8601
+                    release = try? decoder.decode(SiteRelease.self, from: data).asRelease()
+                } else {
+                    release = try? JSONDecoder().decode(Release.self, from: data)
+                }
+                guard let release,
                       let remoteVersion = SemanticVersion(release.versionText),
                       let installedVersion = SemanticVersion(self.currentVersion) else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from GitHub when RayPlacement starts."
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
                     return
                 }
                 self.latestVersion = release.versionText
                 guard installedVersion < remoteVersion else {
-                    self.statusText = "RayPlacement \(self.currentVersion) is up to date."
+                    self.statusText = "LiamFlow \(self.currentVersion) is up to date."
                     return
                 }
-                self.statusText = "RayPlacement \(release.versionText) is available."
+                self.statusText = "LiamFlow \(release.versionText) is available."
                 self.onReleaseAvailable?(release)
             }
         }.resume()
@@ -176,13 +213,13 @@ final class UpdateService: ObservableObject {
         isInstalling = true
         installingVersion = release.versionText
         installationProgress = 0.08
-        installationStage = "Downloading the small model-free update kit from GitHub…"
+        installationStage = "Downloading the verified LiamFlow update kit…"
         statusText = installationStage
         completionResult = nil
         restartScheduled = false
         onInstallStarted?()
         var request = URLRequest(url: asset.browserDownloadURL)
-        request.setValue("RayPlacement/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("LiamFlow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
             guard let self else { return }
             if let error {
@@ -198,7 +235,7 @@ final class UpdateService: ObservableObject {
             let expectedHash = String(digest.dropFirst("sha256:".count))
             Task { @MainActor in
                 self.installationProgress = 0.2
-                self.installationStage = "Download complete. Verifying GitHub's SHA-256 digest…"
+                self.installationStage = "Download complete. Verifying its SHA-256 digest…"
                 self.statusText = self.installationStage
             }
             DispatchQueue.global(qos: .utility).async {
@@ -210,7 +247,7 @@ final class UpdateService: ObservableObject {
                     )
                     Task { @MainActor in
                         self.installationProgress = 0.3
-                        self.installationStage = "Update verified. Preparing the local build…"
+                        self.installationStage = "Update verified. Preparing LiamFlow…"
                         self.statusText = self.installationStage
                         self.launchInstaller(sourceRoot: sourceRoot, version: release.versionText)
                     }
@@ -231,7 +268,7 @@ final class UpdateService: ObservableObject {
         let working = ApplicationPaths.updates.appendingPathComponent("pending", isDirectory: true)
         if fileManager.fileExists(atPath: working.path) { try fileManager.removeItem(at: working) }
         try fileManager.createDirectory(at: working, withIntermediateDirectories: true)
-        let archive = working.appendingPathComponent("RayPlacement-Update.zip")
+        let archive = working.appendingPathComponent("LiamFlow-Update.zip")
         try fileManager.copyItem(at: downloadedArchive, to: archive)
         let attributes = try fileManager.attributesOfItem(atPath: archive.path)
         let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
@@ -253,10 +290,10 @@ final class UpdateService: ObservableObject {
             throw UpdateError.extractionFailed(String(decoding: errorData.prefix(8_000), as: UTF8.self))
         }
 
-        let sourceRoot = extraction.appendingPathComponent("RayPlacementUpdate", isDirectory: true)
+        let sourceRoot = extraction.appendingPathComponent("LiamFlowUpdate", isDirectory: true)
         let required = [
-            "Package.swift", "Install RayPlacement.command", "Packaging/Info.plist",
-            "scripts/package_app.sh", "scripts/apply_downloaded_update.sh"
+            "Package.swift", "Install LiamFlow.command", "Packaging/Info.plist",
+            "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh"
         ]
         guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
               let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")),
@@ -276,7 +313,7 @@ final class UpdateService: ObservableObject {
     }
 
     private func launchInstaller(sourceRoot: URL, version: String) {
-        statusText = "Preparing the local signed update…"
+        statusText = "Preparing the verified LiamFlow update…"
         let helper = sourceRoot.appendingPathComponent("scripts/apply_downloaded_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
         try? FileManager.default.removeItem(at: progressFile)
@@ -341,7 +378,7 @@ final class UpdateService: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
                 guard let self, self.isInstalling else { return }
                 self.installationProgress = 0.95
-                self.installationStage = "Closing for the final verified swap. RayPlacement will reopen automatically…"
+                self.installationStage = "Closing for the final verified swap. LiamFlow will reopen automatically…"
                 self.statusText = self.installationStage
                 NSApp.terminate(nil)
             }

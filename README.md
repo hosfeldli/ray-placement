@@ -1,21 +1,20 @@
-# RayPlacement 2.0
+# LiamFlow 3.0
 
-RayPlacement is a fast, keyboard-first native macOS command launcher and compact workspace. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
+LiamFlow is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
 Text generation has been removed. Writing correction uses deterministic local Python and Harper rules. Dictation is the only model-powered feature and runs locally through Whisper.
 
 ## Install
 
-RayPlacement currently targets Apple-silicon Macs on macOS 13 or later and requires Swift 6 from Xcode 16 Command Line Tools or newer.
+LiamFlow targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-1. Double-click `Install RayPlacement.command`.
-2. Approve the explained local code-signing setup. The private key stays on that Mac; only the public certificate is added to the login keychain as a code-signing-only trust root.
-3. The installer downloads and SHA-256 verifies the pinned Whisper TinyDiarize model when necessary, builds and verifies the app, installs it to `~/Applications/RayPlacement.app`, and installs bundled extensions.
-4. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
+1. Download `LiamFlow.dmg` from the LiamFlow product site or the GitHub release, then open `Install LiamFlow.command` from the disk image.
+2. The guided installer SHA-256 verifies the pinned local dictation model, verifies the bundle, and installs `~/Applications/LiamFlow.app` with bundled extensions.
+3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
 
 The first install downloads about 465 MB for dictation. Later installs and self-updates reuse a verified installed copy. No Qwen, CoEdit, or other text-generation model is downloaded or packaged.
 
-Double-click `Uninstall RayPlacement.command` to move the app to Trash. The uninstaller can optionally move notes, extensions, preferences, update files, and the local signing identity to Trash as a separate confirmed step.
+Choose **LiamFlow → Uninstall LiamFlow…** to remove the app from within LiamFlow, or double-click `Uninstall LiamFlow.command` from the disk image for the optional data cleanup.
 
 ## Main workflow
 
@@ -105,7 +104,7 @@ Writing resources are process-based and exit after each correction. Whisper proc
 
 ## Updates
 
-RayPlacement checks the GitHub Releases feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, a visible progress window downloads the small source update kit, verifies its GitHub SHA-256, reuses the installed Whisper model, rebuilds with that Mac’s stable signing identity, verifies the new bundle, swaps it atomically, and relaunches. A failed build leaves the current app open; a failed swap restores the previous app. Detailed progress is retained at `~/Library/Application Support/RayPlacement/Updates/update.log`.
+LiamFlow checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, a visible progress window downloads the compact prebuilt update kit, verifies its GitHub SHA-256, restores or downloads the pinned local dictation model as needed, verifies the new bundle, swaps it atomically, and relaunches. The update preparation uses an ad-hoc local signature—no user-created certificate or trusted signing identity is required. A failed preparation leaves the current app unchanged; a failed swap restores the previous app. Detailed progress remains at `~/Library/Application Support/RayPlacement/Updates/update.log`.
 
 ## Build and verify
 

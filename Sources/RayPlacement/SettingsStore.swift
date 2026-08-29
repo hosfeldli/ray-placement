@@ -475,7 +475,7 @@ final class SettingsStore: ObservableObject {
                     break
                 case .requiresApproval:
                     SMAppService.openSystemSettingsLoginItems()
-                    lastError = "Approve RayPlacement in System Settings → General → Login Items."
+                    lastError = "Approve LiamFlow in System Settings → General → Login Items."
                     launchAtLogin = false
                     return
                 default:

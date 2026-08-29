@@ -98,7 +98,7 @@ enum WindowManager {
         var errorDescription: String? {
             switch self {
             case .noApplication: return "There is no previous app to resize."
-            case .accessibilityPermission: return "Enable RayPlacement in System Settings → Privacy & Security → Accessibility, then try again."
+            case .accessibilityPermission: return "Enable LiamFlow in System Settings → Privacy & Security → Accessibility, then try again."
             case .noWindow: return "The frontmost app does not have a movable window."
             case .notResizable: return "That window cannot be resized."
             }
