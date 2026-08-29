@@ -63,10 +63,17 @@ CURRENT_MODEL="$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.
 if [[ -f "$CURRENT_MODEL" ]]; then
     write_progress working 0.38 "Restoring this Mac's local dictation model…"
     mkdir -p "$READY_APP/Contents/Resources/Whisper/model"
-    cp "$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin" \
+    cp "$CURRENT_MODEL" \
         "$READY_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 else
-    fail_update "The existing RayPlacement dictation model is unavailable, so the update was not installed."
+    write_progress working 0.38 "Downloading the verified local dictation model for this Mac…"
+    if ! "$SOURCE_ROOT/scripts/assemble_whisper_model.sh"; then
+        fail_update "The local dictation model could not be restored or downloaded, so the update was not installed."
+    fi
+    DOWNLOADED_MODEL="$SOURCE_ROOT/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
+    [[ -f "$DOWNLOADED_MODEL" ]] || fail_update "The downloaded local dictation model is unavailable."
+    mkdir -p "$READY_APP/Contents/Resources/Whisper/model"
+    cp "$DOWNLOADED_MODEL" "$READY_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 fi
 
 write_progress working 0.42 "Preparing this Mac's stable RayPlacement signing identity…"
