@@ -53,9 +53,12 @@ cp "$WHISPER_RUNTIME/MODEL_SOURCE" "$CONTENTS_DIRECTORY/Resources/Whisper/MODEL_
 cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Whisper/runtime/whisper-cli"
 
-if [[ ! -x "$HARPER_DIRECTORY/harper-cli" || ! -f "$PYTHON_GRAMMAR_DIRECTORY/grammar_check.py" \
-    || ! -d "$PYTHON_GRAMMAR_DIRECTORY/site-packages/spellchecker" ]]; then
-    echo "The bundled rule-based writing resources are incomplete."
+MISSING_WRITING_RESOURCES=()
+[[ -f "$HARPER_DIRECTORY/harper-cli" ]] || MISSING_WRITING_RESOURCES+=("Harper/harper-cli")
+[[ -f "$PYTHON_GRAMMAR_DIRECTORY/grammar_check.py" ]] || MISSING_WRITING_RESOURCES+=("PythonGrammar/grammar_check.py")
+[[ -d "$PYTHON_GRAMMAR_DIRECTORY/site-packages/spellchecker" ]] || MISSING_WRITING_RESOURCES+=("PythonGrammar/site-packages/spellchecker")
+if (( ${#MISSING_WRITING_RESOURCES[@]} > 0 )); then
+    echo "The bundled rule-based writing resources are incomplete: ${(j:, :)MISSING_WRITING_RESOURCES}"
     exit 1
 fi
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar"

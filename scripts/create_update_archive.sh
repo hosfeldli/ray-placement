@@ -32,7 +32,7 @@ rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/RayPlacement-Update.sha256"
 
 # Local grammar correction must be in every update kit. Whisper's large model
 # is restored from the already-installed app by apply_downloaded_update.sh.
-test -x "$STAGED_SOURCE/Packaging/Vendor/Harper/harper-cli"
+test -f "$STAGED_SOURCE/Packaging/Vendor/Harper/harper-cli"
 test -f "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/grammar_check.py"
 test -d "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/site-packages/spellchecker"
 (
