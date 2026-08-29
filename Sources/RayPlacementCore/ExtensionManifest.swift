@@ -50,12 +50,14 @@ public struct ExtensionAction: Codable, Sendable {
         case paste
         case pastePlainText
         case checkWriting
-        case openInVSCode
+        case openFocusedFileLauncher
         case convertTimezones
         case forceQuitApplications
         case forceQuitAllApplications
         case openFormatterWorkspace
         case openEmojiPicker
+        case openPasswordGenerator
+        case openExtensionDevelopment
         case form
     }
 
@@ -90,7 +92,7 @@ public struct ExtensionFormDefinition: Codable, Sendable {
 
 public struct ExtensionFormField: Codable, Identifiable, Sendable {
     public enum FieldType: String, Codable, Sendable {
-        case text, secure, multiline, number, toggle, picker
+        case text, secure, multiline, number, toggle, picker, file, directory, date, slider, keyValue
     }
 
     public var id: String
@@ -100,8 +102,13 @@ public struct ExtensionFormField: Codable, Identifiable, Sendable {
     public var defaultValue: String?
     public var options: [String]?
     public var required: Bool?
+    public var section: String?
+    public var helpText: String?
+    public var minimum: Double?
+    public var maximum: Double?
+    public var visibleWhen: ExtensionFieldVisibility?
 
-    public init(id: String, label: String, type: FieldType, placeholder: String? = nil, defaultValue: String? = nil, options: [String]? = nil, required: Bool? = nil) {
+    public init(id: String, label: String, type: FieldType, placeholder: String? = nil, defaultValue: String? = nil, options: [String]? = nil, required: Bool? = nil, section: String? = nil, helpText: String? = nil, minimum: Double? = nil, maximum: Double? = nil, visibleWhen: ExtensionFieldVisibility? = nil) {
         self.id = id
         self.label = label
         self.type = type
@@ -109,6 +116,23 @@ public struct ExtensionFormField: Codable, Identifiable, Sendable {
         self.defaultValue = defaultValue
         self.options = options
         self.required = required
+        self.section = section
+        self.helpText = helpText
+        self.minimum = minimum
+        self.maximum = maximum
+        self.visibleWhen = visibleWhen
+    }
+}
+
+public struct ExtensionFieldVisibility: Codable, Sendable {
+    public var field: String
+    public var equals: String?
+    public var notEquals: String?
+
+    public init(field: String, equals: String? = nil, notEquals: String? = nil) {
+        self.field = field
+        self.equals = equals
+        self.notEquals = notEquals
     }
 }
 

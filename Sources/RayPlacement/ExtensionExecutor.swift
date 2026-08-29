@@ -74,8 +74,8 @@ final class ExtensionExecutor {
         case .checkWriting:
             completion(.success("__CHECK_WRITING__"))
 
-        case .openInVSCode:
-            completion(.success("__OPEN_IN_VSCODE__"))
+        case .openFocusedFileLauncher:
+            completion(.success("__OPEN_FOCUSED_FILE_LAUNCHER__"))
 
         case .convertTimezones:
             completion(.success("__CONVERT_TIMEZONES__"))
@@ -91,6 +91,12 @@ final class ExtensionExecutor {
 
         case .openEmojiPicker:
             completion(.success("__OPEN_EMOJI_PICKER__"))
+
+        case .openPasswordGenerator:
+            completion(.success("__OPEN_PASSWORD_GENERATOR__"))
+
+        case .openExtensionDevelopment:
+            completion(.success("__OPEN_EXTENSION_DEVELOPMENT__"))
 
         case .form:
             completion(.success("__OPEN_EXTENSION_FORM__"))
@@ -109,7 +115,7 @@ final class ExtensionExecutor {
             completion(.failure(ExecutionError.invalidForm("The form definition is missing.")))
             return
         }
-        for field in definition.fields where field.required == true {
+        for field in definition.fields where field.required == true && isVisible(field, values: values) {
             if values[field.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 completion(.failure(ExecutionError.invalidForm("\(field.label) is required.")))
                 return
@@ -142,6 +148,14 @@ final class ExtensionExecutor {
                 }
             }
         }
+    }
+
+    private func isVisible(_ field: ExtensionFormField, values: [String: String]) -> Bool {
+        guard let condition = field.visibleWhen else { return true }
+        let value = values[condition.field, default: ""]
+        if let equals = condition.equals, value != equals { return false }
+        if let notEquals = condition.notEquals, value == notEquals { return false }
+        return true
     }
 
     private func executeHTTPRequest(

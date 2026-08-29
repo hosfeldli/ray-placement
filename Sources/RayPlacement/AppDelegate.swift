@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredDictationShortcut: ShortcutSpec?
     private var registeredNotesDockLeftShortcut: ShortcutSpec?
     private var registeredNotesDockRightShortcut: ShortcutSpec?
+    private var registeredTerminalShortcut: ShortcutSpec?
+    private var registeredSQLShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -79,6 +81,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showNotes() { launcher.showNotes() }
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
+    @objc func showTerminal() { launcher.showDeveloperTerminal() }
+    @objc func showSQLWorkspace() { launcher.showSQLWorkspace() }
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func quit() { NSApp.terminate(nil) }
@@ -161,6 +165,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] in
             self?.launcher.dockNotesRight()
         }
+        registerActionHotkey(
+            identifier: "builtin.terminal",
+            displayName: "Developer Terminal",
+            enabled: SettingsStore.shared.terminalHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.terminalShortcut,
+            previous: &registeredTerminalShortcut,
+            restore: SettingsStore.shared.restoreTerminalShortcut
+        ) { [weak self] in self?.launcher.showDeveloperTerminal() }
+        registerActionHotkey(
+            identifier: "builtin.sql",
+            displayName: "SQL Workspace",
+            enabled: SettingsStore.shared.sqlHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.sqlShortcut,
+            previous: &registeredSQLShortcut,
+            restore: SettingsStore.shared.restoreSQLShortcut
+        ) { [weak self] in self?.launcher.showSQLWorkspace() }
     }
 
     private func registerActionHotkey(

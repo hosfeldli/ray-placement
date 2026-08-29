@@ -5,13 +5,13 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
 WHISPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper"
 MODEL_DIRECTORY="$WHISPER_DIRECTORY/model"
-MODEL="$MODEL_DIRECTORY/ggml-small.en.bin"
-EXPECTED_MODEL_SHA256="c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d"
-DEFAULT_MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.en.bin?download=true"
+MODEL="$MODEL_DIRECTORY/ggml-small.en-tdrz.bin"
+EXPECTED_MODEL_SHA256="ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4"
+DEFAULT_MODEL_URL="https://huggingface.co/akashmjn/tinydiarize-whisper.cpp/resolve/d44ba793fc67e509623a88a409723311fa677744/ggml-small.en-tdrz.bin?download=true"
 MODEL_URL="${RAYPLACEMENT_WHISPER_MODEL_URL:-$DEFAULT_MODEL_URL}"
-PREBUILT_MODEL="$PROJECT_DIRECTORY/build/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en.bin"
-INSTALLED_MODEL="${HOME:?The current user home folder is unavailable}/Applications/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en.bin"
-TEMP_MODEL="$MODEL_DIRECTORY/.ggml-small.en.bin.downloading.$$"
+PREBUILT_MODEL="$PROJECT_DIRECTORY/build/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+INSTALLED_MODEL="${HOME:?The current user home folder is unavailable}/Applications/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+TEMP_MODEL="$MODEL_DIRECTORY/.ggml-small.en-tdrz.bin.downloading.$$"
 
 cleanup() {
     rm -f "$TEMP_MODEL"
@@ -38,7 +38,7 @@ for candidate in "$PREBUILT_MODEL" "$INSTALLED_MODEL"; do
     fi
 done
 
-echo "Downloading the pinned Local Whisper small.en model (about 466 MB)…"
+echo "Downloading the pinned Local Whisper small.en TinyDiarize model (about 465 MB)…"
 if ! curl --fail --location --retry 3 --retry-all-errors --progress-bar "$MODEL_URL" --output "$TEMP_MODEL"; then
     echo "Local Whisper could not be downloaded. Check the network connection and run the installer again."
     exit 1
@@ -51,4 +51,4 @@ if ! model_is_valid "$TEMP_MODEL"; then
     exit 1
 fi
 mv -f "$TEMP_MODEL" "$MODEL"
-echo "Downloaded and verified Local Whisper small.en."
+echo "Downloaded and verified Local Whisper small.en TinyDiarize."

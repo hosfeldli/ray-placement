@@ -12,12 +12,19 @@ let package = Package(
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0")
+    ],
     targets: [
         .target(name: "RayPlacementCore"),
         .target(name: "RayPlacementWriting"),
         .executableTarget(
             name: "RayPlacement",
-            dependencies: ["RayPlacementCore", "RayPlacementWriting"]
+            dependencies: [
+                "RayPlacementCore",
+                "RayPlacementWriting",
+                .product(name: "SwiftTerm", package: "SwiftTerm")
+            ]
         ),
         .testTarget(
             name: "RayPlacementCoreTests",

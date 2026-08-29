@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 2,
+  "id": "local.extension-development",
+  "name": "Extension Development",
+  "version": "1.0.0",
+  "description": "The maintained RayPlacement extension guide and AI-friendly starter templates.",
+  "commands": [
+    {
+      "id": "guide",
+      "title": "Open Extension Development Guide",
+      "subtitle": "Reference, templates, examples, and dynamic-form guidance",
+      "keywords": ["extension", "plugin", "manifest", "api", "template", "developer"],
+      "icon": "puzzlepiece.extension.fill",
+      "action": { "type": "openExtensionDevelopment", "value": "" }
+    }
+  ]
+}

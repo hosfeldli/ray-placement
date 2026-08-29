@@ -19,9 +19,9 @@
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-	<string>1.16.0</string>
+	<string>1.18.0</string>
     <key>CFBundleVersion</key>
-	<string>25</string>
+	<string>27</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
@@ -32,8 +32,10 @@
     <string>Built for personal use.</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
-    <key>NSAccessibilityUsageDescription</key>
-    <string>RayPlacement uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
+	<key>NSAccessibilityUsageDescription</key>
+	<string>RayPlacement uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>RayPlacement uses Apple Events only to show the current Apple Music or Spotify track and run the playback controls you press.</string>
     <key>NSMicrophoneUsageDescription</key>
 	<string>RayPlacement records audio only after you press Dictate in Notes and transcribes short local segments on this Mac.</string>
     <key>NSSpeechRecognitionUsageDescription</key>

@@ -3,7 +3,7 @@
   "id": "local.writing-tools",
   "name": "Writing Tools",
   "version": "1.4.0",
-  "description": "Local plain-text paste plus model-only Qwen grammar correction",
+  "description": "Local plain-text paste plus private rule-based spelling and grammar correction",
   "commands": [
     {
       "id": "paste-plain-text",
@@ -20,7 +20,7 @@
     {
       "id": "check-writing",
       "title": "Check Spelling & Grammar",
-      "subtitle": "Correct selected text directly with local Qwen",
+      "subtitle": "Correct selected text with local Python and Harper rules",
       "keywords": ["spell", "grammar", "writing", "proofread", "correct"],
       "icon": "text.badge.checkmark",
       "hotkey": "control+option+g",

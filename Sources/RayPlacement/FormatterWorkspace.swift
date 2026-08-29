@@ -3,6 +3,42 @@ import RayPlacementCore
 import SwiftUI
 
 @MainActor
+final class FormatterWindowController: NSWindowController {
+    private let model = FormatterWorkspaceModel()
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_020, height: 690),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Document Formatter"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.backgroundColor = .clear
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.minSize = NSSize(width: 760, height: 520)
+        window.setAccessibilityLabel("RayPlacement document formatter")
+        self.init(window: window)
+        window.contentView = NSHostingView(rootView: ZStack {
+            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            FormatterWorkspaceView(model: model)
+                .clipShape(PrismaticPanelShape(cut: 9))
+                .padding(10)
+        }.preferredColorScheme(.dark))
+    }
+
+    func present() {
+        window?.center()
+        if let window { WorkspaceWindowCoordinator.shared.present(window) }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func shutdown() { model.reset() }
+}
+
+@MainActor
 final class FormatterWorkspaceModel: ObservableObject {
     enum SegmentEnding: String, CaseIterable, Identifiable {
         case detected
@@ -41,11 +77,6 @@ final class FormatterWorkspaceModel: ObservableObject {
     @Published private(set) var searchLines: [Int] = []
     @Published private(set) var result: DocumentFormatResult?
     @Published private(set) var errorMessage: String?
-    @Published private(set) var isProposing = false
-    @Published private(set) var proposal: String?
-    @Published private(set) var progressText = ""
-
-    private let runner = WritingProviderRunner()
     private let maximumCharacters = 1_000_000
 
     var statusText: String {
@@ -68,7 +99,6 @@ final class FormatterWorkspaceModel: ObservableObject {
             result = formatted
             output = formatted.output
             errorMessage = nil
-            proposal = nil
             if kind == .automatic { kind = formatted.kind }
             refreshSearch()
         } catch {
@@ -130,85 +160,7 @@ final class FormatterWorkspaceModel: ObservableObject {
         format()
     }
 
-    func proposeCorrections() {
-        guard let result, !source.isEmpty else { return }
-        guard source.count <= 18_000 else {
-            errorMessage = "Local AI proposals are limited to 18,000 characters. Formatting, validation, inspection, search, and file export still support the full document."
-            return
-        }
-        isProposing = true
-        progressText = "Preparing a local AI review…"
-        errorMessage = nil
-        requestProposal(for: source, baseline: result, pass: 1)
-    }
-
-    private func requestProposal(
-        for candidateSource: String,
-        baseline: DocumentFormatResult,
-        pass: Int
-    ) {
-        runner.proposeDocumentCorrection(
-            source: candidateSource,
-            kind: baseline.kind,
-            diagnostics: baseline.diagnostics,
-            progress: { [weak self] message in
-                self?.progressText = pass == 1 ? message : "Verification pass \(pass) · \(message)"
-            }
-        ) { [weak self] response in
-            guard let self else { return }
-            switch response {
-            case .success(let text):
-                let candidate = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                let candidateResult = try? DocumentFormatterService.format(
-                    candidate,
-                    kind: baseline.kind,
-                    style: self.style,
-                    ediSegmentDelimiter: self.segmentEnding.delimiter
-                )
-                let currentErrors = baseline.diagnostics.filter { $0.severity == .error }.count
-                let proposedErrors = candidateResult?.diagnostics.filter { $0.severity == .error }.count ?? Int.max
-
-                if proposedErrors > 0,
-                   proposedErrors < currentErrors,
-                   pass < 2,
-                   let candidateResult {
-                    self.progressText = "Pass 1 improved the document · checking the remaining finding…"
-                    self.requestProposal(for: candidate, baseline: candidateResult, pass: pass + 1)
-                    return
-                }
-
-                self.isProposing = false
-                guard proposedErrors == 0 else {
-                    self.errorMessage = "The selected model did not resolve every validation error. The original remains unchanged; try the Quality model or edit the explicit validation findings manually."
-                    self.progressText = "Proposal rejected by deterministic validation"
-                    return
-                }
-                self.proposal = candidate
-                self.progressText = "Proposal ready · review before applying"
-            case .failure(let error):
-                self.errorMessage = error.localizedDescription
-                self.progressText = ""
-            }
-        }
-    }
-
-    func cancelProposal() {
-        runner.cancel()
-        isProposing = false
-        progressText = ""
-    }
-
-    func applyProposal() {
-        guard let proposal else { return }
-        source = proposal
-        self.proposal = nil
-        format()
-    }
-
-    func dismissProposal() { proposal = nil }
-
     func reset() {
-        runner.cancel()
         source = ""
         output = ""
         kind = .automatic
@@ -217,9 +169,6 @@ final class FormatterWorkspaceModel: ObservableObject {
         searchQuery = ""
         result = nil
         errorMessage = nil
-        proposal = nil
-        isProposing = false
-        progressText = ""
     }
 
     private func refreshSearch() {
@@ -275,17 +224,6 @@ struct FormatterWorkspaceView: View {
                     .foregroundStyle(model.errorMessage == nil ? Color.secondary : Color.orange)
                     .lineLimit(1)
                 Spacer()
-                if model.isProposing {
-                    ProgressView().controlSize(.small)
-                    Text(model.progressText).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    Button("Cancel", action: model.cancelProposal)
-                } else {
-                    Button { model.proposeCorrections() } label: {
-                        Label("AI Fix", systemImage: "sparkles")
-                    }
-                    .disabled(model.result == nil)
-                    .help("Ask the selected local Formatter model to propose a complete corrected document")
-                }
             }
         }
         .padding(.horizontal, 14)
@@ -355,9 +293,6 @@ struct FormatterWorkspaceView: View {
             Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
-                    if let proposal = model.proposal {
-                        proposalCard(proposal)
-                    }
                     if inspectorMode == 0 {
                         ForEach(model.result?.diagnostics ?? []) { diagnostic in
                             Label {
@@ -388,20 +323,6 @@ struct FormatterWorkspaceView: View {
             }
         }
         .frame(minHeight: 155, idealHeight: 190, maxHeight: 250)
-    }
-
-    private func proposalCard(_ proposal: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label("Local AI proposal", systemImage: "sparkles").font(.caption.bold())
-                Spacer()
-                Button("Dismiss", action: model.dismissProposal)
-                Button("Apply & Validate", action: model.applyProposal).buttonStyle(.borderedProminent)
-            }
-            Text(proposal).font(.caption.monospaced()).lineLimit(5).textSelection(.enabled)
-        }
-        .padding(10)
-        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 9))
     }
 
     private var statusSymbol: String {

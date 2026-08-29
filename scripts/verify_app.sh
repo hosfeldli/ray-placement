@@ -5,22 +5,25 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/RayPlacement.app}"
 BINARY="$APP_DIRECTORY/Contents/MacOS/RayPlacement"
+RESOURCES="$APP_DIRECTORY/Contents/Resources"
 
 test -d "$APP_DIRECTORY"
 test -x "$BINARY"
-test -f "$APP_DIRECTORY/Contents/Resources/RayPlacement.icns"
-test -x "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli"
-test -f "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/LICENSE"
-test -f "$APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf"
-test -f "$APP_DIRECTORY/Contents/Resources/Qwen/MODEL_LICENSE"
-test -f "$APP_DIRECTORY/Contents/Resources/Qwen/REVISION"
-test ! -d "$APP_DIRECTORY/Contents/Resources/Qwen/ModelParts"
-test ! -e "$APP_DIRECTORY/Contents/Resources/CoEdit"
-test ! -e "$APP_DIRECTORY/Contents/Resources/Tools/harper-cli"
-test -x "$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli"
-test -f "$APP_DIRECTORY/Contents/Resources/Whisper/model/ggml-small.en.bin"
-test -f "$APP_DIRECTORY/Contents/Resources/Whisper/LICENSE"
-test -f "$APP_DIRECTORY/Contents/Resources/Whisper/REVISION"
+test -f "$RESOURCES/RayPlacement.icns"
+test ! -e "$RESOURCES/Qwen"
+test ! -e "$RESOURCES/CoEdit"
+test -x "$RESOURCES/Tools/harper-cli"
+test -x "$RESOURCES/Tools/PythonGrammar/grammar_check.py"
+test -d "$RESOURCES/Tools/PythonGrammar/site-packages/spellchecker"
+test -x "$RESOURCES/Whisper/runtime/whisper-cli"
+test -f "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin"
+test -f "$RESOURCES/Whisper/LICENSE"
+test -f "$RESOURCES/Whisper/REVISION"
+test -f "$RESOURCES/Documentation/EXTENSIONS.md"
+test -f "$RESOURCES/Documentation/EXTENSION_AUTHORING_FOR_AI.md"
+test -f "$RESOURCES/Documentation/extension-manifest.schema.json"
+test -f "$RESOURCES/Emoji/emoji-test.txt"
+[[ "$(/usr/bin/grep -c '; fully-qualified' "$RESOURCES/Emoji/emoji-test.txt")" -ge 3900 ]]
 plutil -lint "$APP_DIRECTORY/Contents/Info.plist" >/dev/null
 codesign --verify --deep --strict "$APP_DIRECTORY"
 
@@ -32,10 +35,11 @@ MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDe
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.16.0" ]]
-[[ "$BUILD_NUMBER" == "25" ]]
+[[ "$VERSION" == "1.18.0" ]]
+[[ "$BUILD_NUMBER" == "27" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
+[[ -n "$(/usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")" ]]
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     DESIGNATED_REQUIREMENT="$(codesign -dr - "$APP_DIRECTORY" 2>&1)"
     if [[ "$DESIGNATED_REQUIREMENT" == *"cdhash"* ]]; then
@@ -43,128 +47,22 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
         exit 1
     fi
 fi
+
 file "$BINARY" | grep -q "Mach-O 64-bit executable arm64"
-file "$APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli" | grep -q "Mach-O 64-bit executable arm64"
-file "$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" | grep -q "Mach-O 64-bit executable arm64"
-echo "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a  $APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf" | shasum -a 256 -c - >/dev/null
-echo "1895313a209f70c745ccd8d1946c2c81c84e87ac50564ddb3dd4adb376dd7a52  $APP_DIRECTORY/Contents/Resources/Qwen/runtime/llama-cli" | shasum -a 256 -c - >/dev/null
-echo "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc  $APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" | shasum -a 256 -c - >/dev/null
-echo "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d  $APP_DIRECTORY/Contents/Resources/Whisper/model/ggml-small.en.bin" | shasum -a 256 -c - >/dev/null
-"$APP_DIRECTORY/Contents/Resources/Whisper/runtime/whisper-cli" --version | grep -q "1.9.1"
+file "$RESOURCES/Tools/harper-cli" | grep -q "Mach-O 64-bit executable arm64"
+file "$RESOURCES/Whisper/runtime/whisper-cli" | grep -q "Mach-O 64-bit executable arm64"
+echo "ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4  $RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | shasum -a 256 -c - >/dev/null
+echo "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc  $RESOURCES/Whisper/runtime/whisper-cli" | shasum -a 256 -c - >/dev/null
+"$RESOURCES/Whisper/runtime/whisper-cli" --version | grep -q "1.9.1"
 
-QWEN_RUNTIME="$APP_DIRECTORY/Contents/Resources/Qwen/runtime"
-QWEN_MODEL="$APP_DIRECTORY/Contents/Resources/Qwen/Qwen3-1.7B-Q8_0.gguf"
-if [[ "${RAYPLACEMENT_VERIFY_MODEL_RUNTIME:-0}" == "1" && "${RAYPLACEMENT_VERIFY_MODEL_QUALITY:-0}" != "1" ]]; then
-QWEN_HEALTH_CONSOLE="$(
-    "$QWEN_RUNTIME/llama-cli" \
-        -m "$QWEN_MODEL" \
-        --conversation \
-        --single-turn \
-        --reasoning off \
-        --system-prompt "Reply briefly." \
-        --prompt "Health check." \
-        --simple-io \
-        --no-display-prompt \
-        --log-disable \
-        --predict 1 \
-        --temp 0 \
-        --ctx-size 1024 \
-        --threads 1 \
-        --threads-batch 1 \
-        --batch-size 128 \
-        --ubatch-size 64 \
-        --prio -1 \
-        --prio-batch 0 \
-        --gpu-layers 0 \
-        --no-warmup
-)"
-[[ -n "$QWEN_HEALTH_CONSOLE" ]]
-fi
+GRAMMAR_RESULT="$(printf '%s' '{"text":"Hi; whot where you thinking, about","preserve":"RayPlacement VS Code Postman EDI"}' | /usr/bin/python3 "$RESOURCES/Tools/PythonGrammar/grammar_check.py")"
+[[ "$GRAMMAR_RESULT" == "Hi, what were you thinking about?" ]]
+SECOND_GRAMMAR_RESULT="$(printf '%s' '{"text":"u really is a great","preserve":"RayPlacement"}' | /usr/bin/python3 "$RESOURCES/Tools/PythonGrammar/grammar_check.py")"
+[[ "$SECOND_GRAMMAR_RESULT" == "You really are great." ]]
 
-if [[ "${RAYPLACEMENT_VERIFY_MODEL_QUALITY:-0}" == "1" ]]; then
-for QUALITY_ATTEMPT in 1 2; do
-QWEN_CONSOLE="$(
-    "$QWEN_RUNTIME/llama-cli" \
-        -m "$QWEN_MODEL" \
-        --conversation \
-        --single-turn \
-        --reasoning off \
-        --system-prompt "You are a deterministic English correction engine. Correct every spelling, word choice, agreement, tense, missing-word, sentence-structure, capitalization, and punctuation error while preserving meaning. Return exactly <RP_CORRECTED> followed by the corrected passage and then <RP_END>, with nothing outside those tags. Examples: Input: u really is a great Output: <RP_CORRECTED>You really are great.<RP_END> Input: Hi; whot where you thinking, about Output: <RP_CORRECTED>Hi, what were you thinking about?<RP_END>" \
-        --prompt "Hi; whot where you thinking, about" \
-        --simple-io \
-        --no-display-prompt \
-        --log-disable \
-        --predict 512 \
-        --temp 0 \
-        --seed "$QUALITY_ATTEMPT" \
-        --ctx-size 8192 \
-        --threads 1 \
-        --threads-batch 1 \
-        --batch-size 128 \
-        --ubatch-size 64 \
-        --prio -1 \
-        --prio-batch 0 \
-        --gpu-layers all \
-        --no-warmup
-)"
-QWEN_RESULT="${QWEN_CONSOLE##*<RP_CORRECTED>}"
-QWEN_RESULT="${QWEN_RESULT%%<RP_END>*}"
-QWEN_RESULT_LOWER="${QWEN_RESULT:l}"
-if [[ "$QWEN_RESULT_LOWER" != *"whot"* \
-    && "$QWEN_RESULT_LOWER" != *"where you"* \
-    && "$QWEN_RESULT_LOWER" == *"thinking about?"* ]]; then
-    break
-fi
-if [[ "$QUALITY_ATTEMPT" == "2" ]]; then
-    echo "Qwen grammar quality check failed: $QWEN_RESULT" >&2
-    exit 1
-fi
-sleep 2
-done
-
-sleep 2
-
-QWEN_SUMMARY_PROMPT=$'# Notes to summarize\n\nMeeting notes: Alice decided to ship Friday. Bob will review the release. Risk: incomplete tests.\n\n# Required output\nWrite a useful summary with complete Markdown bullet points.'
-for QUALITY_ATTEMPT in 1 2; do
-QWEN_SUMMARY_CONSOLE="$(
-    "$QWEN_RUNTIME/llama-cli" \
-        -m "$QWEN_MODEL" \
-        --conversation \
-        --single-turn \
-        --reasoning off \
-        --system-prompt "Combine the supplied notes into one accurate Markdown summary. Preserve names, dates, decisions, actions, and risks. Return exactly <RP_RESULT> followed by the finished Markdown summary and then <RP_END>, with nothing outside those tags." \
-        --prompt "$QWEN_SUMMARY_PROMPT" \
-        --simple-io \
-        --no-display-prompt \
-        --log-disable \
-        --predict 256 \
-        --temp 0 \
-        --ctx-size 2048 \
-        --threads 1 \
-        --threads-batch 1 \
-        --batch-size 128 \
-        --ubatch-size 64 \
-        --prio -1 \
-        --prio-batch 0 \
-        --gpu-layers all \
-        --no-warmup
-)"
-QWEN_SUMMARY_RESULT="${QWEN_SUMMARY_CONSOLE##*<RP_RESULT>}"
-QWEN_SUMMARY_RESULT="${QWEN_SUMMARY_RESULT%%<RP_END>*}"
-QWEN_SUMMARY_RESULT_LOWER="${QWEN_SUMMARY_RESULT:l}"
-if [[ "$QWEN_SUMMARY_RESULT" == *"Alice"* \
-    && "$QWEN_SUMMARY_RESULT" == *"Bob"* \
-    && "$QWEN_SUMMARY_RESULT" == *"Friday"* \
-    && "$QWEN_SUMMARY_RESULT_LOWER" == *"incomplete"* \
-    && "$QWEN_SUMMARY_RESULT_LOWER" == *"tests"* ]]; then
-    break
-fi
-if [[ "$QUALITY_ATTEMPT" == "2" ]]; then
-    echo "Qwen summary quality check failed: $QWEN_SUMMARY_RESULT" >&2
-    exit 1
-fi
-sleep 2
-done
-fi
+HARPER_INPUT='I has an apple.'
+HARPER_OUTPUT="$(printf '%s' "$HARPER_INPUT" | "$RESOURCES/Tools/harper-cli" --no-color lint --format json --quiet)" || HARPER_STATUS=$?
+[[ "${HARPER_STATUS:-0}" == "0" || "${HARPER_STATUS:-0}" == "1" ]]
+[[ "$HARPER_OUTPUT" == *"have"* ]]
 
 echo "Verified RayPlacement.app"

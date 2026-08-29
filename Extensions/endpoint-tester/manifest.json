@@ -2,14 +2,14 @@
   "schemaVersion": 2,
   "id": "local.endpoint-tester",
   "name": "Endpoint Tester",
-  "version": "2.0.0",
-  "description": "Build, send, and inspect HTTP requests in a Postman-style native workspace.",
+  "version": "3.0.0",
+  "description": "Import Postman collections and environments, build requests, and run complete collections in a native workspace.",
   "commands": [
     {
       "id": "request",
       "title": "Test an HTTP Endpoint",
-      "subtitle": "Params, auth, headers, bodies, history, cURL, and response inspection",
-      "keywords": ["api", "http", "endpoint", "request", "rest", "test", "json", "postman", "curl"],
+      "subtitle": "Collections, environments, auth, variables, runners, history, and cURL",
+      "keywords": ["api", "http", "endpoint", "request", "rest", "test", "json", "postman", "collection", "environment", "runner", "curl"],
       "icon": "network",
       "action": {
         "type": "form",

@@ -12,7 +12,6 @@ enum LauncherOutputState: Equatable {
 enum LauncherMode: Equatable {
     case root
     case files
-    case vscodePicker
     case timezoneConverter
     case forceQuitPicker
     case emojiPicker
@@ -24,7 +23,6 @@ enum LauncherMode: Equatable {
         switch self {
         case .root: return nil
         case .files: return "Search Files"
-        case .vscodePicker: return "Open in VS Code"
         case .timezoneConverter: return "Timezone Converter"
         case .forceQuitPicker: return "Force Quit"
         case .emojiPicker: return "Emoji Picker"
@@ -84,6 +82,7 @@ enum SystemAction {
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
+    case openSQLWorkspace
     case openSettings
     case quit
 }
@@ -92,7 +91,6 @@ enum LauncherAction {
     case launchApplication(URL)
     case openFile(URL)
     case revealFile(URL)
-    case openInVSCode(URL)
     case openURL(URL)
     case copyText(String)
     case pasteText(String)

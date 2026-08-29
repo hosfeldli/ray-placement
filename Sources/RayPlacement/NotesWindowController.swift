@@ -38,8 +38,6 @@ private final class NotesPresentationModel: ObservableObject {
 final class NotesWindowController: NSObject, NSWindowDelegate {
     let store: NotesStore
     let dictation: NoteDictationService
-    let summarizer: NoteSummaryService
-    let formatter: FormatterWorkspaceModel
 
     private static let windowModeKey = "notesWindowMode"
     private static let dockWidthKey = "notesDockWidth"
@@ -59,23 +57,19 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.dictation = NoteDictationService { [weak store] transcript, destinationNoteID in
             store?.appendDictation(transcript, to: destinationNoteID)
         }
-        self.summarizer = NoteSummaryService()
-        self.formatter = FormatterWorkspaceModel()
         let savedMode = UserDefaults.standard.string(forKey: Self.windowModeKey)
             .flatMap(NotesWindowMode.init(rawValue:))
         self.presentation = NotesPresentationModel(
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
         super.init()
-        self.dictationHUD = DictationHUDController(dictation: dictation) { [weak self] in
-            self?.present()
-        }
+        self.dictationHUD = DictationHUDController(dictation: dictation)
     }
 
     func present() {
         let window = ensureWindow()
         applyPresentationMode(presentation.mode, to: window, animated: false)
-        window.makeKeyAndOrderFront(nil)
+        WorkspaceWindowCoordinator.shared.present(window, joinWorkspace: !presentation.mode.isDocked)
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -89,7 +83,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func presentQuickNote() {
-        store.closeFormatterWorkspace()
         store.selectMostRecentNote()
         let preferredMode: NotesWindowMode = presentation.mode == .dockedLeft ? .dockedLeft : .dockedRight
         let window = ensureWindow()
@@ -107,14 +100,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     private func presentDocked(_ edge: NotesDockEdge) {
-        store.closeFormatterWorkspace()
         store.selectMostRecentNote()
+        if let window { WorkspaceWindowCoordinator.shared.popOut(window) }
         dock(edge)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func presentMostRecentAndToggleDictation() {
-        store.closeFormatterWorkspace()
         store.selectMostRecentNote()
         present()
         guard dictation.phase == .idle || dictation.phase == .recording else { return }
@@ -124,23 +116,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         )
     }
 
-    func presentFormatterWorkspace() {
-        store.openFormatterWorkspace()
-        restoreWorkspace()
-        present()
-    }
-
     func shutdown() {
         dictation.cancel()
-        summarizer.cancel()
-        formatter.reset()
         store.flush()
     }
 
     func windowWillClose(_ notification: Notification) {
-        summarizer.cancel()
-        formatter.reset()
-        store.closeFormatterWorkspace()
         store.flush()
     }
 
@@ -214,15 +195,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.appearance = NSAppearance(named: .darkAqua)
-        window.tabbingMode = NSWindow.TabbingMode.disallowed
+        window.tabbingMode = NSWindow.TabbingMode.preferred
         window.isReleasedWhenClosed = false
         window.hasShadow = true
         window.delegate = self
         window.contentView = NSHostingView(rootView: NotesView(
             store: store,
             dictation: dictation,
-            summarizer: summarizer,
-            formatter: formatter,
             presentation: presentation,
             dockLeft: { [weak self] in self?.dock(.left) },
             dockRight: { [weak self] in self?.dock(.right) },
@@ -237,7 +216,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if presentation.mode == .workspace {
             rememberWorkspaceFrame(window.frame)
         }
-        store.closeFormatterWorkspace()
         if store.selectedNote == nil { store.selectMostRecentNote() }
         applyPresentationMode(edge == .left ? .dockedLeft : .dockedRight, to: window, animated: true)
         window.makeKeyAndOrderFront(nil)
@@ -364,8 +342,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 private struct NotesView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var dictation: NoteDictationService
-    @ObservedObject var summarizer: NoteSummaryService
-    @ObservedObject var formatter: FormatterWorkspaceModel
     @ObservedObject var presentation: NotesPresentationModel
     @ObservedObject private var settings = SettingsStore.shared
     let dockLeft: () -> Void
@@ -429,22 +405,6 @@ private struct NotesView: View {
         } message: {
             Text("This permanently removes the selected local note.")
         }
-        .sheet(isPresented: Binding(
-            get: { summarizer.proposal != nil },
-            set: { if !$0 { summarizer.dismissProposal() } }
-        )) {
-            if let proposal = summarizer.proposal {
-                SummaryReviewView(
-                    proposal: proposal,
-                    insert: {
-                        store.insertSummary(proposal.markdown, into: proposal.noteID)
-                        summarizer.dismissProposal()
-                    },
-                    copy: summarizer.copyProposal,
-                    close: summarizer.dismissProposal
-                )
-            }
-        }
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
     }
@@ -453,7 +413,7 @@ private struct NotesView: View {
         HStack(spacing: 10) {
             HStack(spacing: 8) {
                 ZStack {
-                    Circle()
+                    PrismaticPanelShape(cut: 7)
                         .fill(LinearGradient(
                             colors: [settings.accentTheme.primary, settings.accentTheme.secondary],
                             startPoint: .topLeading,
@@ -532,9 +492,6 @@ private struct NotesView: View {
                 .help("New Note (Command-N)")
                 .keyboardShortcut("n", modifiers: .command)
 
-                NotesChromeButton(symbol: "curlybraces.square", label: "Open Temporary Formatter") {
-                    store.openFormatterWorkspace()
-                }
             }
             .padding(10)
 
@@ -542,15 +499,6 @@ private struct NotesView: View {
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 5) {
-                if store.formatterWorkspaceOpen && matchesFormatterSearch {
-                    Button { store.selectedNoteID = NotesStore.formatterWorkspaceID } label: {
-                        formatterRow
-                            .padding(.horizontal, 8)
-                            .liquidGlass(cornerRadius: 11, depth: .raised, selected: store.isFormatterSelected, accentOpacity: 0)
-                    }
-                    .buttonStyle(.plain)
-                }
-
                 if !pinnedNotes.isEmpty {
                     sidebarSectionLabel("Pinned")
                         .padding(.horizontal, 8)
@@ -635,7 +583,7 @@ private struct NotesView: View {
                 }
                 .padding(.horizontal, 8)
                 .frame(width: 116, height: 28)
-                .background(RoundedRectangle(cornerRadius: 7).fill(Color.primary.opacity(0.055)))
+                .background(PrismaticPanelShape(cut: 5).fill(Color.primary.opacity(0.055)))
 
                 NotesChromeButton(symbol: "plus", label: "New Quick Note") { store.createNote() }
                     .keyboardShortcut("n", modifiers: .command)
@@ -656,7 +604,7 @@ private struct NotesView: View {
                                     .lineLimit(1)
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 5)
-                                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                                    .background(PrismaticPanelShape(cut: 4).fill(Color.accentColor.opacity(0.12)))
                             }
                             .buttonStyle(.plain)
                         }
@@ -674,9 +622,7 @@ private struct NotesView: View {
 
     @ViewBuilder
     private var editor: some View {
-        if store.isFormatterSelected {
-            FormatterWorkspaceView(model: formatter)
-        } else if let note = store.selectedNote {
+        if let note = store.selectedNote {
             VStack(spacing: 0) {
                 editorHeader(note)
                 GlassHairline()
@@ -753,8 +699,8 @@ private struct NotesView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(Color.white.opacity(0.24), lineWidth: 0.6))
+                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
+                    .overlay(PrismaticPanelShape(cut: 6).stroke(Color.white.opacity(0.24), lineWidth: 0.6))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 30)
@@ -795,11 +741,11 @@ private struct NotesView: View {
         VStack(spacing: 0) {
             if let status = activeStatus {
                 HStack(spacing: 7) {
-                    if summarizer.isSummarizing || dictation.phase == .transcribing || dictation.phase == .requestingPermission {
+                    if dictation.phase == .transcribing || dictation.phase == .requestingPermission {
                         ProgressView().controlSize(.small)
                     } else {
                         Circle()
-                            .fill((store.lastError ?? dictation.lastError ?? summarizer.lastError) == nil ? Color.accentColor : Color.orange)
+                            .fill((store.lastError ?? dictation.lastError) == nil ? Color.accentColor : Color.orange)
                             .frame(width: 6, height: 6)
                     }
                     Text(status).lineLimit(1)
@@ -860,42 +806,12 @@ private struct NotesView: View {
 
                 Spacer(minLength: 5)
 
-                summaryControl(note, compact: presentation.mode.isDocked)
                 dictationControl(compact: presentation.mode.isDocked)
             }
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
         .background(.ultraThinMaterial)
-    }
-
-    @ViewBuilder
-    private func summaryControl(_ note: MarkdownNote, compact: Bool) -> some View {
-        if summarizer.isSummarizing {
-            Button(action: summarizer.cancel) {
-                if compact {
-                    Image(systemName: "xmark.circle.fill").frame(width: 28, height: 26)
-                } else {
-                    Label("Cancel Summary", systemImage: "xmark.circle.fill")
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        } else {
-            Button {
-                summarizer.summarize(note)
-            } label: {
-                if compact {
-                    Image(systemName: "sparkles").frame(width: 28, height: 26)
-                } else {
-                    Label("Summarize", systemImage: "sparkles")
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(dictation.phase != .idle || note.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help("Summarize this note locally with the selected Qwen model")
-        }
     }
 
     @ViewBuilder
@@ -920,44 +836,14 @@ private struct NotesView: View {
         .disabled(
             dictation.phase == .requestingPermission
                 || dictation.phase == .transcribing
-                || summarizer.isSummarizing
         )
         .help("Record into this note; Stop finishes any remaining transcription")
     }
 
     private var activeStatus: String? {
-        if let error = store.lastError ?? dictation.lastError ?? summarizer.lastError { return error }
-        if summarizer.isSummarizing { return summarizer.progressText ?? "Summarizing locally with Qwen…" }
+        if let error = store.lastError ?? dictation.lastError { return error }
         if dictation.phase != .idle { return dictation.statusText }
         return nil
-    }
-
-    private var matchesFormatterSearch: Bool {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return query.isEmpty || "formatter edi json xml temporary".contains(query)
-    }
-
-    private var formatterRow: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7).fill(Color.orange.opacity(0.13))
-                Image(systemName: "curlybraces.square.fill").foregroundStyle(.orange)
-            }
-            .frame(width: 30, height: 30)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Formatter Workspace").font(.subheadline.weight(.semibold))
-                Text("EDI · JSON · XML").font(.caption2).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Text("TEMP")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundStyle(.orange)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 3)
-                .background(Capsule().fill(Color.orange.opacity(0.12)))
-        }
-        .padding(.vertical, 5)
-        .accessibilityLabel("Formatter Workspace, temporary EDI JSON and XML note")
     }
 
     private func noteSelectionButton(_ note: MarkdownNote) -> some View {
@@ -1047,19 +933,19 @@ private struct NoteListRow: View {
         .background {
             if selected {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: 11, style: .continuous).fill(Color.accentColor.opacity(0.09))
+                    PrismaticPanelShape(cut: 6).fill(.ultraThinMaterial)
+                    PrismaticPanelShape(cut: 6).fill(Color.accentColor.opacity(0.09))
                 }
             }
         }
         .overlay {
             if selected {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                PrismaticPanelShape(cut: 6)
                     .strokeBorder(Color.white.opacity(0.38), lineWidth: 0.7)
             }
         }
         .shadow(color: selected ? Color.accentColor.opacity(0.10) : .clear, radius: 8, y: 3)
-        .contentShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .contentShape(PrismaticPanelShape(cut: 6))
     }
 
     private func relativeTimestamp(_ date: Date) -> String {
@@ -1087,76 +973,5 @@ private struct MarkdownInsertButton: View {
         .contentShape(Rectangle())
         .help(help)
         .accessibilityLabel(help)
-    }
-}
-
-private struct SummaryReviewView: View {
-    let proposal: NoteSummaryProposal
-    let insert: () -> Void
-    let copy: () -> Void
-    let close: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 12) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 10)
-                        .fill(LinearGradient(
-                            colors: [Color.accentColor, Color.purple],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 38, height: 38)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Local Summary").font(.title3.bold())
-                    Text(proposal.noteTitle).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                Text("QWEN · LOCAL")
-                    .font(.system(size: 9, weight: .bold))
-                    .tracking(0.7)
-                    .foregroundStyle(Color.accentColor)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Capsule().fill(Color.accentColor.opacity(0.1)))
-                NotesChromeButton(symbol: "xmark", label: "Close Summary", action: close)
-            }
-            .padding(16)
-            .background(Color.accentColor.opacity(0.04))
-            Divider()
-            ScrollView {
-                renderedSummary
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    .padding(24)
-            }
-            .textSelection(.enabled)
-            Divider()
-            HStack(spacing: 9) {
-                Image(systemName: "lock.fill")
-                Text("Generated on this Mac · review before inserting")
-                Spacer()
-                Button("Copy Markdown", action: copy)
-                Button("Insert at Top", action: insert)
-                    .buttonStyle(.borderedProminent)
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(14)
-        }
-        .frame(width: 680, height: 520)
-    }
-
-    private var renderedSummary: Text {
-        if let attributed = try? AttributedString(
-            markdown: proposal.markdown,
-            options: .init(interpretedSyntax: .full)
-        ) {
-            return Text(attributed)
-        }
-        return Text(proposal.markdown)
     }
 }

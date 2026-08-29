@@ -1,33 +1,6 @@
 import AppKit
 import Foundation
 
-public enum WritingProvider: String, CaseIterable, Identifiable, Sendable {
-    case harper
-    case coeditInt8
-    case qwen3Deep
-
-    public var id: String { rawValue }
-
-    public var title: String {
-        switch self {
-        case .harper: return "Harper"
-        case .coeditInt8: return "T5-small CoEdit INT8"
-        case .qwen3Deep: return "Qwen3 1.7B Q8 (Deep)"
-        }
-    }
-
-    public var detail: String {
-        switch self {
-        case .harper:
-            return "Fast rule-based grammar and spelling suggestions with detailed explanations."
-        case .coeditInt8:
-            return "A local 60.5M-parameter ONNX model that rewrites English text."
-        case .qwen3Deep:
-            return "A stronger 1.7B-parameter local proofreader. It loads only for a check, follows the CPU limit in Settings → Performance, has a time limit, and exits immediately afterward."
-        }
-    }
-}
-
 public struct WritingIssue: Identifiable, Equatable, Sendable {
     public enum Kind: String, Equatable, Sendable {
         case spelling = "Spelling"
@@ -87,32 +60,6 @@ public final class WritingCheckService {
 
     public init() {}
 
-    public func check(_ text: String) throws -> WritingReview {
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw CheckError.emptyText
-        }
-        guard text.count <= characterLimit else { throw CheckError.textTooLong(characterLimit) }
-
-        let checker = NSSpellChecker.shared
-        let documentTag = NSSpellChecker.uniqueSpellDocumentTag()
-        let language = checker.userPreferredLanguages.first ?? checker.availableLanguages.first
-        defer { checker.closeSpellDocument(withTag: documentTag) }
-
-        let source = text as NSString
-        var issues = spellingIssues(in: text, source: source, checker: checker, documentTag: documentTag, language: language)
-        issues.append(contentsOf: grammarIssues(in: text, source: source, checker: checker, documentTag: documentTag, language: language))
-        issues.sort {
-            if $0.range.location == $1.range.location { return $0.kind.rawValue < $1.kind.rawValue }
-            return $0.range.location < $1.range.location
-        }
-
-        return WritingReview(
-            sourceText: text,
-            suggestedText: applyingSuggestions(to: text, issues: issues),
-            issues: issues
-        )
-    }
-
     public func review(sourceText: String, harperJSON: Data) throws -> WritingReview {
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CheckError.emptyText
@@ -159,7 +106,7 @@ public final class WritingCheckService {
     public func review(
         sourceText: String,
         rewrittenText: String,
-        providerTitle: String = "Local rewrite model"
+        engineTitle: String = "local writing checker"
     ) throws -> WritingReview {
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CheckError.emptyText
@@ -175,13 +122,13 @@ public final class WritingCheckService {
             kind: .grammar,
             range: difference.sourceRange,
             original: difference.original.isEmpty ? "Insertion" : difference.original,
-            message: "Suggested rewrite from \(providerTitle)",
+            message: "Suggested correction from \(engineTitle)",
             suggestions: [difference.replacement]
         )
         return WritingReview(sourceText: sourceText, suggestedText: rewritten, issues: [issue])
     }
 
-    public func normalizeModelRewrite(_ text: String) -> String {
+    public func normalizeRewrite(_ text: String) -> String {
         var result = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if result.hasPrefix("<CORRECTED>"), result.hasSuffix("</CORRECTED>") {
             result.removeFirst("<CORRECTED>".count)
@@ -209,11 +156,9 @@ public final class WritingCheckService {
         return result
     }
 
-    /// Gives every local provider the same spelling and punctuation quality floor.
-    /// This deliberately handles only high-confidence transformations; the selected
-    /// provider remains responsible for the broader rewrite.
+    /// Gives the local rule pipeline a final high-confidence punctuation pass.
     public func normalizeProofreadRewrite(_ text: String) -> String {
-        var result = normalizeModelRewrite(text)
+        var result = normalizeRewrite(text)
         result = replacing(
             #"\bwhere\s+(you|we|they)\s+([\p{L}'’-]+ing)\b"#,
             in: result,
@@ -244,95 +189,6 @@ public final class WritingCheckService {
         let leading = source.prefix { $0.isWhitespace }
         let trailing = source.reversed().prefix { $0.isWhitespace }.reversed()
         return String(leading) + corrected + String(trailing)
-    }
-
-    private func spellingIssues(
-        in text: String,
-        source: NSString,
-        checker: NSSpellChecker,
-        documentTag: Int,
-        language: String?
-    ) -> [WritingIssue] {
-        var issues: [WritingIssue] = []
-        var offset = 0
-
-        while offset < source.length {
-            var wordCount = 0
-            let range = checker.checkSpelling(
-                of: text,
-                startingAt: offset,
-                language: language,
-                wrap: false,
-                inSpellDocumentWithTag: documentTag,
-                wordCount: &wordCount
-            )
-            guard range.location != NSNotFound, range.length > 0, NSMaxRange(range) <= source.length else { break }
-            let word = source.substring(with: range)
-            let suggestions = Array((checker.guesses(
-                forWordRange: range,
-                in: text,
-                language: language,
-                inSpellDocumentWithTag: documentTag
-            ) ?? []).prefix(5))
-            issues.append(WritingIssue(
-                kind: .spelling,
-                range: range,
-                original: word,
-                message: "Possible misspelling",
-                suggestions: suggestions
-            ))
-            offset = max(offset + 1, NSMaxRange(range))
-        }
-        return issues
-    }
-
-    private func grammarIssues(
-        in text: String,
-        source: NSString,
-        checker: NSSpellChecker,
-        documentTag: Int,
-        language: String?
-    ) -> [WritingIssue] {
-        var issues: [WritingIssue] = []
-        var offset = 0
-
-        while offset < source.length {
-            var rawDetails: NSArray?
-            let sentenceRange = checker.checkGrammar(
-                of: text,
-                startingAt: offset,
-                language: language,
-                wrap: false,
-                inSpellDocumentWithTag: documentTag,
-                details: &rawDetails
-            )
-            guard sentenceRange.location != NSNotFound,
-                  sentenceRange.length > 0,
-                  NSMaxRange(sentenceRange) <= source.length else { break }
-
-            let details = rawDetails as? [[String: Any]] ?? []
-            for detail in details {
-                let relativeRange = (detail[NSGrammarRange] as? NSValue)?.rangeValue
-                    ?? NSRange(location: 0, length: sentenceRange.length)
-                let range = NSRange(
-                    location: sentenceRange.location + relativeRange.location,
-                    length: relativeRange.length
-                )
-                guard range.location >= 0, range.length > 0, NSMaxRange(range) <= source.length else { continue }
-                let original = source.substring(with: range)
-                let message = detail[NSGrammarUserDescription] as? String ?? "Possible grammar issue"
-                let corrections = Array((detail[NSGrammarCorrections] as? [String] ?? []).prefix(5))
-                issues.append(WritingIssue(
-                    kind: .grammar,
-                    range: range,
-                    original: original,
-                    message: message,
-                    suggestions: corrections
-                ))
-            }
-            offset = max(offset + 1, NSMaxRange(sentenceRange))
-        }
-        return issues
     }
 
     func applyingSuggestions(to text: String, issues: [WritingIssue]) -> String {

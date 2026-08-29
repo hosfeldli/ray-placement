@@ -1,6 +1,5 @@
 import Foundation
 import RayPlacementCore
-import RayPlacementWriting
 import ServiceManagement
 
 enum PerformanceScale: String, CaseIterable, Identifiable {
@@ -76,17 +75,6 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
         }
     }
 
-    var summaryTokenLimit: Int {
-        switch self {
-        case .eco: return 256
-        case .balanced: return 384
-        case .high: return 512
-        case .turbo: return 768
-        case .maximum: return 1_024
-        case .unbounded: return 2_048
-        }
-    }
-
     var dictationMaximumDuration: TimeInterval {
         // Performance controls CPU use, not how much of a meeting may be saved.
         MeetingDictationPlan.maximumDuration
@@ -116,33 +104,6 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
     }
 }
 
-enum AIComputeMode: String, CaseIterable, Identifiable {
-    case automatic
-    case metal
-    case cpu
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .automatic: return "Auto · Metal with CPU fallback"
-        case .metal: return "Apple GPU · Metal"
-        case .cpu: return "CPU only"
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .automatic:
-            return "Uses the Apple GPU when available and retries safely on the CPU if Metal cannot start."
-        case .metal:
-            return "Offloads all supported model layers to the Apple GPU for the lowest latency."
-        case .cpu:
-            return "Keeps local AI on CPU cores. Slower, but useful when GPU memory is constrained."
-        }
-    }
-}
-
 enum DictationEngine: String, CaseIterable, Identifiable {
     case localWhisper
     case appleSpeech
@@ -166,6 +127,21 @@ enum DictationEngine: String, CaseIterable, Identifiable {
     }
 }
 
+enum DictationComputeMode: String, CaseIterable, Identifiable {
+    case automatic
+    case metal
+    case cpu
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .automatic: return "Automatic · Metal with CPU fallback"
+        case .metal: return "Apple GPU · Metal"
+        case .cpu: return "CPU only"
+        }
+    }
+}
+
 enum ApplicationPaths {
     static let applicationSupport: URL = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -179,7 +155,6 @@ enum ApplicationPaths {
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
     static let failedDictations = applicationSupport.appendingPathComponent("Failed Dictations", isDirectory: true)
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
-    static let models = applicationSupport.appendingPathComponent("Models", isDirectory: true)
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
     static let usageLog = usage.appendingPathComponent("usage-log.json")
 
@@ -188,7 +163,6 @@ enum ApplicationPaths {
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: failedDictations, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: models, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
     }
 }
@@ -210,6 +184,10 @@ final class SettingsStore: ObservableObject {
         static let notesDockLeftHotkeyEnabled = "notesDockLeftHotkeyEnabled"
         static let notesDockRightShortcut = "notesDockRightShortcut"
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
+        static let terminalShortcut = "terminalShortcut"
+        static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
+        static let sqlShortcut = "sqlShortcut"
+        static let sqlHotkeyEnabled = "sqlHotkeyEnabled"
         static let accentTheme = "accentTheme"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
@@ -218,25 +196,20 @@ final class SettingsStore: ObservableObject {
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
         static let extensionEnabledOverrides = "extensionEnabledOverrides"
         static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
-        static let writingProvider = "writingProvider"
         static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
-        static let dictationTranscribeWhileRecording = "dictationTranscribeWhileRecording"
+        static let dictationComputeMode = "dictationComputeMode"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
-        static let aiComputeMode = "aiComputeMode"
-        static let writingModel = "writingModel"
-        static let summaryModel = "summaryModel"
-        static let formatterModel = "formatterModel"
     }
 
     private let defaults = UserDefaults.standard
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
-    static let defaultWritingInstructions = "Preserve names, product terms, acronyms, Markdown, and intentional capitalization. Use clear, concise, professional English."
+    static let defaultWritingInstructions = "RayPlacement\nVS Code\nPostman\nEDI"
 
     @Published var activationShortcut: String {
         didSet {
@@ -330,6 +303,22 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var terminalShortcut: String {
+        didSet { defaults.set(terminalShortcut, forKey: Key.terminalShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
+    }
+
+    @Published var terminalHotkeyEnabled: Bool {
+        didSet { defaults.set(terminalHotkeyEnabled, forKey: Key.terminalHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
+    }
+
+    @Published var sqlShortcut: String {
+        didSet { defaults.set(sqlShortcut, forKey: Key.sqlShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
+    }
+
+    @Published var sqlHotkeyEnabled: Bool {
+        didSet { defaults.set(sqlHotkeyEnabled, forKey: Key.sqlHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
+    }
+
     @Published var accentTheme: AppAccentTheme {
         didSet {
             defaults.set(accentTheme.rawValue, forKey: Key.accentTheme)
@@ -356,10 +345,6 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(showInDock, forKey: Key.showInDock) }
     }
 
-    @Published var writingProvider: WritingProvider {
-        didSet { defaults.set(writingProvider.rawValue, forKey: Key.writingProvider) }
-    }
-
     @Published var writingInstructions: String {
         didSet {
             if writingInstructions.count > 4_000 {
@@ -382,8 +367,8 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dictationEngine.rawValue, forKey: Key.dictationEngine) }
     }
 
-    @Published var dictationTranscribeWhileRecording: Bool {
-        didSet { defaults.set(dictationTranscribeWhileRecording, forKey: Key.dictationTranscribeWhileRecording) }
+    @Published var dictationComputeMode: DictationComputeMode {
+        didSet { defaults.set(dictationComputeMode.rawValue, forKey: Key.dictationComputeMode) }
     }
 
     @Published var extensionPerformance: PerformanceScale {
@@ -392,22 +377,6 @@ final class SettingsStore: ObservableObject {
 
     @Published var dynamicPerformance: Bool {
         didSet { defaults.set(dynamicPerformance, forKey: Key.dynamicPerformance) }
-    }
-
-    @Published var aiComputeMode: AIComputeMode {
-        didSet { defaults.set(aiComputeMode.rawValue, forKey: Key.aiComputeMode) }
-    }
-
-    @Published var writingModel: LocalModelID {
-        didSet { defaults.set(writingModel.rawValue, forKey: Key.writingModel) }
-    }
-
-    @Published var summaryModel: LocalModelID {
-        didSet { defaults.set(summaryModel.rawValue, forKey: Key.summaryModel) }
-    }
-
-    @Published var formatterModel: LocalModelID {
-        didSet { defaults.set(formatterModel.rawValue, forKey: Key.formatterModel) }
     }
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
@@ -430,23 +399,22 @@ final class SettingsStore: ObservableObject {
         notesDockLeftHotkeyEnabled = defaults.object(forKey: Key.notesDockLeftHotkeyEnabled) as? Bool ?? false
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
+        terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
+        terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
+        sqlShortcut = defaults.string(forKey: Key.sqlShortcut) ?? "control+option+s"
+        sqlHotkeyEnabled = defaults.object(forKey: Key.sqlHotkeyEnabled) as? Bool ?? false
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
         showInDock = defaults.bool(forKey: Key.showInDock)
-        writingProvider = .qwen3Deep
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
-        dictationTranscribeWhileRecording = defaults.object(forKey: Key.dictationTranscribeWhileRecording) as? Bool ?? false
+        dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
-        aiComputeMode = AIComputeMode(rawValue: defaults.string(forKey: Key.aiComputeMode) ?? "") ?? .automatic
-        writingModel = LocalModelID(rawValue: defaults.string(forKey: Key.writingModel) ?? "") ?? .qwen3Balanced
-        summaryModel = LocalModelID(rawValue: defaults.string(forKey: Key.summaryModel) ?? "") ?? .qwen3Balanced
-        formatterModel = LocalModelID(rawValue: defaults.string(forKey: Key.formatterModel) ?? "") ?? .qwen3Balanced
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
         extensionHotkeyEnabledOverrides = defaults.dictionary(forKey: Key.extensionHotkeyEnabledOverrides) as? [String: Bool] ?? [:]
@@ -479,16 +447,6 @@ final class SettingsStore: ObservableObject {
         @unknown default:
             return "Beta Dynamic is using a conservative active level."
         }
-    }
-
-    func selectedModel(for task: LocalModelTask) -> LocalModelID {
-        let selected: LocalModelID
-        switch task {
-        case .writing: selected = writingModel
-        case .summary: selected = summaryModel
-        case .formatter: selected = formatterModel
-        }
-        return LocalModelCatalog.isInstalled(selected) ? selected : .qwen3Balanced
     }
 
     private func resolvedPerformance(cappedAt cap: PerformanceScale) -> PerformanceScale {
@@ -576,6 +534,9 @@ final class SettingsStore: ObservableObject {
         notesDockRightShortcut = shortcut
         isRestoringActionShortcut = false
     }
+
+    func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
+    func restoreSQLShortcut(_ shortcut: String) { isRestoringActionShortcut = true; sqlShortcut = shortcut; isRestoringActionShortcut = false }
 
     func resetWritingInstructions() {
         writingInstructions = Self.defaultWritingInstructions

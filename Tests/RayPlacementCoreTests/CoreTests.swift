@@ -7,6 +7,42 @@ import Testing
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
 }
 
+@Test func visualSQLBuildsForeignKeyJoin() {
+    let join = SQLJoinSuggestion(
+        name: "fk_order_customer",
+        fromTable: "ops.orders",
+        fromColumn: "customer_id",
+        toTable: "ops.customers",
+        toColumn: "id"
+    )
+    let query = SQLVisualQuery(
+        tables: ["ops.orders", "ops.customers"],
+        projections: ["ops.orders.*", "ops.customers.name"],
+        joins: [join],
+        predicate: "ops.orders.status = 'OPEN'",
+        limit: 50
+    )
+    let sql = query.sql(for: .mysql)
+    #expect(sql.contains("JOIN ops.customers ON ops.orders.customer_id = ops.customers.id"))
+    #expect(sql.contains("WHERE ops.orders.status = 'OPEN'"))
+    #expect(sql.contains("LIMIT 50"))
+}
+
+@Test func schemaReturnsOnlyCompatibleForeignKeyJoins() {
+    let key = SQLForeignKey(
+        name: "fk_order_customer",
+        sourceTable: "ops.orders",
+        sourceColumn: "customer_id",
+        destinationTable: "ops.customers",
+        destinationColumn: "id"
+    )
+    let snapshot = SQLSchemaSnapshot(profileID: UUID(), foreignKeys: [key])
+    let joins = snapshot.joins(for: ["ops.orders"])
+    #expect(joins.count == 1)
+    #expect(joins.first?.toTable == "ops.customers")
+    #expect(snapshot.joins(for: ["ops.orders", "ops.customers"]).isEmpty)
+}
+
 @Test func calculatorPrecedenceAndParentheses() throws {
     #expect(try Calculator.evaluate("2 + 3 * 4") == 14)
     #expect(try Calculator.evaluate("(2 + 3) * 4") == 20)
@@ -86,6 +122,39 @@ import Testing
     #expect(ExtensionTemplate.render("{{method}} {{url}}", values: ["method": "GET", "url": "https://example.com"]) == "GET https://example.com")
 }
 
+@Test func dynamicFormFieldsDecodeConditionalLayout() throws {
+    let data = #"""
+    {
+      "schemaVersion": 2,
+      "id": "local.dynamic",
+      "name": "Dynamic",
+      "commands": [{
+        "id": "flow",
+        "title": "Flow",
+        "action": {
+          "type": "form",
+          "value": "",
+          "form": {
+            "fields": [
+              { "id": "mode", "label": "Mode", "type": "picker", "options": ["Simple", "Advanced"] },
+              { "id": "path", "label": "Folder", "type": "directory", "section": "Input", "visibleWhen": { "field": "mode", "equals": "Advanced" } },
+              { "id": "headers", "label": "Headers", "type": "keyValue", "helpText": "One pair per line" },
+              { "id": "workers", "label": "Workers", "type": "slider", "minimum": 1, "maximum": 12 }
+            ],
+            "execution": { "type": "shell", "executable": "/usr/bin/true" }
+          }
+        }
+      }]
+    }
+    """#.data(using: .utf8)!
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    let fields = try #require(manifest.commands.first?.action.form?.fields)
+    #expect(fields.map(\.type) == [.picker, .directory, .keyValue, .slider])
+    #expect(fields[1].visibleWhen?.field == "mode")
+    #expect(fields[1].visibleWhen?.equals == "Advanced")
+    #expect(fields[3].maximum == 12)
+}
+
 @Test func writingToolsManifestDecodes() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -97,16 +166,27 @@ import Testing
     #expect(manifest.commands.map(\.action.type) == [.pastePlainText, .checkWriting])
 }
 
-@Test func vscodeDirectoriesManifestDecodes() throws {
+@Test func securityToolsManifestDecodes() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/security-tools/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.id == "local.security-tools")
+    #expect(manifest.commands.map(\.action.type) == [.openPasswordGenerator])
+}
+
+@Test func focusedFileLauncherManifestDecodes() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
     let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/vscode-directories/manifest.json"))
     let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.vscode-directories")
+    #expect(manifest.id == "local.focused-file-launcher")
     #expect(manifest.commands.count == 1)
-    #expect(manifest.commands.first?.action.type == .openInVSCode)
+    #expect(manifest.commands.first?.action.type == .openFocusedFileLauncher)
     #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
 }
 
@@ -263,14 +343,6 @@ import Testing
     #expect(MeetingDictationPlan.localWhisperSegmentDuration == 60)
     #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 45)
     #expect(MeetingDictationPlan.maximumDuration >= 60 * 60)
-}
-
-@Test func noteSummaryPlanPreservesAllTextWithinBoundedChunks() {
-    let source = String(repeating: "alpha ", count: 1_300) + "\n\nDecision: ship Friday."
-    let chunks = NoteSummaryPlan.chunks(source)
-    #expect(chunks.count == 3)
-    #expect(chunks.allSatisfy { $0.count <= NoteSummaryPlan.maximumChunkCharacters })
-    #expect(chunks.joined().replacingOccurrences(of: "\n\n", with: "") == source.replacingOccurrences(of: "\n\n", with: ""))
 }
 
 @Test func documentFormatterPrettyPrintsAndInspectsJSON() throws {

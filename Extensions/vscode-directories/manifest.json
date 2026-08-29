@@ -1,18 +1,18 @@
 {
   "schemaVersion": 1,
-  "id": "local.vscode-directories",
-  "name": "VS Code Directories",
-  "version": "2.0.0",
-  "description": "Search for any file or directory and open it in Visual Studio Code",
+  "id": "local.focused-file-launcher",
+  "name": "Focused File Launcher",
+  "version": "1.0.0",
+  "description": "Choose a file or folder with Finder, then launch it in the app you choose.",
   "commands": [
     {
       "id": "open-file-or-directory",
-      "title": "Open File or Directory in VS Code",
-      "subtitle": "Search Spotlight, then choose what to open",
-      "keywords": ["code", "folder", "directory", "file", "project", "workspace"],
-      "icon": "chevron.left.forwardslash.chevron.right",
+      "title": "Focused File Launcher",
+      "subtitle": "Choose in Finder, then open with any installed app",
+      "keywords": ["finder", "open with", "folder", "directory", "file", "project", "workspace", "application"],
+      "icon": "folder.badge.gearshape",
       "action": {
-        "type": "openInVSCode",
+        "type": "openFocusedFileLauncher",
         "value": ""
       }
     }

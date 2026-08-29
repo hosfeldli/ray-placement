@@ -17,10 +17,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let toast = ActionToastController()
     private let extensionExecutor = ExtensionExecutor()
     private lazy var extensionFormWindow = ExtensionFormWindowController()
-    private let writingRunner = WritingProviderRunner()
-    private lazy var notesWindow = NotesWindowController()
+    private let writingChecker = RuleBasedWritingChecker()
+    // The activity shelf also hosts lightweight Apple Music controls, so it is
+    // available from launch rather than only after Notes has been opened once.
+    private let notesWindow = NotesWindowController()
     private lazy var terminalWindow = DeveloperTerminalWindowController()
     private lazy var endpointTesterWindow = EndpointTesterWindowController()
+    private lazy var sqlWorkspaceWindow = SQLWorkspaceWindowController()
+    private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
+    private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
+    private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
+    private lazy var formatterWindow = FormatterWindowController()
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -41,7 +48,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
-        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 704, height: 486))
+        self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
 
@@ -75,12 +82,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func shutdown() {
         extensionExecutor.cancelAll()
-        writingRunner.cancel()
+        writingChecker.cancel()
         toast.dismiss()
         clipboard.flush()
         notesWindow.shutdown()
         terminalWindow.shutdown()
         endpointTesterWindow.shutdown()
+        sqlWorkspaceWindow.shutdown()
+        formatterWindow.shutdown()
     }
 
     func showSettings() {
@@ -113,6 +122,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.presentMostRecentAndToggleDictation()
     }
 
+    func showDeveloperTerminal() { hide(); terminalWindow.present() }
+    func showSQLWorkspace() { hide(); sqlWorkspaceWindow.present() }
+    func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
+
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
         sourceApplication: NSRunningApplication? = nil
@@ -140,9 +153,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .revealFile(let url):
             hide()
             NSWorkspace.shared.activateFileViewerSelecting([url])
-
-        case .openInVSCode(let url):
-            openInVSCode(url, title: item.title)
 
         case .copyText(let text):
             clipboard.copy(text)
@@ -281,12 +291,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
             let controlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
+            if self.viewModel.mode == .emojiPicker {
+                if event.keyCode == 123 {
+                    self.viewModel.moveSelection(by: -1)
+                    return nil
+                }
+                if event.keyCode == 124 {
+                    self.viewModel.moveSelection(by: 1)
+                    return nil
+                }
+            }
             if event.keyCode == 125 || (controlOnly && characters == "n") {
-                self.viewModel.moveSelection(by: 1)
+                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? 12 : 1)
                 return nil
             }
             if event.keyCode == 126 || (controlOnly && characters == "p") {
-                self.viewModel.moveSelection(by: -1)
+                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? -12 : -1)
                 return nil
             }
             if event.keyCode == 36 || event.keyCode == 76 {
@@ -300,7 +320,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if event.keyCode == 53 {
                 if case .output(_, _, .running(let canCancel)) = self.viewModel.mode, canCancel {
                     self.extensionExecutor.cancelAll()
-                    self.writingRunner.cancel()
+                    self.writingChecker.cancel()
                     self.writingTaskID = nil
                 }
                 self.viewModel.handleEscape()
@@ -349,9 +369,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.pasteIntoPreviousApplication()
                 } else if output == "__CHECK_WRITING__" {
                     self.performWritingCheck()
-                } else if output == "__OPEN_IN_VSCODE__" {
-                    self.viewModel.enter(.vscodePicker)
-                    if !self.panel.isVisible { self.presentPanel() }
+                } else if output == "__OPEN_FOCUSED_FILE_LAUNCHER__" {
+                    self.focusedFileLauncherWindow.present()
                 } else if output == "__CONVERT_TIMEZONES__" {
                     self.viewModel.enter(.timezoneConverter)
                     if !self.panel.isVisible { self.presentPanel() }
@@ -361,10 +380,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 } else if output == "__FORCE_QUIT_ALL_APPLICATIONS__" {
                     self.confirmForceQuitAllApplications()
                 } else if output == "__OPEN_FORMATTER_WORKSPACE__" {
-                    self.notesWindow.presentFormatterWorkspace()
+                    self.formatterWindow.present()
                 } else if output == "__OPEN_EMOJI_PICKER__" {
                     self.viewModel.enter(.emojiPicker)
                     if !self.panel.isVisible { self.presentPanel() }
+                } else if output == "__OPEN_PASSWORD_GENERATOR__" {
+                    self.passwordGeneratorWindow.present()
+                } else if output == "__OPEN_EXTENSION_DEVELOPMENT__" {
+                    self.extensionDevelopmentWindow.present()
                 } else if let output {
                     if runsInBackground {
                         self.toast.show("\(command.command.title) completed", style: .success)
@@ -406,6 +429,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication) {
+        let retainedAccessibilityContext = selectedTextContext.flatMap { context in
+            context.processIdentifier == application.processIdentifier ? context : nil
+        }
         toast.show("Reading the highlight with Copy…", style: .working, duration: 4)
         KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
             guard let self else { return }
@@ -413,7 +439,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             case .success(let capture):
                 self.previousApplication = application
                 self.lastExternalApplication = application
-                self.selectedTextContext = nil
+                // Preserve the stronger AX range when Copy and Accessibility
+                // agree. Keyboard capture remains available as a fallback.
+                self.selectedTextContext = retainedAccessibilityContext?.text == capture.text
+                    ? retainedAccessibilityContext
+                    : nil
                 self.keyboardSelectionContext = capture
                 self.showWritingReview(for: capture.text)
             case .failure(let keyboardError):
@@ -470,13 +500,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func showWritingReview(for text: String) {
-        let provider = WritingProvider.qwen3Deep
-        let modelTitle = LocalModelCatalog.descriptor(SettingsStore.shared.selectedModel(for: .writing)).title
         let taskID = UUID()
         writingTaskID = taskID
         hide()
-        toast.show("Correcting \(text.count) characters with \(modelTitle)…", style: .working, duration: 3_600)
-        writingRunner.check(text, provider: provider, progress: { [weak self] message in
+        toast.show("Checking \(text.count) characters locally…", style: .working, duration: 3_600)
+        writingChecker.check(text, progress: { [weak self] message in
             guard let self, self.writingTaskID == taskID else { return }
             self.toast.show(message, style: .working, duration: 3_600)
         }) { [weak self] result in
@@ -577,7 +605,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.selectedTextContext = context
                 self.toast.show("Selection found · replacing text…", style: .working, duration: 10)
                 try SelectedTextService.replaceSelectedText(text, using: context)
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.18) { [weak self] in
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
                     self?.finishDirectReplacement(text, using: context, retryCount: 0)
                 }
             } catch SelectedTextService.SelectionError.replacementUnavailable {
@@ -605,7 +633,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     let refreshed = try SelectedTextService.reconnectedContext(using: context)
                     selectedTextContext = refreshed
                     try SelectedTextService.replaceSelectedText(text, using: refreshed)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
                         self?.finishDirectReplacement(text, using: refreshed, retryCount: 1)
                     }
                 } catch {
@@ -635,13 +663,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             presentError(title: "Replace Selected Text", message: "The source app is no longer running.")
             return
         }
-        clipboard.copy(text)
         toast.show("Returning to the source selection…", style: .working, duration: 5)
-        KeyboardSelectionService.paste(into: application) { [weak self] result in
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
             guard let self else { return }
             guard case .success = result else {
                 let detail: String
                 if case .failure(let error) = result { detail = error.localizedDescription } else { detail = "Unknown error." }
+                self.clipboard.copy(text)
                 self.presentError(
                     title: "Replace Selected Text",
                     message: "RayPlacement could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
@@ -651,7 +683,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             self.selectedTextContext = nil
             self.keyboardSelectionContext = nil
             self.focusedTextContext = nil
-            self.toast.show("Replaced the highlighted text")
+            self.toast.show("Correction pasted into the highlight")
         }
     }
 
@@ -662,29 +694,56 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         do {
             let refreshed = (try? SelectedTextService.reconnectedContext(using: context)) ?? context
             try SelectedTextService.restoreSelection(using: refreshed)
-            toast.show("Direct edit was unavailable · using a verified paste…", style: .working, duration: 8)
-            clipboard.copy(text)
+            toast.show("Direct edit was unavailable · pasting into the restored highlight…", style: .working, duration: 8)
             guard let application = NSRunningApplication(processIdentifier: refreshed.processIdentifier) else {
-                presentError(title: "Replace Selected Text", message: "The source app is no longer running. The corrected text is on the clipboard.")
+                clipboard.copy(text)
+                presentError(title: "Replace Selected Text", message: "The source app is no longer running. The correction is on the clipboard.")
                 return
             }
-            postPasteShortcut(into: application, successMessage: nil)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+            KeyboardSelectionService.paste(
+                text,
+                into: application,
+                clipboardHistory: clipboard
+            ) { [weak self] result in
                 guard let self else { return }
-                switch SelectedTextService.observeReplacement(text, using: refreshed) {
-                case .replaced, .changed, .unavailable:
-                    self.selectedTextContext = nil
-                    self.focusedTextContext = nil
-                    self.toast.show("Replaced the exact highlighted text")
-                case .originalStillPresent:
+                switch result {
+                case .success:
+                    self.finishPastedReplacement(text, using: refreshed, attempt: 0)
+                case .failure(let error):
+                    self.clipboard.copy(text)
                     self.presentError(
                         title: "Replace Selected Text",
-                        message: "The editor did not accept the replacement. The corrected text is on the clipboard, so you can paste it manually with Command-V."
+                        message: "Automatic paste was blocked. The correction is on the clipboard. \(error.localizedDescription)"
                     )
                 }
             }
         } catch {
             presentError(title: "Replace Selected Text", error: error)
+        }
+    }
+
+    private func finishPastedReplacement(
+        _ text: String,
+        using context: SelectedTextService.SelectionContext,
+        attempt: Int
+    ) {
+        switch SelectedTextService.observeReplacement(text, using: context) {
+        case .replaced, .changed, .unavailable:
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            toast.show("Replaced the exact highlighted text")
+        case .originalStillPresent where attempt < 5:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.finishPastedReplacement(text, using: context, attempt: attempt + 1)
+            }
+        case .originalStillPresent:
+            // Command-V was accepted, but some web editors keep stale AX text
+            // for seconds. Avoid a false failure or a destructive second paste.
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            toast.show("Replacement sent to the highlighted text", style: .success, duration: 2.4)
         }
     }
 
@@ -694,25 +753,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return try SelectedTextService.reconnectedContext(using: captured)
         }
         return try SelectedTextService.selectionContext(in: application.processIdentifier)
-    }
-
-    private func openInVSCode(_ url: URL, title: String) {
-        guard let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") else {
-            presentError(title: title, message: "Visual Studio Code is not installed or could not be found.")
-            return
-        }
-        hide()
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        NSWorkspace.shared.open(
-            [url],
-            withApplicationAt: applicationURL,
-            configuration: configuration
-        ) { [weak self] _, error in
-            if let error {
-                DispatchQueue.main.async { self?.presentError(title: title, error: error) }
-            }
-        }
     }
 
     private func confirmForceQuit(processIdentifier: Int32, name: String) {
@@ -841,8 +881,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             showNotesAndToggleDictation()
 
         case .openTerminal:
-            hide()
-            terminalWindow.present()
+            showDeveloperTerminal()
+
+        case .openSQLWorkspace:
+            showSQLWorkspace()
 
         case .openSettings:
             showSettings()

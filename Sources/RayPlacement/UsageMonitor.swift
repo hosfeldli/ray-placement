@@ -3,8 +3,6 @@ import Foundation
 
 enum UsageCategory: String, Codable, CaseIterable {
     case writing = "Writing"
-    case summary = "Summary"
-    case formatterAI = "Formatter AI"
     case dictation = "Dictation"
     case extensionCommand = "Extension"
 }
@@ -38,7 +36,7 @@ struct ActiveUsageTask: Identifiable, Hashable {
 struct UsageSummary {
     let completedToday: Int
     let failedToday: Int
-    let modelSecondsToday: TimeInterval
+    let processingSecondsToday: TimeInterval
     let inputCharactersToday: Int
     let outputCharactersToday: Int
 }
@@ -112,7 +110,7 @@ final class UsageMonitor: ObservableObject {
         return UsageSummary(
             completedToday: today.filter(\.succeeded).count,
             failedToday: today.filter { !$0.succeeded }.count,
-            modelSecondsToday: today.filter { $0.model != nil }.reduce(0) { $0 + $1.duration },
+            processingSecondsToday: today.reduce(0) { $0 + $1.duration },
             inputCharactersToday: today.reduce(0) { $0 + $1.inputCharacters },
             outputCharactersToday: today.reduce(0) { $0 + $1.outputCharacters }
         )

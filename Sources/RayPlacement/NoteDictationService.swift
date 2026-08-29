@@ -43,6 +43,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     @Published private(set) var audioLevel: Double = 0
     @Published private(set) var recordingElapsed: TimeInterval = 0
     @Published private(set) var destinationNoteTitle = "Current Note"
+    @Published private(set) var semiLiveSegmentCount = 0
     @Published private(set) var recoveryAudioURL: URL?
     @Published var lastError: String?
 
@@ -68,6 +69,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var currentChunkRetryCount = 0
     private var currentPartialTranscript = ""
     private var chunkTranscripts: [String] = []
+    private var deliveredTranscriptCount = 0
+    private var deliveredCharacterCount = 0
     private var skippedChunkCount = 0
     private var usageTaskID: UUID?
     private var recoveryDestinationNoteID: UUID?
@@ -165,7 +168,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         usageTaskID = UsageMonitor.shared.begin(
             category: .dictation,
             operation: "Retry saved meeting transcription",
-            model: activeEngine == .localWhisper ? "Whisper small.en" : "Apple on-device speech recognition",
+            model: activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
             performance: activePerformance ?? .eco
         )
         if activeEngine == .appleSpeech {
@@ -256,8 +259,10 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             let performance = SettingsStore.shared.runtimeDictationPerformance
             activePerformance = performance
             activeEngine = SettingsStore.shared.dictationEngine
+            // Local Whisper always runs as a rolling semi-live pipeline. The
+            // active segment keeps recording while each completed segment is
+            // transcribed and appended to the destination note.
             activeTranscribeWhileRecording = activeEngine == .localWhisper
-                && SettingsStore.shared.dictationTranscribeWhileRecording
             let directory = ApplicationPaths.dictationScratch
                 .appendingPathComponent("note-dictation-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -269,7 +274,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             usageTaskID = UsageMonitor.shared.begin(
                 category: .dictation,
                 operation: "Record and transcribe note",
-                model: activeEngine == .localWhisper ? "Whisper small.en" : "Apple on-device speech recognition",
+                model: activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
                 performance: performance
             )
             startMetering()
@@ -411,8 +416,20 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             self.localWhisperIsRunning = false
             switch result {
             case .success(let transcript):
-                if !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.chunkTranscripts.append(transcript)
+                let cleanTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !cleanTranscript.isEmpty {
+                    self.chunkTranscripts.append(cleanTranscript)
+                    if self.phase == .recording {
+                        self.onTranscript(cleanTranscript, self.destinationNoteID)
+                        self.deliveredTranscriptCount = self.chunkTranscripts.count
+                        self.deliveredCharacterCount += cleanTranscript.count
+                        self.semiLiveSegmentCount += 1
+                        self.transcriptionProgress = "Added segment \(self.semiLiveSegmentCount) to \(self.destinationNoteTitle)"
+                        // This segment is now durable in Notes. Removing its
+                        // audio prevents a later recovery retry from inserting
+                        // the same completed segment a second time.
+                        try? FileManager.default.removeItem(at: url)
+                    }
                 }
                 self.localSegmentIndex += 1
                 self.currentChunkRetryCount = 0
@@ -537,26 +554,35 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func finishTranscription() {
-        let transcript = chunkTranscripts
+        let allTranscript = chunkTranscripts
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
-        guard !transcript.isEmpty else {
+        guard !allTranscript.isEmpty else {
             fail(DictationError.emptyTranscript)
             return
         }
+        let remainingTranscript = chunkTranscripts
+            .dropFirst(min(deliveredTranscriptCount, chunkTranscripts.count))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
 
         let warning = skippedChunkCount > 0
             ? "Dictation completed, but \(skippedChunkCount) audio segment\(skippedChunkCount == 1 ? "" : "s") could not be recognized. Markers were added to the note."
             : nil
-        completeTranscription(transcript, warning: warning)
+        completeTranscription(
+            remainingTranscript,
+            outputCharacters: deliveredCharacterCount + remainingTranscript.count,
+            warning: warning
+        )
     }
 
-    private func completeTranscription(_ transcript: String, warning: String?) {
+    private func completeTranscription(_ transcript: String, outputCharacters: Int, warning: String?) {
         let destinationNoteID = destinationNoteID
-        onTranscript(transcript, destinationNoteID)
+        if !transcript.isEmpty { onTranscript(transcript, destinationNoteID) }
         cleanupAudioFiles()
-        finishUsage(succeeded: true, outputCharacters: transcript.count, detail: "Recorded \(Int(recordedDuration)) seconds")
+        finishUsage(succeeded: true, outputCharacters: outputCharacters, detail: "Recorded \(Int(recordedDuration)) seconds")
         resetJobState()
         phase = .idle
         lastError = warning
@@ -659,6 +685,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         currentChunkRetryCount = 0
         currentPartialTranscript = ""
         chunkTranscripts = []
+        deliveredTranscriptCount = 0
+        deliveredCharacterCount = 0
         skippedChunkCount = 0
         localSegmentIndex = 0
         localWhisperIsRunning = false
@@ -670,6 +698,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         destinationNoteID = nil
         audioLevel = 0
         recordingElapsed = 0
+        semiLiveSegmentCount = 0
     }
 
     private func finishUsage(succeeded: Bool, outputCharacters: Int = 0, detail: String? = nil) {

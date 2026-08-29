@@ -9,9 +9,6 @@ final class NotesStore: ObservableObject {
     @Published private(set) var notes: [MarkdownNote]
     @Published var selectedNoteID: UUID?
     @Published var lastError: String?
-    @Published private(set) var formatterWorkspaceOpen = false
-
-    static let formatterWorkspaceID = UUID(uuidString: "8E65542D-D46C-4B1A-A9B5-EE4182FF22F1")!
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
     private var pendingSave: DispatchWorkItem?
@@ -29,7 +26,7 @@ final class NotesStore: ObservableObject {
                 - Build clean headings, **bold**, *italic*, links, lists, tables, and code blocks without source punctuation clutter.
                 - Pin active notes or favorite the ones you want to keep close.
                 - Search titles and content from the sidebar.
-                - Dictation records first and transcribes only after you stop.
+                - Meeting dictation adds each completed segment while recording, then finishes the active segment when you stop.
 
                 > Everything autosaves locally on this Mac.
                 """
@@ -44,18 +41,6 @@ final class NotesStore: ObservableObject {
     var selectedNote: MarkdownNote? {
         guard let selectedNoteID else { return nil }
         return notes.first { $0.id == selectedNoteID }
-    }
-
-    var isFormatterSelected: Bool { selectedNoteID == Self.formatterWorkspaceID }
-
-    func openFormatterWorkspace() {
-        formatterWorkspaceOpen = true
-        selectedNoteID = Self.formatterWorkspaceID
-    }
-
-    func closeFormatterWorkspace() {
-        formatterWorkspaceOpen = false
-        if isFormatterSelected { selectedNoteID = notes.first?.id }
     }
 
     func selectMostRecentNote() {
@@ -150,23 +135,6 @@ final class NotesStore: ObservableObject {
         notes.insert(duplicate, at: 0)
         selectedNoteID = duplicate.id
         scheduleSave()
-    }
-
-    func insertSummary(_ summary: String, into noteID: UUID) {
-        guard let index = notes.firstIndex(where: { $0.id == noteID }) else {
-            lastError = "The original note no longer exists, so the summary was not inserted."
-            return
-        }
-        let cleanSummary = summary.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanSummary.isEmpty else { return }
-        let block = "## Qwen Summary\n\n\(cleanSummary)\n\n---\n\n"
-        let candidate = block + notes[index].content
-        guard candidate.count <= Self.maximumCharactersPerNote else {
-            lastError = "The summary would exceed this note's \(Self.maximumCharactersPerNote.formatted())-character limit."
-            return
-        }
-        updateNote(noteID) { note in note.content = candidate }
-        selectedNoteID = noteID
     }
 
     func flush() {

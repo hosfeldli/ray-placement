@@ -3,17 +3,22 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
-SCRATCH_DIRECTORY="$PROJECT_DIRECTORY/.build"
-MODULE_CACHE_DIRECTORY="$SCRATCH_DIRECTORY/module-cache"
+# An interrupted SwiftPM process can leave the default cache locked. The
+# installer may supply an isolated, disposable scratch directory to complete a
+# clean rebuild without competing with that stale process.
+SCRATCH_DIRECTORY="${RAYPLACEMENT_SCRATCH_DIRECTORY:-$PROJECT_DIRECTORY/.build}"
+# Supply a known-good compiler cache when a cold Swift toolchain cache is slow
+# or interrupted; otherwise keep all build artifacts inside the scratch path.
+MODULE_CACHE_DIRECTORY="${RAYPLACEMENT_MODULE_CACHE_DIRECTORY:-$SCRATCH_DIRECTORY/module-cache}"
 APP_DIRECTORY="$PROJECT_DIRECTORY/build/RayPlacement.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
-QWEN_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Qwen"
-QWEN_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_qwen_model.sh"
 WHISPER_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"
 WHISPER_RUNTIME="$PROJECT_DIRECTORY/Packaging/WhisperRuntime"
-WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en.bin"
+WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
+HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
+PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
 LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
@@ -24,7 +29,6 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
 
 mkdir -p "$MODULE_CACHE_DIRECTORY"
-"$QWEN_ASSEMBLER"
 "$WHISPER_ASSEMBLER"
 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
 BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
@@ -37,14 +41,6 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
 
-if [[ ! -x "$QWEN_DIRECTORY/runtime/llama-cli" || ! -f "$QWEN_DIRECTORY/Qwen3-1.7B-Q8_0.gguf" ]]; then
-    echo "The bundled Qwen writing provider is incomplete. Run scripts/assemble_qwen_model.sh first."
-    exit 1
-fi
-ditto "$QWEN_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Qwen"
-rm -rf "$CONTENTS_DIRECTORY/Resources/Qwen/ModelParts"
-chmod 755 "$CONTENTS_DIRECTORY/Resources/Qwen/runtime/llama-cli"
-
 if [[ ! -x "$WHISPER_RUNTIME/whisper-cli" || ! -f "$WHISPER_MODEL" ]]; then
     echo "The bundled Local Whisper provider is incomplete. Run scripts/assemble_whisper_model.sh first."
     exit 1
@@ -54,29 +50,47 @@ cp "$WHISPER_RUNTIME/whisper-cli" "$CONTENTS_DIRECTORY/Resources/Whisper/runtime
 cp "$WHISPER_RUNTIME/LICENSE" "$CONTENTS_DIRECTORY/Resources/Whisper/LICENSE"
 cp "$WHISPER_RUNTIME/REVISION" "$CONTENTS_DIRECTORY/Resources/Whisper/REVISION"
 cp "$WHISPER_RUNTIME/MODEL_SOURCE" "$CONTENTS_DIRECTORY/Resources/Whisper/MODEL_SOURCE"
-cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en.bin"
+cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Whisper/runtime/whisper-cli"
 
-swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"
-ICONSET_DIRECTORY="$PROJECT_DIRECTORY/Packaging/RayPlacement.iconset"
-if [[ -d "$ICONSET_DIRECTORY" ]]; then
+if [[ ! -x "$HARPER_DIRECTORY/harper-cli" || ! -f "$PYTHON_GRAMMAR_DIRECTORY/grammar_check.py" \
+    || ! -d "$PYTHON_GRAMMAR_DIRECTORY/site-packages/spellchecker" ]]; then
+    echo "The bundled rule-based writing resources are incomplete."
+    exit 1
+fi
+mkdir -p "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar"
+cp "$HARPER_DIRECTORY/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli"
+ditto "$PYTHON_GRAMMAR_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar/grammar_check.py"
+
+if [[ ! -f "$ICON_FILE" || "$ICON_MASTER" -nt "$ICON_FILE" || "${RAYPLACEMENT_REBUILD_ICON:-0}" == "1" ]]; then
+    swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"
+    ICONSET_DIRECTORY="$PROJECT_DIRECTORY/Packaging/RayPlacement.iconset"
+    if [[ -d "$ICONSET_DIRECTORY" ]]; then
+        rm -rf "$ICONSET_DIRECTORY"
+    fi
+    mkdir -p "$ICONSET_DIRECTORY"
+    sips -z 16 16 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_16x16.png" >/dev/null
+    sips -z 32 32 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_16x16@2x.png" >/dev/null
+    sips -z 32 32 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_32x32.png" >/dev/null
+    sips -z 64 64 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_32x32@2x.png" >/dev/null
+    sips -z 128 128 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_128x128.png" >/dev/null
+    sips -z 256 256 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_128x128@2x.png" >/dev/null
+    sips -z 256 256 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_256x256.png" >/dev/null
+    sips -z 512 512 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_256x256@2x.png" >/dev/null
+    sips -z 512 512 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_512x512.png" >/dev/null
+    cp "$ICON_MASTER" "$ICONSET_DIRECTORY/icon_512x512@2x.png"
+    swift "$PROJECT_DIRECTORY/scripts/make_icns.swift" "$ICONSET_DIRECTORY" "$ICON_FILE"
     rm -rf "$ICONSET_DIRECTORY"
 fi
-mkdir -p "$ICONSET_DIRECTORY"
-sips -z 16 16 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_16x16.png" >/dev/null
-sips -z 32 32 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_16x16@2x.png" >/dev/null
-sips -z 32 32 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_32x32.png" >/dev/null
-sips -z 64 64 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_32x32@2x.png" >/dev/null
-sips -z 128 128 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_128x128.png" >/dev/null
-sips -z 256 256 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_128x128@2x.png" >/dev/null
-sips -z 256 256 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_256x256.png" >/dev/null
-sips -z 512 512 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_256x256@2x.png" >/dev/null
-sips -z 512 512 "$ICON_MASTER" --out "$ICONSET_DIRECTORY/icon_512x512.png" >/dev/null
-cp "$ICON_MASTER" "$ICONSET_DIRECTORY/icon_512x512@2x.png"
-swift "$PROJECT_DIRECTORY/scripts/make_icns.swift" "$ICONSET_DIRECTORY" "$ICON_FILE"
-rm -rf "$ICONSET_DIRECTORY"
 
 cp "$ICON_FILE" "$CONTENTS_DIRECTORY/Resources/RayPlacement.icns"
+mkdir -p "$CONTENTS_DIRECTORY/Resources/Documentation"
+cp "$PROJECT_DIRECTORY/docs/EXTENSION_AUTHORING_FOR_AI.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSION_AUTHORING_FOR_AI.md"
+cp "$PROJECT_DIRECTORY/docs/EXTENSIONS.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSIONS.md"
+cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY/Resources/Documentation/extension-manifest.schema.json"
+mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"
+cp "$PROJECT_DIRECTORY/Packaging/Emoji/emoji-test.txt" "$CONTENTS_DIRECTORY/Resources/Emoji/emoji-test.txt"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
 if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then

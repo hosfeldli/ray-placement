@@ -81,13 +81,17 @@ enum KeyboardSelectionService {
             waitForCopy(
                 pasteboard: pasteboard,
                 originalChangeCount: originalChangeCount,
-                attemptsRemaining: 35
+                attemptsRemaining: 60
             ) { result in
                 switch result {
                 case .success(let copiedChangeCount):
                     let text = pasteboard.string(forType: .string) ?? ""
-                    snapshot.restore(to: pasteboard, ifUnchangedSince: copiedChangeCount)
-                    clipboardHistory.synchronizePasteboardChangeCount()
+                    // Rich editors may publish extra pasteboard flavors shortly
+                    // after the string. Restore after that small write window.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+                        snapshot.restore(to: pasteboard, ifUnchangedSince: copiedChangeCount)
+                        clipboardHistory.synchronizePasteboardChangeCount()
+                    }
                     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                         completion(.failure(CaptureError.emptySelection))
                         return
@@ -116,7 +120,49 @@ enum KeyboardSelectionService {
                 completion(.failure(CaptureError.copyUnavailable))
                 return
             }
-            completion(.success(()))
+            // Some Electron and Office editors consume the pasteboard on their
+            // next event-loop turn. Do not report completion before that turn.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
+                completion(.success(()))
+            }
+        }
+    }
+
+    /// Pastes a supplied string as an atomic clipboard transaction and restores
+    /// the user's previous clipboard after the target had time to consume it.
+    static func paste(
+        _ text: String,
+        into application: NSRunningApplication,
+        clipboardHistory: ClipboardHistoryService,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        activate(application) { ready in
+            guard ready else {
+                completion(.failure(CaptureError.activationFailed))
+                return
+            }
+            let pasteboard = NSPasteboard.general
+            let snapshot = PasteboardSnapshot(pasteboard)
+            pasteboard.clearContents()
+            guard pasteboard.setString(text, forType: .string) else {
+                completion(.failure(CaptureError.copyUnavailable))
+                return
+            }
+            let replacementChangeCount = pasteboard.changeCount
+            clipboardHistory.synchronizePasteboardChangeCount()
+            guard postCommandKey(keyCode: 9) else {
+                snapshot.restore(to: pasteboard, ifUnchangedSince: replacementChangeCount)
+                clipboardHistory.synchronizePasteboardChangeCount()
+                completion(.failure(CaptureError.copyUnavailable))
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+                completion(.success(()))
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.90) {
+                snapshot.restore(to: pasteboard, ifUnchangedSince: replacementChangeCount)
+                clipboardHistory.synchronizePasteboardChangeCount()
+            }
         }
     }
 
@@ -140,7 +186,7 @@ enum KeyboardSelectionService {
     ) {
         let frontmostPID = NSWorkspace.shared.frontmostApplication?.processIdentifier
         if application.isActive || frontmostPID == application.processIdentifier {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { completion(true) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { completion(true) }
             return
         }
         guard attemptsRemaining > 0, !application.isTerminated else {
@@ -170,7 +216,7 @@ enum KeyboardSelectionService {
             completion(.failure(CaptureError.copyUnavailable))
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
             waitForCopy(
                 pasteboard: pasteboard,
                 originalChangeCount: originalChangeCount,

@@ -13,6 +13,7 @@ protocol LauncherViewModelDelegate: AnyObject {
 
 @MainActor
 final class LauncherViewModel: ObservableObject {
+    private static let emojiPageSize = 120
     @Published var query = "" {
         didSet {
             if oldValue != query {
@@ -23,6 +24,9 @@ final class LauncherViewModel: ObservableObject {
     }
     @Published private(set) var mode: LauncherMode = .root
     @Published private(set) var results: [LauncherItem] = []
+    /// The emoji picker owns its own lightweight data path. Keeping the raw
+    /// catalog out of `results` avoids creating thousands of command models.
+    @Published private(set) var emojiMatches: [EmojiEntry] = []
     @Published var selectedIndex = 0
     @Published private(set) var isSearching = false
     @Published private(set) var extensionIssues: [ExtensionIssue] = []
@@ -70,7 +74,6 @@ final class LauncherViewModel: ObservableObject {
         switch mode {
         case .root: return "Search commands and applications…"
         case .files: return "Search files with Spotlight…"
-        case .vscodePicker: return "Search for a file or directory to open in VS Code…"
         case .timezoneConverter: return "Enter a time like 9:30 AM, 14:00, or now"
         case .forceQuitPicker: return "Search running applications…"
         case .emojiPicker: return "Search emojis…"
@@ -81,17 +84,47 @@ final class LauncherViewModel: ObservableObject {
     }
 
     var selectedItem: LauncherItem? {
+        if mode == .emojiPicker {
+            guard emojiMatches.indices.contains(selectedIndex) else { return nil }
+            return emojiItem(for: emojiMatches[selectedIndex])
+        }
         guard results.indices.contains(selectedIndex) else { return nil }
         return results[selectedIndex]
     }
 
     var selectedItemIsActionable: Bool {
+        if mode == .emojiPicker { return !emojiMatches.isEmpty }
         guard let selectedItem else { return false }
         return isActionable(selectedItem)
     }
 
     var hasActionableResults: Bool {
-        results.contains(where: isActionable)
+        if mode == .emojiPicker { return !emojiMatches.isEmpty }
+        return results.contains(where: isActionable)
+    }
+
+    /// A bounded range for the emoji grid. Rendering a single 3,900-cell
+    /// collection still makes SwiftUI lay out and expose a huge accessibility
+    /// tree, even when the cells themselves are lazy.
+    var emojiVisibleRange: Range<Int> {
+        let lower = emojiPageIndex * Self.emojiPageSize
+        let upper = min(lower + Self.emojiPageSize, emojiMatches.count)
+        return lower..<upper
+    }
+
+    var emojiPageIndex: Int {
+        guard !emojiMatches.isEmpty else { return 0 }
+        return min(selectedIndex / Self.emojiPageSize, emojiPageCount - 1)
+    }
+
+    var emojiPageCount: Int {
+        guard !emojiMatches.isEmpty else { return 0 }
+        return Int(ceil(Double(emojiMatches.count) / Double(Self.emojiPageSize)))
+    }
+
+    var emojiPageLabel: String {
+        guard emojiPageCount > 1 else { return "" }
+        return "\(emojiPageIndex + 1) / \(emojiPageCount)"
     }
 
     static let timezoneOptions: [TimezoneOption] = [
@@ -200,19 +233,50 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func moveSelection(by delta: Int) {
+        if mode == .emojiPicker {
+            guard !emojiMatches.isEmpty else { return }
+            selectedIndex = (selectedIndex + delta + emojiMatches.count) % emojiMatches.count
+            return
+        }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
     }
 
     func select(_ index: Int) {
+        if mode == .emojiPicker {
+            guard emojiMatches.indices.contains(index) else { return }
+            selectedIndex = index
+            return
+        }
         guard results.indices.contains(index) else { return }
         selectedIndex = index
     }
 
     func executeSelected() {
+        if mode == .emojiPicker {
+            guard emojiMatches.indices.contains(selectedIndex) else { return }
+            let item = emojiItem(for: emojiMatches[selectedIndex])
+            usage.record(item.id)
+            delegate?.launcherViewModel(self, perform: item.action, item: item)
+            return
+        }
         guard let item = selectedItem, isActionable(item) else { return }
         usage.record(item.id)
         delegate?.launcherViewModel(self, perform: item.action, item: item)
+    }
+
+    func executeEmoji(at index: Int) {
+        guard mode == .emojiPicker, emojiMatches.indices.contains(index) else { return }
+        selectedIndex = index
+        executeSelected()
+    }
+
+    func moveEmojiPage(by delta: Int) {
+        guard emojiPageCount > 1 else { return }
+        let targetPage = min(max(emojiPageIndex + delta, 0), emojiPageCount - 1)
+        guard targetPage != emojiPageIndex else { return }
+        let positionOnPage = selectedIndex % Self.emojiPageSize
+        selectedIndex = min(targetPage * Self.emojiPageSize + positionOnPage, emojiMatches.count - 1)
     }
 
     func executeVisibleItem(at index: Int) {
@@ -242,7 +306,7 @@ final class LauncherViewModel: ObservableObject {
         case .root:
             isSearching = false
             results = rootResults()
-        case .files, .vscodePicker:
+        case .files:
             refreshFileResults()
         case .timezoneConverter:
             isSearching = false
@@ -252,7 +316,8 @@ final class LauncherViewModel: ObservableObject {
             results = runningApplicationItems()
         case .emojiPicker:
             isSearching = false
-            results = emojiItems()
+            refreshEmojiMatches()
+            results = []
         case .clipboard:
             refreshClipboardResults()
         case .writingReview:
@@ -262,8 +327,13 @@ final class LauncherViewModel: ObservableObject {
             isSearching = false
             results = []
         }
-        if results.isEmpty { selectedIndex = 0 }
-        else { selectedIndex = min(selectedIndex, results.count - 1) }
+        if mode == .emojiPicker {
+            selectedIndex = emojiMatches.isEmpty ? 0 : min(selectedIndex, emojiMatches.count - 1)
+        } else if results.isEmpty {
+            selectedIndex = 0
+        } else {
+            selectedIndex = min(selectedIndex, results.count - 1)
+        }
     }
 
     private func rootResults() -> [LauncherItem] {
@@ -309,16 +379,15 @@ final class LauncherViewModel: ObservableObject {
     private func refreshFileResults() {
         searchWorkItem?.cancel()
         let requestedMode = mode
-        let opensInVSCode = requestedMode == .vscodePicker
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanQuery.isEmpty else {
             isSearching = false
             fileResults = []
             results = [placeholderItem(
-                id: opensInVSCode ? "vscode.hint" : "files.hint",
-                title: opensInVSCode ? "Type a file or directory name" : "Type a file name",
-                subtitle: opensInVSCode ? "Choose any Spotlight result to open it in VS Code" : "Results come from Spotlight",
-                icon: opensInVSCode ? "chevron.left.forwardslash.chevron.right" : "magnifyingglass"
+                id: "files.hint",
+                title: "Type a file name",
+                subtitle: "Results come from Spotlight",
+                icon: "magnifyingglass"
             )]
             return
         }
@@ -335,12 +404,12 @@ final class LauncherViewModel: ObservableObject {
                 self.fileResults = urls
                 self.results = urls.isEmpty
                     ? [self.placeholderItem(
-                        id: opensInVSCode ? "vscode.empty" : "files.empty",
-                        title: opensInVSCode ? "No files or directories found" : "No files found",
+                        id: "files.empty",
+                        title: "No files found",
                         subtitle: "Try a broader name",
                         icon: "doc.text.magnifyingglass"
                     )]
-                    : urls.map { self.fileItem($0, opensInVSCode: opensInVSCode) }
+                    : urls.map { self.fileItem($0) }
                 self.selectedIndex = 0
             }
         }
@@ -453,32 +522,49 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
-    private func emojiItems() -> [LauncherItem] {
+    private func refreshEmojiMatches() {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        let matching = EmojiCatalog.entries.filter { entry in
-            cleanQuery.isEmpty
-                || entry.emoji.contains(cleanQuery)
-                || FuzzyMatcher.score(([entry.name] + entry.keywords).joined(separator: " "), query: cleanQuery) != nil
+        let matching: [EmojiEntry]
+        if cleanQuery.isEmpty {
+            matching = EmojiCatalog.entries
+        } else {
+            let normalized = cleanQuery.lowercased()
+            let exact = EmojiCatalog.entries.filter {
+                $0.emoji.contains(cleanQuery) || $0.searchableText.contains(normalized)
+            }
+            if !exact.isEmpty {
+                matching = exact.sorted { first, second in
+                    let firstPrefix = first.name.lowercased().hasPrefix(normalized)
+                    let secondPrefix = second.name.lowercased().hasPrefix(normalized)
+                    if firstPrefix != secondPrefix { return firstPrefix }
+                    return first.name < second.name
+                }
+            } else {
+                matching = EmojiCatalog.entries.compactMap { entry -> (EmojiEntry, Double)? in
+                    guard let fuzzy = FuzzyMatcher.score(entry.searchableText, query: cleanQuery) else { return nil }
+                    return (entry, fuzzy)
+                }
+                .sorted { first, second in
+                    if first.1 == second.1 { return first.0.name < second.0.name }
+                    return first.1 > second.1
+                }
+                .prefix(120)
+                .map(\.0)
+            }
         }
-        guard !matching.isEmpty else {
-            return [placeholderItem(
-                id: "emoji.empty",
-                title: "No matching emoji",
-                subtitle: "Try a feeling, object, or action",
-                icon: "face.smiling"
-            )]
-        }
-        return matching.prefix(60).map { entry in
-            LauncherItem(
-                id: "emoji.\(entry.id)",
-                title: entry.name,
-                subtitle: entry.keywords.prefix(4).joined(separator: " · "),
-                icon: .text(entry.emoji),
-                keywords: entry.keywords,
-                action: .pasteText(entry.emoji),
-                accessory: "Paste"
-            )
-        }
+        emojiMatches = matching
+    }
+
+    private func emojiItem(for entry: EmojiEntry) -> LauncherItem {
+        LauncherItem(
+            id: "emoji.\(entry.id)",
+            title: entry.name,
+            subtitle: entry.group,
+            icon: .text(entry.emoji),
+            keywords: entry.keywords,
+            action: .pasteText(entry.emoji),
+            accessory: "Paste"
+        )
     }
 
     private func extensionItems() -> [LauncherItem] {
@@ -505,6 +591,7 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run zsh commands with output search and editor shortcut guides", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
+            LauncherItem(id: "builtin.sql", title: "SQL Workspace", subtitle: "Discover Oracle or MySQL schema, query, join, and export locally", icon: .system("cylinder.split.1x2.fill"), keywords: ["sql", "database", "oracle", "mysql", "schema", "query", "procedures"], action: .system(.openSQLWorkspace), shortcut: SettingsStore.shared.sqlHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.sqlShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
             LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),
@@ -544,15 +631,14 @@ final class LauncherViewModel: ObservableObject {
         )
     }
 
-    private func fileItem(_ url: URL, opensInVSCode: Bool = false) -> LauncherItem {
+    private func fileItem(_ url: URL) -> LauncherItem {
         LauncherItem(
-            id: "\(opensInVSCode ? "vscode" : "file").\(url.path)",
+            id: "file.\(url.path)",
             title: url.lastPathComponent,
             subtitle: url.deletingLastPathComponent().path,
             icon: .file(url),
             keywords: [url.path],
-            action: opensInVSCode ? .openInVSCode(url) : .openFile(url),
-            accessory: opensInVSCode ? "Open in VS Code" : nil
+            action: .openFile(url)
         )
     }
 

@@ -33,7 +33,7 @@ final class ExtensionFormWindowController: NSWindowController {
         window?.title = definition.title ?? command.command.title
         window?.contentView = NSHostingView(rootView: ExtensionFormView(model: model))
         window?.center()
-        window?.makeKeyAndOrderFront(nil)
+        if let window { WorkspaceWindowCoordinator.shared.present(window) }
     }
 }
 
@@ -64,6 +64,47 @@ private final class ExtensionFormViewModel: ObservableObject {
         Binding(
             get: { self.values[field.id, default: ""] },
             set: { self.values[field.id] = $0 }
+        )
+    }
+
+    var visibleFields: [ExtensionFormField] {
+        definition.fields.filter(isVisible)
+    }
+
+    var canRun: Bool {
+        phase != .running && visibleFields.allSatisfy {
+            $0.required != true || !values[$0.id, default: ""].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
+    func isVisible(_ field: ExtensionFormField) -> Bool {
+        guard let condition = field.visibleWhen else { return true }
+        let value = values[condition.field, default: ""]
+        if let equals = condition.equals, value != equals { return false }
+        if let notEquals = condition.notEquals, value == notEquals { return false }
+        return true
+    }
+
+    func choosePath(for field: ExtensionFormField) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = field.type == .file
+        panel.canChooseDirectories = field.type == .directory
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        values[field.id] = url.path
+    }
+
+    func doubleBinding(for field: ExtensionFormField) -> Binding<Double> {
+        Binding(
+            get: { Double(self.values[field.id, default: field.defaultValue ?? "0"]) ?? 0 },
+            set: { self.values[field.id] = String($0) }
+        )
+    }
+
+    func dateBinding(for field: ExtensionFormField) -> Binding<Date> {
+        Binding(
+            get: { ISO8601DateFormatter().date(from: self.values[field.id, default: ""]) ?? Date() },
+            set: { self.values[field.id] = ISO8601DateFormatter().string(from: $0) }
         )
     }
 
@@ -134,7 +175,7 @@ private struct ExtensionFormView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
-            .disabled(model.phase == .running)
+            .disabled(!model.canRun)
         }
         .padding(.horizontal, 12)
         .frame(height: 52)
@@ -144,7 +185,15 @@ private struct ExtensionFormView: View {
     private var form: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 13) {
-                ForEach(model.definition.fields) { field in
+                ForEach(Array(model.visibleFields.enumerated()), id: \.element.id) { index, field in
+                    if let section = field.section,
+                       index == 0 || model.visibleFields[index - 1].section != section {
+                        Text(section.uppercased())
+                            .font(.caption2.weight(.bold))
+                            .tracking(0.7)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                            .padding(.top, index == 0 ? 0 : 7)
+                    }
                     fieldView(field)
                 }
             }
@@ -194,6 +243,41 @@ private struct ExtensionFormView: View {
                 }
                 .pickerStyle(.menu)
                 .labelsHidden()
+            case .file, .directory:
+                HStack(spacing: 7) {
+                    TextField(field.placeholder ?? "Choose a path", text: model.binding(for: field))
+                        .textFieldStyle(.plain)
+                        .font(.caption.monospaced())
+                    Button("Choose…") { model.choosePath(for: field) }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
+            case .date:
+                DatePicker(field.label, selection: model.dateBinding(for: field))
+                    .labelsHidden()
+            case .slider:
+                HStack(spacing: 9) {
+                    Slider(
+                        value: model.doubleBinding(for: field),
+                        in: (field.minimum ?? 0)...max(field.minimum ?? 0, field.maximum ?? 100)
+                    )
+                    Text(model.values[field.id, default: field.defaultValue ?? "0"])
+                        .font(.caption.monospacedDigit())
+                        .frame(width: 52, alignment: .trailing)
+                }
+            case .keyValue:
+                TextEditor(text: model.binding(for: field))
+                    .font(.system(size: 12, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(7)
+                    .frame(minHeight: 92)
+                    .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0.01)
+            }
+            if let help = field.helpText, !help.isEmpty {
+                Text(help).font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }

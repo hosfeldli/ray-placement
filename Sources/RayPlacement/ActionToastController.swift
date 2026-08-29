@@ -99,9 +99,10 @@ private struct ActionToastView: View {
         }
         .padding(.horizontal, 14)
         .frame(width: 360, height: 44)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
+        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
+        .background(Color.black.opacity(0.28), in: PrismaticPanelShape(cut: 8))
         .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
+            PrismaticPanelShape(cut: 8)
                 .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
         )
         .shadow(color: style.color.opacity(0.16), radius: 18, y: 8)

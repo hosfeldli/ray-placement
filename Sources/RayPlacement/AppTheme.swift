@@ -82,6 +82,35 @@ enum LiquidGlassDepth {
     case floating
 }
 
+/// A compact, asymmetric chamfer used throughout RayPlacement. The uneven cuts
+/// keep the interface crystalline without turning every control into a capsule.
+struct PrismaticPanelShape: InsettableShape {
+    var cut: CGFloat = 7
+    var insetAmount: CGFloat = 0
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: insetAmount, dy: insetAmount)
+        let c = min(max(2, cut - insetAmount), min(r.width, r.height) * 0.22)
+        var path = Path()
+        path.move(to: CGPoint(x: r.minX + c, y: r.minY))
+        path.addLine(to: CGPoint(x: r.maxX - c * 0.45, y: r.minY))
+        path.addLine(to: CGPoint(x: r.maxX, y: r.minY + c * 0.45))
+        path.addLine(to: CGPoint(x: r.maxX, y: r.maxY - c))
+        path.addLine(to: CGPoint(x: r.maxX - c, y: r.maxY))
+        path.addLine(to: CGPoint(x: r.minX + c * 0.35, y: r.maxY))
+        path.addLine(to: CGPoint(x: r.minX, y: r.maxY - c * 0.35))
+        path.addLine(to: CGPoint(x: r.minX, y: r.minY + c))
+        path.closeSubpath()
+        return path
+    }
+
+    func inset(by amount: CGFloat) -> PrismaticPanelShape {
+        var copy = self
+        copy.insetAmount += amount
+        return copy
+    }
+}
+
 struct LiquidGlassBackdrop: View {
     @ObservedObject private var settings = SettingsStore.shared
     var material: NSVisualEffectView.Material = .underWindowBackground
@@ -90,26 +119,87 @@ struct LiquidGlassBackdrop: View {
     var body: some View {
         ZStack {
             VisualEffectView(material: material, blendingMode: blendingMode)
-            Color.black.opacity(0.32)
+            Color.black.opacity(0.52)
+            PrismaticAmbientLayer(theme: settings.accentTheme)
             RadialGradient(
-                colors: [settings.accentTheme.primary.opacity(0.24), .clear],
+                colors: [settings.accentTheme.primary.opacity(0.13), .clear],
                 center: .topLeading,
                 startRadius: 4,
                 endRadius: 520
             )
             RadialGradient(
-                colors: [settings.accentTheme.secondary.opacity(0.17), .clear],
+                colors: [settings.accentTheme.secondary.opacity(0.075), .clear],
                 center: .bottomTrailing,
                 startRadius: 8,
                 endRadius: 470
             )
             LinearGradient(
-                colors: [Color.white.opacity(0.045), .clear, Color.black.opacity(0.16)],
-                startPoint: .top,
-                endPoint: .bottom
+                colors: [Color.white.opacity(0.035), .clear, settings.accentTheme.tertiary.opacity(0.024), Color.black.opacity(0.22)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
         }
         .ignoresSafeArea()
+    }
+}
+
+/// Two oversized, low-opacity planes create movement behind windows without a
+/// timer, canvas, blur, or per-frame state update. Core Animation interpolates
+/// the transforms and stops them entirely when Reduce Motion is enabled.
+private struct PrismaticAmbientLayer: View {
+    let theme: AppAccentTheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var drifting = false
+
+    private var canAnimate: Bool {
+        !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let wide = max(proxy.size.width * 0.72, 420)
+            let tall = max(proxy.size.height * 0.66, 310)
+            ZStack {
+                PrismaticPanelShape(cut: 74)
+                    .fill(
+                        LinearGradient(
+                            colors: [theme.primary.opacity(0.13), theme.secondary.opacity(0.055), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: wide, height: tall)
+                    .rotationEffect(.degrees(drifting ? 12 : -6))
+                    .offset(
+                        x: drifting ? proxy.size.width * 0.17 : -proxy.size.width * 0.09,
+                        y: drifting ? -proxy.size.height * 0.12 : proxy.size.height * 0.08
+                    )
+
+                PrismaticPanelShape(cut: 62)
+                    .fill(
+                        LinearGradient(
+                            colors: [.clear, theme.tertiary.opacity(0.085), theme.primary.opacity(0.035)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: wide * 0.76, height: tall * 0.72)
+                    .rotationEffect(.degrees(drifting ? -15 : 9))
+                    .offset(
+                        x: drifting ? -proxy.size.width * 0.15 : proxy.size.width * 0.14,
+                        y: drifting ? proxy.size.height * 0.13 : -proxy.size.height * 0.09
+                    )
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+            .onAppear {
+                guard canAnimate else { return }
+                withAnimation(.easeInOut(duration: 22).repeatForever(autoreverses: true)) {
+                    drifting = true
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -122,9 +212,9 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
 
     private var baseOpacity: Double {
         switch depth {
-        case .recessed: return 0.18
-        case .raised: return 0.26
-        case .floating: return 0.34
+        case .recessed: return 0.28
+        case .raised: return 0.33
+        case .floating: return 0.39
         }
     }
 
@@ -137,56 +227,81 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let shape = PrismaticPanelShape(cut: min(9, max(4, cornerRadius * 0.45)))
         content
             .background {
                 ZStack {
-                    shape.fill(.ultraThinMaterial)
+                    shape.fill(.thinMaterial)
                     shape.fill(Color.black.opacity(baseOpacity))
                     shape.fill(
                         LinearGradient(
-                            colors: [
-                                Color.white.opacity(0.085),
-                                settings.accentTheme.primary.opacity(selected ? 0.20 : accentOpacity),
-                                settings.accentTheme.secondary.opacity(selected ? 0.105 : accentOpacity * 0.40),
-                                Color.clear
-                            ],
+                            colors: [Color.white.opacity(0.05), settings.accentTheme.primary.opacity(selected ? 0.20 : accentOpacity), settings.accentTheme.tertiary.opacity(selected ? 0.10 : accentOpacity * 0.28), Color.clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
+                    shape.fill(
+                        LinearGradient(
+                            colors: [
+                                .clear,
+                                Color.white.opacity(selected ? 0.12 : 0.055),
+                                settings.accentTheme.tertiary.opacity(selected ? 0.085 : 0.026),
+                                .clear
+                            ],
+                            startPoint: .bottomLeading,
+                            endPoint: .topTrailing
+                        )
+                    )
+                    .blendMode(.screen)
                 }
             }
             .overlay {
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(0.34),
-                            settings.accentTheme.primary.opacity(selected ? 0.58 : 0.24),
-                            Color.white.opacity(0.075),
+                            Color.white.opacity(0.24),
+                            settings.accentTheme.primary.opacity(selected ? 0.54 : 0.18),
+                            Color.white.opacity(0.055),
                             Color.black.opacity(0.38)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: selected ? 1.2 : 0.8
+                    lineWidth: selected ? 1.1 : 0.7
                 )
             }
-            .overlay(alignment: .top) {
-                Capsule()
+            .overlay(alignment: .leading) {
+                Rectangle()
                     .fill(LinearGradient(
-                        colors: [.clear, Color.white.opacity(selected ? 0.28 : 0.16), .clear],
-                        startPoint: .leading,
-                        endPoint: .trailing
+                        colors: [.clear, settings.accentTheme.tertiary.opacity(selected ? 0.75 : 0.22), settings.accentTheme.primary.opacity(selected ? 0.8 : 0.28), .clear],
+                        startPoint: .top,
+                        endPoint: .bottom
                     ))
-                    .frame(height: 0.8)
-                    .padding(.horizontal, cornerRadius * 0.72)
+                    .frame(width: selected ? 1.8 : 0.8)
+                    .padding(.vertical, min(10, cornerRadius * 0.55))
             }
-            .shadow(color: shadow.color, radius: shadow.radius, y: shadow.y)
+            .overlay(alignment: .topLeading) {
+                LinearGradient(
+                    colors: [Color.white.opacity(selected ? 0.33 : 0.16), .clear],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(height: 0.8)
+                .padding(.leading, min(18, cornerRadius * 1.1))
+                .padding(.trailing, cornerRadius * 1.8)
+            }
+            .overlay {
+                shape.strokeBorder(
+                    Color.black.opacity(0.26),
+                    lineWidth: 0.45
+                )
+                .padding(1.05)
+            }
+            .shadow(color: shadow.color, radius: shadow.radius * 0.62, y: shadow.y * 0.55)
             .shadow(
                 color: selected ? settings.accentTheme.primary.opacity(0.24) : .clear,
-                radius: selected ? 16 : 0,
-                y: selected ? 7 : 0
+                radius: selected ? 10 : 0,
+                y: selected ? 4 : 0
             )
     }
 }
@@ -216,10 +331,11 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
             .frame(width: size, height: size)
             .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.84))
             .background {
-                Circle().fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(.ultraThinMaterial))
+                PrismaticPanelShape(cut: max(4, size * 0.18))
+                    .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(.ultraThinMaterial))
             }
             .overlay {
-                Circle().strokeBorder(
+                PrismaticPanelShape(cut: max(4, size * 0.18)).strokeBorder(
                     Color.white.opacity(0.27),
                     lineWidth: 0.75
                 )

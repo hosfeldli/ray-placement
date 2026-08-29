@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 2,
+  "id": "local.security-tools",
+  "name": "Security Tools",
+  "version": "1.0.0",
+  "description": "Generate strong passwords locally without saving or logging them.",
+  "commands": [
+    {
+      "id": "password-generator",
+      "title": "Generate Password",
+      "subtitle": "Create and copy a cryptographically secure password",
+      "keywords": ["password", "generate", "security", "random", "credential"],
+      "icon": "key.fill",
+      "action": {
+        "type": "openPasswordGenerator",
+        "value": ""
+      }
+    }
+  ]
+}

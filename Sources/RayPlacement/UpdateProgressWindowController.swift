@@ -83,13 +83,13 @@ private struct UpdateProgressView: View {
                 }
             }
             .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.8), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(UpdateColors.indigo.opacity(0.16)))
+            .background(Color(nsColor: .controlBackgroundColor).opacity(0.8), in: PrismaticPanelShape(cut: 8))
+            .overlay(PrismaticPanelShape(cut: 8).stroke(UpdateColors.indigo.opacity(0.28)))
 
             VStack(spacing: 11) {
                 updateStep("Download small update kit", threshold: 0.08, completeAt: 0.2)
                 updateStep("Verify GitHub digest and contents", threshold: 0.2, completeAt: 0.34)
-                updateStep("Reuse Qwen, build, and sign locally", threshold: 0.34, completeAt: 0.9)
+                updateStep("Reuse Whisper, build, and sign locally", threshold: 0.34, completeAt: 0.9)
                 updateStep("Close briefly, install, and reopen", threshold: 0.9, completeAt: 1)
             }
 

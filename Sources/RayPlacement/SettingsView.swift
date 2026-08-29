@@ -1,7 +1,6 @@
 import AppKit
 import ApplicationServices
 import RayPlacementCore
-import RayPlacementWriting
 import SwiftUI
 
 private extension LoadedExtensionCommand {
@@ -45,12 +44,10 @@ struct SettingsView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var updateService: UpdateService
     @ObservedObject private var usageMonitor = UsageMonitor.shared
-    @ObservedObject private var modelDownloads = ModelDownloadService.shared
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
     @State private var confirmUsageClear = false
-    @State private var modelToRemove: LocalModelID?
     let reloadExtensions: () -> Void
 
     var body: some View {
@@ -64,8 +61,8 @@ struct SettingsView: View {
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(settings.accentTheme.primary)
                             .frame(width: 26, height: 26)
-                            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.25), lineWidth: 0.6))
+                            .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
+                            .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.25), lineWidth: 0.6))
                         Text(selectedSection.title)
                             .font(.system(size: 17, weight: .semibold, design: .rounded))
                         Spacer()
@@ -90,32 +87,20 @@ struct SettingsView: View {
         } message: {
             Text("This permanently removes RayPlacement's local task history. It never contains your selected text or document contents.")
         }
-        .alert("Remove optional model?", isPresented: Binding(
-            get: { modelToRemove != nil },
-            set: { if !$0 { modelToRemove = nil } }
-        )) {
-            Button("Cancel", role: .cancel) { modelToRemove = nil }
-            Button("Remove Model", role: .destructive) {
-                if let modelToRemove { modelDownloads.remove(modelToRemove) }
-                modelToRemove = nil
-            }
-        } message: {
-            Text(modelToRemove.map { "This removes \(LocalModelCatalog.descriptor($0).title) from this Mac. You can download it again later." } ?? "")
-        }
     }
 
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 9) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    PrismaticPanelShape(cut: 7)
                         .fill(SettingsColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 30, height: 30)
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
+                .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
                 .shadow(color: settings.accentTheme.primary.opacity(0.24), radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("RayPlacement").font(.system(size: 13.5, weight: .semibold))
@@ -142,15 +127,15 @@ struct SettingsView: View {
                     .background {
                         if selectedSection == section {
                             ZStack {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.ultraThinMaterial)
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                PrismaticPanelShape(cut: 6).fill(.ultraThinMaterial)
+                                PrismaticPanelShape(cut: 6)
                                     .fill(settings.accentTheme.gradient.opacity(0.10))
                             }
                         }
                     }
                     .overlay {
                         if selectedSection == section {
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            PrismaticPanelShape(cut: 6)
                                 .strokeBorder(Color.white.opacity(0.44), lineWidth: 0.7)
                         }
                     }
@@ -195,29 +180,16 @@ struct SettingsView: View {
                     .foregroundStyle(settings.dynamicPerformance ? Color.accentColor : .secondary)
             }
 
-            Section("Writing and note summaries") {
-                Picker("AI compute", selection: $settings.aiComputeMode) {
-                    ForEach(AIComputeMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                Text(settings.aiComputeMode.detail)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            Section("Local writing checks") {
                 performanceSlider(
                     "Writing",
                     selection: $settings.writingPerformance,
                     active: settings.runtimeWritingPerformance
                 )
                 LabeledContent(
-                    "Active local-AI budget",
-                    value: "\(settings.runtimeWritingPerformance.threadLimit) CPU thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s"), \(settings.runtimeWritingPerformance.timeoutDescription(settings.runtimeWritingPerformance.writingTimeout))"
+                    "Rule engine budget",
+                    value: "\(settings.runtimeWritingPerformance.threadLimit) worker thread\(settings.runtimeWritingPerformance.threadLimit == 1 ? "" : "s")"
                 )
-                if settings.runtimeWritingPerformance == .unbounded {
-                    Label("Uses every CPU core with no timeout", systemImage: "bolt.trianglebadge.exclamationmark.fill")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.orange)
-                }
             }
 
             Section("Note dictation") {
@@ -229,10 +201,13 @@ struct SettingsView: View {
                 Text(settings.dictationEngine.detail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Transcribe completed segments while recording", isOn: $settings.dictationTranscribeWhileRecording)
-                    .disabled(settings.dictationEngine != .localWhisper)
-                if settings.dictationTranscribeWhileRecording, settings.dictationEngine == .localWhisper {
-                    Text("Whisper processes each secured one-minute segment in the background. This reduces work after Stop but uses the selected CPU budget during the meeting.")
+                if settings.dictationEngine == .localWhisper {
+                    Picker("Whisper compute", selection: $settings.dictationComputeMode) {
+                        ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    }
+                }
+                if settings.dictationEngine == .localWhisper {
+                    Label("Semi-live · completed segments appear in the note while recording", systemImage: "waveform.badge.mic")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -247,7 +222,7 @@ struct SettingsView: View {
                 )
             }
 
-            Section("AI-capable extensions") {
+            Section("Executable extensions") {
                 performanceSlider(
                     "Extensions",
                     selection: $settings.extensionPerformance,
@@ -261,7 +236,7 @@ struct SettingsView: View {
 
             Section {
                 DisclosureGroup("How limits work") {
-                    Text("Dynamic mode lowers each slider when Low Power Mode or heat requires it. Local models load only for a requested task and exit afterward. Extension limits are cooperative, so install only code you trust.")
+                    Text("Dynamic mode lowers each slider when Low Power Mode or heat requires it. Dictation is the only feature that loads a speech model. Extension limits are cooperative, so install only code you trust.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
@@ -309,41 +284,31 @@ struct SettingsView: View {
 
     private var writingTab: some View {
         Form {
-            Section("Model assignment") {
-                modelPicker("Grammar correction", selection: $settings.writingModel)
-                modelPicker("Note summaries", selection: $settings.summaryModel)
-                modelPicker("Formatter proposals", selection: $settings.formatterModel)
-            }
-
-            Section("Local model library") {
-                ForEach(LocalModelCatalog.models) { model in
-                    modelRow(model)
-                }
-                if modelDownloads.downloading != nil {
-                    ProgressView(value: modelDownloads.progress)
-                }
-                Text(modelDownloads.status)
+            Section("Local checker") {
+                Label("Python spelling + Harper grammar", systemImage: "checkmark.shield.fill")
+                    .foregroundStyle(.green)
+                Text("Checks stay on this Mac. No text-generation model is installed or used.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Your correction instructions") {
-                Text("Tell the selected local AI which names, terms, capitalization, tone, or grammar style it must preserve. These instructions apply to every grammar check.")
+            Section("Preserved terms") {
+                Text("Enter product names, acronyms, and intentional spellings the checker should leave unchanged, separated by spaces, commas, or lines.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $settings.writingInstructions)
                     .font(.system(size: 12.5))
                     .frame(minHeight: 118)
                     .padding(7)
-                    .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
-                    .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.25)))
-                    .accessibilityLabel("Grammar correction system instructions")
+                    .background(Color(nsColor: .textBackgroundColor), in: PrismaticPanelShape(cut: 5))
+                    .overlay(PrismaticPanelShape(cut: 5).stroke(Color.secondary.opacity(0.25)))
+                    .accessibilityLabel("Words preserved by grammar correction")
                 HStack {
                     Text("\(settings.writingInstructions.count.formatted()) / 4,000 characters")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()
-                    Button("Restore Recommended Instructions") {
+                    Button("Restore Defaults") {
                         settings.resetWritingInstructions()
                     }
                 }
@@ -354,67 +319,12 @@ struct SettingsView: View {
         .controlSize(.small)
     }
 
-    private func modelPicker(_ title: String, selection: Binding<LocalModelID>) -> some View {
-        LabeledContent(title) {
-            Picker(title, selection: selection) {
-                ForEach(LocalModelCatalog.models) { model in
-                    Text("\(model.title)\(LocalModelCatalog.isInstalled(model.id) ? "" : " · Not installed")")
-                        .tag(model.id)
-                        .disabled(!LocalModelCatalog.isInstalled(model.id))
-                }
-            }
-            .labelsHidden()
-            .frame(width: 245)
-            .id(modelDownloads.installedGeneration)
-        }
-    }
-
-    private func modelRow(_ model: LocalModelDescriptor) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: model.bundled ? "shippingbox.fill" : "cpu.fill")
-                .foregroundStyle(model.bundled ? SettingsColors.indigo : SettingsColors.cyan)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.title).font(.callout.weight(.semibold))
-                Text("\(model.vendor) · \(model.detail) · \(model.sizeLabel)")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            if model.bundled {
-                Text("BUNDLED").font(.caption2.bold()).foregroundStyle(.green)
-            } else if modelDownloads.downloading == model.id {
-                Button("Cancel", action: modelDownloads.cancel)
-            } else if LocalModelCatalog.isInstalled(model.id) {
-                Button("Remove…") { modelToRemove = model.id }
-            } else if model.downloadURL == nil {
-                Button("Model Page") {
-                    if let url = model.modelPageURL { NSWorkspace.shared.open(url) }
-                }
-                Button("Import…") { importModel(model.id) }
-            } else {
-                Button("Install") { modelDownloads.install(model.id) }
-                    .disabled(modelDownloads.downloading != nil)
-            }
-        }
-    }
-
-    private func importModel(_ identifier: LocalModelID) {
-        let panel = NSOpenPanel()
-        panel.title = "Import \(LocalModelCatalog.descriptor(identifier).title)"
-        panel.message = "Choose the exact official GGUF file. RayPlacement verifies it before installation."
-        panel.allowedContentTypes = [.data]
-        panel.allowsMultipleSelection = false
-        panel.canChooseDirectories = false
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        modelDownloads.importModel(identifier, from: url)
-    }
-
     private var usageTab: some View {
         let summary = usageMonitor.summary
         return Form {
             Section("Live activity") {
                 if usageMonitor.activeTasks.isEmpty {
-                    Label("No local AI or extension process is running", systemImage: "checkmark.circle.fill")
+                    Label("No local process is running", systemImage: "checkmark.circle.fill")
                         .foregroundStyle(.green)
                 } else {
                     ForEach(usageMonitor.activeTasks) { task in
@@ -435,14 +345,14 @@ struct SettingsView: View {
             Section("Today") {
                 LabeledContent("Completed tasks", value: summary.completedToday.formatted())
                 LabeledContent("Failed or cancelled", value: summary.failedToday.formatted())
-                LabeledContent("Local model time", value: durationLabel(summary.modelSecondsToday))
+                LabeledContent("Local processing time", value: durationLabel(summary.processingSecondsToday))
                 LabeledContent("Characters processed", value: summary.inputCharactersToday.formatted())
                 LabeledContent("Characters produced", value: summary.outputCharactersToday.formatted())
             }
 
             Section("Recent work") {
                 if usageMonitor.events.isEmpty {
-                    Text("Completed AI and executable-extension tasks will appear here.")
+                    Text("Completed dictation, grammar, and executable-extension tasks will appear here.")
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(usageMonitor.events.prefix(20)) { event in
@@ -465,7 +375,7 @@ struct SettingsView: View {
                     Button("Clear Log…", role: .destructive) { confirmUsageClear = true }
                         .disabled(usageMonitor.events.isEmpty)
                 }
-                Label("The log stays on this Mac and records task names, model, limits, duration, counts, and success—not selected text, note contents, prompts, or document data.", systemImage: "hand.raised.fill")
+                Label("The log stays on this Mac and records task names, limits, duration, counts, and success—not selected text, note contents, or document data.", systemImage: "hand.raised.fill")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -524,6 +434,18 @@ struct SettingsView: View {
                     symbol: "rectangle.righthalf.inset.filled",
                     enabled: $settings.notesDockRightHotkeyEnabled,
                     shortcut: $settings.notesDockRightShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "Developer Terminal",
+                    symbol: "terminal.fill",
+                    enabled: $settings.terminalHotkeyEnabled,
+                    shortcut: $settings.terminalShortcut
+                )
+                PrimaryShortcutRow(
+                    title: "SQL Workspace",
+                    symbol: "cylinder.split.1x2.fill",
+                    enabled: $settings.sqlHotkeyEnabled,
+                    shortcut: $settings.sqlShortcut
                 )
             }
 
@@ -715,7 +637,7 @@ struct SettingsView: View {
             Text("RayPlacement").font(.title.bold())
             Text("A fast, local-only macOS command launcher")
                 .foregroundStyle(.secondary)
-            Text("Local-only writing tools. No cloud AI. No analytics.")
+            Text("Local Python and Harper writing tools. No network requests or analytics.")
                 .font(.callout.weight(.medium))
             Text("Version \(updateService.currentVersion)")
                 .font(.caption)
@@ -1057,7 +979,7 @@ final class SettingsWindowController: NSWindowController {
         let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
-            styleMask: [.titled, .closable, .miniaturizable],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
@@ -1079,6 +1001,6 @@ final class SettingsWindowController: NSWindowController {
         settingsStore.refreshLaunchAtLogin()
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
-        window?.makeKeyAndOrderFront(nil)
+        if let window { WorkspaceWindowCoordinator.shared.present(window) }
     }
 }

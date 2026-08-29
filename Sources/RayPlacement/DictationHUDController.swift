@@ -5,53 +5,49 @@ import SwiftUI
 @MainActor
 final class DictationHUDController {
     private let panel: DictationHUDPanel
-    private var phaseObserver: AnyCancellable?
+    private let music = MusicNowPlayingService()
+    private var stateObserver: AnyCancellable?
 
-    init(
-        dictation: NoteDictationService,
-        openNotes: @escaping () -> Void
-    ) {
-        panel = DictationHUDPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 68)
-        )
-        panel.contentView = NSHostingView(rootView: DictationHUDView(
+    init(dictation: NoteDictationService) {
+        panel = DictationHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 48))
+        panel.contentView = NSHostingView(rootView: TopShelfView(
             dictation: dictation,
-            openNotes: openNotes,
-            stop: { dictation.performPrimaryAction(destinationNoteID: nil) },
-            cancel: dictation.cancel
+            music: music
         ))
 
-        phaseObserver = dictation.$phase
-            .removeDuplicates()
-            .sink { [weak self] phase in
+        stateObserver = Publishers.CombineLatest(dictation.$phase, music.$nowPlaying)
+            .sink { [weak self] phase, nowPlaying in
                 guard let self else { return }
-                switch phase {
-                case .idle:
+                let dictationVisible = phase != .idle
+                let musicVisible = nowPlaying != nil
+                guard dictationVisible || musicVisible else {
                     self.hide()
-                case .requestingPermission, .recording, .transcribing:
-                    self.show()
+                    return
                 }
+                let width: CGFloat = dictationVisible && musicVisible ? 590 : (dictationVisible ? 312 : 270)
+                self.show(width: width)
             }
     }
 
-    func show() {
+    private func show(width: CGFloat) {
+        panel.setContentSize(NSSize(width: width, height: 48))
         let screen = NSScreen.main ?? NSScreen.screens.first
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
-                x: visibleFrame.midX - panel.frame.width / 2,
-                y: visibleFrame.minY + 18
+                x: visibleFrame.midX - width / 2,
+                y: visibleFrame.maxY - panel.frame.height - 12
             ))
         }
         panel.orderFrontRegardless()
     }
 
-    func hide() {
+    private func hide() {
         panel.orderOut(nil)
     }
 }
 
 private final class DictationHUDPanel: NSPanel {
-    override var canBecomeKey: Bool { true }
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     override init(
@@ -66,6 +62,9 @@ private final class DictationHUDPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
+        // This is an informational overlay: it should never take focus or
+        // intercept work in the app beneath it.
+        ignoresMouseEvents = true
         level = .statusBar
         isFloatingPanel = true
         hidesOnDeactivate = false
@@ -74,87 +73,97 @@ private final class DictationHUDPanel: NSPanel {
         hasShadow = true
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
-        setAccessibilityLabel("RayPlacement dictation status")
+        setAccessibilityLabel("RayPlacement activity shelf")
     }
 }
 
-private struct DictationHUDView: View {
+private struct TopShelfView: View {
     @ObservedObject var dictation: NoteDictationService
-    let openNotes: () -> Void
-    let stop: () -> Void
-    let cancel: () -> Void
+    @ObservedObject var music: MusicNowPlayingService
 
     var body: some View {
-        HStack(spacing: 11) {
-            activityIndicator
-                .frame(width: 44, height: 32)
+        HStack(spacing: 8) {
+            if dictation.phase != .idle {
+                dictationPill.frame(width: 312)
+            }
+            if let track = music.nowPlaying {
+                musicPill(track).frame(width: 270)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: dictation.phase)
+        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: music.nowPlaying)
+    }
 
+    private var dictationPill: some View {
+        HStack(spacing: 8) {
+            activityIndicator.frame(width: 30, height: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(primaryText)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                 Text(secondaryText)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-
-            Button(action: openNotes) {
-                Image(systemName: "note.text")
-                    .frame(width: 20, height: 20)
-            }
-            .buttonStyle(.borderless)
-            .help("Open the destination note")
-            .accessibilityLabel("Open destination note")
-
-            if dictation.phase == .recording {
-                Button("Stop", systemImage: "stop.fill", action: stop)
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-            }
-
-            Button(action: cancel) {
-                Image(systemName: "xmark")
-                    .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Cancel dictation")
         }
-        .padding(.horizontal, 13)
-        .frame(width: 440, height: 68)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 15, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 15, style: .continuous)
-                .stroke(Color.white.opacity(0.16), lineWidth: 1)
-        )
+        .padding(.horizontal, 10)
+        .frame(height: 48)
+        .prismaticShelf(accent: .red)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityText)
+    }
+
+    private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                PrismaticPanelShape(cut: 6)
+                    .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.24))
+                Image(systemName: track.source.symbol)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+            }
+            .frame(width: 28, height: 28)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title)
+                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                Text(mediaSubtitle(track))
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 48)
+        .prismaticShelf(accent: SettingsStore.shared.accentTheme.tertiary)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(track.source.title), now playing \(track.title) by \(track.artist)")
+    }
+
+    private func mediaSubtitle(_ track: MediaNowPlayingSnapshot) -> String {
+        let detail = track.artist.isEmpty ? track.album : track.artist
+        return detail.isEmpty ? track.source.title : "\(track.source.title) · \(detail)"
     }
 
     @ViewBuilder
     private var activityIndicator: some View {
         switch dictation.phase {
-        case .recording:
-            SpeechLevelView(level: dictation.audioLevel)
-        case .requestingPermission, .transcribing:
-            ProgressView()
-                .controlSize(.small)
-        case .idle:
-            Image(systemName: "mic")
+        case .recording: SpeechLevelView(level: dictation.audioLevel)
+        case .requestingPermission, .transcribing: ProgressView().controlSize(.small)
+        case .idle: Image(systemName: "mic")
         }
     }
 
     private var primaryText: String {
         switch dictation.phase {
-        case .requestingPermission:
-            return "Waiting for dictation permission"
-        case .recording:
-            return "Recording to \(dictation.destinationNoteTitle)"
-        case .transcribing:
-            return "Transcribing to \(dictation.destinationNoteTitle)"
-        case .idle:
-            return "Dictation stopped"
+        case .requestingPermission: return "Waiting for dictation permission"
+        case .recording: return "Recording · \(dictation.destinationNoteTitle)"
+        case .transcribing: return "Transcribing to \(dictation.destinationNoteTitle)"
+        case .idle: return "Dictation stopped"
         }
     }
 
@@ -165,21 +174,20 @@ private struct DictationHUDView: View {
                 ? "Approve Microphone access if prompted"
                 : "Approve Microphone and Speech Recognition if prompted"
         case .recording:
-            return "\(Self.clock(dictation.recordingElapsed)) · \(dictation.inputSignalText)"
+            let live = dictation.semiLiveSegmentCount == 0 ? "semi-live" : "\(dictation.semiLiveSegmentCount) added"
+            return "\(Self.clock(dictation.recordingElapsed)) · \(live) · \(dictation.inputSignalText)"
         case .transcribing:
-            return dictation.transcriptionProgress ?? "Processing the recording on this Mac…"
+            return dictation.transcriptionProgress ?? "Processing locally…"
         case .idle:
             return ""
         }
     }
 
     private var accessibilityText: String {
-        switch dictation.phase {
-        case .recording:
+        if dictation.phase == .recording {
             return "Recording to \(dictation.destinationNoteTitle), \(Self.clock(dictation.recordingElapsed)) elapsed"
-        default:
-            return primaryText
         }
+        return primaryText
     }
 
     private static func clock(_ seconds: TimeInterval) -> String {
@@ -188,20 +196,50 @@ private struct DictationHUDView: View {
     }
 }
 
+private extension View {
+    func prismaticShelf(accent: Color) -> some View {
+        background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
+            .background(Color.black.opacity(0.30), in: PrismaticPanelShape(cut: 8))
+            .overlay(
+                PrismaticPanelShape(cut: 8)
+                    .fill(
+                        LinearGradient(
+                            colors: [.clear, Color.white.opacity(0.09), accent.opacity(0.10), .clear],
+                            startPoint: .bottomLeading,
+                            endPoint: .topTrailing
+                        )
+                    )
+                    .blendMode(.screen)
+            )
+            .overlay(
+                PrismaticPanelShape(cut: 8)
+                    .stroke(
+                        LinearGradient(
+                            colors: [Color.white.opacity(0.36), accent.opacity(0.44), Color.white.opacity(0.08)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        ),
+                        lineWidth: 0.75
+                    )
+            )
+            .shadow(color: accent.opacity(0.16), radius: 10, y: 5)
+    }
+}
+
 private struct SpeechLevelView: View {
     let level: Double
-    private let multipliers: [Double] = [0.48, 0.78, 1.0, 0.72, 0.54]
+    private let multipliers: [Double] = [0.58, 1.0, 0.72]
 
     var body: some View {
-        HStack(alignment: .center, spacing: 3) {
+        HStack(alignment: .center, spacing: 2.5) {
             ForEach(Array(multipliers.enumerated()), id: \.offset) { _, multiplier in
                 Capsule()
                     .fill(Color.red)
-                    .frame(width: 3, height: 5 + 20 * max(0.08, level) * multiplier)
+                    .frame(width: 3, height: 4 + 15 * max(0.08, level) * multiplier)
             }
         }
-        .frame(width: 40, height: 30)
-        .background(Color.red.opacity(0.10), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(width: 28, height: 24)
+        .background(Color.red.opacity(0.10), in: PrismaticPanelShape(cut: 5))
         .animation(.linear(duration: 0.08), value: level)
         .accessibilityHidden(true)
     }

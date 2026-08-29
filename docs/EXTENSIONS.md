@@ -1,25 +1,45 @@
-# RayPlacement extensions
+# Build a RayPlacement extension
 
-Extensions add commands without recompiling the app. They are folders inside:
+RayPlacement extensions add searchable commands and compact native workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
 
-`~/Library/Application Support/RayPlacement/Extensions/`
+Installed extensions live at:
 
-Each folder contains a `manifest.json`. A command can open a URL, file, or app; copy or paste text; or run a local executable. Choose **Reload Extensions** in RayPlacement after making changes.
+```text
+~/Library/Application Support/RayPlacement/Extensions/
+```
 
-## Minimal manifest
+Open that folder from RayPlacement, add or edit an extension, then run **Reload Extensions**. Commands appear in search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
+
+## Choose the smallest tool
+
+| Need | Use |
+| --- | --- |
+| Open a URL, file, folder, or app | A schema-v1 built-in action |
+| Copy or paste fixed text | `copy`, `paste`, or `pastePlainText` |
+| Ask for a few inputs and return output | A schema-v2 `form` |
+| Make an HTTP request | A form with `httpRequest` execution |
+| Run trusted local logic | A form or command with `shell` execution |
+| Build a large persistent workspace | Add a native tool to RayPlacement itself |
+
+Prefer built-in actions and forms. They inherit keyboard navigation, validation, safe argument handling, compact feedback, and the current prismatic interface automatically.
+
+## Five-minute extension
+
+Create `my-tools/manifest.json`:
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "local.my-tools",
+  "id": "local.example.my-tools",
   "name": "My Tools",
+  "description": "Small shortcuts for my workflow",
   "commands": [
     {
       "id": "open-projects",
       "title": "Open Projects",
-      "keywords": ["code", "folder"],
+      "subtitle": "Show my local project folder",
+      "keywords": ["code", "folder", "work"],
       "icon": "folder.fill",
-      "hotkey": "option+shift+p",
       "action": {
         "type": "file",
         "value": "~/Projects"
@@ -29,63 +49,179 @@ Each folder contains a `manifest.json`. A command can open a URL, file, or app; 
 }
 ```
 
-`icon` is any SF Symbols name. `subtitle`, `keywords`, and `hotkey` are optional. Hotkeys use names such as `command`, `option`, `control`, and `shift`, followed by a supported letter, number, arrow, Space, Tab, Return, Escape, or F1–F12. `command+command` is the special double-Command gesture. Every loaded command also gets a recorder in **Settings → Extensions**, where the user can replace, clear, restore, or independently disable its shortcut. Each extension and function has its own enabled checkbox; disabling one preserves its configuration.
+IDs are persistence keys. Use reverse-domain-style extension IDs and never change a released extension or command ID unless you intend to reset its shortcut and enablement preferences. `icon` is an SF Symbols name.
 
-## Action types
+## Command reference
 
-| Type | `value` | Optional fields |
+A command requires `id`, `title`, and `action`.
+
+| Field | Purpose |
+| --- | --- |
+| `subtitle` | One short outcome-oriented explanation |
+| `keywords` | Alternate words users will search |
+| `icon` | SF Symbols name |
+| `hotkey` | Optional default such as `command+shift+p` |
+| `runInBackground` | Keep the launcher free and report progress in a compact status box |
+
+Hotkeys support `command`, `option`, `control`, and `shift`, followed by a letter, number, navigation key, or F1–F12. `command+command` is the double-Command gesture. Default hotkeys should be rare; users can record and independently enable a shortcut for each command.
+
+### Built-in actions
+
+| Type | Behavior | `value` |
 | --- | --- | --- |
-| `url` | Full URL to open | — |
-| `file` | Absolute, `~`-relative, or extension-relative path | — |
-| `application` | Path to a `.app` | — |
-| `copy` | Text copied to the clipboard | — |
-| `paste` | Literal text pasted into the previously focused app | — |
-| `pastePlainText` | Current clipboard text with rich formatting removed, then pasted | `value` is ignored |
-| `checkWriting` | Selected text corrected directly by the bundled local Qwen model using the user's Writing instructions | `value` is ignored |
-| `openInVSCode` | Enters an interactive Spotlight picker, then opens the chosen file or directory in Visual Studio Code | `value` is ignored |
-| `convertTimezones` | Opens the offline, two-column timezone converter | `value` is ignored |
-| `forceQuitApplications` | Opens a searchable running-app picker and requires confirmation before force quitting | `value` is ignored |
-| `forceQuitAllApplications` | Confirms, then force quits every foreground app except RayPlacement | `value` is ignored |
-| `openFormatterWorkspace` | Opens the temporary Notes workspace for EDI, JSON, and XML formatting, validation, inspection, search, and optional local-AI proposals | `value` is ignored |
-| `openEmojiPicker` | Opens the native searchable emoji selector and pastes the chosen emoji into the source app | `value` is ignored |
-| `shell` | Absolute or extension-relative executable path | `arguments`, `workingDirectory` |
+| `url` | Open a web URL | Required URL |
+| `file` | Open a path | Absolute, `~`-relative, or extension-relative path |
+| `application` | Open an app | Path to `.app` |
+| `copy` | Copy fixed plain text | Text to copy |
+| `paste` | Paste fixed text into the prior app | Text to paste |
+| `pastePlainText` | Paste current clipboard without rich formatting | Empty |
+| `checkWriting` | Check and replace the exact selected text locally | Empty |
+| `openFocusedFileLauncher` | Choose a file/folder in Finder, then open it with an installed app | Empty |
+| `convertTimezones` | Open the offline timezone converter | Empty |
+| `forceQuitApplications` | Pick and confirm one app to force quit | Empty |
+| `forceQuitAllApplications` | Confirm and quit foreground apps except RayPlacement | Empty |
+| `openFormatterWorkspace` | Open the EDI/JSON/XML workspace | Empty |
+| `openEmojiPicker` | Search the full Unicode emoji set and paste one | Empty |
+| `openPasswordGenerator` | Open the password generator | Empty |
+| `openExtensionDevelopment` | Open these maintained manuals | Empty |
+| `shell` | Launch an executable directly | Executable path |
+| `form` | Present a native input/output workflow | See below |
 
-Arguments are passed directly to the executable—RayPlacement does not assemble a shell command. Put shell logic in a script with a shebang, then mark it executable:
+## Dynamic forms
 
-```sh
-chmod +x bin/my-command
+Use `schemaVersion: 2` for forms. RayPlacement lays out only the fields that currently matter, validates them before execution, and displays output in the shared workspace. A tool can remain in the main window or be popped out by the user.
+
+Available fields:
+
+| Type | Best for | Useful options |
+| --- | --- | --- |
+| `text` | Short values | `placeholder`, `defaultValue` |
+| `secure` | Passwords and tokens | Never persisted or logged |
+| `multiline` | Bodies, scripts, documents | `placeholder` |
+| `number` | Numeric input | `minimum`, `maximum` |
+| `toggle` | A binary choice | `defaultValue` |
+| `picker` | A fixed set of choices | `options` |
+| `file`, `directory` | Native path selection | `required` |
+| `date` | A date value | `defaultValue` |
+| `slider` | Bounded tuning | `minimum`, `maximum` |
+| `keyValue` | Headers, variables, metadata | Repeatable rows |
+
+All fields accept `id`, `label`, `section`, `helpText`, `required`, and `visibleWhen` where applicable. Keep help text short and use it only where the expected input is not obvious.
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "local.example.request-tools",
+  "name": "Request Tools",
+  "commands": [
+    {
+      "id": "inspect-endpoint",
+      "title": "Inspect Endpoint",
+      "icon": "network",
+      "action": {
+        "type": "form",
+        "value": "",
+        "form": {
+          "title": "Inspect Endpoint",
+          "submitLabel": "Send",
+          "fields": [
+            {
+              "id": "url",
+              "label": "URL",
+              "type": "text",
+              "required": true,
+              "section": "Request"
+            },
+            {
+              "id": "authType",
+              "label": "Authentication",
+              "type": "picker",
+              "options": ["None", "Bearer"],
+              "defaultValue": "None",
+              "section": "Authentication"
+            },
+            {
+              "id": "token",
+              "label": "Bearer token",
+              "type": "secure",
+              "required": true,
+              "section": "Authentication",
+              "visibleWhen": { "field": "authType", "equals": "Bearer" }
+            }
+          ],
+          "execution": {
+            "type": "httpRequest",
+            "method": "GET",
+            "url": "{{url}}",
+            "headers": {
+              "Authorization": "Bearer {{token}}"
+            },
+            "timeoutSeconds": 30
+          }
+        }
+      }
+    }
+  ]
+}
 ```
 
-Script output is shown inside the launcher. Output is limited to 1 MB. Nonzero exit status is shown as an error.
+`visibleWhen` accepts `equals` or `notEquals`. Required validation applies only while the field is visible.
 
-Set `runInBackground` to `true` on a shell command to keep the launcher out of the way while it runs. RayPlacement shows a compact bottom status capsule and records the result in Usage. Leave it off when stdout is the command's primary result.
+## Execution and templates
 
-## Native input/output workflows
+A form execution is either:
 
-Schema version 2 adds a `form` action for extensions that need a real UI without app-specific Swift code. Forms support `text`, `secure`, `multiline`, `number`, `toggle`, and `picker` fields. An execution can send an `httpRequest` or invoke a trusted executable. Use `{{fieldID}}` placeholders in URL, method, headers, body, executable path, arguments, or working directory. Values stay in memory; secure values are not persisted.
+- `httpRequest`: `method`, `url`, `headers`, `body`, and `timeoutSeconds`. Only HTTP(S) is accepted.
+- `shell`: `executable`, `arguments`, `workingDirectory`, and `timeoutSeconds`.
 
-The bundled `Extensions/endpoint-tester` is a complete example and receives a dedicated Postman-style workspace. It supports GET/POST/PUT/PATCH/DELETE/HEAD/OPTIONS, editable query parameters and headers, no-auth/Bearer/Basic/API-key authorization, validated JSON/text/XML bodies, cancellation, session request history, cURL export, and separate formatted Body, Headers, and Raw response views. Secrets remain only in memory and are cleared when a history entry is restored. Only HTTP(S) endpoints are accepted, response capture is capped at 2 MB, and the user's extension timeout remains the upper bound.
+Insert a form value with an exact placeholder such as `{{url}}`. Substitution happens independently inside each string. RayPlacement does not concatenate or evaluate a shell command.
 
-## Performance contract for local AI
+For shell execution, pass every argument separately:
 
-Every executable command receives the user's current **Settings → Performance → Extensions** choice through these environment variables:
+```json
+"execution": {
+  "type": "shell",
+  "executable": "/usr/bin/wc",
+  "arguments": ["-w", "{{file}}"],
+  "timeoutSeconds": 20
+}
+```
+
+Never use `eval`, `zsh -c`, or another command interpreter to process user input. Output is capped at 1 MB. Put complex logic in a reviewed extension-relative executable with an explicit shebang and executable permission.
+
+## Feedback, performance, and privacy
+
+Use `runInBackground: true` for work that does not require the form to stay open. RayPlacement shows a compact status indicator and leaves the launcher available. Commands receive cooperative resource settings on every run:
 
 | Variable | Meaning |
 | --- | --- |
-| `RAYPLACEMENT_PERFORMANCE_SCALE` | Active runtime level: `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
-| `RAYPLACEMENT_THREAD_LIMIT` | Requested maximum worker threads; Unbounded supplies every logical CPU exposed by macOS |
-| `RAYPLACEMENT_TIMEOUT_SECONDS` | Hard wall-clock timeout applied by RayPlacement; `0` means the user explicitly selected no timeout |
-| `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native numerical-library thread limits |
-| `TOKENIZERS_PARALLELISM` | Always `false` |
+| `RAYPLACEMENT_PERFORMANCE_SCALE` | `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
+| `RAYPLACEMENT_THREAD_LIMIT` | Requested worker ceiling |
+| `RAYPLACEMENT_TIMEOUT_SECONDS` | Wall-clock limit; `0` means explicitly unbounded |
+| `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native worker limits |
+| `TOKENIZERS_PARALLELISM` | `false` |
 
-RayPlacement assigns the child process background, utility, or foreground priority for the active level; continuously drains but stores at most 1 MB of output; and terminates it at the configured deadline. With Beta Dynamic Performance enabled, the active level can be lower than the user's slider ceiling when Low Power Mode or thermal pressure calls for it, so extensions must read these variables on every invocation. AI extensions should pass `RAYPLACEMENT_THREAD_LIMIT` to every inference runtime. They should load models only when invoked, unload them on exit, avoid GPU use unless clearly disclosed, and document approximate memory use. Environment thread limits are cooperative—a third-party executable can ignore them—so only run extensions you trust.
+Beta Dynamic Performance may lower the active level during Low Power Mode or thermal pressure. Read these values for each run. They are performance guidance, not a security sandbox.
 
-## Trust and permissions
+Rules for sensitive data:
 
-Extensions are local code and run with your macOS user account's access. Only install scripts you wrote or reviewed. `paste`, `pastePlainText`, selected-text reading/replacement, and window management ask for Accessibility permission. `checkWriting` sends the standard Copy command to the previously focused app so it works in browsers, Electron, Office, and custom editors; RayPlacement reads only the resulting text and immediately restores the prior clipboard when no other app changed it. Accessibility selection is the fallback. Qwen runs locally and receives the correction instructions from Settings; checked text is not sent over the network. Ordinary launcher shortcuts, URL/file opening, and executable commands do not need Accessibility access. The special double-Command gesture is observed only while its hotkey is enabled and ignores Command when used in a chord. Performance limits do not turn untrusted executable code into a security sandbox.
+- Use `secure` for credentials and consume them only for the current run.
+- Never echo secrets, request authorization headers, selected writing, clipboard data, or dictated text.
+- State network access, filesystem writes, and destructive behavior in the command subtitle and confirmation flow.
+- Extensions run as the signed-in user. Install only code you trust.
 
-The included `Extensions/writing-tools` manifest adds **Paste as Plain Text** and **Check Spelling & Grammar**. `Extensions/endpoint-tester` demonstrates a native form flow. `Extensions/emoji-picker` adds the searchable emoji selector with double Command as its default gesture. `Extensions/vscode-directories` adds an interactive file-or-directory search for Visual Studio Code. `Extensions/productivity-tools` adds an offline, daylight-saving-aware **Convert Timezones** view, a confirmed **Force Quit Application** picker, and a separately confirmed **Force Quit All Applications** action that excludes RayPlacement. `Extensions/document-formatter` opens a temporary Notes workspace for EDI, JSON, and XML. The top-level `Install RayPlacement.command` installs RayPlacement and every bundled extension into your user folders.
+## Validate and debug
 
-For a precise AI-oriented build and verification contract, see [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md). A JSON Schema is available at [extension-manifest.schema.json](extension-manifest.schema.json).
+Use [extension-manifest.schema.json](extension-manifest.schema.json) as the source of truth. Before sharing an extension:
 
-The included `Examples/project-tools` folder is ready to copy, or run `./scripts/install_example_extension.sh` from the project.
+1. Confirm the manifest is valid JSON and conforms to the schema.
+2. Reload extensions and search by title and every important keyword.
+3. Test keyboard-only navigation, validation, cancellation, success, and failure.
+4. Record, disable, restore, and invoke the command shortcut.
+5. Confirm secure fields never appear in saved files or logs.
+6. Confirm a background command leaves the launcher responsive.
+7. Test the packaged app, not only a development build.
+
+Bundled references include `Extensions/endpoint-tester`, `Extensions/security-tools`, `Extensions/writing-tools`, `Extensions/emoji-picker`, `Extensions/vscode-directories` (Focused File Launcher), and `Examples/project-tools`.
+
+For a strict implementation contract and a copyable prompt for coding agents, read [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md).

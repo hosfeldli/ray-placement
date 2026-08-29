@@ -7,7 +7,6 @@ SOURCE_EXTENSIONS_DIRECTORY="$SCRIPT_DIRECTORY/Extensions"
 PACKAGE_MANIFEST="$SCRIPT_DIRECTORY/Package.swift"
 SIGNING_SETUP="$SCRIPT_DIRECTORY/scripts/setup_local_signing.sh"
 PACKAGE_SCRIPT="$SCRIPT_DIRECTORY/scripts/package_app.sh"
-QWEN_ASSEMBLER="$SCRIPT_DIRECTORY/scripts/assemble_qwen_model.sh"
 WHISPER_ASSEMBLER="$SCRIPT_DIRECTORY/scripts/assemble_whisper_model.sh"
 CURRENT_USER="$(id -un)"
 USER_HOME_DIRECTORY="$(dscl . -read "/Users/$CURRENT_USER" NFSHomeDirectory | awk '{print $2}')"
@@ -27,7 +26,7 @@ if [[ "$(uname -m)" != "arm64" ]]; then
     exit 1
 fi
 
-if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -x "$QWEN_ASSEMBLER" && -x "$WHISPER_ASSEMBLER" ]]; then
+if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -x "$WHISPER_ASSEMBLER" ]]; then
     if ! xcrun --find swiftc >/dev/null 2>&1; then
         echo "Apple Command Line Tools are required for the first local setup."
         echo "Run: xcode-select --install"
@@ -40,17 +39,8 @@ if [[ -f "$PACKAGE_MANIFEST" && -x "$SIGNING_SETUP" && -x "$PACKAGE_SCRIPT" && -
         exit 1
     fi
 
-    "$QWEN_ASSEMBLER"
     "$WHISPER_ASSEMBLER"
-    QWEN_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/Qwen3-1.7B-Q8_0.gguf"
-    QWEN_RUNTIME="$SCRIPT_DIRECTORY/Packaging/Vendor/Qwen/runtime/llama-cli"
-    if [[ ! -f "$QWEN_MODEL" || "$(stat -f '%z' "$QWEN_MODEL" 2>/dev/null || echo 0)" -lt 1000000000 \
-        || ! -x "$QWEN_RUNTIME" ]]; then
-        echo "The local Qwen writing model or runtime is incomplete."
-        echo "Check the network connection, then open this installer again."
-        exit 1
-    fi
-    WHISPER_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en.bin"
+    WHISPER_MODEL="$SCRIPT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
     WHISPER_RUNTIME="$SCRIPT_DIRECTORY/Packaging/WhisperRuntime/whisper-cli"
     if [[ ! -f "$WHISPER_MODEL" || "$(stat -f '%z' "$WHISPER_MODEL" 2>/dev/null || echo 0)" -lt 400000000 \
         || ! -x "$WHISPER_RUNTIME" ]]; then
@@ -118,20 +108,23 @@ if [[ "${RAYPLACEMENT_SKIP_LAUNCH:-0}" != "1" ]]; then
 fi
 
 echo
-echo "RayPlacement, Notes, Writing Tools, Endpoint Tester, Emoji Picker, VS Code Directories, Productivity Tools, and Document Formatter are installed."
+echo "RayPlacement, Notes, Writing Tools, Endpoint Tester, Password Generator, Emoji Picker, Focused File Launcher, Productivity Tools, and Document Formatter are installed."
 echo "App: $INSTALLED_APP"
 echo "Plain-text paste: Control-Option-V"
 echo "Writing check: Control-Option-G"
 echo "Emoji picker: tap Command twice"
+echo "The Emoji Picker uses the full Unicode 17.0 keyboard set in a searchable grid."
 echo "Configure any extension shortcut in Settings → Extensions."
 echo "Productivity Tools: offline timezone conversion and confirmed single/all-app force quit (RayPlacement stays open)."
-echo "Choose verified local models in Settings → Writing and Auto, Metal, or CPU compute in Settings → Performance."
-echo "Monitor local AI and extension work in Settings → Usage."
-echo "Notes use inline Markdown, can be summarized locally with Qwen, and use Local Whisper for reliable meeting dictation."
-echo "Document Formatter opens as a temporary Notes workspace for EDI, JSON, and XML."
-echo "Developer Terminal keeps one persistent zsh session, supports multiline command blocks and history, and includes Vim/Nano shortcut guides."
-echo "Endpoint Tester includes request params, auth, headers, bodies, session history, cURL export, and response tabs."
-echo "Extension schema v2 can build native input/output forms; Endpoint Tester is included."
+echo "Writing checks use bundled Python spelling and Harper grammar rules; dictation is the only AI-powered feature."
+echo "Choose Automatic, Metal, or CPU compute for Local Whisper in Settings → Performance."
+echo "Monitor local dictation, grammar, and extension work in Settings → Usage."
+echo "Notes use inline formatted Markdown and semi-live Local Whisper meeting dictation with pause and speaker-turn formatting."
+echo "The compact top activity shelf shows supported Apple Music and Spotify controls while a track is playing."
+echo "Document Formatter opens in a focused resizable workspace for EDI, JSON, and XML."
+echo "Developer Terminal is a real PTY with ANSI, sequential shell state, and Control/Option-Meta input."
+echo "Endpoint Tester imports Postman collections/environments and includes variables, inherited auth, runners, cURL, and response tabs."
+echo "Extension schema v2 supports conditional, sectioned, file, directory, date, slider, key/value, and input/output forms."
 echo "Uninstaller: $SCRIPT_DIRECTORY/Uninstall RayPlacement.command"
 echo "Check selected-text access in Settings → General → Accessibility."
 echo

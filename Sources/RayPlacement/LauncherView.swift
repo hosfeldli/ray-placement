@@ -11,7 +11,7 @@ struct LauncherView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
-            VStack(spacing: 7) {
+            VStack(spacing: 5) {
                 searchHeader
                 content
                     .id(viewModel.mode.visualIdentity)
@@ -19,21 +19,21 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: 704, height: 486)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .frame(width: 680, height: 452)
+        .clipShape(PrismaticPanelShape(cut: 12))
         .overlay(
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            PrismaticPanelShape(cut: 12)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.white.opacity(0.72), RayColors.indigo.opacity(0.30), Color.white.opacity(0.12), Color.black.opacity(0.18)],
+                        colors: [Color.white.opacity(0.74), RayColors.cyan.opacity(0.42), RayColors.indigo.opacity(0.28), Color.black.opacity(0.24)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
                     lineWidth: 0.9
                 )
         )
-        .shadow(color: RayColors.indigo.opacity(0.16), radius: 42, y: 20)
-        .shadow(color: .black.opacity(0.34), radius: 34, y: 19)
+        .shadow(color: RayColors.indigo.opacity(0.12), radius: 32, y: 14)
+        .shadow(color: .black.opacity(0.38), radius: 26, y: 14)
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
         .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
@@ -43,16 +43,16 @@ struct LauncherView: View {
     }
 
     private var searchHeader: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             if viewModel.mode == .root {
                 ZStack {
-                    Circle().fill(RayColors.heroGradient)
+                    PrismaticPanelShape(cut: 7).fill(RayColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
                         .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
-                .frame(width: 30, height: 30)
-                .overlay(Circle().stroke(Color.white.opacity(0.48), lineWidth: 0.7))
+                .frame(width: 27, height: 27)
+                .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.48), lineWidth: 0.7))
                 .shadow(color: RayColors.indigo.opacity(0.30), radius: 12, y: 5)
                 .accessibilityHidden(true)
             } else {
@@ -89,7 +89,7 @@ struct LauncherView: View {
             } else {
                 TextField(viewModel.placeholder, text: $viewModel.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 19, weight: .medium))
+                    .font(.system(size: 17, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
             }
@@ -104,14 +104,14 @@ struct LauncherView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: 5))
+                    .background(Color.primary.opacity(0.08), in: PrismaticPanelShape(cut: 4))
             }
         }
-        .padding(.horizontal, 15)
-        .frame(height: 52)
-        .liquidGlass(cornerRadius: 17, depth: .raised, accentOpacity: 0.028)
-        .padding(.horizontal, 10)
-        .padding(.top, 10)
+        .padding(.horizontal, 13)
+        .frame(height: 46)
+        .liquidGlass(cornerRadius: 15, depth: .raised, accentOpacity: 0.022)
+        .padding(.horizontal, 8)
+        .padding(.top, 8)
     }
 
     @ViewBuilder
@@ -123,9 +123,83 @@ struct LauncherView: View {
             writingReviewView(review)
         case .output(let title, let text, let state):
             outputView(title: title, text: text, state: state)
+        case .emojiPicker:
+            emojiGrid
         default:
             resultList
         }
+    }
+
+    private var emojiGrid: some View {
+        VStack(spacing: 6) {
+            if viewModel.emojiPageCount > 1 {
+                HStack(spacing: 5) {
+                    Spacer()
+                    Button { viewModel.moveEmojiPage(by: -1) } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .buttonStyle(EmojiPageButtonStyle(disabled: viewModel.emojiPageIndex == 0))
+                    .disabled(viewModel.emojiPageIndex == 0)
+                    .accessibilityLabel("Previous emoji page")
+                    Text(viewModel.emojiPageLabel)
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(minWidth: 36)
+                    Button { viewModel.moveEmojiPage(by: 1) } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .buttonStyle(EmojiPageButtonStyle(disabled: viewModel.emojiPageIndex + 1 >= viewModel.emojiPageCount))
+                    .disabled(viewModel.emojiPageIndex + 1 >= viewModel.emojiPageCount)
+                    .accessibilityLabel("Next emoji page")
+                }
+                .padding(.horizontal, 13)
+                .frame(height: 22)
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 40, maximum: 46), spacing: 5)],
+                        spacing: 5
+                    ) {
+                        ForEach(viewModel.emojiVisibleRange, id: \.self) { index in
+                            let entry = viewModel.emojiMatches[index]
+                            Button {
+                                viewModel.executeEmoji(at: index)
+                            } label: {
+                                EmojiGridTile(
+                                    emoji: entry.emoji,
+                                    selected: index == viewModel.selectedIndex
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(entry.name)
+                            .accessibilityValue(index == viewModel.selectedIndex ? "Selected" : "")
+                            .id(entry.id)
+                        }
+                    }
+                    .padding(.horizontal, 13)
+                    .padding(.vertical, 7)
+                }
+                .onChange(of: viewModel.selectedIndex) { newIndex in
+                    guard viewModel.emojiVisibleRange.contains(newIndex),
+                          viewModel.emojiMatches.indices.contains(newIndex) else { return }
+                    proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
+                }
+            }
+        }
+        .overlay {
+            if viewModel.emojiMatches.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 22, weight: .medium))
+                    Text("No matching emoji")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var resultList: some View {
@@ -178,12 +252,12 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 12) {
             if case .running = state {
                 HStack(spacing: 12) {
-                    TaskOrbitView(color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
+                    TaskOrbitView(color: isWritingOutput(title) ? RayColors.violet : RayColors.cyan)
                         .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(title).font(.system(size: 16, weight: .bold))
-                            StatusCapsule(text: isAIOutput(title) ? "LOCAL AI" : "RUNNING", color: isAIOutput(title) ? RayColors.violet : RayColors.cyan)
+                            StatusCapsule(text: isWritingOutput(title) ? "LOCAL RULES" : "RUNNING", color: isWritingOutput(title) ? RayColors.violet : RayColors.cyan)
                         }
                         Text(text.isEmpty ? "Working…" : text)
                             .font(.system(size: 13, weight: .medium))
@@ -194,7 +268,7 @@ struct LauncherView: View {
                 }
                 .padding(13)
                 .liquidGlass(cornerRadius: 16, depth: .raised, accentOpacity: 0.030)
-                ActivityTimeline(activeStep: activityStep(for: text), isAI: isAIOutput(title))
+                ActivityTimeline(activeStep: activityStep(for: text), isWriting: isWritingOutput(title))
             } else {
                 HStack(spacing: 12) {
                     ZStack {
@@ -334,7 +408,7 @@ struct LauncherView: View {
                 }
                 .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(review.issues.isEmpty ? "Your writing is ready" : "AI correction ready")
+                    Text(review.issues.isEmpty ? "Your writing is ready" : "Correction ready")
                         .font(.system(size: 16, weight: .bold))
                     Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
                         .font(.caption)
@@ -406,34 +480,30 @@ struct LauncherView: View {
     }
 
     private var activeWritingModelTitle: String {
-        let identifier = SettingsStore.shared.selectedModel(for: .writing)
-        return LocalModelCatalog.descriptor(identifier).title
+        "Python + Harper"
     }
 
+    @ViewBuilder
     private var footer: some View {
-        HStack {
-            Spacer()
-            HStack(spacing: 10) {
-                if viewModel.mode != .root {
+        if viewModel.mode != .root {
+            HStack {
+                Spacer()
+                HStack(spacing: 8) {
                     KeyHint(keys: "esc", label: outputCanCancel ? "Cancel" : "Back")
+                    if case .writingReview = viewModel.mode {
+                        KeyHint(keys: "⌘C", label: "Copy")
+                        KeyHint(keys: "↩", label: "Replace")
+                    }
+                    if viewModel.selectedItemIsActionable, !isOutputMode {
+                        KeyHint(keys: "↩", label: primaryActionLabel)
+                    }
                 }
-                if case .writingReview = viewModel.mode {
-                    KeyHint(keys: "⌘C", label: "Copy")
-                    KeyHint(keys: "↩", label: "Replace")
-                }
-                if viewModel.selectedItemIsActionable, !isOutputMode {
-                    KeyHint(keys: "↩", label: primaryActionLabel)
-                }
-                if viewModel.hasActionableResults, !isOutputMode {
-                    KeyHint(keys: "↑↓", label: "Navigate")
-                }
+                .padding(.horizontal, 8)
+                .frame(height: 25)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 29)
-            .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.018)
+            .padding(.horizontal, 9)
+            .padding(.bottom, 7)
         }
-        .padding(.horizontal, 11)
-        .padding(.bottom, 10)
     }
 
     private var isOutputMode: Bool {
@@ -479,7 +549,7 @@ struct LauncherView: View {
     private var primaryActionLabel: String {
         guard let action = viewModel.selectedItem?.action else { return "Run" }
         switch action {
-        case .launchApplication, .openFile, .openURL, .openInVSCode: return "Open"
+        case .launchApplication, .openFile, .openURL: return "Open"
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
@@ -491,7 +561,7 @@ struct LauncherView: View {
 
     private func actionLabel(for item: LauncherItem) -> String {
         switch item.action {
-        case .launchApplication, .openFile, .openURL, .openInVSCode: return "Open"
+        case .launchApplication, .openFile, .openURL: return "Open"
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
@@ -516,16 +586,29 @@ struct LauncherView: View {
         }
     }
 
-    private func isAIOutput(_ title: String) -> Bool {
+    private func isWritingOutput(_ title: String) -> Bool {
         let clean = title.lowercased()
-        return clean.contains("writing") || clean.contains("grammar") || clean.contains("summary") || clean.contains("qwen")
+        return clean.contains("writing") || clean.contains("grammar")
     }
 
     private func activityStep(for message: String) -> Int {
         let clean = message.lowercased()
         if clean.contains("review") || clean.contains("format") || clean.contains("final") { return 2 }
-        if clean.contains("correct") || clean.contains("qwen") || clean.contains("model") || clean.contains("analy") { return 1 }
+        if clean.contains("correct") || clean.contains("check") || clean.contains("analy") { return 1 }
         return 0
+    }
+}
+
+private struct EmojiPageButtonStyle: ButtonStyle {
+    let disabled: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(disabled ? Color.secondary.opacity(0.38) : Color.primary.opacity(0.85))
+            .frame(width: 20, height: 20)
+            .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.055), in: PrismaticPanelShape(cut: 4))
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
     }
 }
 
@@ -547,7 +630,7 @@ private struct WritingIssueRow: View {
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.07), in: Capsule())
+                        .background(Color.primary.opacity(0.07), in: PrismaticPanelShape(cut: 4))
                 }
                 Text(issue.message)
                     .font(.system(size: 12))
@@ -573,18 +656,18 @@ private struct ResultRow: View {
     let actionLabel: String?
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             LauncherIconView(icon: item.icon, selected: selected)
-                .frame(width: 30, height: 30)
+                .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.system(size: 14, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(.primary.opacity(selected ? 1 : 0.88))
+                    .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                    .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
                         .font(.system(size: 11.25, weight: .regular))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Color.white.opacity(selected ? 0.68 : 0.56))
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -601,8 +684,8 @@ private struct ResultRow: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.20), lineWidth: 0.6))
+                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 4))
+                    .overlay(PrismaticPanelShape(cut: 4).stroke(Color.white.opacity(0.20), lineWidth: 0.6))
             }
             if selected, let actionLabel {
                 HStack(spacing: 4) {
@@ -613,25 +696,25 @@ private struct ResultRow: View {
                 .foregroundStyle(.white)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(SettingsStore.shared.accentTheme.gradient, in: Capsule())
-                .overlay(Capsule().stroke(Color.white.opacity(0.35), lineWidth: 0.6))
+                .background(SettingsStore.shared.accentTheme.gradient, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.35), lineWidth: 0.6))
                 .shadow(color: SettingsStore.shared.accentTheme.primary.opacity(0.24), radius: 7, y: 3)
             }
         }
-        .padding(.horizontal, 11)
-        .frame(height: 46)
+        .padding(.horizontal, 10)
+        .frame(height: 43)
         .background {
             if selected {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 13, style: .continuous).fill(.ultraThinMaterial)
-                    RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    PrismaticPanelShape(cut: 7).fill(.ultraThinMaterial)
+                    PrismaticPanelShape(cut: 7)
                         .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.09))
                 }
             }
         }
         .overlay {
             if selected {
-                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                PrismaticPanelShape(cut: 7)
                     .strokeBorder(
                         LinearGradient(
                             colors: [Color.white.opacity(0.66), SettingsStore.shared.accentTheme.primary.opacity(0.36), Color.white.opacity(0.12)],
@@ -643,7 +726,7 @@ private struct ResultRow: View {
             }
         }
         .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.10) : .clear, radius: 11, y: 5)
-        .opacity(selected ? 1 : 0.90)
+        .opacity(selected ? 1 : 0.96)
         .scaleEffect(selected ? 1 : 0.994)
         .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: selected)
     }
@@ -663,9 +746,9 @@ private struct LauncherIconView: View {
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(selected ? SettingsStore.shared.accentTheme.primary : Color.secondary)
                     .padding(7.5)
-                    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
                     .overlay(
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        PrismaticPanelShape(cut: 5)
                             .stroke(Color.white.opacity(selected ? 0.34 : 0.14), lineWidth: 0.65)
                     )
             case .application(let url), .file(let url):
@@ -677,6 +760,33 @@ private struct LauncherIconView: View {
             }
         }
         .frame(width: 30, height: 30)
+    }
+}
+
+private struct EmojiGridTile: View {
+    let emoji: String
+    let selected: Bool
+
+    var body: some View {
+        Text(emoji)
+            .font(.system(size: 27))
+            .minimumScaleFactor(0.72)
+            .frame(maxWidth: .infinity)
+            .frame(height: 40)
+            .contentShape(PrismaticPanelShape(cut: 5))
+            .background {
+                PrismaticPanelShape(cut: 5)
+                    .fill(selected ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.18)) : AnyShapeStyle(Color.white.opacity(0.035)))
+            }
+            .overlay {
+                PrismaticPanelShape(cut: 5)
+                    .strokeBorder(
+                        selected ? SettingsStore.shared.accentTheme.tertiary.opacity(0.78) : Color.white.opacity(0.10),
+                        lineWidth: selected ? 1.1 : 0.6
+                    )
+            }
+            .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.18) : .clear, radius: 5, y: 2)
+            .scaleEffect(selected ? 1.02 : 1)
     }
 }
 
@@ -703,7 +813,7 @@ private struct KeyHint: View {
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.085), in: RoundedRectangle(cornerRadius: 5))
+                .background(Color.primary.opacity(0.085), in: PrismaticPanelShape(cut: 4))
             Text(label).font(.system(size: 10.5)).foregroundStyle(.secondary)
         }
     }
@@ -720,8 +830,8 @@ private struct StatusCapsule: View {
             .foregroundStyle(color)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .background(color.opacity(0.11), in: Capsule())
-            .overlay(Capsule().stroke(color.opacity(0.2), lineWidth: 1))
+            .background(color.opacity(0.11), in: PrismaticPanelShape(cut: 5))
+            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.24), lineWidth: 0.8))
     }
 }
 
@@ -757,10 +867,10 @@ private struct TaskOrbitView: View {
 
 private struct ActivityTimeline: View {
     let activeStep: Int
-    let isAI: Bool
+    let isWriting: Bool
 
     private var labels: [String] {
-        isAI ? ["Capture", "AI correction", "Review"] : ["Prepare", "Run", "Finish"]
+        isWriting ? ["Capture", "Local correction", "Review"] : ["Prepare", "Run", "Finish"]
     }
 
     var body: some View {
@@ -813,7 +923,6 @@ private extension LauncherMode {
         switch self {
         case .root: return "root"
         case .files: return "files"
-        case .vscodePicker: return "vscode"
         case .timezoneConverter: return "timezone"
         case .forceQuitPicker: return "force-quit"
         case .emojiPicker: return "emoji"
