@@ -15,7 +15,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          lfs: false
+          # Harper is a versioned Apple-silicon binary stored in Git LFS. A
+          # release bundle must contain the binary, never its small LFS pointer.
+          lfs: true
       - name: Verify version and tests
         shell: zsh {0}
         run: |
