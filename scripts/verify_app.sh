@@ -6,6 +6,7 @@ PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/RayPlacement.app}"
 BINARY="$APP_DIRECTORY/Contents/MacOS/RayPlacement"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
+SOURCE_INFO="$PROJECT_DIRECTORY/Packaging/Info.plist"
 
 test -d "$APP_DIRECTORY"
 test -x "$BINARY"
@@ -31,12 +32,14 @@ BUNDLE_IDENTIFIER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$AP
 MINIMUM_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$APP_DIRECTORY/Contents/Info.plist")"
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIRECTORY/Contents/Info.plist")"
 BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIRECTORY/Contents/Info.plist")"
+EXPECTED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SOURCE_INFO")"
+EXPECTED_BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SOURCE_INFO")"
 MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 [[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
-[[ "$VERSION" == "1.18.0" ]]
-[[ "$BUILD_NUMBER" == "27" ]]
+[[ "$VERSION" == "$EXPECTED_VERSION" ]]
+[[ "$BUILD_NUMBER" == "$EXPECTED_BUILD_NUMBER" ]]
 [[ -n "$MICROPHONE_DESCRIPTION" ]]
 [[ -n "$SPEECH_DESCRIPTION" ]]
 [[ -n "$(/usr/libexec/PlistBuddy -c 'Print :NSAppleEventsUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")" ]]

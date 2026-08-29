@@ -70,7 +70,9 @@ write_progress working 0.42 "Preparing this Mac's stable RayPlacement signing id
 "$SOURCE_ROOT/scripts/setup_local_signing.sh"
 
 write_progress working 0.52 "Building RayPlacement $VERSION locally while the current app stays open…"
-RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/package_app.sh"
+if ! RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/package_app.sh"; then
+    fail_update "RayPlacement $VERSION could not pass final build verification. The current app was left unchanged; see the update log for the exact check."
+fi
 [[ -d "$BUILT_APP" ]] || fail_update "RayPlacement $VERSION finished building without a usable app bundle."
 codesign --verify --deep --strict "$BUILT_APP" || fail_update "The newly built RayPlacement app did not pass signature verification."
 
