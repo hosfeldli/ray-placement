@@ -18,7 +18,7 @@ PROGRESS_FILE="${6:-$(dirname "$RESULT_FILE")/update-progress.txt}"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 USER_APPLICATIONS_DIRECTORY="$USER_HOME_DIRECTORY/Applications"
 INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/RayPlacement.app"
-BUILT_APP="$SOURCE_ROOT/build/RayPlacement.app"
+READY_APP="$SOURCE_ROOT/Prebuilt/RayPlacement.app"
 EXTENSIONS_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Extensions"
 UPDATES_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Updates"
 EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/RayPlacementUpdate"
@@ -56,33 +56,40 @@ restore_previous_app() {
     fi
 }
 
-[[ -x "$SOURCE_ROOT/scripts/package_app.sh" ]] || fail_update "The verified update packager is missing."
 [[ -x "$SOURCE_ROOT/scripts/setup_local_signing.sh" ]] || fail_update "The verified signing setup is missing."
+[[ -d "$READY_APP" ]] || fail_update "The verified prebuilt RayPlacement app is missing."
 
-if [[ -f "$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin" ]]; then
-    write_progress working 0.38 "Reusing the verified Local Whisper speaker-turn model…"
-    mkdir -p "$SOURCE_ROOT/Packaging/Vendor/Whisper/model"
+CURRENT_MODEL="$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+if [[ -f "$CURRENT_MODEL" ]]; then
+    write_progress working 0.38 "Restoring this Mac's local dictation model…"
+    mkdir -p "$READY_APP/Contents/Resources/Whisper/model"
     cp "$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin" \
-        "$SOURCE_ROOT/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
+        "$READY_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+else
+    fail_update "The existing RayPlacement dictation model is unavailable, so the update was not installed."
 fi
 
 write_progress working 0.42 "Preparing this Mac's stable RayPlacement signing identity…"
 "$SOURCE_ROOT/scripts/setup_local_signing.sh"
 
-write_progress working 0.52 "Building RayPlacement $VERSION locally while the current app stays open…"
-BUILD_LOG="$UPDATES_DIRECTORY/update-build-$VERSION.log"
-set +e
-RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/package_app.sh" >"$BUILD_LOG" 2>&1
-BUILD_STATUS=$?
-set -e
-cat "$BUILD_LOG"
-if (( BUILD_STATUS != 0 )); then
-    FAILURE_DETAIL="$(tail -n 1 "$BUILD_LOG" | tr '\n' ' ')"
-    [[ -n "$FAILURE_DETAIL" ]] || FAILURE_DETAIL="No detailed build output was produced."
-    fail_update "RayPlacement $VERSION could not pass final build verification: $FAILURE_DETAIL The current app was left unchanged."
+write_progress working 0.52 "Locally signing the verified RayPlacement $VERSION app…"
+LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
+LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
+LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
+LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
+[[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]] || fail_update "The local RayPlacement signing identity is unavailable."
+KEYCHAIN_PASSWORD="$(<"$LOCAL_SIGNING_PASSWORD")"
+security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$LOCAL_SIGNING_KEYCHAIN"
+LOCAL_SIGNING_HASH="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | awk -v identity="$LOCAL_SIGNING_IDENTITY" 'index($0, "\\\"" identity "\\\"") { print $2; exit }')"
+[[ -n "$LOCAL_SIGNING_HASH" ]] || fail_update "The local RayPlacement signing identity is not trusted for code signing."
+ORIGINAL_USER_KEYCHAINS=("${(@f)$(security list-keychains -d user | sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//')}")
+security list-keychains -d user -s "$LOCAL_SIGNING_KEYCHAIN" "${ORIGINAL_USER_KEYCHAINS[@]}"
+if ! codesign --force --deep --sign "$LOCAL_SIGNING_HASH" "$READY_APP"; then
+    security list-keychains -d user -s "${ORIGINAL_USER_KEYCHAINS[@]}" >/dev/null
+    fail_update "RayPlacement $VERSION could not be signed with this Mac's stable identity."
 fi
-[[ -d "$BUILT_APP" ]] || fail_update "RayPlacement $VERSION finished building without a usable app bundle."
-codesign --verify --deep --strict "$BUILT_APP" || fail_update "The newly built RayPlacement app did not pass signature verification."
+security list-keychains -d user -s "${ORIGINAL_USER_KEYCHAINS[@]}" >/dev/null
+RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/verify_app.sh" "$READY_APP" || fail_update "The locally signed RayPlacement $VERSION app did not pass verification."
 
 write_progress ready 0.90 "Build verified. RayPlacement will close briefly, install, and reopen…"
 
@@ -97,7 +104,7 @@ mkdir -p "$USER_APPLICATIONS_DIRECTORY" "$EXTENSIONS_DIRECTORY"
 if [[ -d "$INSTALLED_APP" ]]; then
     mv "$INSTALLED_APP" "$BACKUP_APP"
 fi
-if ! ditto "$BUILT_APP" "$INSTALLED_APP"; then
+if ! ditto "$READY_APP" "$INSTALLED_APP"; then
     restore_previous_app
     fail_update "The verified app could not be copied into your Applications folder. The previous version was restored."
 fi
@@ -119,7 +126,7 @@ if [[ -d "$SOURCE_ROOT/Extensions" ]]; then
 fi
 
 rm -rf "$BACKUP_APP"
-write_result success "RayPlacement $VERSION was downloaded, verified, locally built, signed, and installed successfully."
+write_result success "RayPlacement $VERSION was downloaded, verified, locally signed, and installed successfully."
 write_progress success 1 "RayPlacement $VERSION is ready."
 # A successful local build temporarily contains another full copy of Whisper.
 # Remove only the updater-owned, exactly validated working directory after the

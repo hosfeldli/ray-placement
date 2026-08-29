@@ -17,7 +17,9 @@ test -x "$RESOURCES/Tools/harper-cli"
 test -x "$RESOURCES/Tools/PythonGrammar/grammar_check.py"
 test -d "$RESOURCES/Tools/PythonGrammar/site-packages/spellchecker"
 test -x "$RESOURCES/Whisper/runtime/whisper-cli"
-test -f "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin"
+if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
+    test -f "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin"
+fi
 test -f "$RESOURCES/Whisper/LICENSE"
 test -f "$RESOURCES/Whisper/REVISION"
 test -f "$RESOURCES/Documentation/EXTENSIONS.md"
@@ -54,7 +56,9 @@ fi
 file "$BINARY" | grep -q "Mach-O 64-bit executable arm64"
 file "$RESOURCES/Tools/harper-cli" | grep -q "Mach-O 64-bit executable arm64"
 file "$RESOURCES/Whisper/runtime/whisper-cli" | grep -q "Mach-O 64-bit executable arm64"
-echo "ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4  $RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | shasum -a 256 -c - >/dev/null
+if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
+    echo "ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4  $RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | shasum -a 256 -c - >/dev/null
+fi
 echo "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc  $RESOURCES/Whisper/runtime/whisper-cli" | shasum -a 256 -c - >/dev/null
 "$RESOURCES/Whisper/runtime/whisper-cli" --version | grep -q "1.9.1"
 

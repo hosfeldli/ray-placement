@@ -12,6 +12,7 @@ cleanup() {
 trap cleanup EXIT
 
 STAGED_SOURCE="$TEMP_DIRECTORY/RayPlacementUpdate"
+PREBUILT_APP="$PROJECT_DIRECTORY/build/RayPlacement.app"
 mkdir -p "$STAGED_SOURCE" "$OUTPUT_DIRECTORY"
 OUTPUT_DIRECTORY="$(cd "$OUTPUT_DIRECTORY" && pwd)"
 rsync -a \
@@ -35,6 +36,9 @@ rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/RayPlacement-Update.sha256"
 test -f "$STAGED_SOURCE/Packaging/Vendor/Harper/harper-cli"
 test -f "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/grammar_check.py"
 test -d "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/site-packages/spellchecker"
+test -d "$PREBUILT_APP"
+mkdir -p "$STAGED_SOURCE/Prebuilt"
+ditto "$PREBUILT_APP" "$STAGED_SOURCE/Prebuilt/RayPlacement.app"
 (
     cd "$TEMP_DIRECTORY"
     ditto -c -k --sequesterRsrc --keepParent RayPlacementUpdate "$ARCHIVE"

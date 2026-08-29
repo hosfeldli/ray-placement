@@ -17,6 +17,7 @@ ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
 WHISPER_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"
 WHISPER_RUNTIME="$PROJECT_DIRECTORY/Packaging/WhisperRuntime"
 WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
+MODEL_FREE_UPDATE_BUILD="${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}"
 HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
@@ -29,7 +30,9 @@ export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
 
 mkdir -p "$MODULE_CACHE_DIRECTORY"
-"$WHISPER_ASSEMBLER"
+if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" ]]; then
+    "$WHISPER_ASSEMBLER"
+fi
 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
 BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
 
@@ -41,8 +44,12 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
 
-if [[ ! -x "$WHISPER_RUNTIME/whisper-cli" || ! -f "$WHISPER_MODEL" ]]; then
-    echo "The bundled Local Whisper provider is incomplete. Run scripts/assemble_whisper_model.sh first."
+if [[ ! -x "$WHISPER_RUNTIME/whisper-cli" ]]; then
+    echo "The bundled Local Whisper runtime is incomplete."
+    exit 1
+fi
+if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" && ! -f "$WHISPER_MODEL" ]]; then
+    echo "The bundled Local Whisper model is incomplete. Run scripts/assemble_whisper_model.sh first."
     exit 1
 fi
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Whisper/runtime" "$CONTENTS_DIRECTORY/Resources/Whisper/model"
@@ -50,7 +57,9 @@ cp "$WHISPER_RUNTIME/whisper-cli" "$CONTENTS_DIRECTORY/Resources/Whisper/runtime
 cp "$WHISPER_RUNTIME/LICENSE" "$CONTENTS_DIRECTORY/Resources/Whisper/LICENSE"
 cp "$WHISPER_RUNTIME/REVISION" "$CONTENTS_DIRECTORY/Resources/Whisper/REVISION"
 cp "$WHISPER_RUNTIME/MODEL_SOURCE" "$CONTENTS_DIRECTORY/Resources/Whisper/MODEL_SOURCE"
-cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" ]]; then
+    cp "$WHISPER_MODEL" "$CONTENTS_DIRECTORY/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+fi
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Whisper/runtime/whisper-cli"
 
 MISSING_WRITING_RESOURCES=()
@@ -133,6 +142,6 @@ else
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
 fi
-"$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
+RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
 
 echo "Packaged: $APP_DIRECTORY"
