@@ -21,12 +21,20 @@ rsync -a \
     --exclude build/ \
     --exclude dist/ \
     --exclude Downloads/ \
-    --exclude Packaging/Vendor/ \
+    --exclude Packaging/Vendor/Whisper/ \
+    --exclude Packaging/Vendor/CoEdit/ \
+    --exclude Packaging/Vendor/Qwen/ \
     --exclude .DS_Store \
     "$PROJECT_DIRECTORY/" "$STAGED_SOURCE/"
 
 ARCHIVE="$OUTPUT_DIRECTORY/RayPlacement-Update.zip"
 rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/RayPlacement-Update.sha256"
+
+# Local grammar correction must be in every update kit. Whisper's large model
+# is restored from the already-installed app by apply_downloaded_update.sh.
+test -x "$STAGED_SOURCE/Packaging/Vendor/Harper/harper-cli"
+test -f "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/grammar_check.py"
+test -d "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/site-packages/spellchecker"
 (
     cd "$TEMP_DIRECTORY"
     ditto -c -k --sequesterRsrc --keepParent RayPlacementUpdate "$ARCHIVE"
