@@ -42,12 +42,14 @@ private final class FocusedFileLauncherModel: ObservableObject {
     @Published var selectedApplicationURL: URL?
     @Published var appSearch = ""
     @Published var status = "Choose an item, then choose its destination."
+    @Published var isLoadingApplications = true
 
     private let applicationIndex = ApplicationIndex()
 
     init() {
         applicationIndex.scan { [weak self] applications in
             self?.applications = applications
+            self?.isLoadingApplications = false
         }
     }
 
@@ -115,13 +117,11 @@ private struct FocusedFileLauncherView: View {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: 9) {
                 header
-                HSplitView {
-                    selectionPane.frame(minWidth: 290, idealWidth: 360)
-                    applicationPane.frame(minWidth: 280, idealWidth: 380)
-                }
+                workspace
                 statusBar
             }
             .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
@@ -148,17 +148,36 @@ private struct FocusedFileLauncherView: View {
         .liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.022)
     }
 
+    private var workspace: some View {
+        GeometryReader { proxy in
+            let selectionWidth = min(max(proxy.size.width * 0.37, 290), 440)
+            HStack(spacing: 10) {
+                selectionPane
+                    .frame(width: selectionWidth)
+                    .frame(maxHeight: .infinity)
+                applicationPane
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     private var selectionPane: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Selected item").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
             if let url = model.selectedURL {
                 VStack(alignment: .leading, spacing: 8) {
-                    Image(systemName: fileSymbol(url))
-                        .font(.system(size: 30, weight: .medium))
-                        .foregroundStyle(settings.accentTheme.gradient)
-                        .frame(maxWidth: .infinity, minHeight: 95)
-                    Text(url.lastPathComponent).font(.system(size: 13, weight: .semibold)).lineLimit(2)
-                    Text(url.path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: fileSymbol(url))
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(settings.accentTheme.gradient)
+                            .frame(width: 46, height: 46)
+                            .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(url.lastPathComponent).font(.system(size: 13, weight: .semibold)).lineLimit(2)
+                            Text(url.path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                        }
+                    }
                     HStack(spacing: 7) {
                         Button("Reveal", action: model.revealInFinder).buttonStyle(.bordered).controlSize(.small)
                         Button("Default app", action: model.openWithDefaultApplication).buttonStyle(.bordered).controlSize(.small)
@@ -166,7 +185,7 @@ private struct FocusedFileLauncherView: View {
                 }
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 8))
+                .liquidGlass(cornerRadius: 10, depth: .raised, accentOpacity: 0.018)
             } else {
                 VStack(spacing: 8) {
                     Image(systemName: "folder").font(.system(size: 28, weight: .medium)).foregroundStyle(.secondary)
@@ -174,7 +193,8 @@ private struct FocusedFileLauncherView: View {
                     Text("Choose any file or folder.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button("Choose in Finder", action: model.chooseInFinder).buttonStyle(.bordered)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 58)
             }
             Spacer(minLength: 0)
         }
@@ -195,16 +215,34 @@ private struct FocusedFileLauncherView: View {
             TextField("Filter installed apps", text: $model.appSearch).textFieldStyle(.plain)
                 .padding(.horizontal, 9).frame(height: 28)
                 .background(Color.white.opacity(0.06), in: PrismaticPanelShape(cut: 5))
-            List(selection: $model.selectedApplicationURL) {
-                ForEach(model.filteredApplications) { app in
-                    HStack(spacing: 8) {
-                        appIcon(app.url)
-                        Text(app.name).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
+            Group {
+                if model.isLoadingApplications {
+                    VStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Loading installed apps…").font(.caption).foregroundStyle(.secondary)
                     }
-                    .tag(app.url)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if model.filteredApplications.isEmpty {
+                    VStack(spacing: 7) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        Text("No matching apps").font(.caption.weight(.medium))
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List(selection: $model.selectedApplicationURL) {
+                        ForEach(model.filteredApplications) { app in
+                            HStack(spacing: 8) {
+                                appIcon(app.url)
+                                Text(app.name).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
+                            }
+                            .tag(app.url)
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
                 }
             }
-            .listStyle(.plain)
+            .background(Color.black.opacity(0.14), in: PrismaticPanelShape(cut: 7))
             HStack(spacing: 7) {
                 Button("Open selected", action: model.openWithSelectedApplication)
                     .buttonStyle(.borderedProminent)
