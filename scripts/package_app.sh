@@ -142,6 +142,8 @@ else
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
 fi
-RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
+if [[ "${RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION:-0}" != "1" ]]; then
+    RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
+fi
 
 echo "Packaged: $APP_DIRECTORY"
