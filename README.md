@@ -1,4 +1,4 @@
-# RayPlacement
+# RayPlacement 2.0
 
 RayPlacement is a fast, keyboard-first native macOS command launcher and compact workspace. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
@@ -25,7 +25,7 @@ Double-click `Uninstall RayPlacement.command` to move the app to Trash. The unin
 - Regular RayPlacement tools join one native macOS tabbed window by default. Use the standard Window menu or drag a tab to break it into a separate window.
 - Background extension work reports compact progress without blocking the launcher.
 
-The interface uses a compact dark liquid-glass visual system with configurable accent colors, strong status contrast, short transitions, keyboard hints only where useful, and reduced-motion support through macOS.
+Version 2.0 introduces a higher-contrast prismatic visual system across every workspace: sharper glass edges, clearer selected states, tighter controls, calmer ambient motion, and reduced-motion support through macOS. Keyboard hints appear only at the point of use.
 
 ## Developer Terminal
 

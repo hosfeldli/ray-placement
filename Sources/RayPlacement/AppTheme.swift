@@ -69,7 +69,7 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
 
     var ambientGradient: LinearGradient {
         LinearGradient(
-            colors: [primary.opacity(0.86), secondary.opacity(0.72), tertiary.opacity(0.54)],
+            colors: [primary.opacity(0.92), secondary.opacity(0.70), tertiary.opacity(0.48)],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -119,22 +119,22 @@ struct LiquidGlassBackdrop: View {
     var body: some View {
         ZStack {
             VisualEffectView(material: material, blendingMode: blendingMode)
-            Color.black.opacity(0.52)
+            Color.black.opacity(0.58)
             PrismaticAmbientLayer(theme: settings.accentTheme)
             RadialGradient(
-                colors: [settings.accentTheme.primary.opacity(0.13), .clear],
-                center: .topLeading,
+                colors: [settings.accentTheme.primary.opacity(0.18), .clear],
+                center: .init(x: 0.12, y: 0.02),
                 startRadius: 4,
-                endRadius: 520
+                endRadius: 600
             )
             RadialGradient(
-                colors: [settings.accentTheme.secondary.opacity(0.075), .clear],
-                center: .bottomTrailing,
+                colors: [settings.accentTheme.secondary.opacity(0.10), .clear],
+                center: .init(x: 0.88, y: 0.96),
                 startRadius: 8,
-                endRadius: 470
+                endRadius: 540
             )
             LinearGradient(
-                colors: [Color.white.opacity(0.035), .clear, settings.accentTheme.tertiary.opacity(0.024), Color.black.opacity(0.22)],
+                colors: [Color.white.opacity(0.060), .clear, settings.accentTheme.tertiary.opacity(0.038), Color.black.opacity(0.30)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -163,7 +163,7 @@ private struct PrismaticAmbientLayer: View {
                 PrismaticPanelShape(cut: 74)
                     .fill(
                         LinearGradient(
-                            colors: [theme.primary.opacity(0.13), theme.secondary.opacity(0.055), .clear],
+                            colors: [theme.primary.opacity(0.17), theme.secondary.opacity(0.065), .clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -178,7 +178,7 @@ private struct PrismaticAmbientLayer: View {
                 PrismaticPanelShape(cut: 62)
                     .fill(
                         LinearGradient(
-                            colors: [.clear, theme.tertiary.opacity(0.085), theme.primary.opacity(0.035)],
+                            colors: [.clear, theme.tertiary.opacity(0.11), theme.primary.opacity(0.048)],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -212,9 +212,9 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
 
     private var baseOpacity: Double {
         switch depth {
-        case .recessed: return 0.28
-        case .raised: return 0.33
-        case .floating: return 0.39
+        case .recessed: return 0.38
+        case .raised: return 0.43
+        case .floating: return 0.49
         }
     }
 
@@ -227,7 +227,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
     }
 
     func body(content: Content) -> some View {
-        let shape = PrismaticPanelShape(cut: min(9, max(4, cornerRadius * 0.45)))
+        let shape = PrismaticPanelShape(cut: min(12, max(5, cornerRadius * 0.56)))
         content
             .background {
                 ZStack {
@@ -235,7 +235,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                     shape.fill(Color.black.opacity(baseOpacity))
                     shape.fill(
                         LinearGradient(
-                            colors: [Color.white.opacity(0.05), settings.accentTheme.primary.opacity(selected ? 0.20 : accentOpacity), settings.accentTheme.tertiary.opacity(selected ? 0.10 : accentOpacity * 0.28), Color.clear],
+                            colors: [Color.white.opacity(0.085), settings.accentTheme.primary.opacity(selected ? 0.24 : accentOpacity), settings.accentTheme.tertiary.opacity(selected ? 0.13 : accentOpacity * 0.34), Color.clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -244,8 +244,8 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                         LinearGradient(
                             colors: [
                                 .clear,
-                                Color.white.opacity(selected ? 0.12 : 0.055),
-                                settings.accentTheme.tertiary.opacity(selected ? 0.085 : 0.026),
+                                Color.white.opacity(selected ? 0.15 : 0.075),
+                                settings.accentTheme.tertiary.opacity(selected ? 0.10 : 0.038),
                                 .clear
                             ],
                             startPoint: .bottomLeading,
@@ -260,8 +260,8 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                     LinearGradient(
                         colors: [
                             Color.white.opacity(0.24),
-                            settings.accentTheme.primary.opacity(selected ? 0.54 : 0.18),
-                            Color.white.opacity(0.055),
+                            settings.accentTheme.primary.opacity(selected ? 0.62 : 0.24),
+                            Color.white.opacity(0.085),
                             Color.black.opacity(0.38)
                         ],
                         startPoint: .topLeading,
@@ -273,11 +273,11 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             .overlay(alignment: .leading) {
                 Rectangle()
                     .fill(LinearGradient(
-                        colors: [.clear, settings.accentTheme.tertiary.opacity(selected ? 0.75 : 0.22), settings.accentTheme.primary.opacity(selected ? 0.8 : 0.28), .clear],
+                        colors: [.clear, settings.accentTheme.tertiary.opacity(selected ? 0.80 : 0.28), settings.accentTheme.primary.opacity(selected ? 0.88 : 0.34), .clear],
                         startPoint: .top,
                         endPoint: .bottom
                     ))
-                    .frame(width: selected ? 1.8 : 0.8)
+                    .frame(width: selected ? 2 : 1)
                     .padding(.vertical, min(10, cornerRadius * 0.55))
             }
             .overlay(alignment: .topLeading) {
@@ -292,7 +292,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             }
             .overlay {
                 shape.strokeBorder(
-                    Color.black.opacity(0.26),
+                    Color.black.opacity(0.34),
                     lineWidth: 0.45
                 )
                 .padding(1.05)
@@ -300,8 +300,8 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             .shadow(color: shadow.color, radius: shadow.radius * 0.62, y: shadow.y * 0.55)
             .shadow(
                 color: selected ? settings.accentTheme.primary.opacity(0.24) : .clear,
-                radius: selected ? 10 : 0,
-                y: selected ? 4 : 0
+                radius: selected ? 12 : 0,
+                y: selected ? 5 : 0
             )
     }
 }
@@ -332,7 +332,9 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
             .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.84))
             .background {
                 PrismaticPanelShape(cut: max(4, size * 0.18))
-                    .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(.ultraThinMaterial))
+                    .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(Color.black.opacity(0.30)))
+                PrismaticPanelShape(cut: max(4, size * 0.18))
+                    .fill(prominent ? AnyShapeStyle(.clear) : AnyShapeStyle(.ultraThinMaterial))
             }
             .overlay {
                 PrismaticPanelShape(cut: max(4, size * 0.18)).strokeBorder(

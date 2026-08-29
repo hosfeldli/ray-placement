@@ -19,7 +19,7 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: 680, height: 452)
+        .frame(width: 704, height: 466)
         .clipShape(PrismaticPanelShape(cut: 12))
         .overlay(
             PrismaticPanelShape(cut: 12)
@@ -701,8 +701,8 @@ private struct ResultRow: View {
                 .shadow(color: SettingsStore.shared.accentTheme.primary.opacity(0.24), radius: 7, y: 3)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 43)
+        .padding(.horizontal, 11)
+        .frame(height: 40)
         .background {
             if selected {
                 ZStack {
@@ -726,8 +726,8 @@ private struct ResultRow: View {
             }
         }
         .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.10) : .clear, radius: 11, y: 5)
-        .opacity(selected ? 1 : 0.96)
-        .scaleEffect(selected ? 1 : 0.994)
+        .opacity(selected ? 1 : 0.97)
+        .scaleEffect(selected ? 1 : 0.998)
         .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: selected)
     }
 }

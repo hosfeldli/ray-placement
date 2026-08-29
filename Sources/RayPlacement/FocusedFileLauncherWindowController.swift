@@ -41,15 +41,13 @@ private final class FocusedFileLauncherModel: ObservableObject {
     @Published var applications: [ApplicationRecord] = []
     @Published var selectedApplicationURL: URL?
     @Published var appSearch = ""
-    @Published var status = "Choose a file or folder in Finder."
+    @Published var status = "Choose an item, then choose its destination."
 
     private let applicationIndex = ApplicationIndex()
 
     init() {
         applicationIndex.scan { [weak self] applications in
             self?.applications = applications
-            self?.selectedApplicationURL = applications.first(where: { $0.bundleIdentifier == "com.microsoft.VSCode" })?.url
-                ?? applications.first?.url
         }
     }
 
@@ -138,7 +136,7 @@ private struct FocusedFileLauncherView: View {
                 .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Focused File Launcher").font(.system(size: 14, weight: .semibold, design: .rounded))
-                Text("Finder selection · choose the destination app").font(.caption2).foregroundStyle(.secondary)
+                Text("Finder → destination app").font(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Choose in Finder", systemImage: "folder") { model.chooseInFinder() }
@@ -173,7 +171,7 @@ private struct FocusedFileLauncherView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "folder").font(.system(size: 28, weight: .medium)).foregroundStyle(.secondary)
                     Text("Nothing selected").font(.system(size: 12, weight: .semibold))
-                    Text("Use Finder to choose any file or folder.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Text("Choose any file or folder.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button("Choose in Finder", action: model.chooseInFinder).buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -189,7 +187,10 @@ private struct FocusedFileLauncherView: View {
             HStack {
                 Text("Open with").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
                 Spacer()
-                if let selected = model.selectedApplication { Text(selected.name).font(.caption2).foregroundStyle(.secondary).lineLimit(1) }
+                Text(model.selectedApplication?.name ?? "Pick an app")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
             TextField("Filter installed apps", text: $model.appSearch).textFieldStyle(.plain)
                 .padding(.horizontal, 9).frame(height: 28)
@@ -209,7 +210,7 @@ private struct FocusedFileLauncherView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.selectedURL == nil || model.selectedApplicationURL == nil)
                 Spacer()
-                Text("Any installed app").font(.caption2).foregroundStyle(.secondary)
+                Text("Default app stays available").font(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(11)
