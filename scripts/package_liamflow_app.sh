@@ -21,6 +21,13 @@ ditto "$SOURCE_APP" "$APP_DIRECTORY"
 mv "$APP_DIRECTORY/Contents/MacOS/RayPlacement" "$APP_DIRECTORY/Contents/MacOS/LiamFlow"
 cp "$PROJECT_DIRECTORY/Uninstall LiamFlow.command" "$APP_DIRECTORY/Contents/Resources/Uninstall LiamFlow.command"
 chmod 755 "$APP_DIRECTORY/Contents/Resources/Uninstall LiamFlow.command"
-codesign --force --deep --sign - "$APP_DIRECTORY"
+# A fresh Git checkout and a local build can carry different Finder metadata.
+# It is never part of an app bundle and can make an otherwise valid ad-hoc
+# signature fail on a hosted macOS runner.
+xattr -cr "$APP_DIRECTORY"
+if ! codesign --force --deep --sign - "$APP_DIRECTORY"; then
+    echo "Could not apply LiamFlow's local ad-hoc signature." >&2
+    exit 1
+fi
 "$PROJECT_DIRECTORY/scripts/verify_liamflow_app.sh" "$APP_DIRECTORY"
 echo "Packaged: $APP_DIRECTORY"
