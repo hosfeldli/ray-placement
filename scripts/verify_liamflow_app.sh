@@ -34,7 +34,12 @@ require "the app signature is invalid" codesign --verify --deep --strict "$APP_D
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the display name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the executable name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIRECTORY/Contents/Info.plist")" == "dev.liam.lima" ]] || { echo "Verification failed: the bundle identifier is incorrect" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP_DIRECTORY/Contents/Info.plist")" == "false" ]] || { echo "Verification failed: Lima is not configured to appear in the Dock" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIRECTORY/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SOURCE_INFO")" ]] || { echo "Verification failed: the app version does not match the release version" >&2; exit 1; }
+if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+    DESIGNATED_REQUIREMENT="$(codesign -dr - "$APP_DIRECTORY" 2>&1)"
+    [[ "$DESIGNATED_REQUIREMENT" != *"cdhash"* ]] || { echo "Verification failed: Lima is ad-hoc signed and would lose Accessibility approval on update" >&2; exit 1; }
+fi
 require "the Lima executable is not Apple-silicon native" sh -c "file '$BINARY' | grep -q 'Mach-O 64-bit executable arm64'"
 require "the Harper executable is not Apple-silicon native" sh -c "file '$RESOURCES/Tools/harper-cli' | grep -q 'Mach-O 64-bit executable arm64'"
 require "the Whisper runtime is not Apple-silicon native" sh -c "file '$RESOURCES/Whisper/runtime/whisper-cli' | grep -q 'Mach-O 64-bit executable arm64'"

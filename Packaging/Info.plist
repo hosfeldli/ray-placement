@@ -21,13 +21,13 @@
     <key>LimaUpdateMetadataURL</key>
     <string>https://www.liamhosfeld.com/updates/latest.json</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.1.1</string>
+    <string>3.1.2</string>
     <key>CFBundleVersion</key>
-    <string>311</string>
+    <string>312</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
     <key>LSUIElement</key>
-    <true/>
+    <false/>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>

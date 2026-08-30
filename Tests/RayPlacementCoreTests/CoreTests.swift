@@ -2,6 +2,19 @@ import Foundation
 import Testing
 @testable import RayPlacementCore
 
+@Test func SQLNetworkPortsUsePlainDigitsAndValidateRange() {
+    #expect(SQLNetworkPort.parsePlainDigits("1521") == 1521)
+    #expect(SQLNetworkPort.parsePlainDigits("1,521") == nil)
+    #expect(SQLNetworkPort.parsePlainDigits("0") == nil)
+    #expect(SQLNetworkPort.parsePlainDigits("65536") == nil)
+}
+
+@Test func OracleConnectionIdentifiersPreserveNormalOracleNameRules() {
+    #expect(SQLOracleConnectionSyntax.identifier(for: "lima_test") == "lima_test")
+    #expect(SQLOracleConnectionSyntax.identifier(for: "  APP_USER  ") == "APP_USER")
+    #expect(SQLOracleConnectionSyntax.identifier(for: "Mixed Name") == "\"Mixed Name\"")
+}
+
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)

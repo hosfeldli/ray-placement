@@ -76,8 +76,8 @@ else
 fi
 
 write_progress working 0.52 "Verifying and preparing Lima $VERSION for this Mac…"
-codesign --force --deep --sign - "$READY_APP" || fail_update "Lima $VERSION could not be prepared for installation."
-"$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified Lima $VERSION app did not pass inspection."
+"$SOURCE_ROOT/scripts/sign_lima_app.sh" "$READY_APP" || fail_update "Lima $VERSION could not be signed with this Mac's stable identity."
+RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified Lima $VERSION app did not pass inspection."
 
 write_progress ready 0.90 "Lima is verified. It will close briefly, install, and reopen…"
 

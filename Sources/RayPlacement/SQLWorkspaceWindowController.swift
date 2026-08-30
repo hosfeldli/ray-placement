@@ -94,6 +94,7 @@ private enum SQLWorkspaceError: LocalizedError {
     case missingClient(SQLDatabaseDriver, String)
     case missingSecret
     case invalidConnection
+    case invalidPort
     case commandFailed(String)
     case keychain(OSStatus)
     case readOnly
@@ -104,6 +105,7 @@ private enum SQLWorkspaceError: LocalizedError {
             return "\(driver.title) client not found at \(path). Install its command-line client or set its location in this connection."
         case .missingSecret: return "Save a password for this connection in the Keychain first."
         case .invalidConnection: return "Complete the connection name, host, database/service, and username."
+        case .invalidPort: return "Enter a port from 1 to 65535 using plain digits (for example, 1521)."
         case .commandFailed(let message): return message
         case .keychain(let status): return "Keychain could not save this connection (status \(status))."
         case .readOnly: return "Read-only mode only runs SELECT, WITH, SHOW, DESCRIBE, or EXPLAIN statements."
@@ -132,13 +134,17 @@ private enum SQLCommandLineClient {
                     process.environment = environment
                     input = sql.hasSuffix(";") ? sql + "\n" : sql + ";\n"
                 case .oracle:
-                    process.arguments = ["-L", "-S"]
-                    let escapedUser = profile.username.replacingOccurrences(of: "\"", with: "\\\"")
+                    // Starting disconnected prevents sqlplus from interpreting the
+                    // first line of the supplied script as a login value.
+                    process.arguments = ["-L", "-S", "/nolog"]
+                    let oracleUser = SQLOracleConnectionSyntax.identifier(for: profile.username)
                     let escapedPassword = password.replacingOccurrences(of: "\"", with: "\\\"")
                     input = """
+                    WHENEVER OSERROR EXIT FAILURE ROLLBACK
+                    WHENEVER SQLERROR EXIT SQL.SQLCODE ROLLBACK
                     SET HEADING ON FEEDBACK OFF VERIFY OFF ECHO OFF PAGESIZE 50000 LINESIZE 32767 TRIMSPOOL ON
                     SET COLSEP '\\t'
-                    CONNECT \"\(escapedUser)\"/\"\(escapedPassword)\"@//\(profile.host):\(profile.port)/\(profile.database)
+                    CONNECT \(oracleUser)/\"\(escapedPassword)\"@//\(profile.host):\(profile.port)/\(profile.database)
                     \(sql.hasSuffix(";") ? sql : sql + ";")
                     EXIT
                     """
@@ -156,7 +162,7 @@ private enum SQLCommandLineClient {
                     if task.terminationStatus == 0 {
                         continuation.resume(returning: out)
                     } else {
-                        let detail = err.trimmingCharacters(in: .whitespacesAndNewlines)
+                        let detail = failureDetail(stdout: out, stderr: err)
                         continuation.resume(throwing: SQLWorkspaceError.commandFailed(detail.isEmpty ? "Database client exited with status \(task.terminationStatus)." : detail))
                     }
                 }
@@ -193,6 +199,25 @@ private enum SQLCommandLineClient {
             throw SQLWorkspaceError.missingClient(profile.driver, profile.commandPath)
         }
         return URL(fileURLWithPath: path)
+    }
+
+    /// Oracle reports many connection errors to standard output. Only surface
+    /// recognizable client error lines so query results and credentials never
+    /// end up in a status message.
+    private static func failureDetail(stdout: String, stderr: String) -> String {
+        let standardError = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !standardError.isEmpty { return standardError }
+        let recognizable = stdout
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { line in
+                let uppercased = line.uppercased()
+                return uppercased.contains("ORA-") || uppercased.contains("SP2-") ||
+                    uppercased.contains("ACCESS DENIED") || uppercased.contains("ERROR ") ||
+                    uppercased.contains("CONNECTION REFUSED")
+            }
+            .prefix(4)
+        return recognizable.joined(separator: "\n")
     }
 
     private static func parse(_ output: String, driver: SQLDatabaseDriver) -> SQLResultSet {
@@ -419,6 +444,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     func saveConnection(test: Bool = false) {
         let profile = normalized(connectionDraft)
         guard !profile.name.isEmpty, !profile.host.isEmpty, !profile.database.isEmpty, !profile.username.isEmpty else { status = SQLWorkspaceError.invalidConnection.localizedDescription; return }
+        guard SQLNetworkPort.validRange.contains(profile.port) else { status = SQLWorkspaceError.invalidPort.localizedDescription; return }
         guard !secretDraft.isEmpty else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
         do {
             try SQLCredentialVault.save(secretDraft, for: profile.id)
@@ -1091,6 +1117,7 @@ private struct SQLWorkspaceView: View {
 private struct SQLConnectionEditor: View {
     @ObservedObject var model: SQLWorkspaceModel
     @Environment(\.dismiss) private var dismiss
+    @State private var portText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -1100,7 +1127,25 @@ private struct SQLConnectionEditor: View {
                 row("Environment") { TextField("Development", text: $model.connectionDraft.environment) }
                 row("Engine") { Picker("Engine", selection: $model.connectionDraft.driver) { ForEach(SQLDatabaseDriver.allCases) { Text($0.title).tag($0) } }.labelsHidden().pickerStyle(.segmented) }
                 row("Host") { TextField("db.example.com", text: $model.connectionDraft.host) }
-                row("Port") { TextField("Port", value: $model.connectionDraft.port, format: .number) }
+                row("Port") {
+                    TextField("1521", text: $portText)
+                        .font(.system(size: 12, design: .monospaced))
+                        .onChange(of: portText) { value in
+                            let digits = value.filter(\.isWholeNumber)
+                            if digits != value {
+                                portText = digits
+                                return
+                            }
+                            model.connectionDraft.port = SQLNetworkPort.parsePlainDigits(value) ?? 0
+                        }
+                        .onChange(of: model.connectionDraft.driver) { driver in
+                            if portText.isEmpty {
+                                portText = String(driver.defaultPort)
+                                model.connectionDraft.port = driver.defaultPort
+                            }
+                        }
+                        .help("Use plain digits only, such as 1521. Ports are not formatted with commas.")
+                }
                 row(model.connectionDraft.driver == .oracle ? "Service" : "Database") { TextField(model.connectionDraft.driver == .oracle ? "service_name" : "database", text: $model.connectionDraft.database) }
                 row("Username") { TextField("Username", text: $model.connectionDraft.username) }
                 row("Password") { SecureField("Stored in macOS Keychain", text: $model.secretDraft) }
@@ -1113,6 +1158,7 @@ private struct SQLConnectionEditor: View {
         .padding(20).frame(width: 560)
         .background(LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow))
         .preferredColorScheme(.dark)
+        .onAppear { portText = String(model.connectionDraft.port) }
     }
 
     private func row<Content: View>(_ name: String, @ViewBuilder content: () -> Content) -> some View {

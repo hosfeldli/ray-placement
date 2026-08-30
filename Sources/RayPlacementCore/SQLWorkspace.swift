@@ -28,6 +28,34 @@ public enum SQLDatabaseDriver: String, Codable, CaseIterable, Identifiable, Send
     }
 }
 
+/// Network ports are identifiers, not quantities: keep their display and
+/// validation free of locale-dependent number formatting such as `1,521`.
+public enum SQLNetworkPort {
+    public static let validRange = 1...65_535
+
+    public static func parsePlainDigits(_ value: String) -> Int? {
+        guard !value.isEmpty,
+              value.allSatisfy({ $0.isWholeNumber }),
+              let port = Int(value),
+              validRange.contains(port) else { return nil }
+        return port
+    }
+}
+
+public enum SQLOracleConnectionSyntax {
+    /// Ordinary Oracle account names must remain unquoted so Oracle applies its
+    /// standard uppercase normalization. Quoting `lima_test` would instead ask
+    /// Oracle to find a distinct, lowercase account and fail authentication.
+    public static func identifier(for username: String) -> String {
+        let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSimple = !trimmed.isEmpty && trimmed.allSatisfy {
+            $0.isLetter || $0.isNumber || $0 == "_" || $0 == "$" || $0 == "#"
+        }
+        if isSimple { return trimmed }
+        return "\"\(trimmed.replacingOccurrences(of: "\"", with: "\\\""))\""
+    }
+}
+
 public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var name: String

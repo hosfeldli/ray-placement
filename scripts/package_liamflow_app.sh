@@ -6,7 +6,11 @@ PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
 SOURCE_APP="$PROJECT_DIRECTORY/build/RayPlacement.app"
 APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
 
-"$PROJECT_DIRECTORY/scripts/package_app.sh"
+if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+    "$PROJECT_DIRECTORY/scripts/package_app.sh"
+else
+    RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$PROJECT_DIRECTORY/scripts/package_app.sh"
+fi
 
 rm -rf "$APP_DIRECTORY"
 ditto "$SOURCE_APP" "$APP_DIRECTORY"
@@ -25,9 +29,10 @@ chmod 755 "$APP_DIRECTORY/Contents/Resources/Uninstall Lima.command"
 # It is never part of an app bundle and can make an otherwise valid ad-hoc
 # signature fail on a hosted macOS runner.
 xattr -cr "$APP_DIRECTORY"
-if ! codesign --force --deep --sign - "$APP_DIRECTORY"; then
-    echo "Could not apply Lima's local ad-hoc signature." >&2
-    exit 1
+if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+    codesign --force --deep --sign - "$APP_DIRECTORY"
+else
+    "$PROJECT_DIRECTORY/scripts/sign_lima_app.sh" "$APP_DIRECTORY"
 fi
 "$PROJECT_DIRECTORY/scripts/verify_liamflow_app.sh" "$APP_DIRECTORY"
 echo "Packaged: $APP_DIRECTORY"

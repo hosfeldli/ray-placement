@@ -407,7 +407,10 @@ final class SettingsStore: ObservableObject {
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
-        showInDock = defaults.bool(forKey: Key.showInDock)
+        // Lima is a regular Mac app now. Existing installs that never chose a
+        // visibility preference gain a Dock icon automatically; an explicit
+        // stored preference is still respected.
+        showInDock = defaults.object(forKey: Key.showInDock) as? Bool ?? true
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
