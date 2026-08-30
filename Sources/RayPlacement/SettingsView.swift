@@ -692,21 +692,25 @@ private struct AccentThemePicker: View {
     @Binding var selection: AppAccentTheme
 
     var body: some View {
-        HStack(spacing: 12) {
-            Text("Accent")
+        HStack(spacing: 7) {
+            Text(selection.title)
+                .font(.callout.weight(.medium))
             Spacer()
             ForEach(AppAccentTheme.allCases) { theme in
                 Button { selection = theme } label: {
-                    Circle()
+                    PrismaticPanelShape(cut: 5)
                         .fill(theme.gradient)
-                        .frame(width: 20, height: 20)
+                        .frame(width: 23, height: 23)
                         .overlay(
-                            Circle().stroke(Color.primary.opacity(selection == theme ? 0.82 : 0.14), lineWidth: selection == theme ? 2 : 1)
+                            PrismaticPanelShape(cut: 5)
+                                .stroke(Color.white.opacity(selection == theme ? 0.82 : 0.18), lineWidth: selection == theme ? 1.25 : 0.65)
                         )
-                        .padding(3)
-                        .background(Circle().fill(selection == theme ? theme.primary.opacity(0.16) : .clear))
+                        .padding(2)
+                        .background(PrismaticPanelShape(cut: 6).fill(selection == theme ? theme.primary.opacity(0.18) : .clear))
+                        .shadow(color: selection == theme ? theme.primary.opacity(0.34) : .clear, radius: 7, y: 3)
                 }
                 .buttonStyle(.plain)
+                .help(theme.title)
                 .accessibilityLabel(theme.title)
                 .accessibilityValue(selection == theme ? "Selected" : "")
             }

@@ -8,17 +8,21 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
     case green
     case orange
     case rose
+    case aurora
+    case graphite
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .violet: return "Violet"
-        case .blue: return "Blue"
-        case .cyan: return "Cyan"
-        case .green: return "Green"
-        case .orange: return "Orange"
-        case .rose: return "Rose"
+        case .violet: return "Ultraviolet"
+        case .blue: return "Cobalt"
+        case .cyan: return "Aqua"
+        case .green: return "Verdant"
+        case .orange: return "Solar"
+        case .rose: return "Fuchsia"
+        case .aurora: return "Aurora"
+        case .graphite: return "Mercury"
         }
     }
 
@@ -34,6 +38,8 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
         case .green: return NSColor(calibratedRed: 0.12, green: 0.62, blue: 0.39, alpha: 1)
         case .orange: return NSColor(calibratedRed: 0.93, green: 0.43, blue: 0.12, alpha: 1)
         case .rose: return NSColor(calibratedRed: 0.90, green: 0.24, blue: 0.47, alpha: 1)
+        case .aurora: return NSColor(calibratedRed: 0.52, green: 0.93, blue: 0.42, alpha: 1)
+        case .graphite: return NSColor(calibratedRed: 0.62, green: 0.72, blue: 0.79, alpha: 1)
         }
     }
 
@@ -45,6 +51,8 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
         case .green: return NSColor(calibratedRed: 0.02, green: 0.60, blue: 0.65, alpha: 1)
         case .orange: return NSColor(calibratedRed: 0.91, green: 0.24, blue: 0.24, alpha: 1)
         case .rose: return NSColor(calibratedRed: 0.66, green: 0.27, blue: 0.89, alpha: 1)
+        case .aurora: return NSColor(calibratedRed: 0.05, green: 0.72, blue: 0.78, alpha: 1)
+        case .graphite: return NSColor(calibratedRed: 0.32, green: 0.40, blue: 0.58, alpha: 1)
         }
     }
 
@@ -56,6 +64,8 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
         case .green: return NSColor(calibratedRed: 0.50, green: 0.69, blue: 0.13, alpha: 1)
         case .orange: return NSColor(calibratedRed: 0.96, green: 0.66, blue: 0.10, alpha: 1)
         case .rose: return NSColor(calibratedRed: 0.95, green: 0.40, blue: 0.24, alpha: 1)
+        case .aurora: return NSColor(calibratedRed: 0.77, green: 0.90, blue: 0.16, alpha: 1)
+        case .graphite: return NSColor(calibratedRed: 0.38, green: 0.86, blue: 0.92, alpha: 1)
         }
     }
 
@@ -82,8 +92,8 @@ enum LiquidGlassDepth {
     case floating
 }
 
-/// A compact, asymmetric chamfer used throughout RayPlacement. The uneven cuts
-/// keep the interface crystalline without turning every control into a capsule.
+/// A deliberately asymmetric bevel. It keeps the workspace crystalline and
+/// gives adjacent panels a crisp, machined silhouette instead of soft pills.
 struct PrismaticPanelShape: InsettableShape {
     var cut: CGFloat = 7
     var insetAmount: CGFloat = 0
@@ -92,14 +102,14 @@ struct PrismaticPanelShape: InsettableShape {
         let r = rect.insetBy(dx: insetAmount, dy: insetAmount)
         let c = min(max(2, cut - insetAmount), min(r.width, r.height) * 0.22)
         var path = Path()
-        path.move(to: CGPoint(x: r.minX + c, y: r.minY))
-        path.addLine(to: CGPoint(x: r.maxX - c * 0.45, y: r.minY))
-        path.addLine(to: CGPoint(x: r.maxX, y: r.minY + c * 0.45))
-        path.addLine(to: CGPoint(x: r.maxX, y: r.maxY - c))
-        path.addLine(to: CGPoint(x: r.maxX - c, y: r.maxY))
-        path.addLine(to: CGPoint(x: r.minX + c * 0.35, y: r.maxY))
-        path.addLine(to: CGPoint(x: r.minX, y: r.maxY - c * 0.35))
-        path.addLine(to: CGPoint(x: r.minX, y: r.minY + c))
+        path.move(to: CGPoint(x: r.minX + c * 1.18, y: r.minY))
+        path.addLine(to: CGPoint(x: r.maxX - c * 0.64, y: r.minY))
+        path.addLine(to: CGPoint(x: r.maxX, y: r.minY + c * 0.64))
+        path.addLine(to: CGPoint(x: r.maxX, y: r.maxY - c * 1.05))
+        path.addLine(to: CGPoint(x: r.maxX - c * 1.05, y: r.maxY))
+        path.addLine(to: CGPoint(x: r.minX + c * 0.48, y: r.maxY))
+        path.addLine(to: CGPoint(x: r.minX, y: r.maxY - c * 0.48))
+        path.addLine(to: CGPoint(x: r.minX, y: r.minY + c * 1.18))
         path.closeSubpath()
         return path
     }
@@ -119,7 +129,7 @@ struct LiquidGlassBackdrop: View {
     var body: some View {
         ZStack {
             VisualEffectView(material: material, blendingMode: blendingMode)
-            Color.black.opacity(0.58)
+            Color.black.opacity(0.49)
             PrismaticAmbientLayer(theme: settings.accentTheme)
             RadialGradient(
                 colors: [settings.accentTheme.primary.opacity(0.18), .clear],
@@ -134,7 +144,7 @@ struct LiquidGlassBackdrop: View {
                 endRadius: 540
             )
             LinearGradient(
-                colors: [Color.white.opacity(0.060), .clear, settings.accentTheme.tertiary.opacity(0.038), Color.black.opacity(0.30)],
+                colors: [Color.white.opacity(0.090), .clear, settings.accentTheme.tertiary.opacity(0.058), Color.black.opacity(0.25)],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
@@ -160,10 +170,10 @@ private struct PrismaticAmbientLayer: View {
             let wide = max(proxy.size.width * 0.72, 420)
             let tall = max(proxy.size.height * 0.66, 310)
             ZStack {
-                PrismaticPanelShape(cut: 74)
+                PrismaticPanelShape(cut: 88)
                     .fill(
                         LinearGradient(
-                            colors: [theme.primary.opacity(0.17), theme.secondary.opacity(0.065), .clear],
+                            colors: [theme.primary.opacity(0.20), theme.secondary.opacity(0.085), .clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
@@ -175,7 +185,7 @@ private struct PrismaticAmbientLayer: View {
                         y: drifting ? -proxy.size.height * 0.12 : proxy.size.height * 0.08
                     )
 
-                PrismaticPanelShape(cut: 62)
+                PrismaticPanelShape(cut: 71)
                     .fill(
                         LinearGradient(
                             colors: [.clear, theme.tertiary.opacity(0.11), theme.primary.opacity(0.048)],
@@ -194,7 +204,7 @@ private struct PrismaticAmbientLayer: View {
             .clipped()
             .onAppear {
                 guard canAnimate else { return }
-                withAnimation(.easeInOut(duration: 22).repeatForever(autoreverses: true)) {
+                withAnimation(.easeInOut(duration: 24).repeatForever(autoreverses: true)) {
                     drifting = true
                 }
             }
@@ -212,9 +222,9 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
 
     private var baseOpacity: Double {
         switch depth {
-        case .recessed: return 0.38
-        case .raised: return 0.43
-        case .floating: return 0.49
+        case .recessed: return 0.33
+        case .raised: return 0.39
+        case .floating: return 0.44
         }
     }
 
@@ -235,6 +245,13 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                     shape.fill(Color.black.opacity(baseOpacity))
                     shape.fill(
                         LinearGradient(
+                            colors: [settings.accentTheme.secondary.opacity(0.045), .clear, Color.black.opacity(0.12)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    shape.fill(
+                        LinearGradient(
                             colors: [Color.white.opacity(0.085), settings.accentTheme.primary.opacity(selected ? 0.24 : accentOpacity), settings.accentTheme.tertiary.opacity(selected ? 0.13 : accentOpacity * 0.34), Color.clear],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
@@ -253,6 +270,14 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                         )
                     )
                     .blendMode(.screen)
+                    shape.fill(
+                        LinearGradient(
+                            colors: [.clear, Color.white.opacity(selected ? 0.09 : 0.035), .clear],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .blendMode(.plusLighter)
                 }
             }
             .overlay {
@@ -290,6 +315,16 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                 .padding(.leading, min(18, cornerRadius * 1.1))
                 .padding(.trailing, cornerRadius * 1.8)
             }
+            .overlay(alignment: .bottomTrailing) {
+                LinearGradient(
+                    colors: [.clear, settings.accentTheme.tertiary.opacity(selected ? 0.40 : 0.17)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+                .frame(width: max(28, cornerRadius * 3.2), height: 1)
+                .padding(.trailing, cornerRadius * 0.9)
+                .padding(.bottom, 0.55)
+            }
             .overlay {
                 shape.strokeBorder(
                     Color.black.opacity(0.34),
@@ -297,7 +332,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                 )
                 .padding(1.05)
             }
-            .shadow(color: shadow.color, radius: shadow.radius * 0.62, y: shadow.y * 0.55)
+            .shadow(color: shadow.color, radius: shadow.radius * 0.58, y: shadow.y * 0.52)
             .shadow(
                 color: selected ? settings.accentTheme.primary.opacity(0.24) : .clear,
                 radius: selected ? 12 : 0,
@@ -332,20 +367,21 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
             .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.84))
             .background {
                 PrismaticPanelShape(cut: max(4, size * 0.18))
-                    .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(Color.black.opacity(0.30)))
+                    .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(Color.black.opacity(0.24)))
                 PrismaticPanelShape(cut: max(4, size * 0.18))
                     .fill(prominent ? AnyShapeStyle(.clear) : AnyShapeStyle(.ultraThinMaterial))
             }
             .overlay {
                 PrismaticPanelShape(cut: max(4, size * 0.18)).strokeBorder(
-                    Color.white.opacity(0.27),
-                    lineWidth: 0.75
+                    Color.white.opacity(prominent ? 0.48 : 0.30),
+                    lineWidth: 0.82
                 )
             }
             .shadow(color: .black.opacity(prominent ? 0.18 : 0.09), radius: prominent ? 9 : 5, y: prominent ? 4 : 2)
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
-            .brightness(configuration.isPressed ? -0.04 : 0)
-            .animation(.interactiveSpring(response: 0.22, dampingFraction: 0.72), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.90 : 1)
+            .offset(y: configuration.isPressed ? 1 : 0)
+            .brightness(configuration.isPressed ? -0.06 : 0)
+            .animation(.interactiveSpring(response: 0.20, dampingFraction: 0.68), value: configuration.isPressed)
     }
 }
 

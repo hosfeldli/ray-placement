@@ -20,20 +20,35 @@ struct LauncherView: View {
             }
         }
         .frame(width: 704, height: 466)
-        .clipShape(PrismaticPanelShape(cut: 12))
+        .clipShape(PrismaticPanelShape(cut: 18))
         .overlay(
-            PrismaticPanelShape(cut: 12)
+            PrismaticPanelShape(cut: 18)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.white.opacity(0.74), RayColors.cyan.opacity(0.42), RayColors.indigo.opacity(0.28), Color.black.opacity(0.24)],
+                        colors: [Color.white.opacity(0.82), RayColors.cyan.opacity(0.54), RayColors.indigo.opacity(0.34), Color.black.opacity(0.28)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: 0.9
+                    lineWidth: 1.0
                 )
         )
-        .shadow(color: RayColors.indigo.opacity(0.12), radius: 32, y: 14)
-        .shadow(color: .black.opacity(0.38), radius: 26, y: 14)
+        .overlay(
+            PrismaticPanelShape(cut: 18)
+                .strokeBorder(Color.black.opacity(0.56), lineWidth: 0.7)
+                .padding(1.35)
+        )
+        .overlay(alignment: .topTrailing) {
+            LinearGradient(
+                colors: [.clear, RayColors.cyan.opacity(0.44), Color.white.opacity(0.36)],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+            .frame(width: 118, height: 1)
+            .padding(.trailing, 31)
+            .padding(.top, 0.7)
+        }
+        .shadow(color: RayColors.indigo.opacity(0.18), radius: 38, y: 16)
+        .shadow(color: .black.opacity(0.48), radius: 30, y: 16)
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
         .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
@@ -109,7 +124,7 @@ struct LauncherView: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
-        .liquidGlass(cornerRadius: 15, depth: .raised, accentOpacity: 0.022)
+        .liquidGlass(cornerRadius: 13, depth: .raised, accentOpacity: 0.032)
         .padding(.horizontal, 8)
         .padding(.top, 8)
     }

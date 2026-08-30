@@ -76,8 +76,12 @@ cp "$HARPER_DIRECTORY/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/harper-cl
 ditto "$PYTHON_GRAMMAR_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Tools/harper-cli" "$CONTENTS_DIRECTORY/Resources/Tools/PythonGrammar/grammar_check.py"
 
-if [[ ! -f "$ICON_FILE" || "$ICON_MASTER" -nt "$ICON_FILE" || "${RAYPLACEMENT_REBUILD_ICON:-0}" == "1" ]]; then
+if [[ ! -f "$ICON_MASTER" ]]; then
+    # Keep a deterministic fallback for source-only checkouts. A committed or
+    # generated master is intentional artwork and must never be overwritten.
     swift "$PROJECT_DIRECTORY/scripts/make_icon.swift" "$ICON_MASTER"
+fi
+if [[ ! -f "$ICON_FILE" || "$ICON_MASTER" -nt "$ICON_FILE" || "${RAYPLACEMENT_REBUILD_ICON:-0}" == "1" ]]; then
     ICONSET_DIRECTORY="$PROJECT_DIRECTORY/Packaging/RayPlacement.iconset"
     if [[ -d "$ICONSET_DIRECTORY" ]]; then
         rm -rf "$ICONSET_DIRECTORY"
