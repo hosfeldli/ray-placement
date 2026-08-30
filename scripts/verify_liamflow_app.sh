@@ -26,6 +26,7 @@ if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
 fi
 require "the extension documentation is missing" test -f "$RESOURCES/Documentation/EXTENSIONS.md"
 require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
+require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall LiamFlow.command"
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"

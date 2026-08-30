@@ -8,13 +8,13 @@ Text generation has been removed. Writing correction uses deterministic local Py
 
 LiamFlow targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-1. Download `LiamFlow.dmg` from the LiamFlow product site or the GitHub release, then open `Install LiamFlow.command` from the disk image.
-2. The guided installer SHA-256 verifies the pinned local dictation model, verifies the bundle, and installs `~/Applications/LiamFlow.app` with bundled extensions.
+1. Download `LiamFlow.dmg` from the LiamFlow product site or the GitHub release.
+2. Drag `LiamFlow.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
 
 The first install downloads about 465 MB for dictation. Later installs and self-updates reuse a verified installed copy. No Qwen, CoEdit, or other text-generation model is downloaded or packaged.
 
-Choose **LiamFlow → Uninstall LiamFlow…** to remove the app from within LiamFlow, or double-click `Uninstall LiamFlow.command` from the disk image for the optional data cleanup.
+Choose **LiamFlow → Uninstall LiamFlow…** to remove the app from within LiamFlow. It keeps notes, extensions, and settings unless you choose to remove them separately.
 
 ## Main workflow
 

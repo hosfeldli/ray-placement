@@ -27,10 +27,11 @@ jobs:
             exit 1
           fi
           make test
-      - name: Create model-free update kit
+      - name: Create update kit and ready-to-drag DMG
         run: |
           RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_update_archive.sh dist
+          RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_liamflow_dmg.sh dist
       - name: Publish GitHub Release assets
         if: github.ref_type == 'tag'

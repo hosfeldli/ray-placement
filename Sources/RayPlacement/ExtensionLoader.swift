@@ -5,6 +5,7 @@ final class ExtensionLoader {
     func prepareFolder() {
         do {
             try ApplicationPaths.prepare()
+            installBundledExtensionsIfNeeded()
             let readme = ApplicationPaths.extensions.appendingPathComponent("README.txt")
             if !FileManager.default.fileExists(atPath: readme.path) {
                 try Self.extensionReadme.write(to: readme, atomically: true, encoding: .utf8)
@@ -12,6 +13,29 @@ final class ExtensionLoader {
         } catch {
             // The Settings screen reports load failures; launch should remain usable.
         }
+    }
+
+    private func installBundledExtensionsIfNeeded() {
+        let fileManager = FileManager.default
+        let marker = ApplicationPaths.extensions.appendingPathComponent(".liamflow-bundled-extensions")
+        guard !fileManager.fileExists(atPath: marker.path),
+              let bundledRoot = Bundle.main.resourceURL?.appendingPathComponent("BundledExtensions", isDirectory: true),
+              let bundledItems = try? fileManager.contentsOfDirectory(
+                  at: bundledRoot,
+                  includingPropertiesForKeys: [.isDirectoryKey],
+                  options: [.skipsHiddenFiles]
+              ) else { return }
+
+        for source in bundledItems {
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue,
+                  fileManager.fileExists(atPath: source.appendingPathComponent("manifest.json").path) else { continue }
+            let destination = ApplicationPaths.extensions.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+            guard !fileManager.fileExists(atPath: destination.path) else { continue }
+            try? fileManager.copyItem(at: source, to: destination)
+        }
+        try? "Bundled extensions were installed with LiamFlow.\n".write(to: marker, atomically: true, encoding: .utf8)
     }
 
     func load() -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {

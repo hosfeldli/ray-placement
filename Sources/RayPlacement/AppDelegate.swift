@@ -90,7 +90,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Move LiamFlow to Trash?"
-        alert.informativeText = "The app will close. Your notes, extensions, and settings stay on this Mac unless you run the full uninstaller from the LiamFlow disk image."
+        alert.informativeText = "The app will close. Your notes, extensions, and settings stay on this Mac."
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn,

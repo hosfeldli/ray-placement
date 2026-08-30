@@ -20,6 +20,7 @@ WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-t
 MODEL_FREE_UPDATE_BUILD="${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}"
 HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
+BUNDLED_EXTENSIONS_DIRECTORY="$PROJECT_DIRECTORY/Extensions"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
 LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
@@ -103,6 +104,11 @@ cp "$PROJECT_DIRECTORY/docs/EXTENSIONS.md" "$CONTENTS_DIRECTORY/Resources/Docume
 cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY/Resources/Documentation/extension-manifest.schema.json"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"
 cp "$PROJECT_DIRECTORY/Packaging/Emoji/emoji-test.txt" "$CONTENTS_DIRECTORY/Resources/Emoji/emoji-test.txt"
+if [[ ! -d "$BUNDLED_EXTENSIONS_DIRECTORY" ]]; then
+    echo "The bundled extensions directory is missing."
+    exit 1
+fi
+ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
 if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
