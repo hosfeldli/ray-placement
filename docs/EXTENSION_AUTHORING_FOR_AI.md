@@ -1,6 +1,6 @@
-# RayPlacement extension contract for coding agents
+# Lima extension contract for coding agents
 
-Use this document when an AI or automation creates, repairs, or reviews a RayPlacement extension. The goal is a small, predictable tool that feels native, remains keyboard-first, and does not widen its authority beyond the requested workflow.
+Use this document when an AI or automation creates, repairs, or reviews a Lima extension. The goal is a small, predictable tool that feels native, remains keyboard-first, and does not widen its authority beyond the requested workflow.
 
 ## Non-negotiable workflow
 
@@ -188,11 +188,12 @@ Use these exact `type` values. No other native actions exist.
 | `openFocusedFileLauncher` | `""` | Opens Finder selection and lets the user choose the destination app. |
 | `convertTimezones` | `""` | Opens the offline timezone converter. |
 | `forceQuitApplications` | `""` | Opens the confirmed single-app force-quit picker. |
-| `forceQuitAllApplications` | `""` | Opens the confirmed all-apps flow; RayPlacement is excluded. |
+| `forceQuitAllApplications` | `""` | Opens the confirmed all-apps flow; Lima is excluded. |
 | `openFormatterWorkspace` | `""` | Opens the EDI/JSON/XML formatter workspace. |
 | `openEmojiPicker` | `""` | Opens the Unicode emoji picker. |
 | `openPasswordGenerator` | `""` | Opens the password generator. |
 | `openExtensionDevelopment` | `""` | Opens the maintained extension manuals. |
+| `uninstallApplication` | `""` | Opens the confirmed Lima uninstall flow while preserving user data. |
 | `shell` | Executable path | Starts one reviewed executable directly. |
 | `form` | `""` | Opens a schema-v2 native form. |
 

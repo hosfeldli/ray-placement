@@ -202,6 +202,17 @@ import Testing
     #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
 }
 
+@Test func appManagementManifestDecodes() throws {
+    let packageRoot = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/app-management/manifest.json"))
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.id == "local.app-management")
+    #expect(manifest.commands.map(\.action.type) == [.uninstallApplication])
+}
+
 @Test func emojiPickerManifestDecodesWithDoubleCommand() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

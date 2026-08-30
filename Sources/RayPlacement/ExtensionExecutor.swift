@@ -98,6 +98,9 @@ final class ExtensionExecutor {
         case .openExtensionDevelopment:
             completion(.success("__OPEN_EXTENSION_DEVELOPMENT__"))
 
+        case .uninstallApplication:
+            completion(.success("__UNINSTALL_APPLICATION__"))
+
         case .form:
             completion(.success("__OPEN_EXTENSION_FORM__"))
 

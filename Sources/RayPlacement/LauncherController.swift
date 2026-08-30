@@ -388,6 +388,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.passwordGeneratorWindow.present()
                 } else if output == "__OPEN_EXTENSION_DEVELOPMENT__" {
                     self.extensionDevelopmentWindow.present()
+                } else if output == "__UNINSTALL_APPLICATION__" {
+                    self.presentUninstaller()
                 } else if let output {
                     if runsInBackground {
                         self.toast.show("\(command.command.title) completed", style: .success)
@@ -412,9 +414,24 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func presentUninstaller() {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Move Lima to Trash?"
+        alert.informativeText = "Lima will close. Your notes, extensions, and settings stay on this Mac."
+        alert.addButton(withTitle: "Move to Trash")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn,
+              let script = Bundle.main.url(forResource: "Uninstall Lima", withExtension: "command") else { return }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = [script.path, "--confirmed"]
+        try? process.run()
+    }
+
     private func performWritingCheck() {
         guard let previousApplication else {
-            presentError(title: "Check Spelling & Grammar", message: "Select text in another app, then open RayPlacement and run this command.")
+            presentError(title: "Check Spelling & Grammar", message: "Select text in another app, then open Lima and run this command.")
             return
         }
         guard WindowManager.trusted(prompt: true) else {
@@ -457,7 +474,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 } catch {
                     self.presentError(
                         title: "Check Spelling & Grammar",
-                        message: "RayPlacement could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                        message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
                     )
                 }
             }
@@ -534,7 +551,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return
         }
         guard WindowManager.trusted(prompt: true) else {
-            presentError(title: "Paste", message: "Enable RayPlacement in System Settings → Privacy & Security → Accessibility to paste automatically.")
+            presentError(title: "Paste", message: "Enable Lima in System Settings → Privacy & Security → Accessibility to paste automatically.")
             return
         }
         previousApplication.unhide()
@@ -574,7 +591,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             case .failure(let error):
                 self?.presentError(
                     title: "Paste",
-                    message: "RayPlacement could not return keyboard focus and paste. The text remains on the clipboard. \(error.localizedDescription)"
+                    message: "Lima could not return keyboard focus and paste. The text remains on the clipboard. \(error.localizedDescription)"
                 )
             }
         }
@@ -676,7 +693,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.clipboard.copy(text)
                 self.presentError(
                     title: "Replace Selected Text",
-                    message: "RayPlacement could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
+                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
                 )
                 return
             }

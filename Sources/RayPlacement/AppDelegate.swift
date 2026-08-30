@@ -86,20 +86,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func quit() { NSApp.terminate(nil) }
-    @objc func uninstall() {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Move LiamFlow to Trash?"
-        alert.informativeText = "The app will close. Your notes, extensions, and settings stay on this Mac."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn,
-              let script = Bundle.main.url(forResource: "Uninstall LiamFlow", withExtension: "command") else { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = [script.path, "--confirmed"]
-        try? process.run()
-    }
 
     private func registerActivationHotkey() {
         guard SettingsStore.shared.activationHotkeyEnabled else {
@@ -288,13 +274,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
-            button.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: "LiamFlow")
+            button.image = NSImage(systemSymbolName: "sparkle.magnifyingglass", accessibilityDescription: "Lima")
             button.target = self
             button.action = #selector(toggleLauncher)
         }
 
         let menu = NSMenu()
-        let show = NSMenuItem(title: "Show LiamFlow", action: #selector(toggleLauncher), keyEquivalent: "")
+        let show = NSMenuItem(title: "Show Lima", action: #selector(toggleLauncher), keyEquivalent: "")
         show.target = self
         menu.addItem(show)
         let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
@@ -318,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updates.target = self
         menu.addItem(updates)
         menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit LiamFlow", action: #selector(quit), keyEquivalent: "q")
+        let quit = NSMenuItem(title: "Quit Lima", action: #selector(quit), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
         item.menu = menu
@@ -329,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let mainMenu = NSMenu()
 
         let appItem = NSMenuItem()
-        let appMenu = NSMenu(title: "LiamFlow")
+        let appMenu = NSMenu(title: "Lima")
         let settings = NSMenuItem(title: "Settings…", action: #selector(showSettings), keyEquivalent: ",")
         settings.target = self
         appMenu.addItem(settings)
@@ -347,11 +333,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
         appMenu.addItem(updates)
-        let uninstall = NSMenuItem(title: "Uninstall LiamFlow…", action: #selector(uninstall), keyEquivalent: "")
-        uninstall.target = self
-        appMenu.addItem(uninstall)
         appMenu.addItem(.separator())
-        let quitItem = NSMenuItem(title: "Quit LiamFlow", action: #selector(quit), keyEquivalent: "q")
+        let quitItem = NSMenuItem(title: "Quit Lima", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
         appMenu.addItem(quitItem)
         appItem.submenu = appMenu
@@ -401,7 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func presentUpdateConfirmation(_ release: UpdateService.Release) {
         let alert = NSAlert()
         alert.alertStyle = .informational
-        alert.messageText = "LiamFlow \(release.versionText) is available"
+        alert.messageText = "Lima \(release.versionText) is available"
         let notes = release.body?
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .prefix(1_200) ?? ""

@@ -1,20 +1,20 @@
-# LiamFlow 3.0
+# Lima 3.1
 
-LiamFlow is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
+Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
 Text generation has been removed. Writing correction uses deterministic local Python and Harper rules. Dictation is the only model-powered feature and runs locally through Whisper.
 
 ## Install
 
-LiamFlow targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
+Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-1. Download `LiamFlow.dmg` from the LiamFlow product site or the GitHub release.
-2. Drag `LiamFlow.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
+1. Download `Lima.dmg` from the Lima product site or the GitHub release.
+2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
 
 The first install downloads about 465 MB for dictation. Later installs and self-updates reuse a verified installed copy. No Qwen, CoEdit, or other text-generation model is downloaded or packaged.
 
-Choose **LiamFlow → Uninstall LiamFlow…** to remove the app from within LiamFlow. It keeps notes, extensions, and settings unless you choose to remove them separately.
+Run the bundled **Uninstall Lima** extension to remove the app from within Lima. It keeps notes, extensions, and settings unless you choose to remove them separately.
 
 ## Main workflow
 
@@ -104,7 +104,7 @@ Writing resources are process-based and exit after each correction. Whisper proc
 
 ## Updates
 
-LiamFlow checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, a visible progress window downloads the compact prebuilt update kit, verifies its GitHub SHA-256, restores or downloads the pinned local dictation model as needed, verifies the new bundle, swaps it atomically, and relaunches. The update preparation uses an ad-hoc local signature—no user-created certificate or trusted signing identity is required. A failed preparation leaves the current app unchanged; a failed swap restores the previous app. Detailed progress remains at `~/Library/Application Support/RayPlacement/Updates/update.log`.
+Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, a visible progress window downloads the compact prebuilt update kit, verifies its GitHub SHA-256, restores or downloads the pinned local dictation model as needed, verifies the new bundle, swaps it atomically, and relaunches. The update preparation uses an ad-hoc local signature—no user-created certificate or trusted signing identity is required. A failed preparation leaves the current app unchanged; a failed swap restores the previous app. Detailed progress remains at `~/Library/Application Support/RayPlacement/Updates/update.log`.
 
 ## Build and verify
 

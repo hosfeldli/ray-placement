@@ -16,8 +16,8 @@ final class LauncherPanel: NSPanel {
         hidesOnDeactivate = false
         isOpaque = false
         backgroundColor = .clear
-        title = "LiamFlow"
-        setAccessibilityLabel("LiamFlow launcher")
+        title = "Lima"
+        setAccessibilityLabel("Lima launcher")
         hasShadow = false
         isReleasedWhenClosed = false
         animationBehavior = .utilityWindow

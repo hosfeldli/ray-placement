@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://rayplacement.local/schemas/extension-manifest-v2.json",
-  "title": "RayPlacement Extension Manifest",
+  "$id": "https://lima.local/schemas/extension-manifest-v2.json",
+  "title": "Lima Extension Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "id", "name", "commands"],
@@ -38,7 +38,7 @@
       "required": ["type", "value"],
       "properties": {
         "type": {
-          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openFocusedFileLauncher", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace", "openEmojiPicker", "openPasswordGenerator", "openExtensionDevelopment", "form"]
+          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openFocusedFileLauncher", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace", "openEmojiPicker", "openPasswordGenerator", "openExtensionDevelopment", "uninstallApplication", "form"]
         },
         "value": { "type": "string" },
         "arguments": { "type": "array", "items": { "type": "string" } },

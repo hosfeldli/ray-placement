@@ -30,7 +30,7 @@
     {
       "id": "force-quit-all-applications",
       "title": "Force Quit All Applications",
-      "subtitle": "Close every foreground app except RayPlacement after confirmation",
+      "subtitle": "Close every foreground app except Lima after confirmation",
       "keywords": ["force", "quit", "all", "kill", "applications", "unresponsive", "frozen"],
       "icon": "xmark.bin.fill",
       "action": {

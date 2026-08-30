@@ -21,9 +21,9 @@ enum SelectedTextService {
         var errorDescription: String? {
             switch self {
             case .accessibilityRequired:
-                return "Enable RayPlacement in System Settings → Privacy & Security → Accessibility, select text in another app, then try again."
+                return "Enable Lima in System Settings → Privacy & Security → Accessibility, select text in another app, then try again."
             case .focusedControlUnavailable:
-                return "RayPlacement could not find the focused text field in the previous app. Select text in an editor that supports macOS Accessibility, then try again."
+                return "Lima could not find the focused text field in the previous app. Select text in an editor that supports macOS Accessibility, then try again."
             case .selectionUnavailable:
                 return "The focused app did not provide its selected text through macOS Accessibility. No clipboard text was used."
             case .emptySelection:
@@ -31,7 +31,7 @@ enum SelectedTextService {
             case .selectionChanged:
                 return "The original highlighted text changed before it could be replaced. Select it again and rerun the writing check."
             case .replacementUnavailable:
-                return "The previous app did not allow RayPlacement to replace its selected text. You can still copy the reviewed text."
+                return "The previous app did not allow Lima to replace its selected text. You can still copy the reviewed text."
             }
         }
     }

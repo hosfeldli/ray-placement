@@ -17,7 +17,7 @@ final class ExtensionLoader {
 
     private func installBundledExtensionsIfNeeded() {
         let fileManager = FileManager.default
-        let marker = ApplicationPaths.extensions.appendingPathComponent(".liamflow-bundled-extensions")
+        let marker = ApplicationPaths.extensions.appendingPathComponent(".lima-bundled-extensions")
         guard !fileManager.fileExists(atPath: marker.path),
               let bundledRoot = Bundle.main.resourceURL?.appendingPathComponent("BundledExtensions", isDirectory: true),
               let bundledItems = try? fileManager.contentsOfDirectory(
@@ -35,7 +35,7 @@ final class ExtensionLoader {
             guard !fileManager.fileExists(atPath: destination.path) else { continue }
             try? fileManager.copyItem(at: source, to: destination)
         }
-        try? "Bundled extensions were installed with LiamFlow.\n".write(to: marker, atomically: true, encoding: .utf8)
+        try? "Bundled extensions were installed with Lima.\n".write(to: marker, atomically: true, encoding: .utf8)
     }
 
     func load() -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {

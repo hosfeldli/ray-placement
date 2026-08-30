@@ -38,5 +38,5 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --title "LiamFlow $GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" dist/LiamFlow-Update.zip dist/LiamFlow-Update.sha256 dist/LiamFlow.dmg dist/LiamFlow.dmg.sha256 --clobber
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --title "Lima $GITHUB_REF_NAME"
+          gh release upload "$GITHUB_REF_NAME" dist/Lima-Update.zip dist/Lima-Update.sha256 dist/Lima.dmg dist/Lima.dmg.sha256 --clobber

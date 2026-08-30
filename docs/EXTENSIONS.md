@@ -1,6 +1,6 @@
-# Build a RayPlacement extension
+# Build a Lima extension
 
-RayPlacement extensions add searchable commands and compact native workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
+Lima extensions add searchable commands and compact native workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
 
 Installed extensions live at:
 
@@ -79,17 +79,18 @@ Hotkeys support `command`, `option`, `control`, and `shift`, followed by a lette
 | `openFocusedFileLauncher` | Choose a file/folder in Finder, then open it with an installed app | Empty |
 | `convertTimezones` | Open the offline timezone converter | Empty |
 | `forceQuitApplications` | Pick and confirm one app to force quit | Empty |
-| `forceQuitAllApplications` | Confirm and quit foreground apps except RayPlacement | Empty |
+| `forceQuitAllApplications` | Confirm and quit foreground apps except Lima | Empty |
 | `openFormatterWorkspace` | Open the EDI/JSON/XML workspace | Empty |
 | `openEmojiPicker` | Search the full Unicode emoji set and paste one | Empty |
 | `openPasswordGenerator` | Open the password generator | Empty |
 | `openExtensionDevelopment` | Open these maintained manuals | Empty |
+| `uninstallApplication` | Confirm and move Lima to Trash, preserving user data | Empty |
 | `shell` | Launch an executable directly | Executable path |
 | `form` | Present a native input/output workflow | See below |
 
 ## Dynamic forms
 
-Use `schemaVersion: 2` for forms. RayPlacement lays out only the fields that currently matter, validates them before execution, and displays output in the shared workspace. A tool can remain in the main window or be popped out by the user.
+Use `schemaVersion: 2` for forms. Lima lays out only the fields that currently matter, validates them before execution, and displays output in the shared workspace. A tool can remain in the main window or be popped out by the user.
 
 Available fields:
 

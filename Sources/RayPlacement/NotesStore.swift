@@ -17,9 +17,9 @@ final class NotesStore: ObservableObject {
         notes = Self.loadNotes()
         if notes.isEmpty {
             let welcome = MarkdownNote(
-                title: "Welcome to LiamFlow Notes",
+                title: "Welcome to Lima Notes",
                 content: """
-                # Welcome to LiamFlow Notes
+                # Welcome to Lima Notes
 
                 Notes are private, local, and saved as portable Markdown.
 
@@ -53,7 +53,7 @@ final class NotesStore: ObservableObject {
 
     func createNote() {
         guard notes.count < Self.maximumNotes else {
-            lastError = "LiamFlow Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."
+            lastError = "Lima Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."
             return
         }
         let note = MarkdownNote()

@@ -17,12 +17,12 @@ RESULT_FILE="$5"
 PROGRESS_FILE="${6:-$(dirname "$RESULT_FILE")/update-progress.txt}"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 USER_APPLICATIONS_DIRECTORY="$USER_HOME_DIRECTORY/Applications"
-INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/LiamFlow.app"
-READY_APP="$SOURCE_ROOT/Prebuilt/LiamFlow.app"
+INSTALLED_APP="$USER_APPLICATIONS_DIRECTORY/Lima.app"
+READY_APP="$SOURCE_ROOT/Prebuilt/Lima.app"
 EXTENSIONS_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Extensions"
 UPDATES_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Updates"
-EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/LiamFlowUpdate"
-BACKUP_APP="$USER_APPLICATIONS_DIRECTORY/.LiamFlow.previous-update.$$"
+EXPECTED_SOURCE_ROOT="$UPDATES_DIRECTORY/pending/extracted/LimaUpdate"
+BACKUP_APP="$USER_APPLICATIONS_DIRECTORY/.Lima.previous-update.$$"
 
 write_atomic_lines() {
     local destination="$1"
@@ -56,7 +56,7 @@ restore_previous_app() {
     fi
 }
 
-[[ -d "$READY_APP" ]] || fail_update "The verified prebuilt LiamFlow app is missing."
+[[ -d "$READY_APP" ]] || fail_update "The verified prebuilt Lima app is missing."
 
 CURRENT_MODEL="$CURRENT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 if [[ -f "$CURRENT_MODEL" ]]; then
@@ -75,17 +75,17 @@ else
     cp "$DOWNLOADED_MODEL" "$READY_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 fi
 
-write_progress working 0.52 "Verifying and preparing LiamFlow $VERSION for this Mac…"
-codesign --force --deep --sign - "$READY_APP" || fail_update "LiamFlow $VERSION could not be prepared for installation."
-"$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified LiamFlow $VERSION app did not pass inspection."
+write_progress working 0.52 "Verifying and preparing Lima $VERSION for this Mac…"
+codesign --force --deep --sign - "$READY_APP" || fail_update "Lima $VERSION could not be prepared for installation."
+"$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified Lima $VERSION app did not pass inspection."
 
-write_progress ready 0.90 "LiamFlow is verified. It will close briefly, install, and reopen…"
+write_progress ready 0.90 "Lima is verified. It will close briefly, install, and reopen…"
 
 for _ in {1..240}; do
     kill -0 "$CURRENT_PID" >/dev/null 2>&1 || break
     sleep 0.25
 done
-kill -0 "$CURRENT_PID" >/dev/null 2>&1 && fail_update "RayPlacement did not close in time, so the update was cancelled."
+kill -0 "$CURRENT_PID" >/dev/null 2>&1 && fail_update "Lima did not close in time, so the update was cancelled."
 
 write_progress installing 0.96 "Installing the verified app and bundled extensions…"
 mkdir -p "$USER_APPLICATIONS_DIRECTORY" "$EXTENSIONS_DIRECTORY"
@@ -114,8 +114,8 @@ if [[ -d "$SOURCE_ROOT/Extensions" ]]; then
 fi
 
 rm -rf "$BACKUP_APP"
-write_result success "LiamFlow $VERSION was downloaded, verified, and installed successfully."
-write_progress success 1 "LiamFlow $VERSION is ready."
+write_result success "Lima $VERSION was downloaded, verified, and installed successfully."
+write_progress success 1 "Lima $VERSION is ready."
 # A successful local build temporarily contains another full copy of Whisper.
 # Remove only the updater-owned, exactly validated working directory after the
 # signed app and extensions are safely installed. Failed builds are retained so

@@ -11,8 +11,8 @@ cleanup() {
 }
 trap cleanup EXIT
 
-STAGED_SOURCE="$TEMP_DIRECTORY/LiamFlowUpdate"
-PREBUILT_APP="$PROJECT_DIRECTORY/build/LiamFlow.app"
+STAGED_SOURCE="$TEMP_DIRECTORY/LimaUpdate"
+PREBUILT_APP="$PROJECT_DIRECTORY/build/Lima.app"
 mkdir -p "$STAGED_SOURCE" "$OUTPUT_DIRECTORY"
 OUTPUT_DIRECTORY="$(cd "$OUTPUT_DIRECTORY" && pwd)"
 rsync -a \
@@ -28,8 +28,8 @@ rsync -a \
     --exclude .DS_Store \
     "$PROJECT_DIRECTORY/" "$STAGED_SOURCE/"
 
-ARCHIVE="$OUTPUT_DIRECTORY/LiamFlow-Update.zip"
-rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/LiamFlow-Update.sha256"
+ARCHIVE="$OUTPUT_DIRECTORY/Lima-Update.zip"
+rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/Lima-Update.sha256"
 
 # Local grammar correction must be in every update kit. Whisper's large model
 # is restored from the already-installed app by apply_downloaded_update.sh.
@@ -38,13 +38,13 @@ test -f "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/grammar_check.py"
 test -d "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/site-packages/spellchecker"
 test -d "$PREBUILT_APP"
 mkdir -p "$STAGED_SOURCE/Prebuilt"
-ditto "$PREBUILT_APP" "$STAGED_SOURCE/Prebuilt/LiamFlow.app"
+ditto "$PREBUILT_APP" "$STAGED_SOURCE/Prebuilt/Lima.app"
 (
     cd "$TEMP_DIRECTORY"
-    ditto -c -k --sequesterRsrc --keepParent LiamFlowUpdate "$ARCHIVE"
+    ditto -c -k --sequesterRsrc --keepParent LimaUpdate "$ARCHIVE"
 )
 (
     cd "$OUTPUT_DIRECTORY"
-    shasum -a 256 "$(basename "$ARCHIVE")" > LiamFlow-Update.sha256
+    shasum -a 256 "$(basename "$ARCHIVE")" > Lima-Update.sha256
 )
 echo "Created: $ARCHIVE"

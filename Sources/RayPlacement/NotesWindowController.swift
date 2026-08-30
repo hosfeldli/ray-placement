@@ -188,8 +188,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "LiamFlow Notes"
-        window.setAccessibilityLabel("LiamFlow Notes")
+        window.title = "Lima Notes"
+        window.setAccessibilityLabel("Lima Notes")
         window.titleVisibility = NSWindow.TitleVisibility.hidden
         window.titlebarAppearsTransparent = true
         window.isOpaque = false

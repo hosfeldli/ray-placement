@@ -3,7 +3,7 @@
   "id": "local.extension-development",
   "name": "Extension Development",
   "version": "1.0.0",
-  "description": "The maintained RayPlacement extension guide and AI-friendly starter templates.",
+  "description": "The maintained Lima extension guide and AI-friendly starter templates.",
   "commands": [
     {
       "id": "guide",

@@ -38,7 +38,7 @@ final class UpdateService: ObservableObject {
         }
 
         var versionText: String { tagName.hasPrefix("v") ? String(tagName.dropFirst()) : tagName }
-        var updateAsset: Asset? { assets.first { $0.name == "LiamFlow-Update.zip" } }
+        var updateAsset: Asset? { assets.first { $0.name == "Lima-Update.zip" } }
     }
 
     struct SiteRelease: Decodable {
@@ -56,8 +56,8 @@ final class UpdateService: ObservableObject {
         }
 
         func asRelease() -> Release {
-            let assets = update.map { [Release.Asset(name: "LiamFlow-Update.zip", browserDownloadURL: $0, digest: updateDigest, size: updateSize ?? 0)] } ?? []
-            return Release(tagName: version, name: "LiamFlow \(version)", body: nil, htmlURL: releaseURL, assets: assets)
+            let assets = update.map { [Release.Asset(name: "Lima-Update.zip", browserDownloadURL: $0, digest: updateDigest, size: updateSize ?? 0)] } ?? []
+            return Release(tagName: version, name: "Lima \(version)", body: nil, htmlURL: releaseURL, assets: assets)
         }
     }
 
@@ -73,9 +73,9 @@ final class UpdateService: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .invalidResponse: return "The LiamFlow update source returned an unreadable response."
-            case .noRelease: return "No published LiamFlow update is available yet."
-            case .missingAsset: return "The LiamFlow release does not contain a verified update kit."
+            case .invalidResponse: return "The Lima update source returned an unreadable response."
+            case .noRelease: return "No published Lima update is available yet."
+            case .missingAsset: return "The Lima release does not contain a verified update kit."
             case .invalidDigest: return "The downloaded update did not match its SHA-256 digest and was not opened."
             case .oversizedAsset: return "The update kit is unexpectedly large and was rejected."
             case .extractionFailed(let message): return message.isEmpty ? "The update kit could not be opened." : message
@@ -88,12 +88,12 @@ final class UpdateService: ObservableObject {
     static let repositoryURL = URL(string: "https://github.com/hosfeldli/ray-placement")!
     private static let latestReleaseURL = URL(string: "https://api.github.com/repos/hosfeldli/ray-placement/releases/latest")!
     private static var siteMetadataURL: URL? {
-        guard let raw = Bundle.main.object(forInfoDictionaryKey: "LiamFlowUpdateMetadataURL") as? String,
+        guard let raw = Bundle.main.object(forInfoDictionaryKey: "LimaUpdateMetadataURL") as? String,
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return URL(string: raw)
     }
 
-    @Published private(set) var statusText = "Updates are checked from the LiamFlow site when LiamFlow starts."
+    @Published private(set) var statusText = "Updates are checked from the Lima site when Lima starts."
     @Published private(set) var isBusy = false
     @Published private(set) var latestVersion: String?
     @Published private(set) var isInstalling = false
@@ -137,23 +137,23 @@ final class UpdateService: ObservableObject {
     func checkForUpdates(manual: Bool) {
         guard !isBusy, !isInstalling else { return }
         isBusy = true
-        statusText = "Checking for LiamFlow updates…"
+        statusText = "Checking for Lima updates…"
 
         let usingSiteMetadata = Self.siteMetadataURL != nil
         var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
-        request.setValue("LiamFlow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor in
                 guard let self else { return }
                 self.isBusy = false
                 if let error {
-                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from the LiamFlow site when LiamFlow starts."
+                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from the Lima site when Lima starts."
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
                     return
                 }
                 if http.statusCode == 404 {
@@ -161,7 +161,7 @@ final class UpdateService: ObservableObject {
                     return
                 }
                 guard (200..<300).contains(http.statusCode), let data else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
                     return
                 }
                 let release: Release?
@@ -175,15 +175,15 @@ final class UpdateService: ObservableObject {
                 guard let release,
                       let remoteVersion = SemanticVersion(release.versionText),
                       let installedVersion = SemanticVersion(self.currentVersion) else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the LiamFlow site when LiamFlow starts."
+                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
                     return
                 }
                 self.latestVersion = release.versionText
                 guard installedVersion < remoteVersion else {
-                    self.statusText = "LiamFlow \(self.currentVersion) is up to date."
+                    self.statusText = "Lima \(self.currentVersion) is up to date."
                     return
                 }
-                self.statusText = "LiamFlow \(release.versionText) is available."
+                self.statusText = "Lima \(release.versionText) is available."
                 self.onReleaseAvailable?(release)
             }
         }.resume()
@@ -213,13 +213,13 @@ final class UpdateService: ObservableObject {
         isInstalling = true
         installingVersion = release.versionText
         installationProgress = 0.08
-        installationStage = "Downloading the verified LiamFlow update kit…"
+        installationStage = "Downloading the verified Lima update kit…"
         statusText = installationStage
         completionResult = nil
         restartScheduled = false
         onInstallStarted?()
         var request = URLRequest(url: asset.browserDownloadURL)
-        request.setValue("LiamFlow/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
             guard let self else { return }
             if let error {
@@ -247,7 +247,7 @@ final class UpdateService: ObservableObject {
                     )
                     Task { @MainActor in
                         self.installationProgress = 0.3
-                        self.installationStage = "Update verified. Preparing LiamFlow…"
+                        self.installationStage = "Update verified. Preparing Lima…"
                         self.statusText = self.installationStage
                         self.launchInstaller(sourceRoot: sourceRoot, version: release.versionText)
                     }
@@ -268,7 +268,7 @@ final class UpdateService: ObservableObject {
         let working = ApplicationPaths.updates.appendingPathComponent("pending", isDirectory: true)
         if fileManager.fileExists(atPath: working.path) { try fileManager.removeItem(at: working) }
         try fileManager.createDirectory(at: working, withIntermediateDirectories: true)
-        let archive = working.appendingPathComponent("LiamFlow-Update.zip")
+        let archive = working.appendingPathComponent("Lima-Update.zip")
         try fileManager.copyItem(at: downloadedArchive, to: archive)
         let attributes = try fileManager.attributesOfItem(atPath: archive.path)
         let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
@@ -290,9 +290,9 @@ final class UpdateService: ObservableObject {
             throw UpdateError.extractionFailed(String(decoding: errorData.prefix(8_000), as: UTF8.self))
         }
 
-        let sourceRoot = extraction.appendingPathComponent("LiamFlowUpdate", isDirectory: true)
+        let sourceRoot = extraction.appendingPathComponent("LimaUpdate", isDirectory: true)
         let required = [
-            "Package.swift", "Install LiamFlow.command", "Packaging/Info.plist",
+            "Package.swift", "Uninstall Lima.command", "Packaging/Info.plist",
             "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh"
         ]
         guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
@@ -313,7 +313,7 @@ final class UpdateService: ObservableObject {
     }
 
     private func launchInstaller(sourceRoot: URL, version: String) {
-        statusText = "Preparing the verified LiamFlow update…"
+        statusText = "Preparing the verified Lima update…"
         let helper = sourceRoot.appendingPathComponent("scripts/apply_downloaded_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
         try? FileManager.default.removeItem(at: progressFile)
@@ -378,7 +378,7 @@ final class UpdateService: ObservableObject {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
                 guard let self, self.isInstalling else { return }
                 self.installationProgress = 0.95
-                self.installationStage = "Closing for the final verified swap. LiamFlow will reopen automatically…"
+                self.installationStage = "Closing for the final verified swap. Lima will reopen automatically…"
                 self.statusText = self.installationStage
                 NSApp.terminate(nil)
             }

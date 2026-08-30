@@ -58,6 +58,7 @@ public struct ExtensionAction: Codable, Sendable {
         case openEmojiPicker
         case openPasswordGenerator
         case openExtensionDevelopment
+        case uninstallApplication
         case form
     }
 
