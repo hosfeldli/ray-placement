@@ -242,7 +242,12 @@ private enum SQLCommandLineClient {
 }
 
 private enum SQLSchemaDiscovery {
-    static func discover(profile: SQLConnectionProfile, password: String) async throws -> SQLSchemaSnapshot {
+    typealias ProgressHandler = @MainActor @Sendable (_ completed: Int, _ total: Int, _ activity: String) -> Void
+
+    static func discover(profile: SQLConnectionProfile, password: String, progress: @escaping ProgressHandler) async throws -> SQLSchemaSnapshot {
+        let totalSteps = 6
+
+        await progress(0, totalSteps, "Reading tables and views")
         let tableResult = try await run(profile, password, query: tablesQuery(for: profile.driver))
         var tables = tableResult.rows.compactMap { row -> SQLTable? in
             guard row.count >= 3 else { return nil }
@@ -250,6 +255,7 @@ private enum SQLSchemaDiscovery {
         }
         var tableIndex = Dictionary(uniqueKeysWithValues: tables.indices.map { (tables[$0].qualifiedName, $0) })
 
+        await progress(1, totalSteps, "Reading columns")
         let columns = try await run(profile, password, query: columnsQuery(for: profile.driver))
         for row in columns.rows where row.count >= 7 {
             let tableName = qualified(schema: row[0], table: row[1])
@@ -260,6 +266,7 @@ private enum SQLSchemaDiscovery {
             ))
         }
 
+        await progress(2, totalSteps, "Reading indexes")
         let indexResult = try await run(profile, password, query: indexesQuery(for: profile.driver))
         for row in indexResult.rows where row.count >= 6 {
             let tableName = qualified(schema: row[0], table: row[1])
@@ -267,6 +274,7 @@ private enum SQLSchemaDiscovery {
             tables[index].indexes.append(SQLIndex(table: tableName, name: clean(row[2]), column: clean(row[5]), ordinal: Int(clean(row[4])) ?? 0, unique: clean(row[3]) == "0" || clean(row[3]).uppercased() == "UNIQUE"))
         }
 
+        await progress(3, totalSteps, "Reading constraints")
         let constraints = try await run(profile, password, query: constraintsQuery(for: profile.driver))
         for row in constraints.rows where row.count >= 4 {
             let tableName = qualified(schema: row[0], table: row[1])
@@ -274,6 +282,7 @@ private enum SQLSchemaDiscovery {
             tables[index].constraints.append("\(clean(row[2])) · \(clean(row[3]))")
         }
 
+        await progress(4, totalSteps, "Mapping relationships")
         let foreignKeyResult = try await run(profile, password, query: foreignKeysQuery(for: profile.driver))
         let foreignKeys = foreignKeyResult.rows.compactMap { row -> SQLForeignKey? in
             guard row.count >= 7 else { return nil }
@@ -283,6 +292,7 @@ private enum SQLSchemaDiscovery {
             )
         }
 
+        await progress(5, totalSteps, "Reading procedures and functions")
         let procedureResult = try await run(profile, password, query: proceduresQuery(for: profile.driver))
         let procedures = procedureResult.rows.compactMap { row -> SQLProcedure? in
             guard row.count >= 3 else { return nil }
@@ -290,6 +300,7 @@ private enum SQLSchemaDiscovery {
         }
         tables.sort { $0.qualifiedName.localizedStandardCompare($1.qualifiedName) == .orderedAscending }
         tableIndex = Dictionary(uniqueKeysWithValues: tables.indices.map { (tables[$0].qualifiedName, $0) })
+        await progress(totalSteps, totalSteps, "Finalizing schema")
         return SQLSchemaSnapshot(profileID: profile.id, tables: tables, foreignKeys: foreignKeys, procedures: procedures)
     }
 
@@ -383,6 +394,9 @@ private final class SQLWorkspaceModel: ObservableObject {
     @Published var result = SQLResultSet()
     @Published var status = "Choose a connection to discover its schema."
     @Published var isBusy = false
+    @Published var discoveryCompletedSteps = 0
+    @Published var discoveryTotalSteps = 0
+    @Published var discoveryActivity = ""
     @Published var showsConnectionEditor = false
     @Published var connectionDraft = SQLConnectionProfile(name: "New Connection", environment: "Development", driver: .mysql, host: "", database: "", username: "")
     @Published var secretDraft = ""
@@ -426,6 +440,10 @@ private final class SQLWorkspaceModel: ObservableObject {
     var joinSuggestions: [SQLJoinSuggestion] { schema?.joins(for: visualQuery.tables) ?? [] }
     var activeCollection: SQLLocalCollection? { collections.first { $0.id == selectedCollectionID } }
     var pendingConnectionDeletion: SQLConnectionProfile? { connections.first { $0.id == pendingConnectionDeletionID } }
+    var discoveryProgress: Double {
+        guard discoveryTotalSteps > 0 else { return 0 }
+        return Double(discoveryCompletedSteps) / Double(discoveryTotalSteps)
+    }
 
     func newConnection() {
         isEditingConnection = false
@@ -476,20 +494,36 @@ private final class SQLWorkspaceModel: ObservableObject {
     func discover() {
         guard let profile = selectedConnection else { status = "Choose or add a connection first."; return }
         guard let password = SQLCredentialVault.password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
-        isBusy = true; status = "Discovering tables, columns, keys, indexes, and procedures…"
+        isBusy = true
+        discoveryCompletedSteps = 0
+        discoveryTotalSteps = 6
+        discoveryActivity = "Preparing discovery"
+        status = "Discovery 0 of 6 · Preparing connection…"
         runningTask = Task { [weak self] in
             do {
-                let snapshot = try await SQLSchemaDiscovery.discover(profile: profile, password: password)
+                let snapshot = try await SQLSchemaDiscovery.discover(profile: profile, password: password) { [weak self] completed, total, activity in
+                    guard let self else { return }
+                    self.discoveryCompletedSteps = completed
+                    self.discoveryTotalSteps = total
+                    self.discoveryActivity = activity
+                    self.status = "Discovery \(completed) of \(total) · \(activity)…"
+                }
                 guard !Task.isCancelled else { return }
                 self?.schema = snapshot
                 self?.cachedSchemas[profile.id] = snapshot
                 self?.selectedTableID = snapshot.tables.first?.id
                 self?.status = "Discovered \(snapshot.tables.count) tables/views, \(snapshot.foreignKeys.count) relationships, and \(snapshot.procedures.count) procedures."
+                self?.discoveryCompletedSteps = self?.discoveryTotalSteps ?? 0
+                self?.discoveryActivity = "Schema ready"
                 self?.isBusy = false
                 self?.save()
             } catch {
-                self?.status = error.localizedDescription
-                self?.isBusy = false
+                if let self {
+                    let activity = self.discoveryActivity.isEmpty ? "preparing discovery" : self.discoveryActivity.lowercased()
+                    self.status = "Discovery stopped while \(activity): \(error.localizedDescription)"
+                    self.discoveryActivity = "Discovery stopped"
+                    self.isBusy = false
+                }
             }
         }
     }
@@ -680,9 +714,12 @@ private struct SQLWorkspaceView: View {
             VStack(spacing: 8) {
                 toolbar
                 workspaceContent
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .layoutPriority(1)
                 statusBar
             }
             .padding(10)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
@@ -776,6 +813,7 @@ private struct SQLWorkspaceView: View {
                 mainContent.frame(minWidth: 420)
                 inspector.frame(minWidth: 235, idealWidth: 285, maxWidth: 360)
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
 
@@ -924,7 +962,9 @@ private struct SQLWorkspaceView: View {
             }
             resultsView
         }
-        .padding(10).liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.016)
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.016)
     }
 
     private var sqlEditor: some View {
@@ -1093,13 +1133,33 @@ private struct SQLWorkspaceView: View {
     }
 
     private var statusBar: some View {
-        HStack(spacing: 7) {
-            if model.isBusy { ProgressView().controlSize(.small) } else { Circle().fill(model.status.lowercased().contains("could not") || model.status.lowercased().contains("not found") ? Color.orange : settings.accentTheme.tertiary).frame(width: 5, height: 5) }
-            Text(model.status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
-            Spacer()
-            if let schema = model.schema { Text("Schema cached \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.tertiary) }
+        VStack(spacing: model.isBusy ? 4 : 0) {
+            HStack(spacing: 7) {
+                if model.isBusy {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Circle()
+                        .fill(model.status.lowercased().contains("could not") || model.status.lowercased().contains("not found") ? Color.orange : settings.accentTheme.tertiary)
+                        .frame(width: 5, height: 5)
+                }
+                Text(model.status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                if model.isBusy, model.discoveryTotalSteps > 0 {
+                    Text("\(model.discoveryCompletedSteps)/\(model.discoveryTotalSteps)")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(settings.accentTheme.tertiary)
+                } else if let schema = model.schema {
+                    Text("Schema cached \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            if model.isBusy, model.discoveryTotalSteps > 0 {
+                ProgressView(value: model.discoveryProgress)
+                    .tint(settings.accentTheme.primary)
+                    .controlSize(.mini)
+            }
         }
-        .padding(.horizontal, 10).frame(height: 27)
+        .padding(.horizontal, 10)
+        .frame(height: model.isBusy ? 34 : 27)
         .background(Color.black.opacity(0.16), in: PrismaticPanelShape(cut: 6))
     }
 
