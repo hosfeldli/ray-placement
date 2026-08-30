@@ -27,16 +27,22 @@ jobs:
             exit 1
           fi
           make test
+          ./scripts/test_lima_installer.sh
       - name: Create update kit and ready-to-drag DMG
         run: |
           RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_update_archive.sh dist
           RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_liamflow_dmg.sh dist
-      - name: Publish GitHub Release assets
+      - name: Stage GitHub Release assets for review
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --generate-notes --title "Lima $GITHUB_REF_NAME"
+          # Never overwrite a published, reviewed bundle with CI's ad-hoc copy.
+          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null)" = false ]; then
+            echo "This release is already published; leaving its verified assets unchanged."
+            exit 0
+          fi
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Lima $GITHUB_REF_NAME"
           gh release upload "$GITHUB_REF_NAME" dist/Lima-Update.zip dist/Lima-Update.sha256 dist/Lima.dmg dist/Lima.dmg.sha256 --clobber

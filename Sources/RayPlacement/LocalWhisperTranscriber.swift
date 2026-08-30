@@ -318,7 +318,8 @@ final class LocalWhisperTranscriber {
         let executable = root.appendingPathComponent("runtime/whisper-cli")
         let tdrz = root.appendingPathComponent("model/ggml-small.en-tdrz.bin")
         let standard = root.appendingPathComponent("model/ggml-small.en.bin")
-        let model = FileManager.default.fileExists(atPath: tdrz.path) ? tdrz : standard
+        let cached = ApplicationPaths.applicationSupport.appendingPathComponent("Whisper/model/ggml-small.en-tdrz.bin")
+        guard let model = [tdrz, cached, standard].first(where: { FileManager.default.fileExists(atPath: $0.path) }) else { return nil }
         guard FileManager.default.isExecutableFile(atPath: executable.path), FileManager.default.fileExists(atPath: model.path) else { return nil }
         return Resources(executable: executable, model: model, supportsSpeakerTurns: model.lastPathComponent.contains("tdrz"))
     }

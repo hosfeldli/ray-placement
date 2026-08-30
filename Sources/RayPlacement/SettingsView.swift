@@ -639,7 +639,7 @@ struct SettingsView: View {
                 .foregroundStyle(.secondary)
             Text("Local Python and Harper writing tools. No network requests or analytics.")
                 .font(.callout.weight(.medium))
-            Text("Version \(updateService.currentVersion)")
+            Text("Version \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Text(updateService.statusText)
@@ -664,12 +664,16 @@ struct SettingsView: View {
             }
             if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }
             DisclosureGroup("Update details") {
-                Text("Updates are downloaded from GitHub, verified, rebuilt locally with this Mac’s signing identity, and installed after confirmation.")
+                Text("Verified prebuilt updates replace this app in place after confirmation. No local compilation is required.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Text("~/Library/Application Support/RayPlacement/Updates/update.log")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
+                Button("Reveal running app in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+                }
+                Text(Bundle.main.bundleURL.path).font(.caption2.monospaced()).textSelection(.enabled)
             }
             .frame(maxWidth: 470)
         }

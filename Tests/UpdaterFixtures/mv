@@ -1,0 +1,11 @@
+#!/bin/zsh
+# Used only by the updater regression test to inject a failure after backup.
+if [[ "${LIMA_TEST_SWAP_FAILURE:-0}" == 1 && "$1" == */Incoming.app ]]; then
+    exit 73
+fi
+if [[ "${LIMA_TEST_CORRUPT_SWAP:-0}" == 1 && "$1" == */Incoming.app ]]; then
+    /bin/mv "$@" || exit $?
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleVersion corrupted' "$2/Contents/Info.plist"
+    exit 0
+fi
+exec /bin/mv "$@"

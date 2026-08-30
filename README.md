@@ -12,7 +12,7 @@ Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
 
-The first install downloads about 465 MB for dictation. Later installs and self-updates reuse a verified installed copy. No Qwen, CoEdit, or other text-generation model is downloaded or packaged.
+The DMG already contains the dictation model (about 465 MB). Compact updates reuse a checksum-verified copy in Application Support, downloading it only if missing or damaged. No Qwen, CoEdit, or other text-generation model is downloaded or packaged. Open the installed copy from Applications, not the mounted disk image.
 
 Run the bundled **Uninstall Lima** extension to remove the app from within Lima. It keeps notes, extensions, and settings unless you choose to remove them separately.
 
@@ -52,6 +52,7 @@ Endpoint Tester is a native Postman-style workspace:
 SQL Workspace is a native Oracle and MySQL client that uses the installed `sqlplus` or `mysql` command-line client on your Mac. It does not bundle proprietary database drivers. Add named development, staging, and production connections, then save each password to the macOS Keychain; the local workspace file contains only connection metadata and cached schema information.
 
 - Discover all objects visible to the connected account: tables, views, columns and descriptions, primary/foreign-key constraints, indexes, and procedures/functions.
+- Discovery reports six completed stages and the current scan. Each catalog query has a 120-second timeout. Oracle uses SQLPlus MARKUP CSV (12.2 or newer) to preserve quoted/multiline metadata, including LONG column defaults; output is drained continuously to prevent large-schema pipe deadlocks. Broad accounts may still take longer because `ALL_*` views include every accessible schema.
 - Drag schema tables into the visual canvas or free-SQL editor. The join panel proposes foreign-key-compatible joins and inserts their exact predicates.
 - Use read-only execution for `SELECT`/`WITH` work. Other SQL remains available in Free SQL after an explicit per-run confirmation.
 - Export a selected result range into the built-in local document store. Collections are saved locally, can be extended with later exports, and are available from SQL Workspace → Storage.
@@ -104,14 +105,19 @@ Writing resources are process-based and exit after each correction. Whisper proc
 
 ## Updates
 
-Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, a visible progress window downloads the compact prebuilt update kit, verifies its GitHub SHA-256, restores or downloads the pinned local dictation model as needed, verifies the new bundle, swaps it atomically, and relaunches. The update preparation uses an ad-hoc local signature—no user-created certificate or trusted signing identity is required. A failed preparation leaves the current app unchanged; a failed swap restores the previous app. Detailed progress remains at `~/Library/Application Support/RayPlacement/Updates/update.log`.
+Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, the updater verifies the archive SHA-256 and prebuilt app version/build/signature, preserves the dictation model outside the app, and replaces the exact running app path using a staged bundle and rollback backup. It never redirects an installation in `/Applications` to `~/Applications`. Relaunch uses the exact installed path, and the new process checks a version/build/path receipt before reporting success. Settings → About → Update details can reveal the running copy in Finder.
+
+No compiler, new trust root, or local signing key is required on another Mac. The downloaded signature is preserved; an existing local signing identity is reused only when it matches the currently installed app. Accessibility approval remains controlled by macOS: changing from an older ad-hoc signature may require approval once. These builds are not Apple-notarized Developer ID distributions.
+
+An unwritable app folder or disk-image launch is rejected before Lima closes. Use the DMG in Finder and approve administrator access if necessary. Failed swaps restore the previous bundle; successful updates keep a recovery copy in a `.lima-install.*` folder beside the app, with its exact path in `~/Library/Application Support/RayPlacement/Updates/update.log`. The optional `Install Lima.command` installs a prebuilt app to `/Applications/Lima.app` (or an explicit destination); the old installer name forwards to it and no longer builds or installs RayPlacement.
 
 ## Build and verify
 
 ```sh
 swift test
-./scripts/package_app.sh
-./scripts/verify_app.sh build/RayPlacement.app
+./scripts/test_lima_installer.sh
+./scripts/package_liamflow_app.sh
+./scripts/verify_liamflow_app.sh build/Lima.app
 ```
 
 `scripts/assemble_whisper_model.sh` restores the verified model from an existing RayPlacement app or downloads the exact pinned asset. `scripts/fetch_vendor_assets.sh` prepares only the dictation asset; there is no text-model asset fetch.

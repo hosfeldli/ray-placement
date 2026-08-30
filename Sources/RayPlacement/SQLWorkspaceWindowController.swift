@@ -114,12 +114,12 @@ private enum SQLWorkspaceError: LocalizedError {
 }
 
 private enum SQLCommandLineClient {
-    static func execute(profile: SQLConnectionProfile, password: String, sql: String) async throws -> SQLResultSet {
-        let output = try await raw(profile: profile, password: password, sql: sql)
+    static func execute(profile: SQLConnectionProfile, password: String, sql: String, timeout: TimeInterval = 3600) async throws -> SQLResultSet {
+        let output = try await raw(profile: profile, password: password, sql: sql, timeout: timeout)
         return parse(output, driver: profile.driver)
     }
 
-    static func raw(profile: SQLConnectionProfile, password: String, sql: String) async throws -> String {
+    static func raw(profile: SQLConnectionProfile, password: String, sql: String, timeout: TimeInterval = 3600) async throws -> String {
         let client = try resolvedClient(for: profile)
         return try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
@@ -143,33 +143,24 @@ private enum SQLCommandLineClient {
                     WHENEVER OSERROR EXIT FAILURE ROLLBACK
                     WHENEVER SQLERROR EXIT SQL.SQLCODE ROLLBACK
                     SET HEADING ON FEEDBACK OFF VERIFY OFF ECHO OFF PAGESIZE 50000 LINESIZE 32767 TRIMSPOOL ON
-                    SET COLSEP '\\t'
+                    SET MARKUP CSV ON DELIMITER | QUOTE ON
+                    SET LONG 1000000 LONGCHUNKSIZE 1000000
                     CONNECT \(oracleUser)/\"\(escapedPassword)\"@//\(profile.host):\(profile.port)/\(profile.database)
                     \(sql.hasSuffix(";") ? sql : sql + ";")
                     EXIT
                     """
                 }
 
-                let stdout = Pipe()
-                let stderr = Pipe()
-                let stdin = Pipe()
-                process.standardOutput = stdout
-                process.standardError = stderr
-                process.standardInput = stdin
-                process.terminationHandler = { task in
-                    let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                    let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-                    if task.terminationStatus == 0 {
+                do {
+                    let captured = try SQLClientProcess.run(process, input: Data(input.utf8), timeout: timeout)
+                    let out = String(decoding: captured.stdout, as: UTF8.self)
+                    let err = String(decoding: captured.stderr, as: UTF8.self)
+                    if process.terminationStatus == 0 {
                         continuation.resume(returning: out)
                     } else {
                         let detail = failureDetail(stdout: out, stderr: err)
-                        continuation.resume(throwing: SQLWorkspaceError.commandFailed(detail.isEmpty ? "Database client exited with status \(task.terminationStatus)." : detail))
+                        continuation.resume(throwing: SQLWorkspaceError.commandFailed(detail.isEmpty ? "Database client exited with status \(process.terminationStatus)." : detail))
                     }
-                }
-                do {
-                    try process.run()
-                    stdin.fileHandleForWriting.write(Data(input.utf8))
-                    try? stdin.fileHandleForWriting.close()
                 } catch {
                     continuation.resume(throwing: error)
                 }
@@ -221,15 +212,10 @@ private enum SQLCommandLineClient {
     }
 
     private static func parse(_ output: String, driver: SQLDatabaseDriver) -> SQLResultSet {
-        var lines = output.components(separatedBy: .newlines)
+        if driver == .oracle { return SQLOracleOutput.parse(output) }
+        let lines = output.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .newlines) }
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        if driver == .oracle {
-            lines.removeAll { line in
-                let stripped = line.trimmingCharacters(in: .whitespaces)
-                return stripped.hasPrefix("Connected to:") || stripped.hasPrefix("Disconnected from") || stripped.allSatisfy { $0 == "-" || $0 == " " || $0 == "\t" }
-            }
-        }
         guard let header = lines.first else { return SQLResultSet() }
         let columns = header.components(separatedBy: "\t")
         let rows = lines.dropFirst().map { line in
@@ -305,7 +291,8 @@ private enum SQLSchemaDiscovery {
     }
 
     private static func run(_ profile: SQLConnectionProfile, _ password: String, query: String) async throws -> SQLResultSet {
-        try await SQLCommandLineClient.execute(profile: profile, password: password, sql: query)
+        try Task.checkCancellation()
+        return try await SQLCommandLineClient.execute(profile: profile, password: password, sql: query, timeout: 120)
     }
 
     private static func clean(_ value: String) -> String { value.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -332,7 +319,7 @@ private enum SQLSchemaDiscovery {
         case .mysql:
             return "SELECT c.TABLE_SCHEMA, c.TABLE_NAME, c.COLUMN_NAME, c.COLUMN_TYPE, c.IS_NULLABLE, c.ORDINAL_POSITION, IFNULL(c.COLUMN_DEFAULT, ''), IFNULL(c.COLUMN_COMMENT, '') FROM INFORMATION_SCHEMA.COLUMNS c WHERE c.TABLE_SCHEMA = DATABASE() ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION"
         case .oracle:
-            return "SELECT c.OWNER, c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE || CASE WHEN c.DATA_LENGTH IS NOT NULL THEN '(' || c.DATA_LENGTH || ')' ELSE '' END, CASE WHEN c.NULLABLE='Y' THEN 'Y' ELSE 'N' END, c.COLUMN_ID, NVL(TO_CHAR(c.DATA_DEFAULT), ''), NVL(m.COMMENTS, '') FROM ALL_TAB_COLUMNS c LEFT JOIN ALL_COL_COMMENTS m ON m.OWNER=c.OWNER AND m.TABLE_NAME=c.TABLE_NAME AND m.COLUMN_NAME=c.COLUMN_NAME ORDER BY c.OWNER, c.TABLE_NAME, c.COLUMN_ID"
+            return "SELECT c.OWNER, c.TABLE_NAME, c.COLUMN_NAME, c.DATA_TYPE || CASE WHEN c.DATA_LENGTH IS NOT NULL THEN '(' || c.DATA_LENGTH || ')' ELSE '' END, CASE WHEN c.NULLABLE='Y' THEN 'Y' ELSE 'N' END, c.COLUMN_ID, c.DATA_DEFAULT, NVL(m.COMMENTS, '') FROM ALL_TAB_COLUMNS c LEFT JOIN ALL_COL_COMMENTS m ON m.OWNER=c.OWNER AND m.TABLE_NAME=c.TABLE_NAME AND m.COLUMN_NAME=c.COLUMN_NAME ORDER BY c.OWNER, c.TABLE_NAME, c.COLUMN_ID"
         }
     }
     private static func indexesQuery(for driver: SQLDatabaseDriver) -> String {
@@ -492,6 +479,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func discover() {
+        guard !isBusy else { return }
         guard let profile = selectedConnection else { status = "Choose or add a connection first."; return }
         guard let password = SQLCredentialVault.password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
         isBusy = true
@@ -615,6 +603,8 @@ private final class SQLWorkspaceModel: ObservableObject {
     func cancel() { runningTask?.cancel(); isBusy = false }
 
     private func execute(sql: String, readOnly: Bool, completion: (() -> Void)? = nil) {
+        guard !isBusy else { return }
+        discoveryTotalSteps = 0
         let clean = sql.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { status = "Write a query first."; return }
         guard !readOnly || SQLCommandLineClient.isReadOnly(clean) else { status = SQLWorkspaceError.readOnly.localizedDescription; return }
@@ -696,6 +686,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func selectConnection(_ id: UUID) {
+        guard !isBusy else { return }
         selectedConnectionID = id
         schema = cachedSchemas[id]
         selectedTableID = schema?.tables.first?.id

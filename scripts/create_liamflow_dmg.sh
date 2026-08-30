@@ -13,13 +13,15 @@ cleanup() {
 trap cleanup EXIT
 
 [[ -d "$APP_DIRECTORY" ]] || { echo "Lima.app has not been packaged."; exit 1; }
+RAYPLACEMENT_MODEL_FREE_UPDATE=0 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$APP_DIRECTORY"
 mkdir -p "$OUTPUT_DIRECTORY"
 OUTPUT_DIRECTORY="$(cd "$OUTPUT_DIRECTORY" && pwd)"
 STAGE="$TEMP_DIRECTORY/Lima"
 mkdir -p "$STAGE"
 ditto "$APP_DIRECTORY" "$STAGE/Lima.app"
 ln -s /Applications "$STAGE/Applications"
-rm -f "$OUTPUT_DIRECTORY/Lima.dmg"
-hdiutil create -volname "Lima" -srcfolder "$STAGE" -ov -format UDZO "$OUTPUT_DIRECTORY/Lima.dmg" >/dev/null
-shasum -a 256 "$OUTPUT_DIRECTORY/Lima.dmg" > "$OUTPUT_DIRECTORY/Lima.dmg.sha256"
+hdiutil create -volname "Lima" -srcfolder "$STAGE" -format UDZO "$TEMP_DIRECTORY/Lima.dmg" >/dev/null
+hdiutil verify "$TEMP_DIRECTORY/Lima.dmg"
+mv -f "$TEMP_DIRECTORY/Lima.dmg" "$OUTPUT_DIRECTORY/Lima.dmg"
+(cd "$OUTPUT_DIRECTORY"; shasum -a 256 Lima.dmg > Lima.dmg.sha256)
 echo "Created: $OUTPUT_DIRECTORY/Lima.dmg"

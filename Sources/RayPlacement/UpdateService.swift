@@ -117,9 +117,17 @@ final class UpdateService: ObservableObject {
     func consumePreviousUpdateResult() -> (succeeded: Bool, message: String)? {
         guard let value = try? String(contentsOf: resultFile, encoding: .utf8) else { return nil }
         try? FileManager.default.removeItem(at: resultFile)
-        let lines = value.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+        let lines = value.split(separator: "\n", omittingEmptySubsequences: false)
         guard let status = lines.first else { return nil }
         let message = lines.count > 1 ? String(lines[1]) : ""
+        if status == "success", lines.count >= 5 {
+            let expectedPath = URL(fileURLWithPath: String(lines[4])).resolvingSymlinksInPath().path
+            let runningPath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+            let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+            guard String(lines[2]) == currentVersion, String(lines[3]) == runningBuild, expectedPath == runningPath else {
+                return (false, "The update was installed at \(expectedPath), but this is Lima \(currentVersion) at \(runningPath). Quit this copy and open the updated app from Finder; replace any Dock shortcut pointing at the old copy.")
+            }
+        }
         return (status == "success", message)
     }
 
@@ -141,6 +149,7 @@ final class UpdateService: ObservableObject {
 
         let usingSiteMetadata = Self.siteMetadataURL != nil
         var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
@@ -219,6 +228,7 @@ final class UpdateService: ObservableObject {
         restartScheduled = false
         onInstallStarted?()
         var request = URLRequest(url: asset.browserDownloadURL)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
         URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
             guard let self else { return }
@@ -232,6 +242,15 @@ final class UpdateService: ObservableObject {
                 Task { @MainActor in self.finishWithError(UpdateError.invalidResponse) }
                 return
             }
+            // URLSession deletes temporaryURL when this callback returns.
+            // Preserve it before handing verification to another queue.
+            let retainedDownload = FileManager.default.temporaryDirectory.appendingPathComponent("Lima-download-\(UUID().uuidString).zip")
+            do {
+                try FileManager.default.copyItem(at: temporaryURL, to: retainedDownload)
+            } catch {
+                Task { @MainActor in self.finishWithError(error) }
+                return
+            }
             let expectedHash = String(digest.dropFirst("sha256:".count))
             Task { @MainActor in
                 self.installationProgress = 0.2
@@ -239,9 +258,10 @@ final class UpdateService: ObservableObject {
                 self.statusText = self.installationStage
             }
             DispatchQueue.global(qos: .utility).async {
+                defer { try? FileManager.default.removeItem(at: retainedDownload) }
                 do {
                     let sourceRoot = try self.prepareUpdate(
-                        downloadedArchive: temporaryURL,
+                        downloadedArchive: retainedDownload,
                         expectedHash: expectedHash,
                         expectedVersion: release.versionText
                     )
@@ -293,11 +313,18 @@ final class UpdateService: ObservableObject {
         let sourceRoot = extraction.appendingPathComponent("LimaUpdate", isDirectory: true)
         let required = [
             "Package.swift", "Uninstall Lima.command", "Packaging/Info.plist",
-            "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh"
+            "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh",
+            "scripts/replace_lima_bundle.sh", "Prebuilt/Lima.app/Contents/MacOS/Lima"
         ]
         guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
               let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")),
               SemanticVersion(packagedVersion) == SemanticVersion(expectedVersion) else {
+            throw UpdateError.invalidPackage
+        }
+        let prebuiltInfo = sourceRoot.appendingPathComponent("Prebuilt/Lima.app/Contents/Info.plist")
+        guard try plistValue("CFBundleIdentifier", in: prebuiltInfo) == "dev.liam.lima",
+              try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion,
+              try plistValue("CFBundleVersion", in: prebuiltInfo) == plistValue("CFBundleVersion", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
             throw UpdateError.invalidPackage
         }
         return sourceRoot

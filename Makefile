@@ -12,13 +12,13 @@ test:
 	$(SWIFT_ENV) swift test --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)"
 
 package:
-	./scripts/package_app.sh
+	./scripts/package_liamflow_app.sh
 
 verify:
-	./scripts/verify_app.sh
+	./scripts/verify_liamflow_app.sh
 
 run: package
-	open "$(PROJECT_DIRECTORY)/build/RayPlacement.app"
+	open "$(PROJECT_DIRECTORY)/build/Lima.app"
 
 clean:
 	$(SWIFT_ENV) swift package --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)" clean

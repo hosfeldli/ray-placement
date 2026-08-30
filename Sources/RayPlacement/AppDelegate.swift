@@ -30,6 +30,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         try? ApplicationPaths.prepare()
+        let launchPath = Bundle.main.bundleURL.path
+        if launchPath.hasPrefix("/Volumes/") || launchPath.contains("/AppTranslocation/") {
+            let alert = NSAlert()
+            alert.messageText = "Move Lima to Applications"
+            alert.informativeText = "Drag Lima into Applications in Finder, then open that installed copy. Running from the download or disk image prevents reliable updates and Dock shortcuts."
+            alert.addButton(withTitle: "Open Applications")
+            alert.addButton(withTitle: "Quit")
+            if alert.runModal() == .alertFirstButtonReturn {
+                NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications"))
+            }
+            NSApp.terminate(nil)
+            return
+        }
         NSApp.appearance = NSAppearance(named: .darkAqua)
         NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
         launcher = LauncherController(updateService: updateService)
