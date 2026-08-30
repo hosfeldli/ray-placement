@@ -145,6 +145,7 @@ private enum SQLCommandLineClient {
                     SET HEADING ON FEEDBACK OFF VERIFY OFF ECHO OFF PAGESIZE 50000 LINESIZE 32767 TRIMSPOOL ON
                     SET MARKUP CSV ON DELIMITER | QUOTE ON
                     SET LONG 1000000 LONGCHUNKSIZE 1000000
+                    SET ARRAYSIZE 500
                     CONNECT \(oracleUser)/\"\(escapedPassword)\"@//\(profile.host):\(profile.port)/\(profile.database)
                     \(sql.hasSuffix(";") ? sql : sql + ";")
                     EXIT
@@ -229,47 +230,91 @@ private enum SQLCommandLineClient {
 
 private enum SQLSchemaDiscovery {
     typealias ProgressHandler = @MainActor @Sendable (_ completed: Int, _ total: Int, _ activity: String) -> Void
+    typealias CheckpointHandler = @MainActor @Sendable (SQLSchemaSnapshot) -> Void
 
-    static func discover(profile: SQLConnectionProfile, password: String, progress: @escaping ProgressHandler) async throws -> SQLSchemaSnapshot {
-        let totalSteps = 6
+    static func discover(profile: SQLConnectionProfile, password: String, progress: @escaping ProgressHandler, checkpoint: @escaping CheckpointHandler) async throws -> SQLSchemaSnapshot {
+        var totalSteps = 6
+        var completed = 0
+        let owners = profile.driver == .oracle ? (profile.discoverySchemas ?? []) : []
 
         await progress(0, totalSteps, "Reading tables and views")
-        let tableResult = try await run(profile, password, query: tablesQuery(for: profile.driver))
+        let tableSQL = tablesQuery(for: profile.driver)
+        // A wrapper applies the owner restriction to both arms of the UNION.
+        let scopedTables = owners.isEmpty ? tableSQL : SQLOracleDiscovery.scoped("SELECT * FROM (\(tableSQL)) ORDER BY OWNER, TABLE_NAME", owner: "OWNER", schemas: owners, hasWhere: false)
+        let tableResult = try await run(profile, password, query: scopedTables)
         var tables = tableResult.rows.compactMap { row -> SQLTable? in
             guard row.count >= 3 else { return nil }
             return SQLTable(schema: clean(row[0]), name: clean(row[1]), kind: clean(row[2]), description: nullable(row, 3))
         }
-        var tableIndex = Dictionary(uniqueKeysWithValues: tables.indices.map { (tables[$0].qualifiedName, $0) })
+        let tableIndex = Dictionary(uniqueKeysWithValues: tables.indices.map { (tables[$0].qualifiedName, $0) })
+        completed = 1
+        await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, discoveryComplete: false))
 
-        await progress(1, totalSteps, "Reading columns")
-        let columns = try await run(profile, password, query: columnsQuery(for: profile.driver))
-        for row in columns.rows where row.count >= 7 {
-            let tableName = qualified(schema: row[0], table: row[1])
-            guard let index = tableIndex[tableName] else { continue }
-            tables[index].columns.append(SQLColumn(
-                name: clean(row[2]), dataType: clean(row[3]), nullable: clean(row[4]).uppercased() == "Y" || clean(row[4]).uppercased() == "YES",
-                ordinal: Int(clean(row[5])) ?? 0, defaultValue: nullable(row, 6), description: nullable(row, 7)
-            ))
+        func applyColumns(_ result: SQLResultSet) {
+            for row in result.rows where row.count >= 7 {
+                let tableName = qualified(schema: row[0], table: row[1])
+                guard let index = tableIndex[tableName] else { continue }
+                tables[index].columns.append(SQLColumn(
+                    name: clean(row[2]), dataType: clean(row[3]), nullable: clean(row[4]).uppercased() == "Y" || clean(row[4]).uppercased() == "YES",
+                    ordinal: Int(clean(row[5])) ?? 0, defaultValue: nullable(row, 6), description: nullable(row, 7)
+                ))
+            }
         }
 
-        await progress(2, totalSteps, "Reading indexes")
-        let indexResult = try await run(profile, password, query: indexesQuery(for: profile.driver))
+        if profile.driver == .oracle {
+            var pending = SQLOracleDiscovery.batches(for: tables)
+            totalSteps = 5 + max(1, pending.count)
+            var loadedTables = 0
+            if pending.isEmpty { completed += 1 }
+            while !pending.isEmpty {
+                try Task.checkCancellation()
+                let batch = pending.removeFirst()
+                let label = "Columns · \(batch.schema) · \(loadedTables)/\(tables.count) tables · reading \(batch.tables.first ?? "") (\(batch.tables.count) tables)"
+                await progress(completed, totalSteps, label)
+                let query = SQLOracleDiscovery.filtered(columnsQuery(for: .oracle), predicate: batch.predicate, hasWhere: false)
+                do {
+                    applyColumns(try await run(profile, password, query: query))
+                    loadedTables += batch.tables.count
+                    completed += 1
+                    await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, discoveryComplete: false))
+                } catch is SQLClientProcess.Timeout {
+                    guard !batch.split.isEmpty else {
+                        throw SQLWorkspaceError.commandFailed("Column discovery timed out for \(batch.schema).\(batch.tables[0]). Completed tables are retained. Edit the connection's Discovery schemas to narrow the scan, or ask your DBA to check catalog access for this table.")
+                    }
+                    totalSteps += 1
+                    pending.insert(contentsOf: batch.split, at: 0)
+                    await progress(completed, totalSteps, "\(batch.schema) batch timed out · retrying smaller table batches")
+                }
+            }
+        } else {
+            await progress(completed, totalSteps, "Reading columns")
+            applyColumns(try await run(profile, password, query: columnsQuery(for: .mysql)))
+            completed += 1
+            await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, discoveryComplete: false))
+        }
+
+        await progress(completed, totalSteps, "Reading indexes")
+        let indexResult = try await run(profile, password, query: SQLOracleDiscovery.scoped(indexesQuery(for: profile.driver), owner: "i.TABLE_OWNER", schemas: owners, hasWhere: true))
         for row in indexResult.rows where row.count >= 6 {
             let tableName = qualified(schema: row[0], table: row[1])
             guard let index = tableIndex[tableName] else { continue }
             tables[index].indexes.append(SQLIndex(table: tableName, name: clean(row[2]), column: clean(row[5]), ordinal: Int(clean(row[4])) ?? 0, unique: clean(row[3]) == "0" || clean(row[3]).uppercased() == "UNIQUE"))
         }
 
-        await progress(3, totalSteps, "Reading constraints")
-        let constraints = try await run(profile, password, query: constraintsQuery(for: profile.driver))
+        completed += 1
+        await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, discoveryComplete: false))
+        await progress(completed, totalSteps, "Reading constraints")
+        let constraints = try await run(profile, password, query: SQLOracleDiscovery.scoped(constraintsQuery(for: profile.driver), owner: "OWNER", schemas: owners, hasWhere: true))
         for row in constraints.rows where row.count >= 4 {
             let tableName = qualified(schema: row[0], table: row[1])
             guard let index = tableIndex[tableName] else { continue }
             tables[index].constraints.append("\(clean(row[2])) · \(clean(row[3]))")
         }
 
-        await progress(4, totalSteps, "Mapping relationships")
-        let foreignKeyResult = try await run(profile, password, query: foreignKeysQuery(for: profile.driver))
+        completed += 1
+        await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, discoveryComplete: false))
+        await progress(completed, totalSteps, "Mapping relationships")
+        let foreignKeyResult = try await run(profile, password, query: SQLOracleDiscovery.scoped(foreignKeysQuery(for: profile.driver), owner: "c.OWNER", schemas: owners, hasWhere: true))
         let foreignKeys = foreignKeyResult.rows.compactMap { row -> SQLForeignKey? in
             guard row.count >= 7 else { return nil }
             return SQLForeignKey(
@@ -278,14 +323,15 @@ private enum SQLSchemaDiscovery {
             )
         }
 
-        await progress(5, totalSteps, "Reading procedures and functions")
-        let procedureResult = try await run(profile, password, query: proceduresQuery(for: profile.driver))
+        completed += 1
+        await checkpoint(SQLSchemaSnapshot(profileID: profile.id, tables: tables, foreignKeys: foreignKeys, discoveryComplete: false))
+        await progress(completed, totalSteps, "Reading procedures and functions")
+        let procedureResult = try await run(profile, password, query: SQLOracleDiscovery.scoped(proceduresQuery(for: profile.driver), owner: "OWNER", schemas: owners, hasWhere: true))
         let procedures = procedureResult.rows.compactMap { row -> SQLProcedure? in
             guard row.count >= 3 else { return nil }
             return SQLProcedure(schema: clean(row[0]), name: clean(row[1]), kind: clean(row[2]), description: nullable(row, 3))
         }
         tables.sort { $0.qualifiedName.localizedStandardCompare($1.qualifiedName) == .orderedAscending }
-        tableIndex = Dictionary(uniqueKeysWithValues: tables.indices.map { (tables[$0].qualifiedName, $0) })
         await progress(totalSteps, totalSteps, "Finalizing schema")
         return SQLSchemaSnapshot(profileID: profile.id, tables: tables, foreignKeys: foreignKeys, procedures: procedures)
     }
@@ -433,6 +479,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func newConnection() {
+        guard !isBusy else { return }
         isEditingConnection = false
         connectionDraft = SQLConnectionProfile(name: "New Connection", environment: "Development", driver: .mysql, host: "", database: "", username: "")
         secretDraft = ""
@@ -440,6 +487,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func editConnection(_ profile: SQLConnectionProfile) {
+        guard !isBusy else { return }
         isEditingConnection = true
         connectionDraft = profile
         secretDraft = SQLCredentialVault.password(for: profile.id) ?? ""
@@ -447,6 +495,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func saveConnection(test: Bool = false) {
+        guard !isBusy else { return }
         let profile = normalized(connectionDraft)
         guard !profile.name.isEmpty, !profile.host.isEmpty, !profile.database.isEmpty, !profile.username.isEmpty else { status = SQLWorkspaceError.invalidConnection.localizedDescription; return }
         guard SQLNetworkPort.validRange.contains(profile.port) else { status = SQLWorkspaceError.invalidPort.localizedDescription; return }
@@ -463,6 +512,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func deleteConnection(_ profile: SQLConnectionProfile) {
+        guard !isBusy else { return }
         connections.removeAll { $0.id == profile.id }
         cachedSchemas.removeValue(forKey: profile.id)
         SQLCredentialVault.delete(profileID: profile.id)
@@ -489,13 +539,20 @@ private final class SQLWorkspaceModel: ObservableObject {
         status = "Discovery 0 of 6 · Preparing connection…"
         runningTask = Task { [weak self] in
             do {
-                let snapshot = try await SQLSchemaDiscovery.discover(profile: profile, password: password) { [weak self] completed, total, activity in
+                let snapshot = try await SQLSchemaDiscovery.discover(profile: profile, password: password, progress: { [weak self] completed, total, activity in
                     guard let self else { return }
                     self.discoveryCompletedSteps = completed
                     self.discoveryTotalSteps = total
                     self.discoveryActivity = activity
                     self.status = "Discovery \(completed) of \(total) · \(activity)…"
-                }
+                }, checkpoint: { [weak self] snapshot in
+                    guard let self else { return }
+                    self.cachedSchemas[profile.id] = snapshot
+                    if self.selectedConnectionID == profile.id {
+                        self.schema = snapshot
+                        if self.selectedTableID == nil { self.selectedTableID = snapshot.tables.first?.id }
+                    }
+                })
                 guard !Task.isCancelled else { return }
                 self?.schema = snapshot
                 self?.cachedSchemas[profile.id] = snapshot
@@ -511,6 +568,10 @@ private final class SQLWorkspaceModel: ObservableObject {
                     self.status = "Discovery stopped while \(activity): \(error.localizedDescription)"
                     self.discoveryActivity = "Discovery stopped"
                     self.isBusy = false
+                    if self.cachedSchemas[profile.id]?.discoveryComplete == false {
+                        self.status += " Completed discovery data has been saved."
+                    }
+                    self.save()
                 }
             }
         }
@@ -636,6 +697,8 @@ private final class SQLWorkspaceModel: ObservableObject {
         profile.database = profile.database.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.username = profile.username.trimmingCharacters(in: .whitespacesAndNewlines)
         profile.commandPath = profile.commandPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let owners = (profile.discoverySchemas ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        profile.discoverySchemas = owners.isEmpty ? nil : Array(Set(owners)).sorted()
         if profile.port <= 0 { profile.port = profile.driver.defaultPort }
         if profile.commandPath.isEmpty { profile.commandPath = profile.driver.defaultCommand }
         return profile
@@ -1140,7 +1203,7 @@ private struct SQLWorkspaceView: View {
                         .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(settings.accentTheme.tertiary)
                 } else if let schema = model.schema {
-                    Text("Schema cached \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.tertiary)
+                    Text("\(schema.discoveryComplete == false ? "Partial schema" : "Schema cached") \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
                 }
             }
             if model.isBusy, model.discoveryTotalSteps > 0 {
@@ -1169,6 +1232,7 @@ private struct SQLConnectionEditor: View {
     @ObservedObject var model: SQLWorkspaceModel
     @Environment(\.dismiss) private var dismiss
     @State private var portText = ""
+    @State private var discoverySchemasText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -1201,6 +1265,19 @@ private struct SQLConnectionEditor: View {
                 row("Username") { TextField("Username", text: $model.connectionDraft.username) }
                 row("Password") { SecureField("Stored in macOS Keychain", text: $model.secretDraft) }
                 row("Client") { TextField(model.connectionDraft.driver.defaultCommand, text: $model.connectionDraft.commandPath).font(.system(size: 11, design: .monospaced)) }
+                if model.connectionDraft.driver == .oracle {
+                    row("Discovery schemas") {
+                        HStack {
+                            TextField("All accessible · or HR, SALES", text: $discoverySchemasText)
+                                .onChange(of: discoverySchemasText) { value in
+                                    model.connectionDraft.discoverySchemas = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+                                }
+                                .help("Optional exact schema owner names, separated by commas. Leave empty to discover all accessible schemas.")
+                            Button("My schema") { discoverySchemasText = model.connectionDraft.username.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }
+                                .help("Limit discovery to the schema matching this username.")
+                        }
+                    }
+                }
             }
             Text("The workspace saves connection metadata locally with restricted permissions. Passwords are stored separately in this Mac’s Keychain and are excluded from query history, schema files, and usage logs.")
                 .font(.caption).foregroundStyle(.secondary)
@@ -1209,7 +1286,10 @@ private struct SQLConnectionEditor: View {
         .padding(20).frame(width: 560)
         .background(LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow))
         .preferredColorScheme(.dark)
-        .onAppear { portText = String(model.connectionDraft.port) }
+        .onAppear {
+            portText = String(model.connectionDraft.port)
+            discoverySchemasText = (model.connectionDraft.discoverySchemas ?? []).joined(separator: ", ")
+        }
     }
 
     private func row<Content: View>(_ name: String, @ViewBuilder content: () -> Content) -> some View {

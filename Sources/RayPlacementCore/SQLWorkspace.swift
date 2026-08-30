@@ -69,6 +69,8 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     /// An optional explicit location for mysql or sqlplus. Credentials are not
     /// part of this profile and are stored only in Keychain.
     public var commandPath: String
+    /// Empty/nil keeps all accessible schemas. Names are exact Oracle owners.
+    public var discoverySchemas: [String]?
 
     public init(
         id: UUID = UUID(),
@@ -79,7 +81,8 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         port: Int? = nil,
         database: String,
         username: String,
-        commandPath: String? = nil
+        commandPath: String? = nil,
+        discoverySchemas: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -90,6 +93,7 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.database = database
         self.username = username
         self.commandPath = commandPath ?? driver.defaultCommand
+        self.discoverySchemas = discoverySchemas
     }
 
     public var displayLocation: String { "\(host):\(port)/\(database)" }
@@ -211,13 +215,16 @@ public struct SQLSchemaSnapshot: Codable, Hashable, Sendable {
     public var tables: [SQLTable]
     public var foreignKeys: [SQLForeignKey]
     public var procedures: [SQLProcedure]
+    /// Nil in older caches means the legacy, completed snapshot.
+    public var discoveryComplete: Bool?
 
-    public init(profileID: UUID, discoveredAt: Date = Date(), tables: [SQLTable] = [], foreignKeys: [SQLForeignKey] = [], procedures: [SQLProcedure] = []) {
+    public init(profileID: UUID, discoveredAt: Date = Date(), tables: [SQLTable] = [], foreignKeys: [SQLForeignKey] = [], procedures: [SQLProcedure] = [], discoveryComplete: Bool = true) {
         self.profileID = profileID
         self.discoveredAt = discoveredAt
         self.tables = tables
         self.foreignKeys = foreignKeys
         self.procedures = procedures
+        self.discoveryComplete = discoveryComplete
     }
 
     public func joins(for tableNames: [String]) -> [SQLJoinSuggestion] {
