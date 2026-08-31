@@ -1,0 +1,65 @@
+name: Assemble verified signed DMG
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft release tag
+        required: true
+      sha256:
+        description: SHA-256 of the locally verified, signed DMG
+        required: true
+      part_count:
+        description: Number of uploaded DMG parts (1–64)
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: signed-dmg-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  assemble:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      EXPECTED_SHA: ${{ inputs.sha256 }}
+      PART_COUNT: ${{ inputs.part_count }}
+    steps:
+      - name: Reassemble and verify the approved draft download
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$EXPECTED_SHA" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$PART_COUNT" =~ ^[1-9][0-9]?$ ]] && (( PART_COUNT <= 64 ))
+          assert_draft() {
+            [[ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" == true ]]
+          }
+          assert_draft
+          mkdir "$RUNNER_TEMP/lima-dmg-parts"
+          cd "$RUNNER_TEMP/lima-dmg-parts"
+          gh release download "$RELEASE_TAG" --pattern 'Lima.dmg.part-*'
+          export LC_ALL=C
+          parts=(Lima.dmg.part-*)
+          [[ ${#parts[@]} == "$PART_COUNT" ]]
+          truncate -s 0 Lima.dmg
+          for part in "${parts[@]}"; do
+            [[ "$part" =~ ^Lima\.dmg\.part-[a-z]{2}$ && -f "$part" && ! -L "$part" ]]
+            dd if="$part" of=Lima.dmg oflag=append conv=notrunc status=none
+          done
+          printf '%s  Lima.dmg\n' "$EXPECTED_SHA" | sha256sum --check --strict
+          assert_draft
+          gh release upload "$RELEASE_TAG" Lima.dmg --clobber
+          asset_url=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "Lima.dmg") | .apiUrl')
+          [[ "$(gh api "$asset_url" --jq .digest)" == "sha256:$EXPECTED_SHA" ]]
+          for part in "${parts[@]}"; do
+            assert_draft
+            gh release delete-asset "$RELEASE_TAG" "$part" --yes
+          done
+          echo 'Verified DMG uploaded. Release remains a draft for final review.'
