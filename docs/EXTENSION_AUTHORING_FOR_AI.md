@@ -458,6 +458,8 @@ Extensions run with the user's account authority. Performance controls are coope
 
 ## Performance contract
 
+Native forms inherit Lima’s app-wide text-size setting automatically. When adding app-native SwiftUI controls, use `.limaFont(.caption)` or `.limaFont(.system(size: 13))` rather than fixed `.font` calls. New hosting roots use `LimaTypographyRoot(content:)`. AppKit editors observe `AppTypography.shared.$scale` and update fonts without recreating the editor, resetting focus, or losing text. Test at 85%, 100%, and 140%; allow labels to wrap or make dense panels scrollable. Native macOS dialogs retain system typography. This does not add any new manifest fields.
+
 Read the provided resource environment on every execution:
 
 - `RAYPLACEMENT_PERFORMANCE_SCALE`

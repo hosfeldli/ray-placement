@@ -3,6 +3,7 @@ import RayPlacementCore
 import SwiftUI
 
 struct InlineMarkdownEditor: NSViewRepresentable {
+    @ObservedObject private var typography = AppTypography.shared
     @Binding var text: String
     var compact = false
 
@@ -66,6 +67,10 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         if context.coordinator.lastMarkdown != text {
             context.coordinator.render(markdown: text, preservingSelection: true)
         }
+        if context.coordinator.lastTextScale != typography.scale {
+            context.coordinator.lastTextScale = typography.scale
+            context.coordinator.applyStyles(immediately: true)
+        }
     }
 
     @MainActor
@@ -74,6 +79,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         fileprivate weak var textView: MarkdownTextView?
         var isApplyingExternalUpdate = false
         fileprivate var lastMarkdown = ""
+        fileprivate var lastTextScale = AppTypography.shared.scale
         private var stylingWorkItem: DispatchWorkItem?
 
         init(text: Binding<String>) {
@@ -440,8 +446,8 @@ final class MarkdownTextView: NSTextView {
 }
 
 private enum MarkdownInlineStyler {
-    private static let baseFont = NSFont.systemFont(ofSize: 15.5)
-    private static let monoFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+    private static var baseFont: NSFont { NSFont.systemFont(ofSize: AppTypography.size(15.5)) }
+    private static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: AppTypography.size(14), weight: .regular) }
     private static let codeBackground = NSColor.controlBackgroundColor.withAlphaComponent(0.78)
     private static let hiddenMarkerFont = NSFont.systemFont(ofSize: 0.1)
 
@@ -480,7 +486,7 @@ private enum MarkdownInlineStyler {
             headingParagraph.paragraphSpacingBefore = level <= 2 ? 12 : 8
             headingParagraph.paragraphSpacing = level <= 2 ? 9 : 6
             storage.addAttributes([
-                .font: NSFont.systemFont(ofSize: sizes[level - 1], weight: level <= 3 ? .bold : .semibold),
+                .font: NSFont.systemFont(ofSize: AppTypography.size(sizes[level - 1]), weight: level <= 3 ? .bold : .semibold),
                 .paragraphStyle: headingParagraph
             ], range: contentRange)
             let markerRange = NSRange(location: match.range.location, length: contentRange.location - match.range.location)
@@ -521,7 +527,7 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"\*\*([^*\n]+)\*\*|__([^_\n]+)__"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let contentRange = match.range(at: match.range(at: 1).location == NSNotFound ? 2 : 1)
-            storage.addAttribute(.font, value: NSFont.systemFont(ofSize: 15, weight: .bold), range: contentRange)
+            storage.addAttribute(.font, value: NSFont.systemFont(ofSize: AppTypography.size(15.5), weight: .bold), range: contentRange)
             styleMarkers(around: contentRange, in: match.range, storage: storage)
         }
         apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)"#, to: source) { match in
@@ -565,7 +571,7 @@ private enum MarkdownInlineStyler {
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttributes([
                 .foregroundColor: NSColor.separatorColor,
-                .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular),
+                .font: NSFont.monospacedSystemFont(ofSize: AppTypography.size(13), weight: .regular),
                 .kern: 2.2
             ], range: match.range)
         }

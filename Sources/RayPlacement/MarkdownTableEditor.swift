@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import RayPlacementCore
 
 @MainActor
@@ -169,6 +170,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private weak var titleField: NSTextField?
     private var isSizingColumns = false
     private var accentObserver: NSObjectProtocol?
+    private var typographySubscription: AnyCancellable?
 
     var onChange: (() -> Void)?
     var onDelete: (() -> Void)?
@@ -199,6 +201,19 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.updateAppearance() }
+        }
+        typographySubscription = AppTypography.shared.$scale.sink { [weak self] scale in
+            guard let self else { return }
+            self.titleField?.font = .systemFont(ofSize: 12 * scale, weight: .semibold)
+            for field in self.fields {
+                let header: Bool
+                if case .header = field.coordinate { header = true } else { header = false }
+                field.font = .systemFont(ofSize: 13.5 * scale, weight: header ? .semibold : .regular)
+                field.currentEditor()?.font = field.font
+            }
+            for case let button as NSButton in self.toolbar.arrangedSubviews {
+                button.font = .systemFont(ofSize: 11 * scale, weight: .medium)
+            }
         }
     }
 
@@ -248,7 +263,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         title.drawsBackground = false
         title.focusRingType = .none
         title.placeholderString = "Untitled table"
-        title.font = .systemFont(ofSize: 12, weight: .semibold)
+        title.font = .systemFont(ofSize: AppTypography.size(12), weight: .semibold)
         title.textColor = .labelColor
         title.setAccessibilityLabel("Table name")
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -286,7 +301,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .recessed
         button.controlSize = .small
-        button.font = .systemFont(ofSize: 11, weight: .medium)
+        button.font = .systemFont(ofSize: AppTypography.size(11), weight: .medium)
         return button
     }
 
@@ -354,7 +369,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.font = .systemFont(ofSize: 13.5, weight: header ? .semibold : .regular)
+        field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
         field.lineBreakMode = .byTruncatingTail

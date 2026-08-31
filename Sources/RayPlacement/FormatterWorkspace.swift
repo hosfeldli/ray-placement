@@ -21,12 +21,12 @@ final class FormatterWindowController: NSWindowController {
         window.minSize = NSSize(width: 760, height: 520)
         window.setAccessibilityLabel("RayPlacement document formatter")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: ZStack {
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             FormatterWorkspaceView(model: model)
                 .clipShape(PrismaticPanelShape(cut: 9))
                 .padding(10)
-        }.preferredColorScheme(.dark))
+        }.preferredColorScheme(.dark)))
     }
 
     func present() {
@@ -220,7 +220,7 @@ struct FormatterWorkspaceView: View {
             }
             HStack {
                 Label(model.statusText, systemImage: statusSymbol)
-                    .font(.caption.weight(.medium))
+                    .limaFont(.caption.weight(.medium))
                     .foregroundStyle(model.errorMessage == nil ? Color.secondary : Color.orange)
                     .lineLimit(1)
                 Spacer()
@@ -233,7 +233,7 @@ struct FormatterWorkspaceView: View {
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
-                Text(title).font(.caption2.bold()).tracking(1.1).foregroundStyle(.secondary)
+                Text(title).limaFont(.caption2.bold()).tracking(1.1).foregroundStyle(.secondary)
                 Spacer()
                 if !editable {
                     TextField("Search output", text: $model.searchQuery)
@@ -241,7 +241,7 @@ struct FormatterWorkspaceView: View {
                         .frame(width: 150)
                     if !model.searchQuery.isEmpty {
                         Text(model.searchLines.isEmpty ? "No matches" : "Lines \(model.searchLines.prefix(6).map(String.init).joined(separator: ", "))")
-                            .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            .limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Button { model.copyOutput() } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(.borderless).help("Copy formatted output")
@@ -254,13 +254,13 @@ struct FormatterWorkspaceView: View {
             Divider()
             if editable {
                 TextEditor(text: text)
-                    .font(.system(size: 12.5, design: .monospaced))
+                    .limaFont(.system(size: 12.5, design: .monospaced))
                     .padding(6)
                     .accessibilityLabel("Source document")
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     Text(text.wrappedValue.isEmpty ? "Formatted output appears here." : text.wrappedValue)
-                        .font(.system(size: 12.5, design: .monospaced))
+                        .limaFont(.system(size: 12.5, design: .monospaced))
                         .foregroundStyle(text.wrappedValue.isEmpty ? .secondary : .primary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -285,7 +285,7 @@ struct FormatterWorkspaceView: View {
                 Spacer()
                 if let edi = model.result?.edi {
                     Text("Elements \(edi.elementDelimiter.description) · Segments \(delimiterName(edi.segmentDelimiter)) · \(edi.segmentCount) segments")
-                        .font(.caption.monospaced()).foregroundStyle(.secondary)
+                        .limaFont(.caption.monospaced()).foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 12)
@@ -301,19 +301,19 @@ struct FormatterWorkspaceView: View {
                                 Image(systemName: diagnostic.severity == .error ? "xmark.octagon.fill" : diagnostic.severity == .warning ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
                                     .foregroundStyle(diagnostic.severity == .error ? .red : diagnostic.severity == .warning ? .orange : .green)
                             }
-                            .font(.caption)
+                            .limaFont(.caption)
                         }
                     } else if inspectorMode == 1 {
                         ForEach(Array((model.result?.inspection ?? []).enumerated()), id: \.offset) { _, line in
-                            Text(line).font(.caption.monospaced()).textSelection(.enabled)
+                            Text(line).limaFont(.caption.monospaced()).textSelection(.enabled)
                         }
                     } else {
                         ForEach(model.result?.edi?.fields ?? []) { field in
                             HStack(alignment: .firstTextBaseline) {
-                                Text(field.path).font(.caption.monospaced().bold()).frame(width: 64, alignment: .leading)
-                                Text(field.value.isEmpty ? "(empty)" : field.value).font(.caption.monospaced()).textSelection(.enabled)
+                                Text(field.path).limaFont(.caption.monospaced().bold()).frame(width: 64, alignment: .leading)
+                                Text(field.value.isEmpty ? "(empty)" : field.value).limaFont(.caption.monospaced()).textSelection(.enabled)
                                 Spacer()
-                                Text("segment \(field.segmentIndex)").font(.caption2).foregroundStyle(.tertiary)
+                                Text("segment \(field.segmentIndex)").limaFont(.caption2).foregroundStyle(.tertiary)
                             }
                         }
                     }

@@ -10,10 +10,10 @@ final class DictationHUDController {
 
     init(dictation: NoteDictationService) {
         panel = DictationHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 48))
-        panel.contentView = NSHostingView(rootView: TopShelfView(
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: TopShelfView(
             dictation: dictation,
             music: music
-        ))
+        )))
 
         stateObserver = Publishers.CombineLatest(dictation.$phase, music.$nowPlaying)
             .sink { [weak self] phase, nowPlaying in
@@ -100,10 +100,10 @@ private struct TopShelfView: View {
             activityIndicator.frame(width: 30, height: 26)
             VStack(alignment: .leading, spacing: 2) {
                 Text(primaryText)
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                 Text(secondaryText)
-                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -122,16 +122,16 @@ private struct TopShelfView: View {
                 PrismaticPanelShape(cut: 6)
                     .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.24))
                 Image(systemName: track.source.symbol)
-                    .font(.system(size: 12, weight: .bold))
+                    .limaFont(.system(size: 12, weight: .bold))
                     .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
             }
             .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(track.title)
-                    .font(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
                 Text(mediaSubtitle(track))
-                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }

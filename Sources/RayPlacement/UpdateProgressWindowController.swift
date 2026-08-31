@@ -14,9 +14,9 @@ final class UpdateProgressWindowController: NSWindowController {
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
-        window.contentView = NSHostingView(rootView: UpdateProgressView(service: service) { [weak self] in
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: UpdateProgressView(service: service) { [weak self] in
             self?.close()
-        })
+        }))
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -56,13 +56,13 @@ private struct UpdateProgressView: View {
                     .frame(width: 56, height: 56)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Updating Lima")
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
+                        .limaFont(.system(size: 22, weight: .bold, design: .rounded))
                     Text(service.installingVersion.map { "Installing version \($0)" } ?? "Preparing update")
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Text("VERIFIED LOCAL BUILD")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .limaFont(.system(size: 9, weight: .bold, design: .rounded))
                     .tracking(0.6)
                     .foregroundStyle(UpdateColors.cyan)
                     .padding(.horizontal, 8)
@@ -75,10 +75,10 @@ private struct UpdateProgressView: View {
                     .tint(UpdateColors.indigo)
                 HStack {
                     Text(service.installationStage.isEmpty ? "Preparing…" : service.installationStage)
-                        .font(.system(size: 13, weight: .semibold))
+                        .limaFont(.system(size: 13, weight: .semibold))
                     Spacer()
                     Text("\(Int(service.installationProgress * 100))%")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
+                        .limaFont(.system(size: 12, weight: .bold, design: .rounded))
                         .foregroundStyle(UpdateColors.indigo)
                 }
             }
@@ -98,7 +98,7 @@ private struct UpdateProgressView: View {
                 Text("Detailed log: ~/Library/Application Support/RayPlacement/Updates/update.log")
                     .fontDesign(.monospaced)
             }
-            .font(.caption)
+            .limaFont(.caption)
             .foregroundStyle(.secondary)
         }
         .padding(26)
@@ -115,7 +115,7 @@ private struct UpdateProgressView: View {
                     .frame(width: 22, height: 22)
                 if complete {
                     Image(systemName: "checkmark")
-                        .font(.system(size: 10, weight: .bold))
+                        .limaFont(.system(size: 10, weight: .bold))
                         .foregroundStyle(.white)
                 } else if active {
                     ProgressView().controlSize(.mini).tint(.white)
@@ -124,7 +124,7 @@ private struct UpdateProgressView: View {
                 }
             }
             Text(title)
-                .font(.system(size: 12.5, weight: active ? .semibold : .medium))
+                .limaFont(.system(size: 12.5, weight: active ? .semibold : .medium))
                 .foregroundStyle(complete || active ? Color.primary : .secondary)
             Spacer()
         }
@@ -135,14 +135,14 @@ private struct UpdateProgressView: View {
             ZStack {
                 Circle().fill((result.succeeded ? Color.green : Color.orange).opacity(0.13))
                 Image(systemName: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .font(.system(size: 46, weight: .semibold))
+                    .limaFont(.system(size: 46, weight: .semibold))
                     .foregroundStyle(result.succeeded ? Color.green : Color.orange)
             }
             .frame(width: 82, height: 82)
             Text(result.succeeded ? "Update complete" : "Update needs attention")
-                .font(.system(size: 24, weight: .bold, design: .rounded))
+                .limaFont(.system(size: 24, weight: .bold, design: .rounded))
             Text(result.message)
-                .font(.system(size: 13.5))
+                .limaFont(.system(size: 13.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 430)
@@ -171,7 +171,7 @@ private struct UpdatePulse: View {
                 .rotationEffect(.degrees(rotation))
                 .padding(5)
             Image(systemName: "arrow.down.app.fill")
-                .font(.system(size: 18, weight: .bold))
+                .limaFont(.system(size: 18, weight: .bold))
                 .foregroundStyle(UpdateColors.indigo)
         }
         .onAppear {

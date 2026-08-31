@@ -199,7 +199,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.hasShadow = true
         window.delegate = self
-        window.contentView = NSHostingView(rootView: NotesView(
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: NotesView(
             store: store,
             dictation: dictation,
             presentation: presentation,
@@ -207,7 +207,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             dockRight: { [weak self] in self?.dock(.right) },
             restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
             toggleFullScreen: { [weak self] in self?.toggleFullScreen() }
-        ))
+        )))
         return window
     }
 
@@ -420,12 +420,12 @@ private struct NotesView: View {
                             endPoint: .bottomTrailing
                         ))
                     Image(systemName: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus")
-                        .font(.system(size: 12, weight: .bold))
+                        .limaFont(.system(size: 12, weight: .bold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 28, height: 28)
                 Text(presentation.mode.isDocked ? "Quick Note" : "Notes")
-                    .font(.system(size: 14, weight: .semibold))
+                    .limaFont(.system(size: 14, weight: .semibold))
             }
 
             Spacer(minLength: 8)
@@ -533,13 +533,13 @@ private struct NotesView: View {
             GlassHairline()
             HStack(spacing: 6) {
                 Image(systemName: "lock.fill")
-                    .font(.caption2)
+                    .limaFont(.caption2)
                     .foregroundStyle(Color.accentColor)
                 Text("Local")
                 Spacer()
                 Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
             }
-            .font(.caption)
+            .limaFont(.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .frame(height: 34)
@@ -569,7 +569,7 @@ private struct NotesView: View {
                         Text(store.selectedNote?.displayTitle ?? "Choose a note")
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
-                            .font(.caption2)
+                            .limaFont(.caption2)
                             .foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -600,7 +600,7 @@ private struct NotesView: View {
                                 searchQuery = ""
                             } label: {
                                 Text(note.displayTitle)
-                                    .font(.caption)
+                                    .limaFont(.caption)
                                     .lineLimit(1)
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 5)
@@ -635,13 +635,13 @@ private struct NotesView: View {
                 ZStack {
                     Circle().fill(Color.accentColor.opacity(0.12))
                     Image(systemName: "note.text.badge.plus")
-                        .font(.system(size: 28, weight: .medium))
+                        .limaFont(.system(size: 28, weight: .medium))
                         .foregroundStyle(Color.accentColor)
                 }
                 .frame(width: 66, height: 66)
-                Text("Start a quick thought").font(.title3.bold())
+                Text("Start a quick thought").limaFont(.title3.bold())
                 Text("Notes save locally as you type.")
-                    .font(.subheadline)
+                    .limaFont(.subheadline)
                     .foregroundStyle(.secondary)
                 Button("Create Note") { store.createNote() }
                     .buttonStyle(.borderedProminent)
@@ -661,7 +661,7 @@ private struct NotesView: View {
                     )
                 )
                 .textFieldStyle(.plain)
-                .font(.system(size: presentation.mode.isDocked ? 17 : 21, weight: .semibold))
+                .limaFont(.system(size: presentation.mode.isDocked ? 17 : 21, weight: .semibold))
 
                 HStack(spacing: 5) {
                     Text("\(wordCount(note.content)) words")
@@ -670,7 +670,7 @@ private struct NotesView: View {
                         Text("edited \(relativeTimestamp(note.modifiedAt))")
                     }
                 }
-                .font(.caption2)
+                .limaFont(.caption2)
                 .foregroundStyle(.secondary)
             }
 
@@ -766,7 +766,7 @@ private struct NotesView: View {
                         }
                     }
                 }
-                .font(.caption)
+                .limaFont(.caption)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 12)
                 .padding(.top, 7)
@@ -784,7 +784,7 @@ private struct NotesView: View {
                         Button("Table") { MarkdownEditorActions.table() }
                     } label: {
                         Image(systemName: "textformat")
-                            .font(.system(size: 11, weight: .semibold))
+                            .limaFont(.system(size: 11, weight: .semibold))
                             .frame(width: 25, height: 24)
                     }
                     .menuStyle(.borderlessButton)
@@ -858,7 +858,7 @@ private struct NotesView: View {
 
     private func sidebarSectionLabel(_ title: String) -> some View {
         Text(title.uppercased())
-            .font(.system(size: 9, weight: .bold))
+            .limaFont(.system(size: 9, weight: .bold))
             .tracking(0.8)
             .foregroundStyle(.secondary)
     }
@@ -885,7 +885,7 @@ private struct NotesChromeButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 12, weight: .semibold))
+                .limaFont(.system(size: 12, weight: .semibold))
                 .frame(width: 27, height: 27)
         }
         .buttonStyle(LiquidGlassIconButtonStyle(size: 27))
@@ -903,27 +903,27 @@ private struct NoteListRow: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(note.displayTitle)
-                        .font(.subheadline.weight(.semibold))
+                        .limaFont(.subheadline.weight(.semibold))
                         .lineLimit(1)
                     if note.isPinned {
                         Image(systemName: "pin.fill")
-                            .font(.system(size: 8))
+                            .limaFont(.system(size: 8))
                             .foregroundStyle(Color.accentColor)
                             .accessibilityHidden(true)
                     }
                     if note.isFavorite {
                         Image(systemName: "star.fill")
-                            .font(.system(size: 8))
+                            .limaFont(.system(size: 8))
                             .foregroundStyle(Color.yellow)
                             .accessibilityHidden(true)
                     }
                 }
                 Text(note.preview)
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(relativeTimestamp(note.modifiedAt))
-                    .font(.caption2)
+                    .limaFont(.caption2)
                     .foregroundStyle(.tertiary)
             }
         }
@@ -966,7 +966,7 @@ private struct MarkdownInsertButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: symbol)
-                .font(.system(size: 11, weight: .semibold))
+                .limaFont(.system(size: 11, weight: .semibold))
                 .frame(width: 25, height: 24)
         }
         .buttonStyle(.plain)

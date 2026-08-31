@@ -21,7 +21,7 @@ final class PasswordGeneratorWindowController: NSWindowController {
         window.minSize = NSSize(width: 520, height: 360)
         window.setAccessibilityLabel("RayPlacement password generator")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: PasswordGeneratorView(model: model))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: PasswordGeneratorView(model: model)))
     }
 
     func present() {
@@ -127,10 +127,10 @@ private struct PasswordGeneratorView: View {
             VStack(spacing: 10) {
                 HStack(spacing: 9) {
                     Image(systemName: "key.fill").foregroundStyle(SettingsStore.shared.accentTheme.gradient)
-                    Text("Password Generator").font(.system(size: 15, weight: .semibold, design: .rounded))
+                    Text("Password Generator").limaFont(.system(size: 15, weight: .semibold, design: .rounded))
                     Spacer()
                     Text("\(model.entropyBits) bits · \(model.strength)")
-                        .font(.caption.monospacedDigit().weight(.medium))
+                        .limaFont(.caption.monospacedDigit().weight(.medium))
                         .foregroundStyle(model.entropyBits >= 80 ? .green : .secondary)
                 }
                 .padding(.horizontal, 13)
@@ -139,7 +139,7 @@ private struct PasswordGeneratorView: View {
 
                 HStack(spacing: 10) {
                     Text(model.password)
-                        .font(.system(size: 17, weight: .medium, design: .monospaced))
+                        .limaFont(.system(size: 17, weight: .medium, design: .monospaced))
                         .textSelection(.enabled)
                         .lineLimit(2)
                         .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
@@ -154,9 +154,9 @@ private struct PasswordGeneratorView: View {
 
                 VStack(spacing: 13) {
                     HStack {
-                        Text("Length").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                        Text("Length").limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
                         Slider(value: Binding(get: { Double(model.length) }, set: { model.length = Int($0); model.generate() }), in: 8...128, step: 1)
-                        Text(String(model.length)).font(.caption.monospacedDigit()).frame(width: 30, alignment: .trailing)
+                        Text(String(model.length)).limaFont(.caption.monospacedDigit()).frame(width: 30, alignment: .trailing)
                     }
                     HStack(spacing: 16) {
                         option("a-z", isOn: $model.lowercase)
@@ -166,7 +166,7 @@ private struct PasswordGeneratorView: View {
                         Spacer()
                     }
                     Toggle("Exclude ambiguous characters", isOn: $model.excludeAmbiguous)
-                        .font(.caption)
+                        .limaFont(.caption)
                 }
                 .onChange(of: model.lowercase) { _ in model.generate() }
                 .onChange(of: model.uppercase) { _ in model.generate() }
@@ -184,6 +184,6 @@ private struct PasswordGeneratorView: View {
     }
 
     private func option(_ label: String, isOn: Binding<Bool>) -> some View {
-        Toggle(label, isOn: isOn).toggleStyle(.checkbox).font(.caption.monospaced())
+        Toggle(label, isOn: isOn).toggleStyle(.checkbox).limaFont(.caption.monospaced())
     }
 }

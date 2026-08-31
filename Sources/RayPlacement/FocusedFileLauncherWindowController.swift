@@ -22,7 +22,7 @@ final class FocusedFileLauncherWindowController: NSWindowController {
         window.minSize = NSSize(width: 660, height: 440)
         window.setAccessibilityLabel("RayPlacement Focused File Launcher")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: FocusedFileLauncherView(model: model))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: FocusedFileLauncherView(model: model)))
     }
 
     func present() {
@@ -130,13 +130,13 @@ private struct FocusedFileLauncherView: View {
     private var header: some View {
         HStack(spacing: 9) {
             Image(systemName: "folder.badge.gearshape")
-                .font(.system(size: 14, weight: .bold))
+                .limaFont(.system(size: 14, weight: .bold))
                 .foregroundStyle(settings.accentTheme.gradient)
                 .frame(width: 31, height: 31)
                 .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
             VStack(alignment: .leading, spacing: 1) {
-                Text("Focused File Launcher").font(.system(size: 14, weight: .semibold, design: .rounded))
-                Text("Finder → destination app").font(.caption2).foregroundStyle(.secondary)
+                Text("Focused File Launcher").limaFont(.system(size: 14, weight: .semibold, design: .rounded))
+                Text("Finder → destination app").limaFont(.caption2).foregroundStyle(.secondary)
             }
             Spacer()
             Button("Choose in Finder", systemImage: "folder") { model.chooseInFinder() }
@@ -164,18 +164,18 @@ private struct FocusedFileLauncherView: View {
 
     private var selectionPane: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Selected item").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
+            Text("Selected item").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
             if let url = model.selectedURL {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: fileSymbol(url))
-                            .font(.system(size: 20, weight: .semibold))
+                            .limaFont(.system(size: 20, weight: .semibold))
                             .foregroundStyle(settings.accentTheme.gradient)
                             .frame(width: 46, height: 46)
                             .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(url.lastPathComponent).font(.system(size: 13, weight: .semibold)).lineLimit(2)
-                            Text(url.path).font(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
+                            Text(url.lastPathComponent).limaFont(.system(size: 13, weight: .semibold)).lineLimit(2)
+                            Text(url.path).limaFont(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                         }
                     }
                     HStack(spacing: 7) {
@@ -188,9 +188,9 @@ private struct FocusedFileLauncherView: View {
                 .liquidGlass(cornerRadius: 10, depth: .raised, accentOpacity: 0.018)
             } else {
                 VStack(spacing: 8) {
-                    Image(systemName: "folder").font(.system(size: 28, weight: .medium)).foregroundStyle(.secondary)
-                    Text("Nothing selected").font(.system(size: 12, weight: .semibold))
-                    Text("Choose any file or folder.").font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    Image(systemName: "folder").limaFont(.system(size: 28, weight: .medium)).foregroundStyle(.secondary)
+                    Text("Nothing selected").limaFont(.system(size: 12, weight: .semibold))
+                    Text("Choose any file or folder.").limaFont(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     Button("Choose in Finder", action: model.chooseInFinder).buttonStyle(.bordered)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -205,10 +205,10 @@ private struct FocusedFileLauncherView: View {
     private var applicationPane: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text("Open with").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
+                Text("Open with").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
                 Spacer()
                 Text(model.selectedApplication?.name ?? "Pick an app")
-                    .font(.caption2)
+                    .limaFont(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
@@ -219,13 +219,13 @@ private struct FocusedFileLauncherView: View {
                 if model.isLoadingApplications {
                     VStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Loading installed apps…").font(.caption).foregroundStyle(.secondary)
+                        Text("Loading installed apps…").limaFont(.caption).foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if model.filteredApplications.isEmpty {
                     VStack(spacing: 7) {
                         Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                        Text("No matching apps").font(.caption.weight(.medium))
+                        Text("No matching apps").limaFont(.caption.weight(.medium))
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
@@ -233,7 +233,7 @@ private struct FocusedFileLauncherView: View {
                         ForEach(model.filteredApplications) { app in
                             HStack(spacing: 8) {
                                 appIcon(app.url)
-                                Text(app.name).font(.system(size: 11.5, weight: .medium)).lineLimit(1)
+                                Text(app.name).limaFont(.system(size: 11.5, weight: .medium)).lineLimit(1)
                             }
                             .tag(app.url)
                         }
@@ -248,7 +248,7 @@ private struct FocusedFileLauncherView: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(model.selectedURL == nil || model.selectedApplicationURL == nil)
                 Spacer()
-                Text("Default app stays available").font(.caption2).foregroundStyle(.secondary)
+                Text("Default app stays available").limaFont(.caption2).foregroundStyle(.secondary)
             }
         }
         .padding(11)
@@ -258,7 +258,7 @@ private struct FocusedFileLauncherView: View {
     private var statusBar: some View {
         HStack(spacing: 7) {
             Circle().fill(settings.accentTheme.tertiary).frame(width: 5, height: 5)
-            Text(model.status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+            Text(model.status).limaFont(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
         }
         .padding(.horizontal, 10)

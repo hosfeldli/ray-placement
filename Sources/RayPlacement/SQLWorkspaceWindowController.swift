@@ -26,7 +26,7 @@ final class SQLWorkspaceWindowController: NSWindowController {
         window.minSize = NSSize(width: 920, height: 600)
         window.setAccessibilityLabel("RayPlacement SQL workspace")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: SQLWorkspaceView(model: model))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: SQLWorkspaceView(model: model)))
     }
 
     func present() {
@@ -897,9 +897,9 @@ private struct SQLWorkspaceView: View {
                 .frame(width: 29, height: 29)
                 .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
             VStack(alignment: .leading, spacing: 0) {
-                Text("SQL Workspace").font(.system(size: 14, weight: .semibold, design: .rounded))
+                Text("SQL Workspace").limaFont(.system(size: 14, weight: .semibold, design: .rounded))
                 Text(model.selectedConnection?.environment ?? "No environment")
-                    .font(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
+                    .limaFont(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
             }
             Menu {
                 ForEach(model.connections) { connection in
@@ -912,9 +912,9 @@ private struct SQLWorkspaceView: View {
             } label: {
                 HStack(spacing: 5) {
                     Text(model.selectedConnection?.name ?? "Choose connection").lineLimit(1)
-                    Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    Image(systemName: "chevron.up.chevron.down").limaFont(.caption2)
                 }
-                .font(.system(size: 11.5, weight: .medium))
+                .limaFont(.system(size: 11.5, weight: .medium))
                 .padding(.horizontal, 9).frame(height: 28)
                 .background(Color.white.opacity(0.07), in: PrismaticPanelShape(cut: 5))
             }
@@ -975,13 +975,13 @@ private struct SQLWorkspaceView: View {
         VStack(spacing: 12) {
             Spacer(minLength: 20)
             Image(systemName: "cylinder.split.1x2")
-                .font(.system(size: 30, weight: .medium))
+                .limaFont(.system(size: 30, weight: .medium))
                 .foregroundStyle(settings.accentTheme.gradient)
                 .frame(width: 68, height: 68)
                 .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 13))
-            Text("Connect a database").font(.system(size: 17, weight: .semibold, design: .rounded))
+            Text("Connect a database").limaFont(.system(size: 17, weight: .semibold, design: .rounded))
             Text("Add a named MySQL or Oracle environment. RayPlacement keeps the password in Keychain and discovers only what that account can see.")
-                .font(.system(size: 11.5))
+                .limaFont(.system(size: 11.5))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 480)
@@ -989,7 +989,7 @@ private struct SQLWorkspaceView: View {
                 Label("MySQL", systemImage: "cylinder")
                 Label("Oracle", systemImage: "cylinder")
             }
-            .font(.caption.weight(.medium))
+            .limaFont(.caption.weight(.medium))
             .foregroundStyle(.secondary)
             Button("Add Connection…", action: model.newConnection)
                 .buttonStyle(.borderedProminent)
@@ -1033,9 +1033,9 @@ private struct SQLWorkspaceView: View {
             } else if !model.isSearchingSchema {
                 HStack {
                     let count = model.schemaSection == .procedures ? model.visibleProcedures.count : model.visibleTables.count
-                    Text("\(count) \(count == 1 ? "match" : "matches")").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text("\(count) \(count == 1 ? "match" : "matches")").limaFont(.system(size: 10)).foregroundStyle(.secondary)
                     Spacer()
-                    if count == 0 { Button("Clear filters") { model.schemaSearch = ""; model.schemaOwner = "" }.buttonStyle(.borderless).font(.caption) }
+                    if count == 0 { Button("Clear filters") { model.schemaSearch = ""; model.schemaOwner = "" }.buttonStyle(.borderless).limaFont(.caption) }
                 }
             }
         }
@@ -1049,13 +1049,13 @@ private struct SQLWorkspaceView: View {
         } label: {
             HStack(spacing: 7) {
                 Image(systemName: table.kind.uppercased() == "VIEW" ? "eye" : "tablecells")
-                    .font(.system(size: 10, weight: .semibold)).foregroundStyle(settings.accentTheme.tertiary)
+                    .limaFont(.system(size: 10, weight: .semibold)).foregroundStyle(settings.accentTheme.tertiary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(table.name).lineLimit(1).font(.system(size: 11.5, weight: .medium))
-                    Text(table.schema).lineLimit(1).font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text(table.name).lineLimit(1).limaFont(.system(size: 11.5, weight: .medium))
+                    Text(table.schema).lineLimit(1).limaFont(.system(size: 9)).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 0)
-                Text("\(table.columns.count)").font(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
+                Text("\(table.columns.count)").limaFont(.system(size: 9, design: .monospaced)).foregroundStyle(.tertiary)
             }
             .padding(.horizontal, 7).frame(height: 34)
             .background(model.selectedTableID == table.id ? settings.accentTheme.primary.opacity(0.13) : .clear, in: PrismaticPanelShape(cut: 5))
@@ -1068,10 +1068,10 @@ private struct SQLWorkspaceView: View {
     private func procedureRow(_ procedure: SQLProcedure) -> some View {
         Button { model.insertProcedure(procedure) } label: {
             HStack(spacing: 7) {
-                Image(systemName: "function").font(.system(size: 10, weight: .bold)).foregroundStyle(.orange)
+                Image(systemName: "function").limaFont(.system(size: 10, weight: .bold)).foregroundStyle(.orange)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(procedure.name).lineLimit(1).font(.system(size: 11.5, weight: .medium))
-                    Text("\(procedure.schema) · \(procedure.kind)").lineLimit(1).font(.system(size: 9)).foregroundStyle(.secondary)
+                    Text(procedure.name).lineLimit(1).limaFont(.system(size: 11.5, weight: .medium))
+                    Text("\(procedure.schema) · \(procedure.kind)").lineLimit(1).limaFont(.system(size: 9)).foregroundStyle(.secondary)
                 }
             }.padding(.horizontal, 7).frame(height: 34)
         }.buttonStyle(.plain)
@@ -1089,7 +1089,7 @@ private struct SQLWorkspaceView: View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
                 Label("Query blocks", systemImage: "point.3.connected.trianglepath.dotted")
-                    .font(.system(size: 12.5, weight: .semibold))
+                    .limaFont(.system(size: 12.5, weight: .semibold))
                 Spacer()
                 Button(action: model.saveBlocks) { Image(systemName: "bookmark") }.help("Save query blocks for this connection").buttonStyle(.bordered).controlSize(.small)
                 Button("Edit SQL") { model.queryText = model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql); model.mode = .sql }
@@ -1100,7 +1100,7 @@ private struct SQLWorkspaceView: View {
                     .help(model.canvasIssue ?? "Run read-only query · ⌘Return")
             }
             if let issue = model.canvasIssue, !model.visualQuery.tables.isEmpty {
-                Label(issue, systemImage: "exclamationmark.circle").font(.system(size: 10.5)).foregroundStyle(.orange).lineLimit(2).help(issue)
+                Label(issue, systemImage: "exclamationmark.circle").limaFont(.system(size: 10.5)).foregroundStyle(.orange).lineLimit(2).help(issue)
             }
             VSplitView {
                 SQLBlockCanvasEditor(query: $model.visualQuery, tables: model.schema?.tables ?? [], driver: model.selectedConnection?.driver ?? .mysql, schemaRevision: model.schemaRevision)
@@ -1109,7 +1109,7 @@ private struct SQLWorkspaceView: View {
                     DisclosureGroup("Generated SQL", isExpanded: $showsBlockSQL) {
                         ScrollView {
                             Text(model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql))
-                                .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                                .limaFont(.system(size: 11, design: .monospaced)).textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading).padding(8)
                         }.frame(maxHeight: 130)
                     }
@@ -1126,7 +1126,7 @@ private struct SQLWorkspaceView: View {
     private var sqlEditor: some View {
         VStack(spacing: 8) {
             HStack(spacing: 7) {
-                Label("Free SQL", systemImage: "chevron.left.forwardslash.chevron.right").font(.system(size: 12.5, weight: .semibold))
+                Label("Free SQL", systemImage: "chevron.left.forwardslash.chevron.right").limaFont(.system(size: 12.5, weight: .semibold))
                 Spacer()
                 TextField("Save query as", text: $model.savedQueryName).textFieldStyle(.roundedBorder).frame(width: 140)
                 Button(action: model.saveCurrentQuery) { Image(systemName: "bookmark") }.buttonStyle(.bordered).controlSize(.small)
@@ -1135,11 +1135,11 @@ private struct SQLWorkspaceView: View {
             }
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $model.queryText)
-                    .font(.system(size: 12, design: .monospaced))
+                    .limaFont(.system(size: 12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(7)
                 if model.queryText.isEmpty {
-                    Text("Drop a table or write SQL…").font(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary).padding(14)
+                    Text("Drop a table or write SQL…").limaFont(.system(size: 12, design: .monospaced)).foregroundStyle(.tertiary).padding(14)
                 }
             }
             .frame(minHeight: 195)
@@ -1163,22 +1163,22 @@ private struct SQLWorkspaceView: View {
     private var resultsView: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Results").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Results").limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
                 if !model.result.rows.isEmpty {
-                    Text("\(model.result.rows.count) rows").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                    Text("\(model.result.rows.count) rows").limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary)
                     Button("Export range", action: model.exportResultRange).buttonStyle(.bordered).controlSize(.mini)
                 }
             }
             if model.result.columns.isEmpty {
-                Text("Results appear here.").font(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity, minHeight: 80)
+                Text("Results appear here.").limaFont(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity, minHeight: 80)
             } else {
                 ScrollView([.horizontal, .vertical]) {
                     Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
-                        GridRow { ForEach(model.result.columns, id: \.self) { Text($0).font(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(settings.accentTheme.tertiary) } }
+                        GridRow { ForEach(model.result.columns, id: \.self) { Text($0).limaFont(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(settings.accentTheme.tertiary) } }
                         Divider()
                         ForEach(Array(model.result.rows.prefix(100).enumerated()), id: \.offset) { _, row in
-                            GridRow { ForEach(Array(row.enumerated()), id: \.offset) { _, value in Text(value).font(.system(size: 10.5, design: .monospaced)).textSelection(.enabled).lineLimit(1) } }
+                            GridRow { ForEach(Array(row.enumerated()), id: \.offset) { _, value in Text(value).limaFont(.system(size: 10.5, design: .monospaced)).textSelection(.enabled).lineLimit(1) } }
                         }
                     }.padding(8)
                 }.frame(minHeight: 130, maxHeight: 255).background(Color.black.opacity(0.16), in: PrismaticPanelShape(cut: 7))
@@ -1197,8 +1197,8 @@ private struct SQLWorkspaceView: View {
 
     private var storageHeader: some View {
         HStack {
-            Label("Local document store", systemImage: "shippingbox.fill").font(.system(size: 12.5, weight: .semibold))
-            Text("Saved locally · no remote service").font(.caption2).foregroundStyle(.secondary)
+            Label("Local document store", systemImage: "shippingbox.fill").limaFont(.system(size: 12.5, weight: .semibold))
+            Text("Saved locally · no remote service").limaFont(.caption2).foregroundStyle(.secondary)
             Spacer()
             Button("Reveal file") { NSWorkspace.shared.activateFileViewerSelecting([ApplicationPaths.applicationSupport.appendingPathComponent("sql-workspace.json")]) }
                 .buttonStyle(.bordered).controlSize(.small)
@@ -1208,7 +1208,7 @@ private struct SQLWorkspaceView: View {
     private var storageExportControls: some View {
         HStack(spacing: 7) {
             TextField("Collection name", text: $model.exportCollectionName).textFieldStyle(.roundedBorder)
-            Text("Rows").font(.caption).foregroundStyle(.secondary)
+            Text("Rows").limaFont(.caption).foregroundStyle(.secondary)
             TextField("1", value: $model.exportStart, format: .number).frame(width: 44).textFieldStyle(.roundedBorder)
             Text("–").foregroundStyle(.secondary)
             TextField("250", value: $model.exportEnd, format: .number).frame(width: 52).textFieldStyle(.roundedBorder)
@@ -1221,8 +1221,8 @@ private struct SQLWorkspaceView: View {
             List(selection: $model.selectedCollectionID) {
                 ForEach(model.collections) { collection in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(collection.name).font(.system(size: 12, weight: .medium))
-                        Text("\(collection.documents.count) documents · \(collection.source)").font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        Text(collection.name).limaFont(.system(size: 12, weight: .medium))
+                        Text("\(collection.documents.count) documents · \(collection.source)").limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }.tag(collection.id)
                 }
                 .onDelete { offsets in offsets.map { model.collections[$0] }.forEach(model.deleteCollection) }
@@ -1235,8 +1235,8 @@ private struct SQLWorkspaceView: View {
     private func collectionDetail(_ collection: SQLLocalCollection) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
-                Text(collection.name).font(.system(size: 15, weight: .semibold))
-                Text("\(collection.documents.count) documents · updated \(collection.updatedAt.formatted(date: .abbreviated, time: .shortened))").font(.caption).foregroundStyle(.secondary)
+                Text(collection.name).limaFont(.system(size: 15, weight: .semibold))
+                Text("\(collection.documents.count) documents · updated \(collection.updatedAt.formatted(date: .abbreviated, time: .shortened))").limaFont(.caption).foregroundStyle(.secondary)
                 ForEach(Array(collection.documents.prefix(50).enumerated()), id: \.offset) { index, document in documentCard(index: index, document: document) }
             }.padding(10)
         }
@@ -1244,11 +1244,11 @@ private struct SQLWorkspaceView: View {
 
     private func documentCard(index: Int, document: [String: String]) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("#\(index + 1)").font(.caption2.weight(.bold)).foregroundStyle(settings.accentTheme.tertiary)
+            Text("#\(index + 1)").limaFont(.caption2.weight(.bold)).foregroundStyle(settings.accentTheme.tertiary)
             ForEach(document.keys.sorted(), id: \.self) { key in
                 HStack(alignment: .top, spacing: 7) {
-                    Text(key).font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary)
-                    Text(document[key] ?? "").font(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
+                    Text(key).limaFont(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundStyle(.secondary)
+                    Text(document[key] ?? "").limaFont(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
                 }
             }
         }.padding(8).background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 6))
@@ -1258,31 +1258,31 @@ private struct SQLWorkspaceView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let table = model.selectedTable {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) { Text(table.name).font(.system(size: 13, weight: .semibold)); Text(table.schema).font(.caption2).foregroundStyle(.secondary) }
+                    VStack(alignment: .leading, spacing: 2) { Text(table.name).limaFont(.system(size: 13, weight: .semibold)); Text(table.schema).limaFont(.caption2).foregroundStyle(.secondary) }
                     Spacer()
                     Button(action: { model.addTable(table) }) { Image(systemName: "plus.square.on.square") }.buttonStyle(.bordered).controlSize(.mini).help("Add to canvas")
                 }
-                if let description = table.description, !description.isEmpty { Text(description).font(.caption).foregroundStyle(.secondary) }
+                if let description = table.description, !description.isEmpty { Text(description).limaFont(.caption).foregroundStyle(.secondary) }
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("Columns").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
+                        Text("Columns").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
                         ForEach(table.columns) { column in
                             HStack(alignment: .top, spacing: 5) {
-                                Image(systemName: column.nullable ? "circle" : "key.fill").font(.system(size: 8)).foregroundStyle(column.nullable ? Color.secondary : Color.yellow)
-                                VStack(alignment: .leading, spacing: 1) { Text(column.name).font(.system(size: 10.5, weight: .medium, design: .monospaced)); Text(column.dataType).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary) }
+                                Image(systemName: column.nullable ? "circle" : "key.fill").limaFont(.system(size: 8)).foregroundStyle(column.nullable ? Color.secondary : Color.yellow)
+                                VStack(alignment: .leading, spacing: 1) { Text(column.name).limaFont(.system(size: 10.5, weight: .medium, design: .monospaced)); Text(column.dataType).limaFont(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary) }
                             }.contextMenu { Button("Insert column") { model.insertDroppedSQL("\(table.qualifiedName).\(column.name)") } }
                         }
-                        if !table.indexes.isEmpty { Divider(); Text("Indexes").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.indexes) { index in Text("\(index.unique ? "UNIQUE " : "")\(index.name) · \(index.column)").font(.system(size: 9.5, design: .monospaced)).foregroundStyle(.secondary) } }
-                        if !table.constraints.isEmpty { Divider(); Text("Constraints").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.constraints, id: \.self) { Text($0).font(.caption2).foregroundStyle(.secondary) } }
+                        if !table.indexes.isEmpty { Divider(); Text("Indexes").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.indexes) { index in Text("\(index.unique ? "UNIQUE " : "")\(index.name) · \(index.column)").limaFont(.system(size: 9.5, design: .monospaced)).foregroundStyle(.secondary) } }
+                        if !table.constraints.isEmpty { Divider(); Text("Constraints").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.constraints, id: \.self) { Text($0).limaFont(.caption2).foregroundStyle(.secondary) } }
                     }.padding(.vertical, 2)
                 }
             } else {
                 emptyState("tablecells", "Select a table", "Details, keys, and columns appear here.")
             }
             Divider()
-            Text("Compatible joins").font(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
-            if model.joinSuggestions.isEmpty { Text("Add a table to see foreign-key joins.").font(.caption2).foregroundStyle(.secondary) }
-            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { VStack(alignment: .leading, spacing: 2) { Text(join.toTable).font(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 5)) }.buttonStyle(.plain) } } } }
+            Text("Compatible joins").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
+            if model.joinSuggestions.isEmpty { Text("Add a table to see foreign-key joins.").limaFont(.caption2).foregroundStyle(.secondary) }
+            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { VStack(alignment: .leading, spacing: 2) { Text(join.toTable).limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).limaFont(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 5)) }.buttonStyle(.plain) } } } }
         }
         .padding(9).liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.012)
     }
@@ -1297,14 +1297,14 @@ private struct SQLWorkspaceView: View {
                         .fill(model.status.lowercased().contains("could not") || model.status.lowercased().contains("not found") ? Color.orange : settings.accentTheme.tertiary)
                         .frame(width: 5, height: 5)
                 }
-                Text(model.status).font(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
+                Text(model.status).limaFont(.system(size: 10.5, weight: .medium)).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
                 if model.isBusy, model.discoveryTotalSteps > 0 {
                     Text("\(model.discoveryCompletedSteps)/\(model.discoveryTotalSteps)")
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .limaFont(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(settings.accentTheme.tertiary)
                 } else if let schema = model.schema {
-                    Text("\(schema.discoveryComplete == false ? "Partial schema" : "Schema cached") \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").font(.caption2).foregroundStyle(.secondary)
+                    Text("\(schema.discoveryComplete == false ? "Partial schema" : "Schema cached") \(schema.discoveredAt.formatted(date: .omitted, time: .shortened))").limaFont(.caption2).foregroundStyle(.secondary)
                 }
             }
             if model.isBusy, model.discoveryTotalSteps > 0 {
@@ -1320,9 +1320,9 @@ private struct SQLWorkspaceView: View {
 
     private func emptyState(_ symbol: String, _ title: String, _ description: String) -> some View {
         VStack(spacing: 7) {
-            Image(systemName: symbol).font(.system(size: 18, weight: .medium)).foregroundStyle(.secondary)
-            Text(title).font(.system(size: 11.5, weight: .semibold))
-            Text(description).font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Image(systemName: symbol).limaFont(.system(size: 18, weight: .medium)).foregroundStyle(.secondary)
+            Text(title).limaFont(.system(size: 11.5, weight: .semibold))
+            Text(description).limaFont(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(16)
@@ -1337,7 +1337,7 @@ private struct SQLConnectionEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
-            HStack { Label(model.isEditingConnection ? "Edit connection" : "New connection", systemImage: "cylinder.split.1x2").font(.title3.weight(.semibold)); Spacer(); Button(action: { dismiss() }) { Image(systemName: "xmark") }.buttonStyle(.borderless) }
+            HStack { Label(model.isEditingConnection ? "Edit connection" : "New connection", systemImage: "cylinder.split.1x2").limaFont(.title3.weight(.semibold)); Spacer(); Button(action: { dismiss() }) { Image(systemName: "xmark") }.buttonStyle(.borderless) }
             Grid(horizontalSpacing: 10, verticalSpacing: 9) {
                 row("Name") { TextField("Operations MySQL", text: $model.connectionDraft.name) }
                 row("Environment") { TextField("Development", text: $model.connectionDraft.environment) }
@@ -1345,7 +1345,7 @@ private struct SQLConnectionEditor: View {
                 row("Host") { TextField("db.example.com", text: $model.connectionDraft.host) }
                 row("Port") {
                     TextField("1521", text: $portText)
-                        .font(.system(size: 12, design: .monospaced))
+                        .limaFont(.system(size: 12, design: .monospaced))
                         .onChange(of: portText) { value in
                             let digits = value.filter(\.isWholeNumber)
                             if digits != value {
@@ -1365,7 +1365,7 @@ private struct SQLConnectionEditor: View {
                 row(model.connectionDraft.driver == .oracle ? "Service" : "Database") { TextField(model.connectionDraft.driver == .oracle ? "service_name" : "database", text: $model.connectionDraft.database) }
                 row("Username") { TextField("Username", text: $model.connectionDraft.username) }
                 row("Password") { SecureField("Stored in macOS Keychain", text: $model.secretDraft) }
-                row("Client") { TextField(model.connectionDraft.driver.defaultCommand, text: $model.connectionDraft.commandPath).font(.system(size: 11, design: .monospaced)) }
+                row("Client") { TextField(model.connectionDraft.driver.defaultCommand, text: $model.connectionDraft.commandPath).limaFont(.system(size: 11, design: .monospaced)) }
                 if model.connectionDraft.driver == .oracle {
                     row("Discovery schemas") {
                         HStack {
@@ -1381,7 +1381,7 @@ private struct SQLConnectionEditor: View {
                 }
             }
             Text("The workspace saves connection metadata locally with restricted permissions. Passwords are stored separately in this Mac’s Keychain and are excluded from query history, schema files, and usage logs.")
-                .font(.caption).foregroundStyle(.secondary)
+                .limaFont(.caption).foregroundStyle(.secondary)
             HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { model.saveConnection(); dismiss() }.buttonStyle(.bordered); Button("Save & Test") { model.saveConnection(test: true); dismiss() }.buttonStyle(.borderedProminent) }
         }
         .padding(20).frame(width: 560)
@@ -1394,6 +1394,6 @@ private struct SQLConnectionEditor: View {
     }
 
     private func row<Content: View>(_ name: String, @ViewBuilder content: () -> Content) -> some View {
-        GridRow { Text(name).font(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 83, alignment: .trailing); content().textFieldStyle(.roundedBorder) }
+        GridRow { Text(name).limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 83, alignment: .trailing); content().textFieldStyle(.roundedBorder) }
     }
 }

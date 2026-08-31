@@ -47,7 +47,7 @@ final class ActionToastController {
 
     func show(_ message: String, style: Style = .success, duration: TimeInterval = 1.4) {
         dismissWorkItem?.cancel()
-        panel.contentView = NSHostingView(rootView: ActionToastView(message: message, style: style))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ActionToastView(message: message, style: style)))
         let screen = NSScreen.main ?? NSScreen.screens.first
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
@@ -89,11 +89,11 @@ private struct ActionToastView: View {
                 ProgressView().controlSize(.small)
             } else {
                 Image(systemName: style.symbol)
-                    .font(.system(size: 14, weight: .semibold))
+                    .limaFont(.system(size: 14, weight: .semibold))
                     .foregroundStyle(style.color)
             }
             Text(message)
-                .font(.system(size: 12.5, weight: .semibold))
+                .limaFont(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
             Spacer(minLength: 0)
         }

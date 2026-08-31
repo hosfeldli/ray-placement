@@ -29,8 +29,8 @@ struct SQLBlockCanvasEditor: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 91), spacing: 5)], alignment: .leading, spacing: 5) {
                     ForEach(["Select", "Join", "Filter", "Group", "Aggregate", "Having", "Sort"], id: \.self) { kind in
                         Button { add(kind) } label: {
-                            HStack(spacing: 4) { Image(systemName: paletteIcon(kind)).foregroundStyle(color(kind)); Text(paletteTitle(kind)); Spacer(minLength: 0); Image(systemName: "plus").font(.system(size: 8)) }
-                                .font(.system(size: 10, weight: .medium)).padding(.horizontal, 7).frame(height: 27)
+                            HStack(spacing: 4) { Image(systemName: paletteIcon(kind)).foregroundStyle(color(kind)); Text(paletteTitle(kind)); Spacer(minLength: 0); Image(systemName: "plus").limaFont(.system(size: 8)) }
+                                .limaFont(.system(size: 10, weight: .medium)).padding(.horizontal, 7).frame(height: 27)
                         }
                             .buttonStyle(.plain)
                             .background(Color.white.opacity(0.045), in: SQLSocketShape())
@@ -79,7 +79,7 @@ struct SQLBlockCanvasEditor: View {
                 return !providers.isEmpty
             }
         }
-        .font(.system(size: 11))
+        .limaFont(.system(size: 11))
         .textFieldStyle(.roundedBorder)
         .controlSize(.small)
         .onAppear(perform: refreshSchemaSuggestions)
@@ -101,7 +101,7 @@ struct SQLBlockCanvasEditor: View {
                 ForEach(Array(query.tables.enumerated()), id: \.element) { index, table in
                     HStack {
                         Text(index == 0 ? "Start" : (blocks.wrappedValue.joins.contains { $0.table == table } ? "Joined" : "Cross")).foregroundStyle(.secondary).frame(width: 40, alignment: .leading)
-                        Text(table).font(.system(size: 11, design: .monospaced)).lineLimit(1).help(table)
+                        Text(table).limaFont(.system(size: 11, design: .monospaced)).lineLimit(1).help(table)
                         Spacer()
                         Button { pendingRemoval = table } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Remove table and reset query blocks")
                     }
@@ -136,7 +136,7 @@ struct SQLBlockCanvasEditor: View {
                         SQLExpressionField(placeholder: "Joined table", text: $join.table, suggestions: tableNames)
                         Button { blocks.wrappedValue.joins.removeAll { $0.id == join.id } } label: { Image(systemName: "xmark") }.buttonStyle(.borderless).help("Remove join")
                     }
-                    Text(joinDescription(join.style)).font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(joinDescription(join.style)).limaFont(.system(size: 10)).foregroundStyle(.secondary)
                     if join.style != .cross { SQLFilterNodeEditor(node: $join.condition, columns: columns) }
                 }
             }
@@ -260,15 +260,15 @@ private struct SQLQueryStepCard<Content: View>: View {
                     withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) { expanded.toggle() }
                 } label: {
                     HStack(spacing: 7) {
-                        Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .bold)).foregroundStyle(color)
-                        Text(meaning.0).font(.system(size: 11, weight: .semibold))
+                        Image(systemName: expanded ? "chevron.down" : "chevron.right").limaFont(.system(size: 8, weight: .bold)).foregroundStyle(color)
+                        Text(meaning.0).limaFont(.system(size: 11, weight: .semibold))
                         Spacer(minLength: 3)
-                        Text(clause == "FILTER" ? "WHERE" : clause).font(.system(size: 8.5, weight: .medium, design: .monospaced)).foregroundStyle(color)
+                        Text(clause == "FILTER" ? "WHERE" : clause).limaFont(.system(size: 8.5, weight: .medium, design: .monospaced)).foregroundStyle(color)
                     }.contentShape(Rectangle())
                 }.buttonStyle(.plain).help(expanded ? "Collapse this block" : "Expand this block")
-                Button { showingHelp.toggle() } label: { Image(systemName: "info.circle").font(.system(size: 10)).foregroundStyle(.secondary) }
+                Button { showingHelp.toggle() } label: { Image(systemName: "info.circle").limaFont(.system(size: 10)).foregroundStyle(.secondary) }
                     .buttonStyle(.plain).accessibilityLabel("About \(meaning.0)")
-                    .popover(isPresented: $showingHelp) { Text(meaning.1).font(.system(size: 12)).padding(12).frame(width: 265) }
+                    .popover(isPresented: $showingHelp) { Text(meaning.1).limaFont(.system(size: 12)).padding(12).frame(width: 265) }
             }.padding(.horizontal, 10).frame(height: 33)
             if expanded {
                 content().padding(.horizontal, 10).padding(.bottom, 10)
@@ -300,7 +300,7 @@ private struct SQLExpressionField: View {
     var suggestions: [String]
     var body: some View {
         HStack(spacing: 3) {
-            TextField(placeholder, text: $text).font(.system(size: 10.5, design: .monospaced))
+            TextField(placeholder, text: $text).limaFont(.system(size: 10.5, design: .monospaced))
             if !suggestions.isEmpty {
                 Menu {
                     ForEach(Array(suggestions.lazy.filter { text.isEmpty || $0.localizedCaseInsensitiveContains(text) }.prefix(100)), id: \.self) { item in Button(item) { text = item } }

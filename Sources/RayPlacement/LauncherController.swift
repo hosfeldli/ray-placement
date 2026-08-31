@@ -54,7 +54,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         viewModel.delegate = self
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LauncherView(viewModel: viewModel))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel)))
         rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }

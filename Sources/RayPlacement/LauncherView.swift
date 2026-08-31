@@ -63,7 +63,7 @@ struct LauncherView: View {
                 ZStack {
                     PrismaticPanelShape(cut: 7).fill(RayColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
-                        .font(.system(size: 14, weight: .bold))
+                        .limaFont(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 27, height: 27)
@@ -75,7 +75,7 @@ struct LauncherView: View {
                     viewModel.enter(.root)
                 } label: {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .bold))
+                        .limaFont(.system(size: 14, weight: .bold))
                         .foregroundStyle(.primary)
                         .frame(width: 29, height: 29)
                 }
@@ -86,10 +86,10 @@ struct LauncherView: View {
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
                 Text(title)
-                    .font(.system(size: 14, weight: .bold))
+                    .limaFont(.system(size: 14, weight: .bold))
                     .foregroundStyle(.primary)
                 Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .bold))
+                    .limaFont(.system(size: 9, weight: .bold))
                     .foregroundStyle(.tertiary)
             }
 
@@ -98,13 +98,13 @@ struct LauncherView: View {
                 StatusCapsule(text: "OFFLINE", color: RayColors.cyan)
             } else if isOutputMode {
                 Text(outputHeaderText)
-                    .font(.system(size: 15, weight: .medium))
+                    .limaFont(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
                 TextField(viewModel.placeholder, text: $viewModel.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 17, weight: .medium))
+                    .limaFont(.system(size: 17, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
             }
@@ -115,7 +115,7 @@ struct LauncherView: View {
                     .frame(width: 20)
             } else if !viewModel.query.isEmpty {
                 Text("esc")
-                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
@@ -157,7 +157,7 @@ struct LauncherView: View {
                     .disabled(viewModel.emojiPageIndex == 0)
                     .accessibilityLabel("Previous emoji page")
                     Text(viewModel.emojiPageLabel)
-                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .limaFont(.system(size: 9.5, weight: .semibold, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .frame(minWidth: 36)
                     Button { viewModel.moveEmojiPage(by: 1) } label: {
@@ -207,9 +207,9 @@ struct LauncherView: View {
             if viewModel.emojiMatches.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
-                        .font(.system(size: 22, weight: .medium))
+                        .limaFont(.system(size: 22, weight: .medium))
                     Text("No matching emoji")
-                        .font(.system(size: 13, weight: .semibold))
+                        .limaFont(.system(size: 13, weight: .semibold))
                 }
                 .foregroundStyle(.secondary)
             }
@@ -271,11 +271,11 @@ struct LauncherView: View {
                         .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
-                            Text(title).font(.system(size: 16, weight: .bold))
+                            Text(title).limaFont(.system(size: 16, weight: .bold))
                             StatusCapsule(text: isWritingOutput(title) ? "LOCAL RULES" : "RUNNING", color: isWritingOutput(title) ? RayColors.violet : RayColors.cyan)
                         }
                         Text(text.isEmpty ? "Working…" : text)
-                            .font(.system(size: 13, weight: .medium))
+                            .limaFont(.system(size: 13, weight: .medium))
                             .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
@@ -289,14 +289,14 @@ struct LauncherView: View {
                     ZStack {
                         Circle().fill(outputStateColor(state).opacity(0.14))
                         Image(systemName: state == .error ? "exclamationmark.triangle.fill" : "checkmark")
-                            .font(.system(size: 17, weight: .bold))
+                            .limaFont(.system(size: 17, weight: .bold))
                             .foregroundStyle(outputStateColor(state))
                     }
                     .frame(width: 30, height: 30)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(title).font(.system(size: 16, weight: .bold))
+                        Text(title).limaFont(.system(size: 16, weight: .bold))
                         Text(state == .error ? "Lima needs your attention" : "Finished successfully")
-                            .font(.caption)
+                            .limaFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
@@ -304,7 +304,7 @@ struct LauncherView: View {
                 }
                 ScrollView {
                     Text(text.isEmpty ? "Command completed." : text)
-                        .font(.system(size: 13.5, design: .rounded))
+                        .limaFont(.system(size: 13.5, design: .rounded))
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .padding(16)
@@ -329,7 +329,7 @@ struct LauncherView: View {
 
                 Button { viewModel.swapTimezones() } label: {
                     Image(systemName: "arrow.left.arrow.right")
-                        .font(.system(size: 14, weight: .bold))
+                        .limaFont(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: 38, height: 38)
                         .background(RayColors.heroGradient, in: Circle())
@@ -375,7 +375,7 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 15) {
             HStack {
                 Text(title)
-                    .font(.system(size: 10, weight: .bold, design: .rounded))
+                    .limaFont(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
                     .foregroundStyle(isSource ? RayColors.indigo : RayColors.cyan)
                 Spacer()
@@ -392,17 +392,17 @@ struct LauncherView: View {
             if isSource {
                 TextField("9:30 AM", text: $viewModel.query)
                     .textFieldStyle(.plain)
-                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 29, weight: .semibold, design: .rounded))
                     .focused($timezoneFocused)
                     .accessibilityLabel("Time to convert")
                 Text(time == nil && !viewModel.query.isEmpty ? "Enter a valid time" : (date ?? "Type a time above"))
-                    .font(.caption.weight(.medium))
+                    .limaFont(.caption.weight(.medium))
                     .foregroundStyle(time == nil && !viewModel.query.isEmpty ? Color.orange : .secondary)
             } else {
                 Text(time ?? "—")
-                    .font(.system(size: 29, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 29, weight: .semibold, design: .rounded))
                 Text(date.map { "\($0) · \(viewModel.timezoneConversion?.destinationZone ?? "")" } ?? "Converted time appears here")
-                    .font(.caption.weight(.medium))
+                    .limaFont(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
@@ -418,15 +418,15 @@ struct LauncherView: View {
                 ZStack {
                     Circle().fill((review.issues.isEmpty ? Color.green : RayColors.violet).opacity(0.14))
                     Image(systemName: review.issues.isEmpty ? "checkmark" : "wand.and.stars")
-                        .font(.system(size: 16, weight: .bold))
+                        .limaFont(.system(size: 16, weight: .bold))
                         .foregroundStyle(review.issues.isEmpty ? Color.green : RayColors.violet)
                 }
                 .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(review.issues.isEmpty ? "Your writing is ready" : "Correction ready")
-                        .font(.system(size: 16, weight: .bold))
+                        .limaFont(.system(size: 16, weight: .bold))
                     Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -480,11 +480,11 @@ struct LauncherView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 9) {
             Label(title, systemImage: symbol)
-                .font(.system(size: 10.5, weight: .bold, design: .rounded))
+                .limaFont(.system(size: 10.5, weight: .bold, design: .rounded))
                 .tracking(0.8)
                 .foregroundStyle(color)
             Text(text)
-                .font(.system(size: 13.5))
+                .limaFont(.system(size: 13.5))
                 .lineSpacing(3)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
@@ -619,7 +619,7 @@ private struct EmojiPageButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.system(size: 9, weight: .bold))
+            .limaFont(.system(size: 9, weight: .bold))
             .foregroundStyle(disabled ? Color.secondary.opacity(0.38) : Color.primary.opacity(0.85))
             .frame(width: 20, height: 20)
             .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.055), in: PrismaticPanelShape(cut: 4))
@@ -639,20 +639,20 @@ private struct WritingIssueRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(issue.original)
-                        .font(.system(size: 13, weight: .semibold))
+                        .limaFont(.system(size: 13, weight: .semibold))
                     Text(issue.kind.rawValue)
-                        .font(.caption2.weight(.semibold))
+                        .limaFont(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Color.primary.opacity(0.07), in: PrismaticPanelShape(cut: 4))
                 }
                 Text(issue.message)
-                    .font(.system(size: 12))
+                    .limaFont(.system(size: 12))
                     .foregroundStyle(.secondary)
                 if !issue.suggestions.isEmpty {
                     Text("Suggestions: \(issue.suggestions.joined(separator: ", "))")
-                        .font(.system(size: 12))
+                        .limaFont(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -676,12 +676,12 @@ private struct ResultRow: View {
                 .frame(width: 27, height: 27)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
-                    .font(.system(size: 13.5, weight: selected ? .semibold : .medium))
+                    .limaFont(.system(size: 13.5, weight: selected ? .semibold : .medium))
                     .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
-                        .font(.system(size: 11.25, weight: .regular))
+                        .limaFont(.system(size: 11.25, weight: .regular))
                         .foregroundStyle(Color.white.opacity(selected ? 0.68 : 0.56))
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -690,12 +690,12 @@ private struct ResultRow: View {
             Spacer(minLength: 10)
             if let accessory = item.accessory {
                 Text(accessory)
-                    .font(.system(size: 10.5, weight: .medium))
+                    .limaFont(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(.secondary)
             }
             if let shortcut = item.shortcut {
                 Text(shortcut)
-                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 10.5, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
@@ -707,7 +707,7 @@ private struct ResultRow: View {
                     Text("↩")
                     Text(actionLabel)
                 }
-                .font(.system(size: 10.25, weight: .bold, design: .rounded))
+                .limaFont(.system(size: 10.25, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
@@ -771,7 +771,7 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
             case .text(let text):
-                Text(text).font(.system(size: 23))
+                Text(text).limaFont(.system(size: 23))
             }
         }
         .frame(width: 30, height: 30)
@@ -784,7 +784,7 @@ private struct EmojiGridTile: View {
 
     var body: some View {
         Text(emoji)
-            .font(.system(size: 27))
+            .limaFont(.system(size: 27))
             .minimumScaleFactor(0.72)
             .frame(maxWidth: .infinity)
             .frame(height: 40)
@@ -825,11 +825,11 @@ private struct KeyHint: View {
     var body: some View {
         HStack(spacing: 5) {
             Text(keys)
-                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
                 .background(Color.primary.opacity(0.085), in: PrismaticPanelShape(cut: 4))
-            Text(label).font(.system(size: 10.5)).foregroundStyle(.secondary)
+            Text(label).limaFont(.system(size: 10.5)).foregroundStyle(.secondary)
         }
     }
 }
@@ -840,7 +840,7 @@ private struct StatusCapsule: View {
 
     var body: some View {
         Text(text)
-            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+            .limaFont(.system(size: 9.5, weight: .bold, design: .rounded))
             .tracking(0.6)
             .foregroundStyle(color)
             .padding(.horizontal, 8)
@@ -869,7 +869,7 @@ private struct TaskOrbitView: View {
                 .rotationEffect(.degrees(spinning ? 360 : 0))
                 .padding(5)
             Image(systemName: "sparkles")
-                .font(.system(size: 11, weight: .bold))
+                .limaFont(.system(size: 11, weight: .bold))
                 .foregroundStyle(color)
         }
         .onAppear {
@@ -898,7 +898,7 @@ private struct ActivityTimeline: View {
                             .frame(width: 14, height: 14)
                         if index < activeStep {
                             Image(systemName: "checkmark")
-                                .font(.system(size: 7, weight: .bold))
+                                .limaFont(.system(size: 7, weight: .bold))
                                 .foregroundStyle(.white)
                         } else {
                             Circle()
@@ -907,7 +907,7 @@ private struct ActivityTimeline: View {
                         }
                     }
                     Text(label)
-                        .font(.system(size: 10, weight: index == activeStep ? .semibold : .medium))
+                        .limaFont(.system(size: 10, weight: index == activeStep ? .semibold : .medium))
                         .foregroundStyle(index <= activeStep ? Color.primary : .secondary)
                 }
                 if index < labels.count - 1 {

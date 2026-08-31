@@ -31,7 +31,7 @@ final class ExtensionFormWindowController: NSWindowController {
         let model = ExtensionFormViewModel(command: command, definition: definition, execute: execute)
         self.model = model
         window?.title = definition.title ?? command.command.title
-        window?.contentView = NSHostingView(rootView: ExtensionFormView(model: model))
+        window?.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionFormView(model: model)))
         window?.center()
         if let window { WorkspaceWindowCoordinator.shared.present(window) }
     }
@@ -155,16 +155,16 @@ private struct ExtensionFormView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: model.command.command.icon ?? "square.stack.3d.up.fill")
-                .font(.system(size: 13, weight: .semibold))
+                .limaFont(.system(size: 13, weight: .semibold))
                 .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
                 .frame(width: 29, height: 29)
                 .liquidGlass(cornerRadius: 9, depth: .floating, accentOpacity: 0.1)
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.definition.title ?? model.command.command.title)
-                    .font(.system(size: 15, weight: .semibold, design: .rounded))
+                    .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
                 if model.command.extensionName != (model.definition.title ?? model.command.command.title) {
                     Text(model.command.extensionName)
-                        .font(.caption2.weight(.medium))
+                        .limaFont(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -189,7 +189,7 @@ private struct ExtensionFormView: View {
                     if let section = field.section,
                        index == 0 || model.visibleFields[index - 1].section != section {
                         Text(section.uppercased())
-                            .font(.caption2.weight(.bold))
+                            .limaFont(.caption2.weight(.bold))
                             .tracking(0.7)
                             .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                             .padding(.top, index == 0 ? 0 : 7)
@@ -209,7 +209,7 @@ private struct ExtensionFormView: View {
         VStack(alignment: .leading, spacing: 6) {
             if field.type != .toggle {
                 Text(field.label + (field.required == true ? " *" : ""))
-                    .font(.caption.weight(.semibold))
+                    .limaFont(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
             switch field.type {
@@ -227,7 +227,7 @@ private struct ExtensionFormView: View {
                     .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
             case .multiline:
                 TextEditor(text: model.binding(for: field))
-                    .font(.system(size: 12, design: .monospaced))
+                    .limaFont(.system(size: 12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 110)
@@ -247,7 +247,7 @@ private struct ExtensionFormView: View {
                 HStack(spacing: 7) {
                     TextField(field.placeholder ?? "Choose a path", text: model.binding(for: field))
                         .textFieldStyle(.plain)
-                        .font(.caption.monospaced())
+                        .limaFont(.caption.monospaced())
                     Button("Choose…") { model.choosePath(for: field) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -265,19 +265,19 @@ private struct ExtensionFormView: View {
                         in: (field.minimum ?? 0)...max(field.minimum ?? 0, field.maximum ?? 100)
                     )
                     Text(model.values[field.id, default: field.defaultValue ?? "0"])
-                        .font(.caption.monospacedDigit())
+                        .limaFont(.caption.monospacedDigit())
                         .frame(width: 52, alignment: .trailing)
                 }
             case .keyValue:
                 TextEditor(text: model.binding(for: field))
-                    .font(.system(size: 12, design: .monospaced))
+                    .limaFont(.system(size: 12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 92)
                     .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0.01)
             }
             if let help = field.helpText, !help.isEmpty {
-                Text(help).font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                Text(help).limaFont(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -288,16 +288,16 @@ private struct ExtensionFormView: View {
                 if let result = model.result {
                     Image(systemName: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
                         .foregroundStyle(result.succeeded ? .green : .orange)
-                    Text(result.headline).font(.callout.weight(.semibold))
-                    Text(result.detail).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(result.headline).limaFont(.callout.weight(.semibold))
+                    Text(result.detail).limaFont(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 } else if let error = model.error {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(.orange)
-                    Text(error).font(.caption.weight(.medium)).lineLimit(2)
+                    Text(error).limaFont(.caption.weight(.medium)).lineLimit(2)
                 } else {
                     Image(systemName: model.phase == .running ? "waveform.path.ecg" : "terminal.fill")
                         .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                     Text(model.phase == .running ? "Running…" : "Output")
-                        .font(.callout.weight(.semibold))
+                        .limaFont(.callout.weight(.semibold))
                 }
                 Spacer()
                 if model.result != nil {
@@ -311,7 +311,7 @@ private struct ExtensionFormView: View {
             GlassHairline()
             ScrollView(.vertical) {
                 Text(model.result?.output ?? (model.phase == .running ? "Waiting for a response…" : "Run this flow to inspect its result."))
-                    .font(.system(size: 11.5, design: .monospaced))
+                    .limaFont(.system(size: 11.5, design: .monospaced))
                     .foregroundStyle(model.result == nil ? .secondary : .primary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)

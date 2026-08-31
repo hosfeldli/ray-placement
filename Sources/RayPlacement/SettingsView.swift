@@ -58,13 +58,13 @@ struct SettingsView: View {
                 VStack(spacing: 0) {
                     HStack(spacing: 10) {
                         Image(systemName: selectedSection.symbol)
-                            .font(.system(size: 12, weight: .semibold))
+                            .limaFont(.system(size: 12, weight: .semibold))
                             .foregroundStyle(settings.accentTheme.primary)
                             .frame(width: 26, height: 26)
                             .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
                             .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.25), lineWidth: 0.6))
                         Text(selectedSection.title)
-                            .font(.system(size: 17, weight: .semibold, design: .rounded))
+                            .limaFont(.system(size: 17, weight: .semibold, design: .rounded))
                         Spacer()
                     }
                     .padding(.horizontal, 14)
@@ -96,14 +96,14 @@ struct SettingsView: View {
                     PrismaticPanelShape(cut: 7)
                         .fill(SettingsColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
-                        .font(.system(size: 14, weight: .bold))
+                        .limaFont(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                 }
                 .frame(width: 30, height: 30)
                 .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
                 .shadow(color: settings.accentTheme.primary.opacity(0.24), radius: 8, y: 4)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Lima").font(.system(size: 13.5, weight: .semibold))
+                    Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
                 }
             }
             .padding(.horizontal, 14)
@@ -114,11 +114,11 @@ struct SettingsView: View {
                 Button { selectedSection = section } label: {
                     HStack(spacing: 9) {
                         Image(systemName: section.symbol)
-                            .font(.system(size: 12, weight: .semibold))
+                            .limaFont(.system(size: 12, weight: .semibold))
                             .foregroundStyle(selectedSection == section ? settings.accentTheme.primary : Color.secondary)
                             .frame(width: 21)
                         Text(section.title)
-                            .font(.system(size: 13, weight: selectedSection == section ? .semibold : .medium))
+                            .limaFont(.system(size: 13, weight: selectedSection == section ? .semibold : .medium))
                         Spacer()
                     }
                     .foregroundStyle(selectedSection == section ? Color.primary : Color.primary.opacity(0.76))
@@ -176,7 +176,7 @@ struct SettingsView: View {
                     Label("Beta Dynamic Performance", systemImage: "gauge.with.dots.needle.67percent")
                 }
                 Label(settings.dynamicPerformanceDescription, systemImage: settings.dynamicPerformance ? "waveform.path.ecg" : "slider.horizontal.3")
-                    .font(.caption.weight(.medium))
+                    .limaFont(.caption.weight(.medium))
                     .foregroundStyle(settings.dynamicPerformance ? Color.accentColor : .secondary)
             }
 
@@ -199,7 +199,7 @@ struct SettingsView: View {
                     }
                 }
                 Text(settings.dictationEngine.detail)
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
@@ -208,7 +208,7 @@ struct SettingsView: View {
                 }
                 if settings.dictationEngine == .localWhisper {
                     Label("Semi-live · completed segments appear in the note while recording", systemImage: "waveform.badge.mic")
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
                 performanceSlider(
@@ -237,7 +237,7 @@ struct SettingsView: View {
             Section {
                 DisclosureGroup("How limits work") {
                     Text("Dynamic mode lowers each slider when Low Power Mode or heat requires it. Dictation is the only feature that loads a speech model. Extension limits are cooperative, so install only code you trust.")
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                         .padding(.top, 4)
                 }
@@ -275,7 +275,7 @@ struct SettingsView: View {
                 Spacer()
                 Text("Unbounded")
             }
-            .font(.caption2)
+            .limaFont(.caption2)
             .foregroundStyle(.tertiary)
         }
         .accessibilityElement(children: .contain)
@@ -288,16 +288,16 @@ struct SettingsView: View {
                 Label("Python spelling + Harper grammar", systemImage: "checkmark.shield.fill")
                     .foregroundStyle(.green)
                 Text("Checks stay on this Mac. No text-generation model is installed or used.")
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Preserved terms") {
                 Text("Enter product names, acronyms, and intentional spellings the checker should leave unchanged, separated by spaces, commas, or lines.")
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $settings.writingInstructions)
-                    .font(.system(size: 12.5))
+                    .limaFont(.system(size: 12.5))
                     .frame(minHeight: 118)
                     .padding(7)
                     .background(Color(nsColor: .textBackgroundColor), in: PrismaticPanelShape(cut: 5))
@@ -305,7 +305,7 @@ struct SettingsView: View {
                     .accessibilityLabel("Words preserved by grammar correction")
                 HStack {
                     Text("\(settings.writingInstructions.count.formatted()) / 4,000 characters")
-                        .font(.caption2)
+                        .limaFont(.caption2)
                         .foregroundStyle(.tertiary)
                     Spacer()
                     Button("Restore Defaults") {
@@ -331,12 +331,12 @@ struct SettingsView: View {
                         HStack(spacing: 10) {
                             ProgressView().controlSize(.small)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(task.operation).font(.callout.weight(.semibold))
+                                Text(task.operation).limaFont(.callout.weight(.semibold))
                                 Text("\(task.model ?? task.category.rawValue) · \(task.performance.title) · \(task.threads) threads")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .limaFont(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(task.startedAt, style: .timer).font(.caption.monospacedDigit())
+                            Text(task.startedAt, style: .timer).limaFont(.caption.monospacedDigit())
                         }
                     }
                 }
@@ -360,12 +360,12 @@ struct SettingsView: View {
                             Image(systemName: event.succeeded ? "checkmark.circle.fill" : "xmark.circle.fill")
                                 .foregroundStyle(event.succeeded ? .green : .orange)
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(event.operation).font(.callout.weight(.medium))
+                                Text(event.operation).limaFont(.callout.weight(.medium))
                                 Text("\(event.model ?? event.category.rawValue) · \(event.performance) · \(event.threads) threads · \(durationLabel(event.duration))")
-                                    .font(.caption).foregroundStyle(.secondary)
+                                    .limaFont(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
-                            Text(event.startedAt, style: .relative).font(.caption2).foregroundStyle(.tertiary)
+                            Text(event.startedAt, style: .relative).limaFont(.caption2).foregroundStyle(.tertiary)
                         }
                     }
                 }
@@ -376,7 +376,7 @@ struct SettingsView: View {
                         .disabled(usageMonitor.events.isEmpty)
                 }
                 Label("The log stays on this Mac and records task names, limits, duration, counts, and success—not selected text, note contents, or document data.", systemImage: "hand.raised.fill")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .limaFont(.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -396,6 +396,7 @@ struct SettingsView: View {
         Form {
             Section("Appearance") {
                 AccentThemePicker(selection: $settings.accentTheme)
+                InterfaceTextSizeControl()
             }
 
             Section("Global hotkeys") {
@@ -456,7 +457,7 @@ struct SettingsView: View {
                 ))
                 if let error = settings.lastError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.orange)
                 }
             }
@@ -473,13 +474,13 @@ struct SettingsView: View {
                     Button("Open Settings") { openAccessibilitySettings() }
                     Spacer()
                     Text("Needed for selection, replace, paste, and windows")
-                        .font(.caption2)
+                        .limaFont(.caption2)
                         .foregroundStyle(.tertiary)
                 }
 
                 DisclosureGroup("Troubleshooting") {
                     Text(Bundle.main.bundleURL.path)
-                        .font(.system(size: 10, design: .monospaced))
+                        .limaFont(.system(size: 10, design: .monospaced))
                         .foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .lineLimit(2)
@@ -511,11 +512,11 @@ struct SettingsView: View {
                 Toggle("Remember copied text", isOn: $settings.clipboardEnabled)
                 Stepper("Keep up to \(settings.clipboardLimit) items", value: $settings.clipboardLimit, in: 10...500, step: 10)
                 Text("Off by default. When enabled, RayPlacement checks the macOS clipboard and stores text only in ~/Library/Application Support/RayPlacement. Nothing is sent over the network.")
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 if #available(macOS 15.4, *) {
                     Text("macOS clipboard permission: \(pasteboardAccessDescription())")
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Button("Clear Clipboard History", role: .destructive) {
@@ -541,7 +542,7 @@ struct SettingsView: View {
                 Button("Reload") { reloadExtensions() }
                 Spacer()
                 Text("\(viewModel.extensionCommands.count) commands")
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
             }
             .help(ApplicationPaths.extensions.path)
@@ -552,8 +553,8 @@ struct SettingsView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(viewModel.extensionIssues) { issue in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(issue.file).font(.caption.weight(.semibold))
-                                    Text(issue.message).font(.caption).foregroundStyle(.secondary)
+                                    Text(issue.file).limaFont(.caption.weight(.semibold))
+                                    Text(issue.message).limaFont(.caption).foregroundStyle(.secondary)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -567,9 +568,9 @@ struct SettingsView: View {
             if viewModel.extensionCommands.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "puzzlepiece.extension")
-                        .font(.system(size: 30))
+                        .limaFont(.system(size: 30))
                         .foregroundStyle(.secondary)
-                    Text("No extension commands loaded").font(.headline)
+                    Text("No extension commands loaded").limaFont(.headline)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -581,7 +582,7 @@ struct SettingsView: View {
                                     Image(systemName: "puzzlepiece.extension.fill")
                                         .foregroundStyle(SettingsColors.violet)
                                     Text(group.name)
-                                        .font(.system(size: 13, weight: .semibold))
+                                        .limaFont(.system(size: 13, weight: .semibold))
                                     Spacer()
                                     Toggle(
                                         "Extension",
@@ -591,7 +592,7 @@ struct SettingsView: View {
                                         )
                                     )
                                     .toggleStyle(.checkbox)
-                                    .font(.caption2)
+                                    .limaFont(.caption2)
                                 }
                                 .padding(.horizontal, 11)
                                 .frame(height: 36)
@@ -631,19 +632,19 @@ struct SettingsView: View {
     private var aboutTab: some View {
         VStack(spacing: 14) {
             Image(systemName: "sparkle.magnifyingglass")
-                .font(.system(size: 56, weight: .medium))
+                .limaFont(.system(size: 56, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.accentColor)
-            Text("Lima").font(.title.bold())
+            Text("Lima").limaFont(.title.bold())
             Text("A fast, local-only macOS command launcher")
                 .foregroundStyle(.secondary)
             Text("Local Python and Harper writing tools. No network requests or analytics.")
-                .font(.callout.weight(.medium))
+                .limaFont(.callout.weight(.medium))
             Text("Version \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
-                .font(.caption)
+                .limaFont(.caption)
                 .foregroundStyle(.tertiary)
             Text(updateService.statusText)
-                .font(.caption)
+                .limaFont(.caption)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
@@ -652,7 +653,7 @@ struct SettingsView: View {
                     ProgressView(value: updateService.installationProgress)
                         .tint(SettingsColors.indigo)
                     Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
-                        .font(.caption2.weight(.medium))
+                        .limaFont(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: 420)
@@ -665,15 +666,15 @@ struct SettingsView: View {
             if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }
             DisclosureGroup("Update details") {
                 Text("Verified prebuilt updates replace this app in place after confirmation. No local compilation is required.")
-                    .font(.caption)
+                    .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 Text("~/Library/Application Support/RayPlacement/Updates/update.log")
-                    .font(.caption2.monospaced())
+                    .limaFont(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
                 Button("Reveal running app in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
                 }
-                Text(Bundle.main.bundleURL.path).font(.caption2.monospaced()).textSelection(.enabled)
+                Text(Bundle.main.bundleURL.path).limaFont(.caption2.monospaced()).textSelection(.enabled)
             }
             .frame(maxWidth: 470)
         }
@@ -698,7 +699,7 @@ private struct AccentThemePicker: View {
     var body: some View {
         HStack(spacing: 7) {
             Text(selection.title)
-                .font(.callout.weight(.medium))
+                .limaFont(.callout.weight(.medium))
             Spacer()
             ForEach(AppAccentTheme.allCases) { theme in
                 Button { selection = theme } label: {
@@ -735,7 +736,7 @@ private struct PrimaryShortcutRow: View {
                 .frame(width: 20)
                 .accessibilityHidden(true)
             Text(title)
-                .font(.callout.weight(.medium))
+                .limaFont(.callout.weight(.medium))
             Spacer()
             Toggle("Enable \(title) hotkey", isOn: $enabled)
                 .labelsHidden()
@@ -760,7 +761,7 @@ private struct ExtensionShortcutRow: View {
                 .frame(width: 24)
                 .accessibilityHidden(true)
             Text(loaded.command.title)
-                .font(.system(size: 13, weight: .semibold))
+                .limaFont(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
             Spacer(minLength: 10)
@@ -769,7 +770,7 @@ private struct ExtensionShortcutRow: View {
                 set: { settings.setHotkeyEnabled($0, for: loaded) }
             )) {
                 Image(systemName: "command")
-                    .font(.system(size: 9, weight: .bold))
+                    .limaFont(.system(size: 9, weight: .bold))
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
@@ -998,7 +999,7 @@ final class SettingsWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: view)
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: view))
         window.center()
         super.init(window: window)
     }

@@ -19,7 +19,7 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
         window.minSize = NSSize(width: 760, height: 520)
         window.setAccessibilityLabel("RayPlacement extension development manuals")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: ExtensionDevelopmentView().preferredColorScheme(.dark))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionDevelopmentView().preferredColorScheme(.dark)))
     }
 
     func present() {
@@ -77,13 +77,13 @@ private struct ExtensionDevelopmentView: View {
             ZStack {
                 PrismaticPanelShape(cut: 7).fill(SettingsStore.shared.accentTheme.gradient)
                 Image(systemName: "puzzlepiece.extension.fill")
-                    .font(.system(size: 13, weight: .bold))
+                    .limaFont(.system(size: 13, weight: .bold))
             }
             .frame(width: 28, height: 28)
             Text("Extension Lab")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
             Text("API 2")
-                .font(.system(size: 9, weight: .bold, design: .rounded))
+                .limaFont(.system(size: 9, weight: .bold, design: .rounded))
                 .tracking(0.7)
                 .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
             Spacer()
@@ -116,7 +116,7 @@ private struct ExtensionDevelopmentView: View {
                         query = ""
                     } label: {
                         Text(item.shortTitle)
-                            .font(.system(size: 10.5, weight: .semibold))
+                            .limaFont(.system(size: 10.5, weight: .semibold))
                             .frame(maxWidth: .infinity)
                             .padding(.vertical, 6)
                             .background(
@@ -154,7 +154,7 @@ private struct ExtensionDevelopmentView: View {
                                     .fill(section.id == selectedSection.id ? SettingsStore.shared.accentTheme.tertiary : Color.clear)
                                     .frame(width: 1.5, height: 17)
                                 Text(section.title)
-                                    .font(.system(size: section.level == 1 ? 11.5 : 10.8, weight: section.level == 1 ? .semibold : .medium))
+                                    .limaFont(.system(size: section.level == 1 ? 11.5 : 10.8, weight: section.level == 1 ? .semibold : .medium))
                                     .foregroundStyle(section.id == selectedSection.id ? Color.primary : .secondary)
                                     .lineLimit(2)
                                 Spacer(minLength: 0)
@@ -179,9 +179,9 @@ private struct ExtensionDevelopmentView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(selectedSection.title)
-                        .font(.system(size: 16, weight: .semibold, design: .rounded))
+                        .limaFont(.system(size: 16, weight: .semibold, design: .rounded))
                     Text(manual.title)
-                        .font(.caption)
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -203,7 +203,7 @@ private struct ExtensionDevelopmentView: View {
 
             ScrollView {
                 Text(renderedMarkdown(displayMarkdown(selectedSection.markdown)))
-                    .font(.system(size: 12.5))
+                    .limaFont(.system(size: 12.5))
                     .lineSpacing(4)
                     .textSelection(.enabled)
                     .frame(maxWidth: 720, alignment: .topLeading)

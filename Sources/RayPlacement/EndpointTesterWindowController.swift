@@ -25,7 +25,7 @@ final class EndpointTesterWindowController: NSWindowController {
         window.minSize = NSSize(width: 820, height: 560)
         window.setAccessibilityLabel("RayPlacement endpoint tester")
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: EndpointTesterView(model: model))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: EndpointTesterView(model: model)))
     }
 
     func present() {
@@ -823,11 +823,11 @@ private struct EndpointTesterView: View {
             Image(systemName: "network")
                 .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
             Text("Endpoint Tester")
-                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
             Spacer()
             if model.isRunning {
                 ProgressView().controlSize(.small)
-                Text("Sending").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("Sending").limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary)
             }
             Menu {
                 Button("No environment") { model.selectEnvironment(nil) }
@@ -885,7 +885,7 @@ private struct EndpointTesterView: View {
                                     VStack(alignment: .leading, spacing: 3) {
                                         HStack(spacing: 6) {
                                             Image(systemName: "shippingbox.fill").foregroundStyle(.secondary)
-                                            Text(collection.name).font(.caption.weight(.semibold)).lineLimit(1)
+                                            Text(collection.name).limaFont(.caption.weight(.semibold)).lineLimit(1)
                                             Spacer()
                                             Menu { Button("Remove", role: .destructive) { model.deleteCollection(collection.id) } } label: {
                                                 Image(systemName: "ellipsis").foregroundStyle(.secondary)
@@ -898,14 +898,14 @@ private struct EndpointTesterView: View {
                                             Button { model.load(request, collectionID: collection.id) } label: {
                                                 HStack(spacing: 6) {
                                                     Text(request.method)
-                                                        .font(.system(size: 8.5, weight: .bold, design: .monospaced))
+                                                        .limaFont(.system(size: 8.5, weight: .bold, design: .monospaced))
                                                         .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                                                         .frame(width: 36, alignment: .leading)
                                                     VStack(alignment: .leading, spacing: 1) {
-                                                        Text(request.name).font(.caption.weight(.medium)).lineLimit(1)
+                                                        Text(request.name).limaFont(.caption.weight(.medium)).lineLimit(1)
                                                         if !request.folderPath.isEmpty {
                                                             Text(request.folderPath.joined(separator: " / "))
-                                                                .font(.system(size: 9.5))
+                                                                .limaFont(.system(size: 9.5))
                                                                 .foregroundStyle(.tertiary)
                                                                 .lineLimit(1)
                                                         }
@@ -941,12 +941,12 @@ private struct EndpointTesterView: View {
                                     Button { model.load(entry) } label: {
                                         VStack(alignment: .leading, spacing: 3) {
                                             HStack(spacing: 5) {
-                                                Text(entry.method).font(.caption2.monospaced().bold()).foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                                                Text(entry.method).limaFont(.caption2.monospaced().bold()).foregroundStyle(SettingsStore.shared.accentTheme.primary)
                                                 Spacer()
-                                                if let status = entry.statusCode { Text(String(status)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
+                                                if let status = entry.statusCode { Text(String(status)).limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary) }
                                             }
-                                            Text(entry.title).font(.caption.weight(.medium)).lineLimit(1)
-                                            Text(entry.sentAt.formatted(date: .omitted, time: .shortened)).font(.caption2).foregroundStyle(.tertiary)
+                                            Text(entry.title).limaFont(.caption.weight(.medium)).lineLimit(1)
+                                            Text(entry.sentAt.formatted(date: .omitted, time: .shortened)).limaFont(.caption2).foregroundStyle(.tertiary)
                                         }
                                         .frame(maxWidth: .infinity, alignment: .leading)
                                         .padding(8)
@@ -965,7 +965,7 @@ private struct EndpointTesterView: View {
                 GlassHairline()
                 Button("Clear history", action: model.clearHistory)
                     .buttonStyle(.plain)
-                    .font(.caption2)
+                    .limaFont(.caption2)
                     .foregroundStyle(.secondary)
                     .frame(height: 30)
             }
@@ -976,8 +976,8 @@ private struct EndpointTesterView: View {
     private func emptySidebar(symbol: String, title: String) -> some View {
         VStack(spacing: 7) {
             Spacer()
-            Image(systemName: symbol).font(.system(size: 18)).foregroundStyle(.tertiary)
-            Text(title).font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
+            Image(systemName: symbol).limaFont(.system(size: 18)).foregroundStyle(.tertiary)
+            Text(title).limaFont(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
             if model.sidebarMode == .collections {
                 Button("Import", action: model.importPostmanDocuments).buttonStyle(.bordered).controlSize(.small)
             }
@@ -993,9 +993,9 @@ private struct EndpointTesterView: View {
             VStack(spacing: 10) {
                 HStack {
                     Image(systemName: "play.rectangle.on.rectangle.fill").foregroundStyle(SettingsStore.shared.accentTheme.gradient)
-                    Text(model.selectedCollection?.name ?? "Collection Runner").font(.headline)
+                    Text(model.selectedCollection?.name ?? "Collection Runner").limaFont(.headline)
                     Spacer()
-                    Text(model.runnerProgress).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(model.runnerProgress).limaFont(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 13)
                 .frame(height: 42)
@@ -1018,12 +1018,12 @@ private struct EndpointTesterView: View {
                         ForEach(model.runnerResults) { result in
                             HStack(spacing: 8) {
                                 Circle().fill(result.succeeded ? Color.green : Color.orange).frame(width: 6, height: 6)
-                                Text("#\(result.iteration)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                Text(result.requestName).font(.caption.weight(.medium)).lineLimit(1)
+                                Text("#\(result.iteration)").limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                Text(result.requestName).limaFont(.caption.weight(.medium)).lineLimit(1)
                                 Spacer()
-                                if let status = result.statusCode { Text(String(status)).font(.caption.monospacedDigit().bold()) }
-                                Text(String(format: "%.0f ms", result.elapsed * 1_000)).font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                                if let error = result.error { Text(error).font(.caption2).foregroundStyle(.orange).lineLimit(1).frame(maxWidth: 180) }
+                                if let status = result.statusCode { Text(String(status)).limaFont(.caption.monospacedDigit().bold()) }
+                                Text(String(format: "%.0f ms", result.elapsed * 1_000)).limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                if let error = result.error { Text(error).limaFont(.caption2).foregroundStyle(.orange).lineLimit(1).frame(maxWidth: 180) }
                             }
                             .padding(.horizontal, 10)
                             .frame(height: 34)
@@ -1049,7 +1049,7 @@ private struct EndpointTesterView: View {
                         .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
                     TextField("Environment name", text: $model.environmentDraftName)
                         .textFieldStyle(.plain)
-                        .font(.headline)
+                        .limaFont(.headline)
                     Spacer()
                     if model.canDeleteEditingEnvironment {
                         Button(role: .destructive, action: model.requestDeleteEditingEnvironment) {
@@ -1070,11 +1070,11 @@ private struct EndpointTesterView: View {
 
                 VStack(spacing: 6) {
                     HStack {
-                        Text("VARIABLES").font(.caption2.bold()).foregroundStyle(.secondary)
+                        Text("VARIABLES").limaFont(.caption2.bold()).foregroundStyle(.secondary)
                         Spacer()
                         Button { model.addEnvironmentVariable() } label: { Label("Add", systemImage: "plus") }
                             .buttonStyle(.plain)
-                            .font(.caption.weight(.medium))
+                            .limaFont(.caption.weight(.medium))
                     }
                     ScrollView {
                         LazyVStack(spacing: 5) {
@@ -1121,7 +1121,7 @@ private struct EndpointTesterView: View {
             .frame(width: 105)
             TextField("https://api.example.com/resource", text: $model.urlText)
                 .textFieldStyle(.plain)
-                .font(.system(size: 12.5, design: .monospaced))
+                .limaFont(.system(size: 12.5, design: .monospaced))
                 .focused($urlFocused)
                 .onSubmit(model.send)
                 .padding(.horizontal, 10)
@@ -1195,7 +1195,7 @@ private struct EndpointTesterView: View {
             HStack {
                 Button(action: add) { Label("Add row", systemImage: "plus") }
                     .buttonStyle(.plain)
-                    .font(.caption.weight(.medium))
+                    .limaFont(.caption.weight(.medium))
                 Spacer()
             }
             .padding(.horizontal, 11)
@@ -1246,11 +1246,11 @@ private struct EndpointTesterView: View {
                 .frame(width: 150)
                 Spacer()
                 if model.bodyKind == .json {
-                    Button("Pretty", action: model.prettyPrintJSON).buttonStyle(.plain).font(.caption.weight(.medium))
+                    Button("Pretty", action: model.prettyPrintJSON).buttonStyle(.plain).limaFont(.caption.weight(.medium))
                 }
             }
             TextEditor(text: $model.body)
-                .font(.system(size: 12, design: .monospaced))
+                .limaFont(.system(size: 12, design: .monospaced))
                 .scrollContentBackground(.hidden)
                 .padding(7)
                 .disabled(model.bodyKind == .none)
@@ -1265,15 +1265,15 @@ private struct EndpointTesterView: View {
             HStack(spacing: 8) {
                 if let response = model.response {
                     Circle().fill(response.succeeded ? Color.green : Color.orange).frame(width: 7, height: 7)
-                    Text(String(response.statusCode)).font(.callout.monospacedDigit().bold())
-                    Text(String(format: "%.0f ms", response.elapsed * 1_000)).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(String(response.statusCode)).limaFont(.callout.monospacedDigit().bold())
+                    Text(String(format: "%.0f ms", response.elapsed * 1_000)).limaFont(.caption.monospacedDigit()).foregroundStyle(.secondary)
                     Text(ByteCountFormatter.string(fromByteCount: Int64(response.byteCount), countStyle: .file))
-                        .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        .limaFont(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 } else if let error = model.error {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(error).font(.caption.weight(.medium)).lineLimit(1)
+                    Text(error).limaFont(.caption.weight(.medium)).lineLimit(1)
                 } else {
-                    Text("RESPONSE").font(.caption2.bold()).foregroundStyle(.secondary)
+                    Text("RESPONSE").limaFont(.caption2.bold()).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Picker("Response", selection: $model.responseTab) {
@@ -1291,7 +1291,7 @@ private struct EndpointTesterView: View {
             GlassHairline()
             ScrollView(.vertical) {
                 Text(model.displayedResponse)
-                    .font(.system(size: 11.8, design: .monospaced))
+                    .limaFont(.system(size: 11.8, design: .monospaced))
                     .foregroundStyle(model.response == nil ? .secondary : .primary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)

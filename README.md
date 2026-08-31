@@ -32,9 +32,25 @@ Developer Terminal is backed by a true local pseudo-terminal through SwiftTerm. 
 
 - Enter any sequence of commands in the same session.
 - Control combinations such as Control-C, Control-D, and Control-Z are sent to the PTY.
-- **Option as Meta** is configurable in the terminal toolbar.
+- **Option as Meta** and terminal-specific font sizing live in the toolbar’s overflow menu.
 - Paste, clear, interrupt, restart, and font controls are available.
 - Vim and Nano show a compact bottom overlay with common keys while the program is active.
+- Files and the command guide share one resizable inspector beside the same shell. Toggle Files with **⌘⇧E**, Guide with **F1 / ⌘⇧H**, and adjust the inspector with **⌘⇧[ / ⌘⇧]**. The shell stays alive when the window is closed and reopened; restarting requires confirmation.
+- **⌘⇧L** opens the command shelf. Guide examples, project suggestions, and file paths prepare text here; **Insert** sends one line without executing it. Review the shell input, then press Return. This avoids a competing command runner or accidentally submitting a command to a foreground editor. Control characters and multiline command-shelf submissions are rejected; normal terminal paste retains native bracketed-paste behavior.
+- The explorer follows the actual local shell directory, even when a shell does not emit directory notifications. Its bounded 600-entry preview runs off the UI thread, ignores stale refresh results, and does not recursively follow symlinks. Navigate into large folders to inspect deeper contents.
+- Local manual output is drained before waiting for completion, avoiding pipe-buffer deadlocks, and cached for the terminal session.
+
+## Text size
+
+**Settings → General → Appearance → Text size** changes interface text from **85% to 140%** in 5% steps, with a one-click reset. It applies live to all app-hosted tools, including Markdown text, table cells, and terminal text, without recreating windows or losing edits. The terminal’s own 9–28pt base size is saved separately and multiplied by the global setting. Native macOS menus and file dialogs keep the system’s text sizing.
+
+New SwiftUI views should use `.limaFont(.system(size: …))` or semantic recipes such as `.limaFont(.caption)`, and host their roots inside `LimaTypographyRoot(content:)`. Native text views should observe `AppTypography.shared.$scale` and update fonts in place. Do not reset a view’s identity to apply typography changes.
+
+For isolated native UI testing, a debug build accepts `--terminal-preview`. This opens only a terminal and sample note/text-size controls; it does not start the launcher, global shortcuts, dictation, or update checks. Use a separate preview bundle identifier to isolate preferences.
+
+### Verified release uploads
+
+The manual **Assemble verified signed DMG** GitHub workflow can assemble `Lima.dmg.part-aa`, `part-ab`, etc. already uploaded to an existing draft. It requires the exact local SHA-256 and part count, verifies the reconstructed DMG and GitHub’s uploaded digest, then removes only those temporary part assets. It cannot publish a release and refuses published releases. Its repository `contents: write` permission is used for draft release asset upload/deletion; final publication remains a separate reviewed step.
 
 ## API Workspace
 
