@@ -1,0 +1,4 @@
+#!/bin/zsh
+# Test-only stand-in for declining macOS's administrator prompt.
+print -ru2 -- 'execution error: User canceled. (-128)'
+exit 1

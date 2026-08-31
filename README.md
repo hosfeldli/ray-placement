@@ -8,6 +8,8 @@ Text generation has been removed. Writing correction uses deterministic local Py
 
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
+Version 3.3 adds virtualized, filterable SQL results; full-workspace schema and compatible-join dragging; deeper local and remote SSH file trees; context-aware terminal guidance; and administrator-approved protected-folder updates with cancellation-safe rollback.
+
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
@@ -132,13 +134,18 @@ Lima checks its configured product-site update feed after startup and also offer
 
 No compiler, new trust root, or local signing key is required on another Mac. The downloaded signature is preserved; an existing local signing identity is reused only when it matches the currently installed app. Accessibility approval remains controlled by macOS: changing from an older ad-hoc signature may require approval once. These builds are not Apple-notarized Developer ID distributions.
 
-An unwritable app folder or disk-image launch is rejected before Lima closes. Use the DMG in Finder and approve administrator access if necessary. Failed swaps restore the previous bundle; successful updates keep a recovery copy in a `.lima-install.*` folder beside the app, with its exact path in `~/Library/Application Support/RayPlacement/Updates/update.log`. The optional `Install Lima.command` installs a prebuilt app to `/Applications/Lima.app` (or an explicit destination); the old installer name forwards to it and no longer builds or installs RayPlacement.
+When the app folder cannot create a staging directory, the updater requests one-time administrator approval through macOS (the system prompt may identify its tool as **osascript**). It first verifies the incoming app against the installed signing identity, then stages a root-owned, non-writable copy before telling Lima to close. Declining approval leaves the current app running. No password is read, stored, or logged by Lima; no privileged daemon is installed, folder permissions are not loosened, and relaunch/model/extension work still runs as the signed-in user. Disk-image launches remain unsupported; drag the app into Applications first. Ad-hoc or unrelated signing identities require installing the official DMG once with Finder instead of weakening signature checks.
+
+Failed swaps restore the previous bundle; successful updates keep a recovery copy in a `.lima-install.*` folder beside the app. The exact path appears in `~/Library/Application Support/RayPlacement/Updates/update.log`; protected-folder approval details are in `administrator-update.log` there. Administrator-owned recovery copies may require Finder approval to remove. MDM restrictions or a missing administrator account are not bypassed. The optional `Install Lima.command` installs a prebuilt app to `/Applications/Lima.app` (or an explicit destination); the old installer name forwards to it and no longer builds or installs RayPlacement.
 
 ## Build and verify
 
 ```sh
 swift test
 ./scripts/test_lima_installer.sh
+/bin/zsh scripts/test_approved_lima_update.sh
+# Optional local tests with the existing development signing identity:
+LIMA_TEST_STABLE_SIGNING=1 /bin/zsh scripts/test_approved_lima_update.sh
 ./scripts/package_liamflow_app.sh
 ./scripts/verify_liamflow_app.sh build/Lima.app
 ```

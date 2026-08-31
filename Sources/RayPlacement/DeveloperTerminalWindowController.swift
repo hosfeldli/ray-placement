@@ -106,8 +106,9 @@ private struct TerminalFileNode: Identifiable, Hashable {
     let isDirectory: Bool
     let children: [TerminalFileNode]?
 
-    var id: String { url.path }
+    var id: String { url.absoluteString }
     var name: String { url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent }
+    var isRemote: Bool { url.scheme == "ssh" }
 }
 
 @MainActor
@@ -115,8 +116,10 @@ private final class TerminalDirectoryExplorer: ObservableObject {
     @Published private(set) var root: TerminalFileNode?
     @Published var showHidden = false { didSet { refresh() } }
     @Published private(set) var status = ""
+    @Published private(set) var remoteTarget: String?
 
     private var directoryURL: URL?
+    private var remotePath: String?
     private var watcher: DispatchSourceFileSystemObject?
     private var descriptor: Int32 = -1
     private var refreshWorkItem: DispatchWorkItem?
@@ -124,10 +127,22 @@ private final class TerminalDirectoryExplorer: ObservableObject {
 
     func setDirectory(_ path: String) {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        guard directoryURL != url else { return }
+        guard directoryURL != url || remoteTarget != nil else { return }
+        remoteTarget = nil
+        remotePath = nil
         directoryURL = url
         refresh()
         startWatching(url)
+    }
+
+    func setRemote(target: String, path: String) {
+        let normalizedPath = path.hasPrefix("/") ? path : "~"
+        guard remoteTarget != target || directoryURL?.path != normalizedPath else { return }
+        stopWatching()
+        remoteTarget = target
+        remotePath = normalizedPath
+        directoryURL = Self.remoteURL(target: target, path: normalizedPath)
+        refresh()
     }
 
     func refresh() {
@@ -136,14 +151,19 @@ private final class TerminalDirectoryExplorer: ObservableObject {
         let rootURL = directoryURL
         let request = UUID()
         revision = request
+        if let remoteTarget {
+            status = "Reading \(remoteTarget)…"
+            refreshRemote(target: remoteTarget, path: remotePath ?? rootURL.path, request: request)
+            return
+        }
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            var budget = 600
+            var budget = 1_200
             let node = Self.makeNode(url: rootURL, depth: 0, showHidden: hidden, budget: &budget)
             let limited = budget <= 0
             DispatchQueue.main.async {
                 guard self?.directoryURL == rootURL, self?.revision == request else { return }
                 self?.root = node
-                self?.status = node == nil ? "Folder is unavailable" : (limited ? "600-entry preview · navigate into a folder to see more" : "Updated just now")
+                self?.status = node == nil ? "Folder is unavailable" : (limited ? "1,200-entry preview · navigate into a folder to see more" : "Updated just now")
             }
         }
     }
@@ -154,7 +174,7 @@ private final class TerminalDirectoryExplorer: ObservableObject {
         var directory: ObjCBool = false
         guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory) else { return nil }
         guard directory.boolValue else { return TerminalFileNode(url: url, isDirectory: false, children: nil) }
-        guard depth < 4 else { return TerminalFileNode(url: url, isDirectory: true, children: []) }
+        guard depth < 16 else { return TerminalFileNode(url: url, isDirectory: true, children: []) }
         let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey, .nameKey]
         let options: FileManager.DirectoryEnumerationOptions = showHidden ? [.skipsPackageDescendants] : [.skipsHiddenFiles, .skipsPackageDescendants]
         guard let values = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys, options: options) else {
@@ -162,7 +182,7 @@ private final class TerminalDirectoryExplorer: ObservableObject {
         }
         let children = values
             .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
-            .prefix(120)
+            .prefix(160)
             .compactMap { child -> TerminalFileNode? in
                 let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                 guard budget > 0 else { return nil }
@@ -173,6 +193,75 @@ private final class TerminalDirectoryExplorer: ObservableObject {
                 return TerminalFileNode(url: child, isDirectory: false, children: nil)
             }
         return TerminalFileNode(url: url, isDirectory: true, children: children)
+    }
+
+    nonisolated private static func remoteURL(target: String, path: String) -> URL {
+        var components = URLComponents()
+        components.scheme = "ssh"
+        if let split = target.lastIndex(of: "@") {
+            components.user = String(target[..<split])
+            components.host = String(target[target.index(after: split)...])
+        } else {
+            components.host = target
+        }
+        components.path = path.hasPrefix("/") ? path : "/"
+        return components.url ?? URL(string: "ssh://invalid/")!
+    }
+
+    private func refreshRemote(target: String, path: String, request: UUID) {
+        let hidden = showHidden
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let process = Process(), output = Pipe(), errors = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+            let quoted = path == "~" ? "\"$HOME\"" : TerminalWorkspaceInput.shellQuote(path)
+            let hiddenFilter = hidden ? "" : " ! -name '.*'"
+            let command = "( /usr/bin/find \(quoted) -maxdepth 16 -type d\(hiddenFilter) -print | /usr/bin/head -n 600; /usr/bin/printf '\\n__LIMA_FILES__\\n'; /usr/bin/find \(quoted) -maxdepth 16\(hiddenFilter) -print | /usr/bin/head -n 1200 )"
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", target, command]
+            process.standardOutput = output
+            process.standardError = errors
+            do {
+                try process.run()
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                let errorData = errors.fileHandleForReading.readDataToEndOfFile()
+                process.waitUntilExit()
+                let text = String(decoding: data, as: UTF8.self)
+                let error = String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                let node = process.terminationStatus == 0 ? Self.makeRemoteTree(target: target, requestedRoot: path, output: text) : nil
+                DispatchQueue.main.async {
+                    guard self?.revision == request, self?.remoteTarget == target else { return }
+                    self?.root = node
+                    self?.status = node == nil
+                        ? (error.isEmpty ? "Remote files unavailable · configure SSH keys or agent access" : String(error.prefix(180)))
+                        : "Remote tree · \(target) · up to 16 levels"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard self?.revision == request else { return }
+                    self?.root = nil
+                    self?.status = "Remote files unavailable · \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    nonisolated private static func makeRemoteTree(target: String, requestedRoot: String, output: String) -> TerminalFileNode? {
+        let halves = output.components(separatedBy: "\n__LIMA_FILES__\n")
+        guard halves.count == 2 else { return nil }
+        let directoryLines = halves[0].split(separator: "\n").map(String.init)
+        let directories = Set(directoryLines)
+        let rootPath = requestedRoot == "~" ? (directoryLines.first ?? requestedRoot) : requestedRoot
+        let paths = halves[1].split(separator: "\n").map(String.init).filter { $0 == rootPath || $0.hasPrefix(rootPath + "/") }
+        guard !paths.isEmpty else { return nil }
+        func node(_ path: String) -> TerminalFileNode {
+            let prefix = path == "/" ? "/" : path + "/"
+            let direct = paths.filter { candidate in
+                guard candidate.hasPrefix(prefix), candidate != path else { return false }
+                return !candidate.dropFirst(prefix.count).contains("/")
+            }
+            let children = directories.contains(path) ? direct.map(node).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } : nil
+            return TerminalFileNode(url: remoteURL(target: target, path: path), isDirectory: directories.contains(path), children: children)
+        }
+        return node(rootPath)
     }
 
     private func startWatching(_ url: URL) {
@@ -214,6 +303,16 @@ private final class TerminalDirectoryExplorer: ObservableObject {
 }
 
 @MainActor
+private final class ContextAwareTerminalView: LocalProcessTerminalView {
+    var onUserInput: ((ArraySlice<UInt8>) -> Void)?
+
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        onUserInput?(data)
+        super.send(source: source, data: data)
+    }
+}
+
+@MainActor
 private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency LocalProcessTerminalViewDelegate {
     @Published private(set) var isLive = false
     @Published private(set) var terminalTitle = "Local zsh"
@@ -234,9 +333,11 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     @Published var composerFocusToken = UUID()
     @Published var helpPanelWidth: CGFloat = 330
     @Published private(set) var commandHistory: [String]
+    @Published private(set) var activeContext = "Ready for a command"
+    @Published private(set) var activeRemoteTarget: String?
 
     var onEditorChanged: ((TerminalEditorOverlayController.Editor?) -> Void)?
-    let terminalView = LocalProcessTerminalView(frame: .zero)
+    let terminalView = ContextAwareTerminalView(frame: .zero)
     let explorer = TerminalDirectoryExplorer()
     private var restartWhenTerminated = false
     private var shuttingDown = false
@@ -244,11 +345,14 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private var typographySubscription: AnyCancellable?
     private var directoryTimer: Timer?
     private var manualCache: [String: String] = [:]
+    private var pendingCommandBytes: [UInt8] = []
+    private var discardingEscapeSequence = false
 
     override init() {
         commandHistory = Array(UserDefaults.standard.stringArray(forKey: "terminalAssistantHistory") ?? []).prefix(24).map { $0 }
         super.init()
         terminalView.processDelegate = self
+        terminalView.onUserInput = { [weak self] bytes in self?.observeUserInput(bytes) }
         terminalView.optionAsMetaKey = true
         terminalView.allowMouseReporting = true
         terminalView.nativeForegroundColor = NSColor(calibratedWhite: 0.91, alpha: 1)
@@ -270,7 +374,10 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     }
 
     var displayPath: String {
-        workingDirectory.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
+        if let target = activeRemoteTarget {
+            return "\(target):\(explorer.root?.url.path ?? "~")"
+        }
+        return workingDirectory.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path, with: "~")
     }
 
     var commandSuggestions: [String] {
@@ -282,6 +389,10 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     }
 
     private var projectSuggestions: [String] {
+        if let target = activeRemoteTarget {
+            return ["pwd", "ls -lah", "find . -maxdepth 2 -type f", "df -h", "exit"].map { $0 }
+                + ["ssh \(target)"]
+        }
         let root = URL(fileURLWithPath: workingDirectory)
         var suggestions: [String] = []
         let manager = FileManager.default
@@ -377,7 +488,6 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     func insertPath(_ url: URL) { useSuggestion(TerminalWorkspaceInput.shellQuote(url.path)) }
 
     func changeDirectory(to url: URL) {
-        guard url.hasDirectoryPath else { return }
         useSuggestion("cd -- \(TerminalWorkspaceInput.shellQuote(url.path))")
     }
 
@@ -386,8 +496,81 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         NSPasteboard.general.setString(url.path, forType: .string)
     }
 
-    func openPath(_ url: URL) { NSWorkspace.shared.open(url) }
-    func revealPath(_ url: URL) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+    func openPath(_ url: URL) { guard url.isFileURL else { insertPath(url); return }; NSWorkspace.shared.open(url) }
+    func revealPath(_ url: URL) { guard url.isFileURL else { copyPath(url); return }; NSWorkspace.shared.activateFileViewerSelecting([url]) }
+
+    private func observeUserInput(_ bytes: ArraySlice<UInt8>) {
+        for byte in bytes {
+            if discardingEscapeSequence {
+                if (0x40...0x7e).contains(byte), byte != 0x5b { discardingEscapeSequence = false }
+                continue
+            }
+            switch byte {
+            case 0x1b:
+                discardingEscapeSequence = true
+            case 0x03:
+                pendingCommandBytes.removeAll(keepingCapacity: true)
+                activeContext = "Interrupted · terminal remains ready"
+            case 0x08, 0x7f:
+                if !pendingCommandBytes.isEmpty { pendingCommandBytes.removeLast() }
+            case 0x0a, 0x0d:
+                let command = String(decoding: pendingCommandBytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                pendingCommandBytes.removeAll(keepingCapacity: true)
+                if !command.isEmpty { commandSubmitted(command) }
+            case 0x20...0x7e:
+                if pendingCommandBytes.count < 8_192 { pendingCommandBytes.append(byte) }
+            default:
+                break
+            }
+        }
+    }
+
+    private func commandSubmitted(_ command: String) {
+        inputStatus = ""
+        if isSafeToRemember(command) {
+            commandHistory.removeAll { $0 == command }
+            commandHistory.insert(command, at: 0)
+            if commandHistory.count > 40 { commandHistory.removeLast(commandHistory.count - 40) }
+            UserDefaults.standard.set(commandHistory, forKey: historyKey)
+        }
+        if let destination = TerminalWorkspaceInput.sshDestination(from: command) {
+            activeRemoteTarget = destination
+            activeContext = "Connecting to \(destination) · remote file explorer ready"
+            explorer.setRemote(target: destination, path: "~")
+            if explorerVisible { explorer.refresh() }
+            return
+        }
+        let primary = TerminalWorkspaceInput.primaryCommand(in: command)?.lowercased() ?? "command"
+        if primary == "exit", activeRemoteTarget != nil {
+            activeRemoteTarget = nil
+            explorer.setDirectory(workingDirectory)
+            activeContext = "Returning to local shell"
+        } else {
+            activeContext = contextDescription(for: primary)
+            if let reference = TerminalCommandReference.catalog.first(where: { $0.command == primary }) {
+                selectedReference = reference
+                if helpVisible { loadManualIfNeeded() }
+            }
+        }
+    }
+
+    private func contextDescription(for command: String) -> String {
+        switch command {
+        case "git": return "Git workflow · repository-aware suggestions available"
+        case "swift", "npm", "python3", "pytest": return "Build/test workflow · project commands available"
+        case "vim", "nvim", "nano": return "Editor active · shortcut guide follows the terminal"
+        case "cd", "pushd", "popd": return "Navigating · file explorer will follow the working directory"
+        case "ls", "find", "rg": return "Inspecting files · open the file explorer with ⌘⇧E"
+        case "sudo": return "Elevated command · macOS will request credentials in the terminal"
+        default: return "Running \(command) · terminal state is preserved"
+        }
+    }
+
+    private func isSafeToRemember(_ command: String) -> Bool {
+        let lowered = command.lowercased()
+        let sensitive = ["password", "passwd", "secret", "token", "api_key", "apikey", "sshpass", "sqlplus", "mysql -p", "export "]
+        return !sensitive.contains { lowered.contains($0) }
+    }
 
     private func loadManualIfNeeded() {
         let reference = selectedReference
@@ -460,7 +643,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private func sendText(_ text: String) { send(bytes: Array(text.utf8)) }
     private func send(bytes: [UInt8]) { terminalView.send(source: terminalView, data: bytes[...]) }
     private func refreshShellDirectory() {
-        guard isLive, terminalView.window?.isVisible == true else { return }
+        guard isLive, terminalView.window?.isVisible == true, activeRemoteTarget == nil else { return }
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
         guard proc_pidinfo(terminalView.process.shellPid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return }
@@ -482,7 +665,15 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         guard let directory, !directory.isEmpty else { return }
-        if let path = TerminalWorkspaceInput.localDirectory(directory) { workingDirectory = path }
+        if let path = TerminalWorkspaceInput.localDirectory(directory) {
+            activeRemoteTarget = nil
+            workingDirectory = path
+        } else if let remote = TerminalWorkspaceInput.remoteDirectory(directory) {
+            let target = activeRemoteTarget.flatMap { $0.hasSuffix("@\(remote.host)") || $0 == remote.host ? $0 : nil } ?? remote.host
+            activeRemoteTarget = target
+            explorer.setRemote(target: target, path: remote.path)
+            activeContext = "Remote \(target) · \(remote.path)"
+        }
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
@@ -490,6 +681,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         directoryTimer?.invalidate()
         directoryTimer = nil
         onEditorChanged?(nil)
+        activeRemoteTarget = nil
         guard !shuttingDown, restartWhenTerminated else { return }
         restartWhenTerminated = false
         DispatchQueue.main.async { [weak self] in self?.startIfNeeded() }
@@ -626,7 +818,7 @@ private struct DeveloperTerminalView: View {
 
     private var statusBar: some View {
         HStack(spacing: 10) {
-            Text(model.inputStatus.isEmpty ? (model.isLive ? "One shell · Tab completes · ↑ recalls history" : "Shell exited") : model.inputStatus)
+            Text(model.inputStatus.isEmpty ? (model.isLive ? model.activeContext : "Shell exited") : model.inputStatus)
                 .limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
             Spacer()
             if !model.isLive { Button("Start shell", action: model.startIfNeeded).limaFont(.caption) }
@@ -722,7 +914,7 @@ private struct TerminalExplorerPanel: View {
     var body: some View {
         VStack(spacing: 8) {
             HStack {
-                Label("Project", systemImage: "folder").limaFont(.caption.weight(.semibold))
+                Label(model.explorer.remoteTarget.map { "Remote · \($0)" } ?? "Project", systemImage: model.explorer.remoteTarget == nil ? "folder" : "network").limaFont(.caption.weight(.semibold))
                 Spacer()
                 Toggle("", isOn: Binding(
                     get: { model.explorer.showHidden },
@@ -764,8 +956,10 @@ private struct TerminalExplorerRow: View {
                 Button("Insert Path") { model.insertPath(node.url) }
                 Button("Copy Path") { model.copyPath(node.url) }
                 if node.isDirectory { Button("Prepare cd Command") { model.changeDirectory(to: node.url) } }
-                Button("Open") { model.openPath(node.url) }
-                Button("Reveal in Finder") { model.revealPath(node.url) }
+                if !node.isRemote {
+                    Button("Open") { model.openPath(node.url) }
+                    Button("Reveal in Finder") { model.revealPath(node.url) }
+                }
             } label: { Image(systemName: "ellipsis") }
             .menuStyle(.borderlessButton).fixedSize()
         }

@@ -274,6 +274,25 @@ public struct SQLResultSet: Codable, Hashable, Sendable {
     }
 }
 
+public enum SQLResultFilter {
+    /// Returns indices instead of copying rows, keeping large result sets cheap
+    /// to display and allowing any number of returned columns.
+    public static func matchingRowIndices(rows: [[String]], filters: [Int: String]) -> [Int] {
+        let needles = filters.compactMapValues { value -> String? in
+            let clean = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return clean.isEmpty ? nil : clean.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }
+        guard !needles.isEmpty else { return Array(rows.indices) }
+        return rows.indices.filter { rowIndex in
+            let row = rows[rowIndex]
+            return needles.allSatisfy { column, needle in
+                guard row.indices.contains(column) else { return false }
+                return row[column].folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current).contains(needle)
+            }
+        }
+    }
+}
+
 public struct SQLVisualQuery: Codable, Hashable, Sendable {
     public var tables: [String]
     public var projections: [String]

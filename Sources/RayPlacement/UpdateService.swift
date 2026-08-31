@@ -314,7 +314,8 @@ final class UpdateService: ObservableObject {
         let required = [
             "Package.swift", "Uninstall Lima.command", "Packaging/Info.plist",
             "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh",
-            "scripts/replace_lima_bundle.sh", "Prebuilt/Lima.app/Contents/MacOS/Lima"
+            "scripts/replace_lima_bundle.sh", "scripts/request_lima_update_approval.sh",
+            "Prebuilt/Lima.app/Contents/MacOS/Lima"
         ]
         guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
               let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")),

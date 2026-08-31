@@ -32,3 +32,14 @@ import Testing
     #expect(TerminalWorkspaceInput.localDirectory("file://remote-host/tmp/project") == nil)
     #expect(TerminalWorkspaceInput.localDirectory("relative/path") == nil)
 }
+
+@Test func terminalRecognizesRemoteDirectoriesAndSafeSSHDestinations() {
+    #expect(TerminalWorkspaceInput.remoteDirectory("file://build-vm/home/liam/Project") == .init(host: "build-vm", path: "/home/liam/Project"))
+    #expect(TerminalWorkspaceInput.remoteDirectory("file:///tmp/local") == nil)
+    #expect(TerminalWorkspaceInput.sshDestination(from: "ssh build-vm") == "build-vm")
+    #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -p 2222 liam@build-vm") == "liam@build-vm")
+    #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -J jump liam@build-vm") == "liam@build-vm")
+    #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -o ProxyCommand=bad host;rm") == nil)
+    #expect(TerminalWorkspaceInput.sshDestination(from: "printf ssh") == nil)
+    #expect(TerminalWorkspaceInput.primaryCommand(in: "  git status") == "git")
+}

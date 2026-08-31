@@ -431,6 +431,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     @Published var queryText = ""
     @Published var visualQuery = SQLVisualQuery()
     @Published var result = SQLResultSet()
+    @Published private(set) var resultRevision = 0
     @Published var status = "Choose a connection to discover its schema."
     @Published var isBusy = false
     @Published var discoveryCompletedSteps = 0
@@ -758,6 +759,7 @@ private final class SQLWorkspaceModel: ObservableObject {
                 let result = try await SQLCommandLineClient.execute(profile: profile, password: password, sql: clean)
                 guard !Task.isCancelled else { return }
                 self?.result = result
+                self?.resultRevision += 1
                 self?.exportStart = 1
                 self?.exportEnd = min(250, result.rows.count)
                 self?.status = result.columns.isEmpty ? "Statement completed." : "Returned \(result.rows.count) rows."
@@ -1173,15 +1175,10 @@ private struct SQLWorkspaceView: View {
             if model.result.columns.isEmpty {
                 Text("Results appear here.").limaFont(.caption).foregroundStyle(.tertiary).frame(maxWidth: .infinity, minHeight: 80)
             } else {
-                ScrollView([.horizontal, .vertical]) {
-                    Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 5) {
-                        GridRow { ForEach(model.result.columns, id: \.self) { Text($0).limaFont(.system(size: 10, weight: .bold, design: .monospaced)).foregroundStyle(settings.accentTheme.tertiary) } }
-                        Divider()
-                        ForEach(Array(model.result.rows.prefix(100).enumerated()), id: \.offset) { _, row in
-                            GridRow { ForEach(Array(row.enumerated()), id: \.offset) { _, value in Text(value).limaFont(.system(size: 10.5, design: .monospaced)).textSelection(.enabled).lineLimit(1) } }
-                        }
-                    }.padding(8)
-                }.frame(minHeight: 130, maxHeight: 255).background(Color.black.opacity(0.16), in: PrismaticPanelShape(cut: 7))
+                SQLResultTableView(result: model.result, revision: model.resultRevision)
+                    .frame(minHeight: 150, maxHeight: 310)
+                    .clipShape(PrismaticPanelShape(cut: 7))
+                    .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.075), lineWidth: 0.7).allowsHitTesting(false))
             }
         }
     }
@@ -1282,7 +1279,7 @@ private struct SQLWorkspaceView: View {
             Divider()
             Text("Compatible joins").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
             if model.joinSuggestions.isEmpty { Text("Add a table to see foreign-key joins.").limaFont(.caption2).foregroundStyle(.secondary) }
-            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { VStack(alignment: .leading, spacing: 2) { Text(join.toTable).limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).limaFont(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 5)) }.buttonStyle(.plain) } } } }
+            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { HStack(spacing: 7) { Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundStyle(.teal); VStack(alignment: .leading, spacing: 2) { Text(join.toTable).limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).limaFont(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) }; Spacer(minLength: 0); Image(systemName: "plus").limaFont(.system(size: 8)).foregroundStyle(.secondary) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 5)) }.buttonStyle(.plain).onDrag { NSItemProvider(object: join.toTable as NSString) }.help("Click to add this join, or drag the related table onto the canvas") } } } }
         }
         .padding(9).liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.012)
     }

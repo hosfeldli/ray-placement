@@ -64,7 +64,6 @@ trap unexpected_exit EXIT
 [[ "$CURRENT_PID" == <-> && "$CURRENT_PID" -gt 1 ]] || fail_update "The running app process is invalid."
 [[ "$INSTALLED_APP" == /*.app && -d "$INSTALLED_APP" ]] || fail_update "The running app location is invalid."
 [[ "$INSTALLED_APP" != /Volumes/* && "$INSTALLED_APP" != *'/AppTranslocation/'* ]] || fail_update "Drag Lima from the disk image into Applications, open that copy, then check for updates."
-[[ -w "${INSTALLED_APP:h}" ]] || fail_update "Lima cannot replace $INSTALLED_APP. Install the new DMG with Finder and approve access to Applications. The current app is unchanged."
 echo "Update target: $INSTALLED_APP"
 echo "Requested version: $VERSION"
 
@@ -100,26 +99,40 @@ RAYPLACEMENT_MODEL_FREE_UPDATE=1 "$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "
 LOCAL_KEYCHAIN="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing/RayPlacementSigning.keychain-db"
 if [[ -f "$LOCAL_KEYCHAIN" ]]; then
     LOCAL_HASH="$(security find-identity -v -p codesigning "$LOCAL_KEYCHAIN" | awk '/"RayPlacement Local Code Signing"/ {print $2; exit}')"
-    if [[ -n "$LOCAL_HASH" ]] && codesign --verify -R "anchor = H\"$LOCAL_HASH\"" "$CURRENT_APP" >/dev/null 2>&1; then
+    if [[ -n "$LOCAL_HASH" ]] && codesign --verify -R "=anchor = H\"$LOCAL_HASH\"" "$CURRENT_APP" >/dev/null 2>&1; then
         "$SOURCE_ROOT/scripts/sign_lima_app.sh" "$READY_APP" || fail_update 'The existing local signing identity could not be reused. The current app is unchanged.'
     fi
 fi
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$READY_APP/Contents/Info.plist")"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$READY_APP/Contents/Info.plist")" == "$VERSION" ]] || fail_update "The downloaded app is not version $VERSION."
-TRANSACTION="$(mktemp -d "${INSTALLED_APP:h}/.lima-install.XXXXXX")" || fail_update "The app folder cannot be prepared for installation."
-
-write_progress ready 0.90 "Lima is verified. It will close briefly, install, and reopen…"
-
-for _ in {1..240}; do
-    kill -0 "$CURRENT_PID" >/dev/null 2>&1 || break
-    sleep 0.25
-done
-kill -0 "$CURRENT_PID" >/dev/null 2>&1 && fail_update "Lima did not close in time, so the update was cancelled."
-
-write_progress installing 0.96 "Replacing $INSTALLED_APP with Lima $VERSION…"
-if ! /bin/zsh "$SOURCE_ROOT/scripts/replace_lima_bundle.sh" "$READY_APP" "$INSTALLED_APP" "$VERSION" "$TRANSACTION"; then
-    /usr/bin/open -n "$INSTALLED_APP" || true
-    fail_update "The app replacement failed. The previous copy was preserved. See update.log for details."
+if TRANSACTION="$(mktemp -d "${INSTALLED_APP:h}/.lima-install.XXXXXX" 2>/dev/null)"; then
+    write_progress ready 0.90 "Lima is verified. It will close briefly, install, and reopen…"
+    for _ in {1..240}; do
+        kill -0 "$CURRENT_PID" >/dev/null 2>&1 || break
+        sleep 0.25
+    done
+    kill -0 "$CURRENT_PID" >/dev/null 2>&1 && fail_update "Lima did not close in time, so the update was cancelled."
+    write_progress installing 0.96 "Replacing $INSTALLED_APP with Lima $VERSION…"
+    if ! /bin/zsh "$SOURCE_ROOT/scripts/replace_lima_bundle.sh" "$READY_APP" "$INSTALLED_APP" "$VERSION" "$TRANSACTION"; then
+        /usr/bin/open -n "$INSTALLED_APP" || true
+        fail_update "The app replacement failed. The previous copy was preserved. See update.log for details."
+    fi
+else
+    # Approval and root-owned staging happen BEFORE asking the app to quit.
+    # Only the signed updater resources are used, not scripts beside the app.
+    TRANSACTION="${INSTALLED_APP:h}/.lima-install.$(/usr/bin/uuidgen)"
+    AUTH_LOG="$UPDATES_DIRECTORY/administrator-update.log"
+    if ! /bin/zsh -f "$SOURCE_ROOT/scripts/request_lima_update_approval.sh" "$CURRENT_PID" "$READY_APP" "$INSTALLED_APP" "$VERSION" "$BUILD" "$TRANSACTION" "$PROGRESS_FILE" "$AUTH_LOG"; then
+        # Do not launch a duplicate instance when approval was declined.
+        kill -0 "$CURRENT_PID" 2>/dev/null || /usr/bin/open -n "$INSTALLED_APP" || true
+        if /usr/bin/grep -q -- '-128' "$AUTH_LOG"; then
+            fail_update 'Administrator approval was canceled. The current Lima app is unchanged.'
+        fi
+        fail_update "Administrator-approved installation did not complete. See administrator-update.log for details. Your previous app is unchanged or retained at $TRANSACTION/Previous.app."
+    fi
+    # Never claim success based only on the authorization process exit code.
+    codesign --verify --deep --strict "$INSTALLED_APP" || fail_update 'The installed app failed final signature verification.'
+    [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED_APP/Contents/Info.plist")" == "$VERSION" && "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED_APP/Contents/Info.plist")" == "$BUILD" ]] || fail_update 'The installed app does not match the approved update.'
 fi
 mkdir -p "$EXTENSIONS_DIRECTORY"
 

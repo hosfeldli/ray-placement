@@ -61,6 +61,14 @@ import Testing
     #expect(index.tables(query: "T500", owner: "APP", kind: "TABLE").first?.name == "T500")
 }
 
+@Test func sqlResultFiltersEveryReturnedColumnWithoutRowOrFieldCaps() {
+    let rows = (0..<2_000).map { row in
+        (0..<180).map { column in column == 179 ? "tail-\(row)" : "r\(row)-c\(column)" }
+    }
+    #expect(SQLResultFilter.matchingRowIndices(rows: rows, filters: [0: "R1999-C0", 179: "TAIL-1999"]) == [1_999])
+    #expect(SQLResultFilter.matchingRowIndices(rows: rows, filters: [179: "tail-"]).count == 2_000)
+}
+
 @Test func nestedFiltersPreserveBooleanPrecedenceAndEscapeText() throws {
     let filter = SQLFilterBlock(kind: .all, children: [
         SQLFilterBlock(field: "name", value: "O'Brien"),

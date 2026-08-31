@@ -11,6 +11,7 @@ struct SQLBlockCanvasEditor: View {
     @State private var pendingRemoval: String?
     @State private var columns: [String] = []
     @State private var tableNames: [String] = []
+    @State private var dropTargeted = false
 
     private var blocks: Binding<SQLQueryBlocks> {
         Binding(get: { query.blocks ?? SQLQueryBlocks() }, set: { query.blocks = $0 })
@@ -68,17 +69,11 @@ struct SQLBlockCanvasEditor: View {
                 }.padding(3)
             }
             .frame(minHeight: 185, maxHeight: .infinity)
-            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                providers.first?.loadObject(ofClass: NSString.self) { object, _ in
-                    guard let text = object as? String else { return }
-                    DispatchQueue.main.async {
-                        if text.hasPrefix("lima-block:") { add(String(text.dropFirst("lima-block:".count))) }
-                        else if tables.contains(where: { $0.qualifiedName == text }), !query.tables.contains(text) { query.tables.append(text) }
-                    }
-                }
-                return !providers.isEmpty
-            }
         }
+        .padding(4)
+        .background(dropTargeted ? Color.teal.opacity(0.10) : .clear, in: SQLSocketShape())
+        .overlay(SQLSocketShape().stroke(dropTargeted ? Color.teal.opacity(0.8) : .clear, style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])).allowsHitTesting(false))
+        .onDrop(of: [.plainText], isTargeted: $dropTargeted, perform: acceptDrop)
         .limaFont(.system(size: 11))
         .textFieldStyle(.roundedBorder)
         .controlSize(.small)
@@ -95,6 +90,18 @@ struct SQLBlockCanvasEditor: View {
         let formatter = NumberFormatter(); formatter.numberStyle = .none; formatter.usesGroupingSeparator = false; return formatter
     }()
 
+    private func acceptDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let provider = providers.first else { return false }
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let text = object as? String else { return }
+            DispatchQueue.main.async {
+                if text.hasPrefix("lima-block:") { add(String(text.dropFirst("lima-block:".count))) }
+                else if tables.contains(where: { $0.qualifiedName == text }), !query.tables.contains(text) { query.tables.append(text) }
+            }
+        }
+        return true
+    }
+
     private var sourceBlock: some View {
         block("FROM", color: .blue) {
             VStack(alignment: .leading, spacing: 5) {
@@ -107,10 +114,10 @@ struct SQLBlockCanvasEditor: View {
                     }
                 }
                 Menu("Add table…") {
-                    ForEach(Array(tables.prefix(100))) { table in
+                    ForEach(tables) { table in
                         Button(table.qualifiedName) { if !query.tables.contains(table.qualifiedName) { query.tables.append(table.qualifiedName) } }
                     }
-                }.frame(maxWidth: 220, alignment: .leading).help("For more tables, search the schema sidebar and drag a result here.")
+                }.frame(maxWidth: 220, alignment: .leading).help("Choose any discovered table, or drag a table anywhere onto the workspace.")
             }
         }
     }
@@ -303,7 +310,7 @@ private struct SQLExpressionField: View {
             TextField(placeholder, text: $text).limaFont(.system(size: 10.5, design: .monospaced))
             if !suggestions.isEmpty {
                 Menu {
-                    ForEach(Array(suggestions.lazy.filter { text.isEmpty || $0.localizedCaseInsensitiveContains(text) }.prefix(100)), id: \.self) { item in Button(item) { text = item } }
+                    ForEach(suggestions.filter { text.isEmpty || $0.localizedCaseInsensitiveContains(text) }, id: \.self) { item in Button(item) { text = item } }
                 } label: { Image(systemName: "list.bullet") }.menuStyle(.borderlessButton).frame(width: 19).help("Choose from schema")
             }
         }

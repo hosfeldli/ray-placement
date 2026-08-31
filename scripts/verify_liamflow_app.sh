@@ -29,6 +29,8 @@ require "the extension documentation is missing" test -f "$RESOURCES/Documentati
 require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
 require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"
+require "the protected-folder updater is missing" test -f "$RESOURCES/Updater/approved_lima_replacement.sh"
+require "the administrator approval dialog is missing" test -f "$RESOURCES/Updater/authorize_lima_update.applescript"
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
 

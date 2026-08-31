@@ -28,6 +28,7 @@ jobs:
           fi
           make test
           ./scripts/test_lima_installer.sh
+          /bin/zsh scripts/test_approved_lima_update.sh
       - name: Create update kit and ready-to-drag DMG
         run: |
           RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
