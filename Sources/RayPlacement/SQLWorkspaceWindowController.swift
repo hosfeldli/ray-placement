@@ -416,11 +416,17 @@ private final class SQLWorkspaceModel: ObservableObject {
     enum SchemaSection: String, CaseIterable, Identifiable { case tables = "Tables", views = "Views", procedures = "Procedures"; var id: String { rawValue } }
 
     @Published var mode: Mode = .canvas
-    @Published var schemaSection: SchemaSection = .tables
+    @Published var schemaSection: SchemaSection = .tables { didSet { searchSchema() } }
     @Published var connections: [SQLConnectionProfile] = []
     @Published var selectedConnectionID: UUID?
-    @Published var schema: SQLSchemaSnapshot?
-    @Published var schemaSearch = ""
+    @Published var schema: SQLSchemaSnapshot? { didSet { rebuildSchemaIndex() } }
+    @Published var schemaSearch = "" { didSet { searchSchema(debounce: true) } }
+    @Published var schemaOwner = "" { didSet { searchSchema() } }
+    @Published private(set) var visibleTables: [SQLTable] = []
+    @Published private(set) var visibleProcedures: [SQLProcedure] = []
+    @Published private(set) var schemaOwners: [String] = []
+    @Published private(set) var schemaRevision = 0
+    @Published private(set) var isSearchingSchema = false
     @Published var selectedTableID: String?
     @Published var queryText = ""
     @Published var visualQuery = SQLVisualQuery()
@@ -445,6 +451,60 @@ private final class SQLWorkspaceModel: ObservableObject {
     @Published var savedQueryName = ""
     private var runningTask: Task<Void, Never>?
     private var cachedSchemas: [UUID: SQLSchemaSnapshot] = [:]
+    private var blockDrafts: [UUID: SQLVisualQuery] = [:]
+    private let sessionCredentials = SQLSessionCredentials()
+    private var schemaIndex: SQLSchemaIndex?
+    private var indexedProfileID: UUID?
+    private var indexingTask: Task<Void, Never>?
+    private var searchTask: Task<Void, Never>?
+
+    private func rebuildSchemaIndex() {
+        indexingTask?.cancel()
+        searchTask?.cancel()
+        if indexedProfileID != schema?.profileID || schema == nil {
+            schemaIndex = nil
+            visibleTables = []; visibleProcedures = []; schemaOwners = []
+        }
+        indexedProfileID = schema?.profileID
+        guard let snapshot = schema else { isSearchingSchema = false; return }
+        isSearchingSchema = true
+        indexingTask = Task { [weak self] in
+            let index = await Task.detached(priority: .userInitiated) { SQLSchemaIndex(snapshot: snapshot) }.value
+            guard !Task.isCancelled, let self else { return }
+            self.schemaIndex = index
+            self.schemaOwners = index.owners
+            self.schemaRevision += 1
+            self.searchSchema()
+        }
+    }
+
+    private func searchSchema(debounce: Bool = false) {
+        searchTask?.cancel()
+        guard let index = schemaIndex else { return }
+        let query = schemaSearch, owner = schemaOwner, section = schemaSection
+        isSearchingSchema = true
+        searchTask = Task { [weak self] in
+            if debounce { do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return } }
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                (index.tables(query: query, owner: owner, kind: section == .views ? "VIEW" : "TABLE"), index.procedures(query: query, owner: owner))
+            }.value
+            guard !Task.isCancelled, let self else { return }
+            self.visibleTables = result.0
+            self.visibleProcedures = result.1
+            self.isSearchingSchema = false
+        }
+    }
+
+    private func password(for id: UUID) -> String? {
+        sessionCredentials.password(for: id) { SQLCredentialVault.password(for: id) }
+    }
+
+    func lockSession() {
+        sessionCredentials.clear()
+        secretDraft = ""
+        status = "Session locked. The next query will request Keychain access."
+    }
 
     struct SQLSavedQuery: Codable, Identifiable, Hashable {
         var id = UUID()
@@ -456,19 +516,11 @@ private final class SQLWorkspaceModel: ObservableObject {
     init() { load() }
 
     var selectedConnection: SQLConnectionProfile? { connections.first { $0.id == selectedConnectionID } }
-    var selectedTable: SQLTable? { schema?.tables.first { $0.id == selectedTableID } }
-    var visibleTables: [SQLTable] {
-        guard let schema else { return [] }
-        let wanted: String = schemaSection == .views ? "VIEW" : "TABLE"
-        let query = schemaSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return schema.tables.filter { table in
-            table.kind.uppercased().contains(wanted) && (query.isEmpty || table.qualifiedName.lowercased().contains(query) || table.columns.contains { $0.name.lowercased().contains(query) })
-        }
-    }
-    var visibleProcedures: [SQLProcedure] {
-        guard let schema else { return [] }
-        let query = schemaSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return schema.procedures.filter { query.isEmpty || $0.qualifiedName.lowercased().contains(query) }
+    var selectedTable: SQLTable? { selectedTableID.flatMap { schemaIndex?.tablesByID[$0] } }
+    var canvasIssue: String? {
+        guard !visualQuery.tables.isEmpty else { return "Add a source table to begin." }
+        do { _ = try (visualQuery.blocks ?? SQLQueryBlocks()).sql(tables: visualQuery.tables, limit: visualQuery.limit, driver: selectedConnection?.driver ?? .mysql); return nil }
+        catch { return error.localizedDescription }
     }
     var joinSuggestions: [SQLJoinSuggestion] { schema?.joins(for: visualQuery.tables) ?? [] }
     var activeCollection: SQLLocalCollection? { collections.first { $0.id == selectedCollectionID } }
@@ -490,7 +542,7 @@ private final class SQLWorkspaceModel: ObservableObject {
         guard !isBusy else { return }
         isEditingConnection = true
         connectionDraft = profile
-        secretDraft = SQLCredentialVault.password(for: profile.id) ?? ""
+        secretDraft = password(for: profile.id) ?? ""
         showsConnectionEditor = true
     }
 
@@ -502,8 +554,15 @@ private final class SQLWorkspaceModel: ObservableObject {
         guard !secretDraft.isEmpty else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
         do {
             try SQLCredentialVault.save(secretDraft, for: profile.id)
+            sessionCredentials.set(secretDraft, for: profile.id)
+            secretDraft = ""
             if let index = connections.firstIndex(where: { $0.id == profile.id }) { connections[index] = profile } else { connections.append(profile) }
+            if let id = selectedConnectionID { blockDrafts[id] = visualQuery }
             selectedConnectionID = profile.id
+            visualQuery = blockDrafts[profile.id] ?? SQLVisualQuery()
+            schema = cachedSchemas[profile.id]
+            schemaOwner = ""
+            selectedTableID = schema?.tables.first?.id
             save()
             status = test ? "Testing \(profile.name)…" : "Saved \(profile.name). Password is in the macOS Keychain."
             if test { execute(sql: testSQL(for: profile.driver), readOnly: true, completion: { self.status = "Connected to \(profile.name)." }) }
@@ -515,8 +574,16 @@ private final class SQLWorkspaceModel: ObservableObject {
         guard !isBusy else { return }
         connections.removeAll { $0.id == profile.id }
         cachedSchemas.removeValue(forKey: profile.id)
+        blockDrafts.removeValue(forKey: profile.id)
         SQLCredentialVault.delete(profileID: profile.id)
-        if selectedConnectionID == profile.id { selectedConnectionID = connections.first?.id; schema = nil }
+        sessionCredentials.remove(profile.id)
+        if selectedConnectionID == profile.id {
+            selectedConnectionID = connections.first?.id
+            schema = selectedConnectionID.flatMap { cachedSchemas[$0] }
+            visualQuery = selectedConnectionID.flatMap { blockDrafts[$0] } ?? SQLVisualQuery()
+            schemaOwner = ""
+            selectedTableID = schema?.tables.first?.id
+        }
         save()
         status = "Removed \(profile.name) and its Keychain password."
     }
@@ -531,7 +598,7 @@ private final class SQLWorkspaceModel: ObservableObject {
     func discover() {
         guard !isBusy else { return }
         guard let profile = selectedConnection else { status = "Choose or add a connection first."; return }
-        guard let password = SQLCredentialVault.password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
+        guard let password = password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
         isBusy = true
         discoveryCompletedSteps = 0
         discoveryTotalSteps = 6
@@ -586,9 +653,15 @@ private final class SQLWorkspaceModel: ObservableObject {
     func runReadOnly() { execute(sql: queryText, readOnly: true) }
     func runCanvas() {
         guard let driver = selectedConnection?.driver else { status = "Choose a connection first."; return }
-        queryText = visualQuery.sql(for: driver)
-        mode = .sql
-        runReadOnly()
+        do {
+            queryText = try (visualQuery.blocks ?? SQLQueryBlocks()).sql(tables: visualQuery.tables, limit: visualQuery.limit, driver: driver)
+            execute(sql: queryText, readOnly: true)
+        } catch { status = error.localizedDescription }
+    }
+
+    func saveBlocks() {
+        guard selectedConnectionID != nil else { return }
+        if save() { status = "Saved this connection’s query blocks." }
     }
 
     func addTable(_ table: SQLTable) {
@@ -603,6 +676,14 @@ private final class SQLWorkspaceModel: ObservableObject {
         if !visualQuery.tables.contains(join.fromTable) { visualQuery.tables.append(join.fromTable) }
         if !visualQuery.tables.contains(join.toTable) { visualQuery.tables.append(join.toTable) }
         if !visualQuery.joins.contains(join) { visualQuery.joins.append(join) }
+        var blocks = visualQuery.blocks ?? SQLQueryBlocks()
+        // Suggestions can point either way: keep the existing source in FROM.
+        let reverse = visualQuery.tables.first == join.toTable
+        let target = reverse ? join.fromTable : join.toTable
+        if !blocks.joins.contains(where: { $0.table == target }) {
+            blocks.joins.append(SQLJoinBlock(table: target, condition: SQLFilterBlock(field: "\(join.fromTable).\(join.fromColumn)", valueType: .expression, value: "\(join.toTable).\(join.toColumn)")))
+        }
+        visualQuery.blocks = blocks
     }
 
     func insertProcedure(_ procedure: SQLProcedure) {
@@ -661,7 +742,7 @@ private final class SQLWorkspaceModel: ObservableObject {
         save()
     }
 
-    func cancel() { runningTask?.cancel(); isBusy = false }
+    func cancel() { runningTask?.cancel(); isBusy = false; save(); lockSession() }
 
     private func execute(sql: String, readOnly: Bool, completion: (() -> Void)? = nil) {
         guard !isBusy else { return }
@@ -670,7 +751,7 @@ private final class SQLWorkspaceModel: ObservableObject {
         guard !clean.isEmpty else { status = "Write a query first."; return }
         guard !readOnly || SQLCommandLineClient.isReadOnly(clean) else { status = SQLWorkspaceError.readOnly.localizedDescription; return }
         guard let profile = selectedConnection else { status = "Choose a connection first."; return }
-        guard let password = SQLCredentialVault.password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
+        guard let password = password(for: profile.id) else { status = SQLWorkspaceError.missingSecret.localizedDescription; return }
         isBusy = true; status = "Running on \(profile.name)…"
         runningTask = Task { [weak self] in
             do {
@@ -724,6 +805,7 @@ private final class SQLWorkspaceModel: ObservableObject {
         var snapshots: [UUID: SQLSchemaSnapshot]
         var savedQueries: [SQLSavedQuery]
         var collections: [SQLLocalCollection]
+        var blockDrafts: [UUID: SQLVisualQuery]?
     }
 
     private var workspaceURL: URL { ApplicationPaths.applicationSupport.appendingPathComponent("sql-workspace.json") }
@@ -736,21 +818,28 @@ private final class SQLWorkspaceModel: ObservableObject {
         schema = selectedConnectionID.flatMap { saved.snapshots[$0] }
         savedQueries = saved.savedQueries
         collections = saved.collections
+        blockDrafts = saved.blockDrafts ?? [:]
+        visualQuery = selectedConnectionID.flatMap { blockDrafts[$0] } ?? SQLVisualQuery()
         selectedCollectionID = collections.first?.id
     }
 
-    private func save() {
+    @discardableResult private func save() -> Bool {
         do {
+            if let id = selectedConnectionID { blockDrafts[id] = visualQuery }
             try ApplicationPaths.prepare()
-            let data = try JSONEncoder().encode(SavedWorkspace(connections: connections, selectedConnectionID: selectedConnectionID, snapshots: cachedSchemas, savedQueries: savedQueries, collections: collections))
+            let data = try JSONEncoder().encode(SavedWorkspace(connections: connections, selectedConnectionID: selectedConnectionID, snapshots: cachedSchemas, savedQueries: savedQueries, collections: collections, blockDrafts: blockDrafts))
             try data.write(to: workspaceURL, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: workspaceURL.path)
-        } catch { status = "Could not save SQL workspace: \(error.localizedDescription)" }
+            return true
+        } catch { status = "Could not save SQL workspace: \(error.localizedDescription)"; return false }
     }
 
     func selectConnection(_ id: UUID) {
         guard !isBusy else { return }
+        if let current = selectedConnectionID { blockDrafts[current] = visualQuery }
         selectedConnectionID = id
+        visualQuery = blockDrafts[id] ?? SQLVisualQuery()
+        schemaOwner = ""
         schema = cachedSchemas[id]
         selectedTableID = schema?.tables.first?.id
         save()
@@ -761,6 +850,10 @@ private final class SQLWorkspaceModel: ObservableObject {
 private struct SQLWorkspaceView: View {
     @ObservedObject var model: SQLWorkspaceModel
     @ObservedObject private var settings = SettingsStore.shared
+    @State private var showsBlockSQL = true
+    @State private var showsSchemaBrowser = true
+    @State private var showsInspector = true
+    @FocusState private var schemaSearchFocused: Bool
 
     var body: some View {
         ZStack {
@@ -777,7 +870,9 @@ private struct SQLWorkspaceView: View {
         }
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $model.showsConnectionEditor) { SQLConnectionEditor(model: model) }
+        .sheet(isPresented: $model.showsConnectionEditor, onDismiss: { model.secretDraft = "" }) { SQLConnectionEditor(model: model) }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in model.lockSession() }
+        .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in model.lockSession() }
         .alert("Run a write statement?", isPresented: $model.requiresWriteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Run Statement", role: .destructive) { model.runConfirmedWrite() }
@@ -832,6 +927,10 @@ private struct SQLWorkspaceView: View {
             .buttonStyle(.bordered)
             .controlSize(.small)
             Spacer()
+            Button { showsSchemaBrowser.toggle() } label: { Image(systemName: "sidebar.left") }
+                .buttonStyle(.borderless).help("Toggle schema browser · ⌘⌥1").keyboardShortcut("1", modifiers: [.command, .option])
+            Button { showsInspector.toggle() } label: { Image(systemName: "sidebar.right") }
+                .buttonStyle(.borderless).help("Toggle table details · ⌘⌥2").keyboardShortcut("2", modifiers: [.command, .option])
             Picker("Mode", selection: $model.mode) {
                 ForEach(SQLWorkspaceModel.Mode.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -839,6 +938,7 @@ private struct SQLWorkspaceView: View {
             .frame(width: 268)
             Menu {
                 Button("New Connection…", action: model.newConnection)
+                Button("Lock credential session", action: model.lockSession).disabled(model.isBusy)
                 if !model.connections.isEmpty { Divider() }
                 ForEach(model.connections) { connection in
                     Menu("\(connection.name) · \(connection.environment)") {
@@ -863,9 +963,9 @@ private struct SQLWorkspaceView: View {
             connectionSetup
         } else {
             HSplitView {
-                schemaSidebar.frame(minWidth: 210, idealWidth: 255, maxWidth: 340)
+                if showsSchemaBrowser { schemaSidebar.frame(minWidth: 210, idealWidth: 255, maxWidth: 340) }
                 mainContent.frame(minWidth: 420)
-                inspector.frame(minWidth: 235, idealWidth: 285, maxWidth: 360)
+                if showsInspector { inspector.frame(minWidth: 235, idealWidth: 285, maxWidth: 360) }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
@@ -905,9 +1005,20 @@ private struct SQLWorkspaceView: View {
             Picker("Schema", selection: $model.schemaSection) {
                 ForEach(SQLWorkspaceModel.SchemaSection.allCases) { Text($0.rawValue).tag($0) }
             }.pickerStyle(.segmented).labelsHidden()
-            TextField("Filter schema", text: $model.schemaSearch).textFieldStyle(.plain)
-                .padding(.horizontal, 9).frame(height: 28)
-                .background(Color.white.opacity(0.06), in: PrismaticPanelShape(cut: 5))
+            Picker("Owner", selection: $model.schemaOwner) {
+                Text("All owners").tag("")
+                ForEach(model.schemaOwners, id: \.self) { Text($0).tag($0) }
+            }.controlSize(.small)
+            HStack(spacing: 6) {
+                Button { schemaSearchFocused = true } label: { Image(systemName: "magnifyingglass").foregroundStyle(.secondary) }
+                    .buttonStyle(.plain).keyboardShortcut("f", modifiers: [.command]).help("Find a table or column · ⌘F")
+                TextField("Tables, columns…", text: $model.schemaSearch).textFieldStyle(.plain).focused($schemaSearchFocused)
+                if !model.schemaSearch.isEmpty {
+                    Button { model.schemaSearch = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain).help("Clear search")
+                }
+                if model.isSearchingSchema { ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 12, height: 12) }
+            }.padding(.horizontal, 9).frame(height: 30)
+                .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if model.schemaSection == .procedures {
@@ -919,6 +1030,13 @@ private struct SQLWorkspaceView: View {
             }
             if model.schema == nil {
                 emptyState("rectangle.stack.badge.magnifyingglass", "Discover your schema", "Choose a connection, then Discover.")
+            } else if !model.isSearchingSchema {
+                HStack {
+                    let count = model.schemaSection == .procedures ? model.visibleProcedures.count : model.visibleTables.count
+                    Text("\(count) \(count == 1 ? "match" : "matches")").font(.system(size: 10)).foregroundStyle(.secondary)
+                    Spacer()
+                    if count == 0 { Button("Clear filters") { model.schemaSearch = ""; model.schemaOwner = "" }.buttonStyle(.borderless).font(.caption) }
+                }
             }
         }
         .padding(9)
@@ -970,62 +1088,45 @@ private struct SQLWorkspaceView: View {
     private var canvas: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack {
-                Label("Visual query", systemImage: "point.3.connected.trianglepath.dotted")
+                Label("Query blocks", systemImage: "point.3.connected.trianglepath.dotted")
                     .font(.system(size: 12.5, weight: .semibold))
                 Spacer()
-                Button("Run", action: model.runCanvas).buttonStyle(.borderedProminent).controlSize(.small)
-                    .disabled(model.visualQuery.tables.isEmpty || model.isBusy)
+                Button(action: model.saveBlocks) { Image(systemName: "bookmark") }.help("Save query blocks for this connection").buttonStyle(.bordered).controlSize(.small)
+                Button("Edit SQL") { model.queryText = model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql); model.mode = .sql }
+                    .buttonStyle(.bordered).controlSize(.small)
+                Button(action: model.runCanvas) { Label("Run query", systemImage: "play.fill") }.buttonStyle(.borderedProminent).controlSize(.small)
+                    .keyboardShortcut(.return, modifiers: [.command])
+                    .disabled(model.canvasIssue != nil || model.isBusy)
+                    .help(model.canvasIssue ?? "Run read-only query · ⌘Return")
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 7) {
-                    ForEach(model.visualQuery.tables, id: \.self) { table in
-                        HStack(spacing: 5) {
-                            Image(systemName: "tablecells").font(.caption2)
-                            Text(table).font(.system(size: 10.5, design: .monospaced)).lineLimit(1)
-                            Button { model.visualQuery.tables.removeAll { $0 == table }; model.visualQuery.projections.removeAll { $0 == "\(table).*" } } label: { Image(systemName: "xmark").font(.system(size: 8, weight: .bold)) }
-                                .buttonStyle(.plain)
-                        }
-                        .padding(.horizontal, 8).frame(height: 27)
-                        .background(settings.accentTheme.primary.opacity(0.13), in: PrismaticPanelShape(cut: 5))
+            if let issue = model.canvasIssue, !model.visualQuery.tables.isEmpty {
+                Label(issue, systemImage: "exclamationmark.circle").font(.system(size: 10.5)).foregroundStyle(.orange).lineLimit(2).help(issue)
+            }
+            VSplitView {
+                SQLBlockCanvasEditor(query: $model.visualQuery, tables: model.schema?.tables ?? [], driver: model.selectedConnection?.driver ?? .mysql, schemaRevision: model.schemaRevision)
+                    .frame(minHeight: 230, maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: 5) {
+                    DisclosureGroup("Generated SQL", isExpanded: $showsBlockSQL) {
+                        ScrollView {
+                            Text(model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql))
+                                .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+                        }.frame(maxHeight: 130)
                     }
-                    if model.visualQuery.tables.isEmpty { Text("Drag a table here or use Add to canvas").font(.caption).foregroundStyle(.secondary) }
-                }.padding(.horizontal, 3)
+                    resultsView
+                }.frame(minHeight: 145)
             }
-            .padding(8).frame(minHeight: 44)
-            .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 7))
-            .onDrop(of: [.plainText], isTargeted: nil) { providers in
-                let tables = model.schema?.tables ?? []
-                providers.first?.loadObject(ofClass: NSString.self) { value, _ in
-                    guard let text = value as? String, let table = tables.first(where: { $0.qualifiedName == text }) else { return }
-                    DispatchQueue.main.async { model.addTable(table) }
-                }
-                return true
-            }
-            HStack(spacing: 8) {
-                Text("WHERE").font(.caption2.weight(.bold)).foregroundStyle(.secondary)
-                TextField("Optional filter, e.g. status = 'OPEN'", text: $model.visualQuery.predicate).textFieldStyle(.plain)
-                Text("Limit").font(.caption2).foregroundStyle(.secondary)
-                TextField("250", value: $model.visualQuery.limit, format: .number).frame(width: 46).textFieldStyle(.roundedBorder)
-            }.padding(9).background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 7))
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Generated SQL").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                Text(model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql))
-                    .font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(10)
-                    .background(Color.black.opacity(0.20), in: PrismaticPanelShape(cut: 7))
-            }
-            resultsView
         }
         .padding(10)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.016)
+        .onAppear { if model.visualQuery.blocks == nil { model.visualQuery.blocks = SQLQueryBlocks() } }
     }
 
     private var sqlEditor: some View {
         VStack(spacing: 8) {
             HStack(spacing: 7) {
                 Label("Free SQL", systemImage: "chevron.left.forwardslash.chevron.right").font(.system(size: 12.5, weight: .semibold))
-                Text("Any statement is allowed after write confirmation.").font(.caption2).foregroundStyle(.secondary)
                 Spacer()
                 TextField("Save query as", text: $model.savedQueryName).textFieldStyle(.roundedBorder).frame(width: 140)
                 Button(action: model.saveCurrentQuery) { Image(systemName: "bookmark") }.buttonStyle(.bordered).controlSize(.small)

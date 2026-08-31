@@ -280,6 +280,7 @@ public struct SQLVisualQuery: Codable, Hashable, Sendable {
     public var joins: [SQLJoinSuggestion]
     public var predicate: String
     public var limit: Int
+    public var blocks: SQLQueryBlocks?
 
     public init(tables: [String] = [], projections: [String] = [], joins: [SQLJoinSuggestion] = [], predicate: String = "", limit: Int = 250) {
         self.tables = tables
@@ -290,6 +291,10 @@ public struct SQLVisualQuery: Codable, Hashable, Sendable {
     }
 
     public func sql(for driver: SQLDatabaseDriver) -> String {
+        if let blocks {
+            do { return try blocks.sql(tables: tables, limit: limit, driver: driver) }
+            catch { return "-- \(error.localizedDescription)" }
+        }
         guard let first = tables.first else { return "-- Add a table from Schema to begin." }
         let select = projections.isEmpty ? "\(first).*" : projections.joined(separator: ",\n  ")
         var text = "SELECT\n  \(select)\nFROM \(first)"
