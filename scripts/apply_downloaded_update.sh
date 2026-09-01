@@ -92,7 +92,22 @@ else
     mv "$CACHED_MODEL.pending.$$" "$CACHED_MODEL"
 fi
 
-write_progress working 0.52 "Verifying and preparing Lima $VERSION for this Mac…"
+write_progress working 0.42 "Inspecting Lima $VERSION and its signing identity…"
+TRUST_CERTIFICATE="$READY_APP/Contents/Resources/Updater/RayPlacementLocalSigning.pem"
+EXPECTED_CERTIFICATE_HASH="7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62"
+if ! /usr/bin/codesign --verify --deep --strict "$READY_APP" >/dev/null 2>&1; then
+    [[ -f "$TRUST_CERTIFICATE" ]] || fail_update 'The update signing certificate is missing. Download the DMG instead.'
+    CERTIFICATE_HASH="$(/usr/bin/openssl x509 -in "$TRUST_CERTIFICATE" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')"
+    [[ "$CERTIFICATE_HASH" == "$EXPECTED_CERTIFICATE_HASH" ]] || fail_update 'The update signing certificate did not match Lima’s pinned certificate.'
+    CERTIFICATE_DIRECTORY="$(/usr/bin/mktemp -d "${TMPDIR%/}/lima-certificate.XXXXXX")" || fail_update 'Lima could not prepare signing verification.'
+    /usr/bin/codesign -d --extract-certificates="$CERTIFICATE_DIRECTORY/cert" "$READY_APP" >/dev/null 2>&1 || fail_update 'The incoming app signature could not be inspected.'
+    [[ "$(/usr/bin/shasum -a 256 "$CERTIFICATE_DIRECTORY/cert0" | /usr/bin/awk '{print $1}')" == "$EXPECTED_CERTIFICATE_HASH" ]] || fail_update 'The incoming app was signed by an unexpected certificate.'
+    write_progress working 0.48 "One-time setup: approve Lima’s code-signing trust prompt. This keeps updates and Accessibility approval stable."
+    LOGIN_KEYCHAIN="$USER_HOME_DIRECTORY/Library/Keychains/login.keychain-db"
+    /usr/bin/security add-trusted-cert -r trustRoot -p codeSign -k "$LOGIN_KEYCHAIN" "$TRUST_CERTIFICATE" || fail_update 'The Lima code-signing trust prompt was canceled. The current app is unchanged; you can install the DMG manually.'
+    /bin/rm -rf "$CERTIFICATE_DIRECTORY"
+fi
+write_progress working 0.52 "Verifying the complete signed Lima app…"
 RAYPLACEMENT_MODEL_FREE_UPDATE=1 "$SOURCE_ROOT/scripts/verify_liamflow_app.sh" "$READY_APP" || fail_update "The verified Lima $VERSION app did not pass inspection."
 # Existing locally signed installations can keep that exact identity. Never
 # create trust roots or require a developer's private key on a fresh Mac.

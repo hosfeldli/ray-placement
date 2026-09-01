@@ -1,4 +1,4 @@
-# Lima 3.4
+# Lima 3.4.1
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
@@ -11,6 +11,8 @@ Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a
 Version 3.3 adds virtualized, filterable SQL results; full-workspace schema and compatible-join dragging; deeper local and remote SSH file trees; context-aware terminal guidance; and administrator-approved protected-folder updates with cancellation-safe rollback.
 
 Version 3.4 makes the launcher pointer-stable: hovering a result updates its highlight without recentering or scrolling the list. Exact command names rank first, every major native workspace is directly searchable, and keyboard navigation remains the only action that intentionally scrolls selection into view. Compact, Balanced, and Comfortable interface densities now resize launcher rows and workspace presentation live. The bundled themes have clearer workflow-oriented names, workspace window positions persist, active-process notifications show elapsed time, and ambient refraction pauses while local processing is active. Notes can persist custom names for detected transcript speakers and apply them to later dictation segments in that note.
+
+Version 3.4.1 repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
 
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
@@ -137,7 +139,7 @@ Writing resources are process-based and exit after each correction. Whisper proc
 
 Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, the updater verifies the archive SHA-256 and prebuilt app version/build/signature, preserves the dictation model outside the app, and replaces the exact running app path using a staged bundle and rollback backup. It never redirects an installation in `/Applications` to `~/Applications`. Relaunch uses the exact installed path, and the new process checks a version/build/path receipt before reporting success. Settings → About → Update details can reveal the running copy in Finder.
 
-No compiler, new trust root, or local signing key is required on another Mac. The downloaded signature is preserved; an existing local signing identity is reused only when it matches the currently installed app. Accessibility approval remains controlled by macOS: changing from an older ad-hoc signature may require approval once. These builds are not Apple-notarized Developer ID distributions.
+No compiler or local signing key is required on another Mac. The downloaded signature is preserved; an existing local signing identity is reused only when it matches the currently installed app. On a fresh Mac, Lima verifies the bundled public certificate against its pinned SHA-256 fingerprint and the incoming app signature before asking macOS to add that certificate to the login keychain as a code-signing-only trust root. No private key is distributed. This one-time approval gives subsequent builds a stable identity for Accessibility; these builds are not Apple-notarized Developer ID distributions.
 
 When the app folder cannot create a staging directory, the updater requests one-time administrator approval through macOS (the system prompt may identify its tool as **osascript**). It first verifies the incoming app against the installed signing identity, then stages a root-owned, non-writable copy before telling Lima to close. Declining approval leaves the current app running. No password is read, stored, or logged by Lima; no privileged daemon is installed, folder permissions are not loosened, and relaunch/model/extension work still runs as the signed-in user. Disk-image launches remain unsupported; drag the app into Applications first. Ad-hoc or unrelated signing identities require installing the official DMG once with Finder instead of weakening signature checks.
 

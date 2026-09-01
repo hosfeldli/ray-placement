@@ -109,6 +109,7 @@ cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Updater"
 cp "$PROJECT_DIRECTORY/scripts/approved_lima_replacement.sh" "$CONTENTS_DIRECTORY/Resources/Updater/approved_lima_replacement.sh"
 cp "$PROJECT_DIRECTORY/scripts/authorize_lima_update.applescript" "$CONTENTS_DIRECTORY/Resources/Updater/authorize_lima_update.applescript"
+cp "$PROJECT_DIRECTORY/Packaging/RayPlacementLocalSigning.pem" "$CONTENTS_DIRECTORY/Resources/Updater/RayPlacementLocalSigning.pem"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"
 cp "$PROJECT_DIRECTORY/Packaging/Emoji/emoji-test.txt" "$CONTENTS_DIRECTORY/Resources/Emoji/emoji-test.txt"
 if [[ ! -d "$BUNDLED_EXTENSIONS_DIRECTORY" ]]; then

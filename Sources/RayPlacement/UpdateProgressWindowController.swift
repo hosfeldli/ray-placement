@@ -5,12 +5,14 @@ import SwiftUI
 final class UpdateProgressWindowController: NSWindowController {
     init(service: UpdateService) {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 540, height: 390),
+            contentRect: NSRect(x: 0, y: 0, width: 620, height: 470),
             styleMask: [.titled, .miniaturizable],
             backing: .buffered,
             defer: false
         )
         window.title = "Lima Update"
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -30,161 +32,265 @@ final class UpdateProgressWindowController: NSWindowController {
 
 private struct UpdateProgressView: View {
     @ObservedObject var service: UpdateService
+    @ObservedObject private var settings = SettingsStore.shared
     let close: () -> Void
 
     var body: some View {
         ZStack {
-            Color(nsColor: .windowBackgroundColor)
-            LinearGradient(
-                colors: [UpdateColors.indigo.opacity(0.11), .clear, UpdateColors.cyan.opacity(0.055)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .withinWindow)
             if let result = service.completionResult {
                 completionView(result)
+                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
             } else {
-                progressView
+                progressView.transition(.opacity)
             }
         }
-        .frame(width: 540, height: 390)
+        .frame(width: 620, height: 470)
+        .tint(settings.accentTheme.primary)
+        .animation(.easeOut(duration: 0.18), value: service.completionResult)
     }
 
     private var progressView: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            HStack(spacing: 16) {
-                UpdatePulse()
-                    .frame(width: 56, height: 56)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Updating Lima")
-                        .limaFont(.system(size: 22, weight: .bold, design: .rounded))
-                    Text(service.installingVersion.map { "Installing version \($0)" } ?? "Preparing update")
+        VStack(alignment: .leading, spacing: 18) {
+            header
+            stageCard
+            steps
+            if let notice = contextualNotice { noticeCard(notice) }
+            Spacer(minLength: 0)
+            HStack(spacing: 10) {
+                Button("Show Log") { service.revealUpdateLog() }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                if service.canCancelInstallation {
+                    Button("Cancel Update") { service.cancelInstallation() }
+                        .buttonStyle(.bordered)
+                        .keyboardShortcut(.cancelAction)
+                } else {
+                    Label("Lima stays open until replacement is ready", systemImage: "shield.checkered")
+                        .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Spacer()
-                Text("VERIFIED LOCAL BUILD")
-                    .limaFont(.system(size: 9, weight: .bold, design: .rounded))
-                    .tracking(0.6)
-                    .foregroundStyle(UpdateColors.cyan)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(UpdateColors.cyan.opacity(0.1), in: Capsule())
             }
-
-            VStack(alignment: .leading, spacing: 10) {
-                ProgressView(value: service.installationProgress)
-                    .tint(UpdateColors.indigo)
-                HStack {
-                    Text(service.installationStage.isEmpty ? "Preparing…" : service.installationStage)
-                        .limaFont(.system(size: 13, weight: .semibold))
-                    Spacer()
-                    Text("\(Int(service.installationProgress * 100))%")
-                        .limaFont(.system(size: 12, weight: .bold, design: .rounded))
-                        .foregroundStyle(UpdateColors.indigo)
-                }
-            }
-            .padding(16)
-            .background(Color(nsColor: .controlBackgroundColor).opacity(0.8), in: PrismaticPanelShape(cut: 8))
-            .overlay(PrismaticPanelShape(cut: 8).stroke(UpdateColors.indigo.opacity(0.28)))
-
-            VStack(spacing: 11) {
-                updateStep("Download small update kit", threshold: 0.08, completeAt: 0.2)
-                updateStep("Verify GitHub digest and contents", threshold: 0.2, completeAt: 0.34)
-                updateStep("Reuse Whisper, build, and sign locally", threshold: 0.34, completeAt: 0.9)
-                updateStep("Close briefly, install, and reopen", threshold: 0.9, completeAt: 1)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Lima stays open while the verified replacement is prepared, then closes briefly and reopens automatically.")
-                Text("Detailed log: ~/Library/Application Support/RayPlacement/Updates/update.log")
-                    .fontDesign(.monospaced)
-            }
-            .limaFont(.caption)
-            .foregroundStyle(.secondary)
         }
         .padding(26)
         .accessibilityElement(children: .contain)
     }
 
-    private func updateStep(_ title: String, threshold: Double, completeAt: Double) -> some View {
-        let complete = service.installationProgress >= completeAt
-        let active = service.installationProgress >= threshold && !complete
-        return HStack(spacing: 11) {
-            ZStack {
-                Circle()
-                    .fill(complete || active ? UpdateColors.indigo : Color.primary.opacity(0.09))
-                    .frame(width: 22, height: 22)
-                if complete {
-                    Image(systemName: "checkmark")
-                        .limaFont(.system(size: 10, weight: .bold))
-                        .foregroundStyle(.white)
-                } else if active {
-                    ProgressView().controlSize(.mini).tint(.white)
-                } else {
-                    Circle().fill(Color.secondary.opacity(0.4)).frame(width: 5, height: 5)
-                }
+    private var header: some View {
+        HStack(spacing: 14) {
+            UpdatePulse(color: settings.accentTheme.primary, gradient: settings.accentTheme.gradient)
+                .frame(width: 48, height: 48)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Lima Update")
+                    .limaFont(.system(size: 21, weight: .bold, design: .rounded))
+                Text(service.installingVersion.map { "Installing version \($0)" } ?? "Preparing a verified update")
+                    .limaFont(.subheadline)
+                    .foregroundStyle(.secondary)
             }
-            Text(title)
-                .limaFont(.system(size: 12.5, weight: active ? .semibold : .medium))
-                .foregroundStyle(complete || active ? Color.primary : .secondary)
             Spacer()
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                Text(elapsedText(at: context.date))
+                    .limaFont(.caption.monospacedDigit().weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .liquidGlass(cornerRadius: 7, depth: .recessed, accentOpacity: 0.01)
+            }
         }
     }
 
-    private func completionView(_ result: UpdateService.CompletionResult) -> some View {
-        VStack(spacing: 17) {
-            ZStack {
-                Circle().fill((result.succeeded ? Color.green : Color.orange).opacity(0.13))
-                Image(systemName: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
-                    .limaFont(.system(size: 46, weight: .semibold))
-                    .foregroundStyle(result.succeeded ? Color.green : Color.orange)
+    private var stageCard: some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(service.installationStage.isEmpty ? "Preparing…" : service.installationStage)
+                    .limaFont(.system(size: 13, weight: .semibold))
+                    .lineLimit(2)
+                Spacer(minLength: 12)
+                Text("\(Int(service.installationProgress * 100))%")
+                    .limaFont(.system(size: 13, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(settings.accentTheme.tertiary)
             }
-            .frame(width: 82, height: 82)
-            Text(result.succeeded ? "Update complete" : "Update needs attention")
-                .limaFont(.system(size: 24, weight: .bold, design: .rounded))
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.white.opacity(0.075))
+                    Capsule()
+                        .fill(settings.accentTheme.gradient)
+                        .frame(width: max(4, proxy.size.width * service.installationProgress))
+                        .shadow(color: settings.accentTheme.primary.opacity(0.35), radius: 7)
+                }
+            }
+            .frame(height: 6)
+            if let bytes = service.formattedDownloadProgress, service.installationProgress < 0.25 {
+                Text(bytes)
+                    .limaFont(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(15)
+        .liquidGlass(cornerRadius: 11, depth: .raised, accentOpacity: 0.035)
+    }
+
+    private var steps: some View {
+        HStack(spacing: 7) {
+            updateStep("Download", symbol: "arrow.down", startsAt: 0.0, completesAt: 0.25)
+            connector(complete: service.installationProgress >= 0.25)
+            updateStep("Verify", symbol: "checkmark.shield", startsAt: 0.25, completesAt: 0.52)
+            connector(complete: service.installationProgress >= 0.52)
+            updateStep("Prepare", symbol: "shippingbox", startsAt: 0.52, completesAt: 0.90)
+            connector(complete: service.installationProgress >= 0.90)
+            updateStep("Replace", symbol: "arrow.triangle.2.circlepath", startsAt: 0.90, completesAt: 1.0)
+        }
+    }
+
+    private func updateStep(_ title: String, symbol: String, startsAt: Double, completesAt: Double) -> some View {
+        let complete = service.installationProgress >= completesAt
+        let active = service.installationProgress >= startsAt && !complete
+        return VStack(spacing: 6) {
+            ZStack {
+                PrismaticPanelShape(cut: 5)
+                    .fill(complete || active ? AnyShapeStyle(settings.accentTheme.gradient) : AnyShapeStyle(Color.white.opacity(0.06)))
+                    .frame(width: 28, height: 28)
+                Image(systemName: complete ? "checkmark" : symbol)
+                    .limaFont(.system(size: 11, weight: .bold))
+                    .foregroundStyle(complete || active ? Color.white : .secondary)
+            }
+            Text(title)
+                .limaFont(.caption2.weight(active ? .bold : .medium))
+                .foregroundStyle(complete || active ? Color.primary : .secondary)
+        }
+        .frame(width: 72)
+    }
+
+    private func connector(complete: Bool) -> some View {
+        Rectangle()
+            .fill(complete ? AnyShapeStyle(settings.accentTheme.gradient) : AnyShapeStyle(Color.white.opacity(0.08)))
+            .frame(maxWidth: .infinity, maxHeight: 1)
+            .offset(y: -9)
+    }
+
+    private var contextualNotice: (symbol: String, title: String, detail: String)? {
+        let stage = service.installationStage.lowercased()
+        if stage.contains("administrator") || stage.contains("approval") {
+            return ("lock.shield", "macOS approval needed", "Approve the system dialog so Lima can replace the copy in Applications. Canceling leaves the current app untouched.")
+        }
+        if stage.contains("trust prompt") || stage.contains("code-signing") {
+            return ("person.badge.key", "One-time signing approval", "This preserves Lima’s identity so Accessibility permissions continue to follow future updates.")
+        }
+        if stage.contains("dictation model") {
+            return ("waveform", "Keeping dictation local", "Lima is verifying or restoring the on-device speech resource; it is not bundled into every update.")
+        }
+        return nil
+    }
+
+    private func noticeCard(_ notice: (symbol: String, title: String, detail: String)) -> some View {
+        HStack(alignment: .top, spacing: 11) {
+            Image(systemName: notice.symbol)
+                .foregroundStyle(settings.accentTheme.tertiary)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(notice.title).limaFont(.caption.weight(.bold))
+                Text(notice.detail).limaFont(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.018)
+    }
+
+    private func completionView(_ result: UpdateService.CompletionResult) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 14) {
+                ZStack {
+                    PrismaticPanelShape(cut: 8)
+                        .fill(result.succeeded ? AnyShapeStyle(Color.green.opacity(0.18)) : AnyShapeStyle(Color.orange.opacity(0.18)))
+                    Image(systemName: result.succeeded ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .limaFont(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(result.succeeded ? Color.green : Color.orange)
+                }
+                .frame(width: 48, height: 48)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(result.succeeded ? "Lima is up to date" : "Update not installed")
+                        .limaFont(.system(size: 21, weight: .bold, design: .rounded))
+                    Text(result.succeeded ? "The new app passed its relaunch check." : "Your current copy of Lima was left unchanged.")
+                        .limaFont(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Text(result.message)
                 .limaFont(.system(size: 13.5))
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 430)
-            Button("Done") {
-                service.dismissCompletion()
-                close()
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .liquidGlass(cornerRadius: 11, depth: .raised, accentOpacity: result.succeeded ? 0.025 : 0.04)
+
+            if !result.succeeded {
+                Label("Retry first. If macOS still blocks replacement, use the DMG; the update log contains the exact failed step.", systemImage: "info.circle")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(UpdateColors.indigo)
-            .keyboardShortcut(.defaultAction)
+
+            Spacer()
+            HStack(spacing: 10) {
+                Button("Show Log") { service.revealUpdateLog() }.buttonStyle(.borderless)
+                if !result.succeeded {
+                    Button("Download DMG") { service.openManualDownload() }.buttonStyle(.bordered)
+                }
+                Spacer()
+                if !result.succeeded && service.canRetryInstallation {
+                    Button("Retry") { service.retryInstallation() }.buttonStyle(.borderedProminent)
+                }
+                if result.succeeded {
+                    Button("Done") {
+                        service.dismissCompletion()
+                        close()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                } else {
+                    Button("Close") {
+                        service.dismissCompletion()
+                        close()
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.defaultAction)
+                }
+            }
         }
         .padding(28)
+    }
+
+    private func elapsedText(at date: Date) -> String {
+        guard let started = service.installationStartedAt else { return "READY" }
+        let seconds = max(0, Int(date.timeIntervalSince(started)))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
 private struct UpdatePulse: View {
+    let color: Color
+    let gradient: LinearGradient
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var rotation = 0.0
-    @State private var pulse = false
 
     var body: some View {
         ZStack {
-            Circle().fill(UpdateColors.indigo.opacity(pulse ? 0.08 : 0.17)).scaleEffect(pulse ? 1.14 : 0.9)
-            Circle()
-                .trim(from: 0.08, to: 0.73)
-                .stroke(UpdateColors.heroGradient, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+            PrismaticPanelShape(cut: 8).fill(color.opacity(0.14))
+            PrismaticPanelShape(cut: 8)
+                .trim(from: 0.06, to: 0.72)
+                .stroke(gradient, style: StrokeStyle(lineWidth: 2.5, lineCap: .square))
                 .rotationEffect(.degrees(rotation))
-                .padding(5)
+                .padding(4)
             Image(systemName: "arrow.down.app.fill")
-                .limaFont(.system(size: 18, weight: .bold))
-                .foregroundStyle(UpdateColors.indigo)
+                .limaFont(.system(size: 17, weight: .bold))
+                .foregroundStyle(color)
         }
         .onAppear {
-            withAnimation(.linear(duration: 1.3).repeatForever(autoreverses: false)) { rotation = 360 }
-            withAnimation(.easeInOut(duration: 1).repeatForever(autoreverses: true)) { pulse = true }
+            guard !reduceMotion else { return }
+            withAnimation(.linear(duration: 1.5).repeatForever(autoreverses: false)) { rotation = 360 }
         }
         .accessibilityHidden(true)
     }
-}
-
-private enum UpdateColors {
-    static let indigo = Color(red: 0.33, green: 0.32, blue: 0.95)
-    static let violet = Color(red: 0.64, green: 0.31, blue: 0.95)
-    static let cyan = Color(red: 0.04, green: 0.67, blue: 0.82)
-    static let heroGradient = LinearGradient(colors: [indigo, violet, cyan], startPoint: .topLeading, endPoint: .bottomTrailing)
 }

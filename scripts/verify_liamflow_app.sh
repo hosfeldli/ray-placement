@@ -31,6 +31,8 @@ require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensio
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"
 require "the protected-folder updater is missing" test -f "$RESOURCES/Updater/approved_lima_replacement.sh"
 require "the administrator approval dialog is missing" test -f "$RESOURCES/Updater/authorize_lima_update.applescript"
+require "the public Lima signing certificate is missing" test -f "$RESOURCES/Updater/RayPlacementLocalSigning.pem"
+[[ "$(/usr/bin/openssl x509 -in "$RESOURCES/Updater/RayPlacementLocalSigning.pem" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')" == 7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62 ]] || { echo 'Verification failed: the public Lima signing certificate is unexpected' >&2; exit 1; }
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
 

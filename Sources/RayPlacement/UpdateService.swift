@@ -77,7 +77,7 @@ final class UpdateService: ObservableObject {
             case .noRelease: return "No published Lima update is available yet."
             case .missingAsset: return "The Lima release does not contain a verified update kit."
             case .invalidDigest: return "The downloaded update did not match its SHA-256 digest and was not opened."
-            case .oversizedAsset: return "The update kit is unexpectedly large and was rejected."
+            case .oversizedAsset: return "This release contains an unexpectedly large update kit, so Lima refused to install it. Retry after the release is repaired or use the full DMG."
             case .extractionFailed(let message): return message.isEmpty ? "The update kit could not be opened." : message
             case .invalidPackage: return "The update kit is incomplete or its version does not match the GitHub Release."
             case .helperFailed(let message): return message
@@ -101,6 +101,9 @@ final class UpdateService: ObservableObject {
     @Published private(set) var installationStage = ""
     @Published private(set) var installingVersion: String?
     @Published private(set) var completionResult: CompletionResult?
+    @Published private(set) var downloadedBytes: Int64 = 0
+    @Published private(set) var totalDownloadBytes: Int64 = 0
+    @Published private(set) var installationStartedAt: Date?
 
     var onReleaseAvailable: ((Release) -> Void)?
     var onInstallStarted: (() -> Void)?
@@ -108,7 +111,23 @@ final class UpdateService: ObservableObject {
     private let progressFile = ApplicationPaths.updates.appendingPathComponent("update-progress.txt")
     private var helperProcess: Process?
     private var progressTimer: Timer?
+    private var downloadProgressTimer: Timer?
+    private var downloadTask: URLSessionDownloadTask?
     private var restartScheduled = false
+    private var lastRelease: Release?
+
+    var canCancelInstallation: Bool {
+        isInstalling && downloadTask != nil && helperProcess == nil && !restartScheduled
+    }
+
+    var canRetryInstallation: Bool { !isInstalling && lastRelease != nil }
+
+    var formattedDownloadProgress: String? {
+        guard totalDownloadBytes > 0 else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return "\(formatter.string(fromByteCount: downloadedBytes)) of \(formatter.string(fromByteCount: totalDownloadBytes))"
+    }
 
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
@@ -200,29 +219,33 @@ final class UpdateService: ObservableObject {
 
     func install(_ release: Release) {
         guard !isBusy, !isInstalling else { return }
+        lastRelease = release
         guard let asset = release.updateAsset else {
-            statusText = UpdateError.missingAsset.localizedDescription
+            rejectInstall(UpdateError.missingAsset, release: release)
             return
         }
         guard asset.size > 0, asset.size <= rayPlacementUpdateAssetMaximumBytes else {
-            statusText = UpdateError.oversizedAsset.localizedDescription
+            rejectInstall(UpdateError.oversizedAsset, release: release)
             return
         }
         guard asset.browserDownloadURL.scheme == "https",
               asset.browserDownloadURL.host?.lowercased() == "github.com" else {
-            statusText = UpdateError.invalidResponse.localizedDescription
+            rejectInstall(UpdateError.invalidResponse, release: release)
             return
         }
         guard let digest = asset.digest?.lowercased(), digest.hasPrefix("sha256:"), digest.count == 71 else {
-            statusText = UpdateError.invalidDigest.localizedDescription
+            rejectInstall(UpdateError.invalidDigest, release: release)
             return
         }
 
         isBusy = true
         isInstalling = true
         installingVersion = release.versionText
-        installationProgress = 0.08
-        installationStage = "Downloading the verified Lima update kit…"
+        installationStartedAt = Date()
+        downloadedBytes = 0
+        totalDownloadBytes = Int64(asset.size)
+        installationProgress = 0.04
+        installationStage = "Downloading the signed Lima update…"
         statusText = installationStage
         completionResult = nil
         restartScheduled = false
@@ -230,10 +253,14 @@ final class UpdateService: ObservableObject {
         var request = URLRequest(url: asset.browserDownloadURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
+        let task = URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
             guard let self else { return }
+            Task { @MainActor in self.stopDownloadProgressMonitoring() }
             if let error {
-                Task { @MainActor in self.finishWithError(error) }
+                Task { @MainActor in
+                    guard self.isInstalling else { return }
+                    self.finishWithError(error)
+                }
                 return
             }
             guard let temporaryURL,
@@ -275,7 +302,45 @@ final class UpdateService: ObservableObject {
                     Task { @MainActor in self.finishWithError(error) }
                 }
             }
-        }.resume()
+        }
+        downloadTask = task
+        startDownloadProgressMonitoring(task: task, expectedBytes: Int64(asset.size))
+        task.resume()
+    }
+
+    func cancelInstallation() {
+        guard canCancelInstallation else { return }
+        downloadTask?.cancel()
+        stopDownloadProgressMonitoring()
+        finishWithError(UpdateError.helperFailed("Update canceled. Lima was not changed."))
+    }
+
+    func retryInstallation() {
+        guard let release = lastRelease, !isInstalling else { return }
+        completionResult = nil
+        install(release)
+    }
+
+    func revealUpdateLog() {
+        let log = ApplicationPaths.updates.appendingPathComponent("update.log")
+        try? ApplicationPaths.prepare()
+        if !FileManager.default.fileExists(atPath: log.path) {
+            FileManager.default.createFile(atPath: log.path, contents: Data())
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([log])
+    }
+
+    func openManualDownload() {
+        if let release = lastRelease { NSWorkspace.shared.open(release.htmlURL) }
+        else { NSWorkspace.shared.open(Self.repositoryURL.appendingPathComponent("releases/latest")) }
+    }
+
+    private func rejectInstall(_ error: Error, release: Release) {
+        installingVersion = release.versionText
+        installationStartedAt = Date()
+        completionResult = CompletionResult(succeeded: false, message: error.localizedDescription)
+        statusText = "Update not installed: \(error.localizedDescription)"
+        onInstallStarted?()
     }
 
     private nonisolated func prepareUpdate(
@@ -373,6 +438,7 @@ final class UpdateService: ObservableObject {
     }
 
     private func finishWithError(_ error: Error) {
+        stopDownloadProgressMonitoring()
         progressTimer?.invalidate()
         progressTimer = nil
         isBusy = false
@@ -380,6 +446,33 @@ final class UpdateService: ObservableObject {
         installationProgress = 0
         completionResult = CompletionResult(succeeded: false, message: error.localizedDescription)
         statusText = "Update failed: \(error.localizedDescription)"
+    }
+
+    private func startDownloadProgressMonitoring(task: URLSessionDownloadTask, expectedBytes: Int64) {
+        downloadProgressTimer?.invalidate()
+        totalDownloadBytes = expectedBytes
+        downloadProgressTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self, weak task] _ in
+            Task { @MainActor in
+                guard let self, let task, self.isInstalling else { return }
+                let received = max(0, task.countOfBytesReceived)
+                let total = task.countOfBytesExpectedToReceive > 0 ? task.countOfBytesExpectedToReceive : expectedBytes
+                self.downloadedBytes = received
+                self.totalDownloadBytes = max(0, total)
+                guard total > 0 else { return }
+                let fraction = min(max(Double(received) / Double(total), 0), 1)
+                self.installationProgress = 0.04 + fraction * 0.20
+                let formatter = ByteCountFormatter()
+                formatter.countStyle = .file
+                self.installationStage = "Downloading \(formatter.string(fromByteCount: received)) of \(formatter.string(fromByteCount: total))…"
+                self.statusText = self.installationStage
+            }
+        }
+    }
+
+    private func stopDownloadProgressMonitoring() {
+        downloadProgressTimer?.invalidate()
+        downloadProgressTimer = nil
+        downloadTask = nil
     }
 
     private func startProgressMonitoring() {
