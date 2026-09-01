@@ -422,11 +422,13 @@ private final class SQLWorkspaceModel: ObservableObject {
     @Published var schema: SQLSchemaSnapshot? { didSet { rebuildSchemaIndex() } }
     @Published var schemaSearch = "" { didSet { searchSchema(debounce: true) } }
     @Published var schemaOwner = "" { didSet { searchSchema() } }
+    @Published var showFilteredTables = false { didSet { searchSchema() } }
     @Published private(set) var visibleTables: [SQLTable] = []
     @Published private(set) var visibleProcedures: [SQLProcedure] = []
     @Published private(set) var schemaOwners: [String] = []
     @Published private(set) var schemaRevision = 0
     @Published private(set) var isSearchingSchema = false
+    @Published private(set) var filteredTableCount = 0
     @Published var selectedTableID: String?
     @Published var queryText = ""
     @Published var visualQuery = SQLVisualQuery()
@@ -474,6 +476,7 @@ private final class SQLWorkspaceModel: ObservableObject {
             guard !Task.isCancelled, let self else { return }
             self.schemaIndex = index
             self.schemaOwners = index.owners
+            self.filteredTableCount = self.selectedConnection.map { index.hiddenTableCount(filter: SQLSchemaFilter(profile: $0)) } ?? 0
             self.schemaRevision += 1
             self.searchSchema()
         }
@@ -483,12 +486,13 @@ private final class SQLWorkspaceModel: ObservableObject {
         searchTask?.cancel()
         guard let index = schemaIndex else { return }
         let query = schemaSearch, owner = schemaOwner, section = schemaSection
+        let filter = showFilteredTables ? SQLSchemaFilter.permissive : selectedConnection.map(SQLSchemaFilter.init(profile:)) ?? .permissive
         isSearchingSchema = true
         searchTask = Task { [weak self] in
             if debounce { do { try await Task.sleep(nanoseconds: 90_000_000) } catch { return } }
             guard !Task.isCancelled else { return }
             let result = await Task.detached(priority: .userInitiated) {
-                (index.tables(query: query, owner: owner, kind: section == .views ? "VIEW" : "TABLE"), index.procedures(query: query, owner: owner))
+                (index.tables(query: query, owner: owner, kind: section == .views ? "VIEW" : "TABLE", filter: filter), index.procedures(query: query, owner: owner))
             }.value
             guard !Task.isCancelled, let self else { return }
             self.visibleTables = result.0
@@ -523,7 +527,10 @@ private final class SQLWorkspaceModel: ObservableObject {
         do { _ = try (visualQuery.blocks ?? SQLQueryBlocks()).sql(tables: visualQuery.tables, limit: visualQuery.limit, driver: selectedConnection?.driver ?? .mysql); return nil }
         catch { return error.localizedDescription }
     }
-    var joinSuggestions: [SQLJoinSuggestion] { schema?.joins(for: visualQuery.tables) ?? [] }
+    var joinSuggestions: [SQLJoinSuggestion] {
+        guard let schema else { return [] }
+        return schema.joins(for: visualQuery.tables, filter: selectedConnection.map(SQLSchemaFilter.init(profile:)) ?? .permissive)
+    }
     var activeCollection: SQLLocalCollection? { collections.first { $0.id == selectedCollectionID } }
     var pendingConnectionDeletion: SQLConnectionProfile? { connections.first { $0.id == pendingConnectionDeletionID } }
     var discoveryProgress: Double {
@@ -590,6 +597,17 @@ private final class SQLWorkspaceModel: ObservableObject {
     }
 
     func requestDeleteConnection(_ profile: SQLConnectionProfile) { pendingConnectionDeletionID = profile.id }
+
+    func alwaysShow(_ table: SQLTable) {
+        guard let id = selectedConnectionID, let index = connections.firstIndex(where: { $0.id == id }) else { return }
+        var values = connections[index].tableIncludeOverrides ?? []
+        if !values.contains(where: { $0.caseInsensitiveCompare(table.qualifiedName) == .orderedSame }) { values.append(table.qualifiedName) }
+        connections[index].tableIncludeOverrides = values.sorted()
+        filteredTableCount = schemaIndex?.hiddenTableCount(filter: SQLSchemaFilter(profile: connections[index])) ?? 0
+        save()
+        searchSchema()
+        status = "Always showing \(table.qualifiedName)."
+    }
     func confirmDeleteConnection() {
         guard let profile = pendingConnectionDeletion else { return }
         pendingConnectionDeletionID = nil
@@ -782,6 +800,10 @@ private final class SQLWorkspaceModel: ObservableObject {
         profile.commandPath = profile.commandPath.trimmingCharacters(in: .whitespacesAndNewlines)
         let owners = (profile.discoverySchemas ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         profile.discoverySchemas = owners.isEmpty ? nil : Array(Set(owners)).sorted()
+        let exclusions = (profile.tableExclusionTerms ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        profile.tableExclusionTerms = exclusions.isEmpty ? nil : Array(Set(exclusions)).sorted()
+        let includes = (profile.tableIncludeOverrides ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        profile.tableIncludeOverrides = includes.isEmpty ? nil : Array(Set(includes)).sorted()
         if profile.port <= 0 { profile.port = profile.driver.defaultPort }
         if profile.commandPath.isEmpty { profile.commandPath = profile.driver.defaultCommand }
         return profile
@@ -1021,6 +1043,14 @@ private struct SQLWorkspaceView: View {
                 if model.isSearchingSchema { ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 12, height: 12) }
             }.padding(.horizontal, 9).frame(height: 30)
                 .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+            if model.schemaSection != .procedures, model.filteredTableCount > 0 {
+                HStack(spacing: 6) {
+                    Toggle("Show \(model.filteredTableCount) filtered", isOn: $model.showFilteredTables)
+                        .toggleStyle(.checkbox).controlSize(.small).limaFont(.caption2)
+                    Spacer()
+                    Text("TEMP / short affix").limaFont(.caption2).foregroundStyle(.tertiary)
+                }
+            }
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
                     if model.schemaSection == .procedures {
@@ -1063,8 +1093,14 @@ private struct SQLWorkspaceView: View {
             .background(model.selectedTableID == table.id ? settings.accentTheme.primary.opacity(0.13) : .clear, in: PrismaticPanelShape(cut: 5))
         }
         .buttonStyle(.plain)
+        .contextMenu {
+            Button("Add to canvas") { model.addTable(table) }
+            Button("Insert in SQL") { model.insertDroppedSQL(table.qualifiedName) }
+            if model.selectedConnection.map({ SQLSchemaFilter(profile: $0).isHidden(table) }) == true {
+                Button("Always show this table") { model.alwaysShow(table) }
+            }
+        }
         .onDrag { NSItemProvider(object: table.qualifiedName as NSString) }
-        .contextMenu { Button("Add to canvas") { model.addTable(table) }; Button("Insert in SQL") { model.insertDroppedSQL(table.qualifiedName) } }
     }
 
     private func procedureRow(_ procedure: SQLProcedure) -> some View {
@@ -1331,6 +1367,8 @@ private struct SQLConnectionEditor: View {
     @Environment(\.dismiss) private var dismiss
     @State private var portText = ""
     @State private var discoverySchemasText = ""
+    @State private var exclusionTermsText = ""
+    @State private var includeOverridesText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -1377,6 +1415,29 @@ private struct SQLConnectionEditor: View {
                     }
                 }
             }
+            DisclosureGroup("Schema clutter filters") {
+                VStack(alignment: .leading, spacing: 9) {
+                    Toggle("Hide names containing TEMP", isOn: Binding(
+                        get: { model.connectionDraft.hideTemporaryTables ?? true },
+                        set: { model.connectionDraft.hideTemporaryTables = $0 }
+                    ))
+                    Toggle("Hide names with 1–2 characters before or after an underscore", isOn: Binding(
+                        get: { model.connectionDraft.hideShortAffixTables ?? true },
+                        set: { model.connectionDraft.hideShortAffixTables = $0 }
+                    ))
+                    TextField("Additional contains terms, comma separated", text: $exclusionTermsText)
+                        .onChange(of: exclusionTermsText) { value in
+                            model.connectionDraft.tableExclusionTerms = commaValues(value)
+                        }
+                    TextField("Always show exact table names", text: $includeOverridesText)
+                        .onChange(of: includeOverridesText) { value in
+                            model.connectionDraft.tableIncludeOverrides = commaValues(value)
+                        }
+                    Text("Filtered tables can still be revealed in the schema sidebar. Use a table’s menu to keep an incorrectly matched table visible.")
+                        .limaFont(.caption2).foregroundStyle(.secondary)
+                }
+                .padding(.top, 7)
+            }
             Text("The workspace saves connection metadata locally with restricted permissions. Passwords are stored separately in this Mac’s Keychain and are excluded from query history, schema files, and usage logs.")
                 .limaFont(.caption).foregroundStyle(.secondary)
             HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { model.saveConnection(); dismiss() }.buttonStyle(.bordered); Button("Save & Test") { model.saveConnection(test: true); dismiss() }.buttonStyle(.borderedProminent) }
@@ -1387,10 +1448,17 @@ private struct SQLConnectionEditor: View {
         .onAppear {
             portText = String(model.connectionDraft.port)
             discoverySchemasText = (model.connectionDraft.discoverySchemas ?? []).joined(separator: ", ")
+            exclusionTermsText = (model.connectionDraft.tableExclusionTerms ?? []).joined(separator: ", ")
+            includeOverridesText = (model.connectionDraft.tableIncludeOverrides ?? []).joined(separator: ", ")
         }
     }
 
     private func row<Content: View>(_ name: String, @ViewBuilder content: () -> Content) -> some View {
         GridRow { Text(name).limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 83, alignment: .trailing); content().textFieldStyle(.roundedBorder) }
+    }
+
+    private func commaValues(_ value: String) -> [String]? {
+        let values = value.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        return values.isEmpty ? nil : values
     }
 }

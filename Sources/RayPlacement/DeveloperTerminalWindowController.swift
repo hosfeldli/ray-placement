@@ -91,12 +91,35 @@ private struct TerminalCommandReference: Identifiable, Hashable {
 
     static let catalog: [TerminalCommandReference] = [
         .init(command: "cd", synopsis: "cd [directory]", summary: "Change the shell's current directory.", examples: ["cd ~/Projects", "cd ..", "cd -"], flags: [".. parent directory", "- previous directory"]),
+        .init(command: "pwd", synopsis: "pwd [-P]", summary: "Print the shell's current directory.", examples: ["pwd", "pwd -P"], flags: ["-P resolve symbolic links"]),
         .init(command: "ls", synopsis: "ls [-lah] [path]", summary: "List files and directories.", examples: ["ls", "ls -lah", "ls -lah src"], flags: ["-l long listing", "-a include hidden files", "-h readable sizes"]),
+        .init(command: "find", synopsis: "find [path] [expression]", summary: "Find files by name, type, age, or other properties.", examples: ["find . -type f", "find . -name '*.swift'", "find . -maxdepth 2 -type d"], flags: ["-name pattern", "-type f/d", "-maxdepth levels"]),
         .init(command: "rg", synopsis: "rg [pattern] [path]", summary: "Fast recursive text search (ripgrep).", examples: ["rg TODO", "rg -n 'func ' Sources", "rg --files"], flags: ["-n line numbers", "--files list tracked candidates", "-g glob filter"]),
+        .init(command: "grep", synopsis: "grep [options] pattern [file]", summary: "Search text streams and files for matching lines.", examples: ["grep -n error app.log", "grep -R 'needle' ."], flags: ["-n line numbers", "-i ignore case", "-R recursive"]),
+        .init(command: "cat", synopsis: "cat [file ...]", summary: "Print or concatenate files.", examples: ["cat README.md", "cat part-* > combined"], flags: ["-n number lines"]),
+        .init(command: "less", synopsis: "less [file]", summary: "Read long output in a searchable pager.", examples: ["less app.log", "git log | less"], flags: ["/ search", "n next match", "q quit"]),
+        .init(command: "head", synopsis: "head [-n count] [file]", summary: "Print the beginning of a file or stream.", examples: ["head -n 20 app.log"], flags: ["-n number of lines"]),
+        .init(command: "tail", synopsis: "tail [-f] [-n count] [file]", summary: "Print or follow the end of a file.", examples: ["tail -n 50 app.log", "tail -f server.log"], flags: ["-f follow changes", "-n line count"]),
+        .init(command: "mkdir", synopsis: "mkdir [-p] directory", summary: "Create directories.", examples: ["mkdir build", "mkdir -p output/reports"], flags: ["-p create parents"]),
+        .init(command: "cp", synopsis: "cp [options] source destination", summary: "Copy files or directories.", examples: ["cp config.example config", "cp -R assets backup/"], flags: ["-R recursive", "-i confirm overwrite"]),
+        .init(command: "mv", synopsis: "mv source destination", summary: "Move or rename files and directories.", examples: ["mv old.txt new.txt", "mv report.pdf archive/"], flags: ["-i confirm overwrite", "-n never overwrite"]),
+        .init(command: "rm", synopsis: "rm [options] path", summary: "Remove files. Review recursive targets carefully.", examples: ["rm file.tmp", "rm -i old.txt"], flags: ["-i confirm", "-r recursive", "-f force"]),
+        .init(command: "chmod", synopsis: "chmod mode file", summary: "Change file permissions.", examples: ["chmod +x script.sh", "chmod 600 secret.env"], flags: ["+x executable", "600 owner read/write", "755 executable/public read"]),
+        .init(command: "ps", synopsis: "ps [options]", summary: "Inspect running processes.", examples: ["ps aux", "ps aux | rg server"], flags: ["aux all user processes"]),
+        .init(command: "kill", synopsis: "kill [-signal] pid", summary: "Send a signal to a process.", examples: ["kill 1234", "kill -TERM 1234"], flags: ["-TERM graceful stop", "-KILL immediate stop"]),
+        .init(command: "curl", synopsis: "curl [options] URL", summary: "Transfer data to or from HTTP and other endpoints.", examples: ["curl -i https://example.com", "curl -X POST -H 'Content-Type: application/json' -d '{}' https://example.com"], flags: ["-i headers", "-L follow redirects", "-X method", "-d body"]),
+        .init(command: "ssh", synopsis: "ssh [user@]host", summary: "Open an encrypted remote shell. The Files panel follows hosts available through keys or ssh-agent.", examples: ["ssh server", "ssh user@server"], flags: ["-p port", "-i identity file", "-L local forwarding"]),
+        .init(command: "scp", synopsis: "scp source destination", summary: "Copy files over SSH.", examples: ["scp file.txt user@host:/tmp/", "scp user@host:/var/log/app.log ."], flags: ["-r recursive", "-P port"]),
+        .init(command: "tar", synopsis: "tar [options] archive files", summary: "Create or extract archives.", examples: ["tar -czf archive.tgz folder", "tar -xzf archive.tgz"], flags: ["-c create", "-x extract", "-z gzip", "-f archive"]),
         .init(command: "git", synopsis: "git <command> [options]", summary: "Inspect and manage a Git repository.", examples: ["git status", "git diff", "git log --oneline -10"], flags: ["status working tree", "diff uncommitted changes", "switch change branch"]),
         .init(command: "swift", synopsis: "swift <subcommand>", summary: "Build, test, and run Swift packages.", examples: ["swift test", "swift build", "swift run"], flags: ["test run package tests", "build compile package", "run run executable"]),
         .init(command: "python3", synopsis: "python3 [script.py]", summary: "Run Python 3 or start an interactive interpreter.", examples: ["python3 script.py", "python3 -m json.tool file.json"], flags: ["-m run a module", "-c execute a short expression"]),
         .init(command: "npm", synopsis: "npm <command>", summary: "Run Node package scripts and manage dependencies.", examples: ["npm run", "npm test", "npm run dev"], flags: ["run list or execute scripts", "test run test script"]),
+        .init(command: "brew", synopsis: "brew <command> [formula]", summary: "Install and manage Homebrew packages.", examples: ["brew search ripgrep", "brew install ripgrep", "brew update"], flags: ["search", "install", "upgrade", "info"]),
+        .init(command: "docker", synopsis: "docker <command>", summary: "Build and run containers.", examples: ["docker ps", "docker compose up", "docker logs -f container"], flags: ["ps containers", "compose multi-container", "logs output"]),
+        .init(command: "kubectl", synopsis: "kubectl <command> [resource]", summary: "Inspect and manage Kubernetes resources.", examples: ["kubectl get pods", "kubectl describe pod name", "kubectl logs -f pod"], flags: ["-n namespace", "get", "describe", "logs"]),
+        .init(command: "vim", synopsis: "vim [file]", summary: "Edit a file with Vim's Normal, Insert, and Command modes.", examples: ["vim README.md", "vim +42 Sources/App.swift"], flags: ["i insert", "Esc normal", ":w save", ":q quit"]),
+        .init(command: "nano", synopsis: "nano [file]", summary: "Edit a file with visible Control-key commands.", examples: ["nano README.md", "nano +42 app.conf"], flags: ["Control-O save", "Control-X exit", "Control-W find"]),
         .init(command: "man", synopsis: "man <command>", summary: "Read a command's local manual page.", examples: ["man git", "man ls", "man 1 printf"], flags: ["q quit pager", "/ search within manual", "n next match"])
     ]
 }
@@ -347,6 +370,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private var manualCache: [String: String] = [:]
     private var pendingCommandBytes: [UInt8] = []
     private var discardingEscapeSequence = false
+    private var activeEditor: TerminalEditorOverlayController.Editor?
 
     override init() {
         commandHistory = Array(UserDefaults.standard.stringArray(forKey: "terminalAssistantHistory") ?? []).prefix(24).map { $0 }
@@ -541,13 +565,17 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
             return
         }
         let primary = TerminalWorkspaceInput.primaryCommand(in: command)?.lowercased() ?? "command"
+        if ["vi", "vim", "nvim"].contains(primary) { setActiveEditor(.vim) }
+        else if primary == "nano" { setActiveEditor(.nano) }
+        else { setActiveEditor(nil) }
         if primary == "exit", activeRemoteTarget != nil {
             activeRemoteTarget = nil
             explorer.setDirectory(workingDirectory)
             activeContext = "Returning to local shell"
         } else {
             activeContext = contextDescription(for: primary)
-            if let reference = TerminalCommandReference.catalog.first(where: { $0.command == primary }) {
+            let manualCommand = ["vi", "nvim"].contains(primary) ? "vim" : primary
+            if let reference = TerminalCommandReference.catalog.first(where: { $0.command == manualCommand }) {
                 selectedReference = reference
                 if helpVisible { loadManualIfNeeded() }
             }
@@ -658,9 +686,15 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         terminalTitle = title.isEmpty ? "Local zsh" : title
         let normalized = title.lowercased()
-        if normalized.contains("vim") { onEditorChanged?(.vim) }
-        else if normalized.contains("nano") { onEditorChanged?(.nano) }
-        else { onEditorChanged?(nil) }
+        if normalized.contains("vim") || normalized.contains("nvim") { setActiveEditor(.vim) }
+        else if normalized.contains("nano") { setActiveEditor(.nano) }
+        else if normalized.contains("zsh") || normalized.contains("shell") { setActiveEditor(nil) }
+    }
+
+    private func setActiveEditor(_ editor: TerminalEditorOverlayController.Editor?) {
+        guard activeEditor != editor else { return }
+        activeEditor = editor
+        onEditorChanged?(editor)
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
@@ -680,7 +714,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         isLive = false
         directoryTimer?.invalidate()
         directoryTimer = nil
-        onEditorChanged?(nil)
+        setActiveEditor(nil)
         activeRemoteTarget = nil
         guard !shuttingDown, restartWhenTerminated else { return }
         restartWhenTerminated = false
@@ -926,9 +960,7 @@ private struct TerminalExplorerPanel: View {
             Text(model.displayPath).limaFont(.caption2.monospaced()).foregroundStyle(.secondary).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
             if let root = model.explorer.root {
                 ScrollView {
-                    OutlineGroup([root], children: \.children) { node in
-                        TerminalExplorerRow(node: node, model: model)
-                    }
+                    TerminalTree(node: root, model: model)
                     .limaFont(.system(size: 11.2))
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }.frame(maxHeight: .infinity)
@@ -939,6 +971,50 @@ private struct TerminalExplorerPanel: View {
         }
         .padding(10)
         .liquidGlass(cornerRadius: 15, depth: .floating, accentOpacity: 0.018)
+    }
+}
+
+private struct TerminalTree: View {
+    let node: TerminalFileNode
+    @ObservedObject var model: DeveloperTerminalModel
+    @State private var expanded: Set<String> = []
+
+    var body: some View {
+        TerminalTreeBranch(node: node, depth: 0, expanded: $expanded, model: model)
+            .onAppear { expanded.insert(node.id) }
+            .onChange(of: node.id) { id in expanded = [id] }
+    }
+}
+
+private struct TerminalTreeBranch: View {
+    let node: TerminalFileNode
+    let depth: Int
+    @Binding var expanded: Set<String>
+    @ObservedObject var model: DeveloperTerminalModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 3) {
+                if node.isDirectory {
+                    Button {
+                        if expanded.contains(node.id) { expanded.remove(node.id) } else { expanded.insert(node.id) }
+                    } label: {
+                        Image(systemName: expanded.contains(node.id) ? "chevron.down" : "chevron.right")
+                            .limaFont(.system(size: 8, weight: .bold)).frame(width: 12)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Color.clear.frame(width: 12, height: 1)
+                }
+                TerminalExplorerRow(node: node, model: model)
+            }
+            .padding(.leading, CGFloat(depth) * 13)
+            if node.isDirectory, expanded.contains(node.id), let children = node.children {
+                ForEach(children) { child in
+                    TerminalTreeBranch(node: child, depth: depth + 1, expanded: $expanded, model: model)
+                }
+            }
+        }
     }
 }
 
@@ -975,7 +1051,7 @@ final class TerminalEditorOverlayController {
     private let panel: NSPanel
 
     init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 650, height: 48), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 64), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
         panel.level = .statusBar
         panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
@@ -999,19 +1075,23 @@ private struct TerminalEditorOverlayView: View {
     let dismiss: () -> Void
     private var keys: [(String, String)] {
         switch editor {
-        case .vim: return [("i", "Insert"), ("esc", "Normal"), (":w", "Save"), (":q", "Quit"), ("dd", "Delete"), ("/", "Find")]
-        case .nano: return [("⌃O", "Save"), ("⌃X", "Exit"), ("⌃W", "Find"), ("⌃K", "Cut"), ("⌃U", "Paste")]
+        case .vim: return [("i", "Insert"), ("Esc", "Normal"), (":w", "Save"), (":q", "Quit"), (":wq", "Save + quit"), ("u", "Undo"), ("⌃R", "Redo"), ("dd", "Delete line"), ("yy / p", "Copy / paste"), ("/ / n", "Find / next")]
+        case .nano: return [("⌃O ↩", "Save"), ("⌃X", "Exit"), ("⌃W", "Find"), ("⌃K", "Cut line"), ("⌃U", "Paste"), ("⌥U", "Undo"), ("⌥E", "Redo"), ("⌃_", "Go to line"), ("⌃C", "Position")]
         }
     }
     var body: some View {
         HStack(spacing: 11) {
             Text(editor == .vim ? "VIM" : "NANO").limaFont(.caption2.bold()).foregroundStyle(SettingsStore.shared.accentTheme.primary)
-            ForEach(Array(keys.enumerated()), id: \.offset) { _, item in HStack(spacing: 4) { Text(item.0).limaFont(.caption.monospaced().bold()); Text(item.1).limaFont(.caption2).foregroundStyle(.secondary) } }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 11) {
+                    ForEach(Array(keys.enumerated()), id: \.offset) { _, item in HStack(spacing: 4) { Text(item.0).limaFont(.caption.monospaced().bold()); Text(item.1).limaFont(.caption2).foregroundStyle(.secondary) } }
+                }
+            }
             Spacer(minLength: 0)
             Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.plain).help("Close editor shortcut guide")
         }
-        .padding(.horizontal, 14).frame(width: 650, height: 48)
-        .background(.ultraThinMaterial, in: Capsule()).overlay(Capsule().stroke(Color.white.opacity(0.2), lineWidth: 0.8))
+        .padding(.horizontal, 14).frame(width: 880, height: 64)
+        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 10)).overlay(PrismaticPanelShape(cut: 10).stroke(Color.white.opacity(0.2), lineWidth: 0.8))
         .shadow(color: .black.opacity(0.35), radius: 18, y: 8).preferredColorScheme(.dark)
     }
 }

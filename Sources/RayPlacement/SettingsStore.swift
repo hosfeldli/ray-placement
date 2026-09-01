@@ -213,6 +213,7 @@ final class SettingsStore: ObservableObject {
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
         static let sqlShortcut = "sqlShortcut"
         static let sqlHotkeyEnabled = "sqlHotkeyEnabled"
+        static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let interfaceDensity = "interfaceDensity"
         static let clipboardEnabled = "clipboardEnabled"
@@ -345,6 +346,13 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(sqlHotkeyEnabled, forKey: Key.sqlHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
     }
 
+    @Published var accessoryMouseBindings: [String: String] {
+        didSet {
+            defaults.set(accessoryMouseBindings, forKey: Key.accessoryMouseBindings)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
     @Published var accentTheme: AppAccentTheme {
         didSet {
             defaults.set(accentTheme.rawValue, forKey: Key.accentTheme)
@@ -433,6 +441,7 @@ final class SettingsStore: ObservableObject {
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         sqlShortcut = defaults.string(forKey: Key.sqlShortcut) ?? "control+option+s"
         sqlHotkeyEnabled = defaults.object(forKey: Key.sqlHotkeyEnabled) as? Bool ?? false
+        accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
@@ -571,6 +580,16 @@ final class SettingsStore: ObservableObject {
 
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
     func restoreSQLShortcut(_ shortcut: String) { isRestoringActionShortcut = true; sqlShortcut = shortcut; isRestoringActionShortcut = false }
+
+    func accessoryMouseAction(for button: Int) -> AccessoryMouseAction {
+        accessoryMouseBindings[String(button)].flatMap(AccessoryMouseAction.init(rawValue:)) ?? .none
+    }
+
+    func setAccessoryMouseAction(_ action: AccessoryMouseAction, for button: Int) {
+        guard (3...8).contains(button) else { return }
+        if action == .none { accessoryMouseBindings.removeValue(forKey: String(button)) }
+        else { accessoryMouseBindings[String(button)] = action.rawValue }
+    }
 
     func resetWritingInstructions() {
         writingInstructions = Self.defaultWritingInstructions

@@ -541,17 +541,9 @@ final class LauncherViewModel: ObservableObject {
         if cleanQuery.isEmpty {
             matching = EmojiCatalog.entries
         } else {
-            let normalized = cleanQuery.lowercased()
-            let exact = EmojiCatalog.entries.filter {
-                $0.emoji.contains(cleanQuery) || $0.searchableText.contains(normalized)
-            }
+            let exact = EmojiCatalog.search(cleanQuery)
             if !exact.isEmpty {
-                matching = exact.sorted { first, second in
-                    let firstPrefix = first.name.lowercased().hasPrefix(normalized)
-                    let secondPrefix = second.name.lowercased().hasPrefix(normalized)
-                    if firstPrefix != secondPrefix { return firstPrefix }
-                    return first.name < second.name
-                }
+                matching = exact
             } else {
                 matching = EmojiCatalog.entries.compactMap { entry -> (EmojiEntry, Double)? in
                     guard let fuzzy = FuzzyMatcher.score(entry.searchableText, query: cleanQuery) else { return nil }

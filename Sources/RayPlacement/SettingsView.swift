@@ -459,6 +459,29 @@ struct SettingsView: View {
                 )
             }
 
+            Section("Accessory mouse buttons") {
+                Text("Bind extra mouse buttons to Lima or macOS navigation. Previous and Next Desktop use the standard Control–Left/Right actions.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                ForEach(3...8, id: \.self) { button in
+                    HStack {
+                        Label("Mouse button \(button + 1)", systemImage: "computermouse")
+                            .limaFont(.callout.weight(.medium))
+                        Spacer()
+                        Picker("Mouse button \(button + 1) action", selection: Binding(
+                            get: { settings.accessoryMouseAction(for: button) },
+                            set: { settings.setAccessoryMouseAction($0, for: button) }
+                        )) {
+                            ForEach(AccessoryMouseAction.allCases) { action in
+                                Text(action.title).tag(action)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(width: 190)
+                    }
+                }
+            }
+
             Section("Startup") {
                 Toggle("Start Lima when I log in", isOn: Binding(
                     get: { settings.launchAtLogin },

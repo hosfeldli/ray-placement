@@ -1,4 +1,4 @@
-# Lima 3.4.1
+# Lima 3.5.0
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
@@ -14,6 +14,8 @@ Version 3.4 makes the launcher pointer-stable: hovering a result updates its hig
 
 Version 3.4.1 repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
 
+Version 3.5 adds per-button accessory-mouse bindings for Lima tools and macOS navigation, including Previous/Next Desktop, Mission Control, application windows, and window back/forward. Emoji lookup now uses a pre-indexed ranked search and a bounded result page, while emoji selection performs a focus-aware paste transaction and restores the previous clipboard. SQL schema clutter filters hide TEMP and short-affix names by default, remain configurable per connection, and support exact always-show overrides; join suggestions now require real foreign-key columns on both visible tables. Developer Terminal adds a true indented directory tree, expanded command guidance, and compact Vim/Nano key guides.
+
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
@@ -28,6 +30,7 @@ Run the bundled **Uninstall Lima** extension to remove the app from within Lima.
 - Pointer hover never moves the result list. Arrow-key and page navigation keep the selected command visible without fighting trackpad scrolling.
 - Configure or disable every extension shortcut independently in **Settings → Extensions**.
 - Configure launcher, Notes, dictation, dock-left, and dock-right shortcuts in **Settings → General**.
+- Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, Terminal, and SQL Workspace.
 - Regular RayPlacement tools join one native macOS tabbed window by default. Use the standard Window menu or drag a tab to break it into a separate window.
 - Background extension work reports compact progress without blocking the launcher.
 
@@ -77,7 +80,8 @@ SQL Workspace is a native Oracle and MySQL client that uses the installed `sqlpl
 - Discover all objects visible to the connected account: tables, views, columns and descriptions, primary/foreign-key constraints, indexes, and procedures/functions.
 - Oracle column discovery runs in owner-specific batches of up to 25 tables instead of one unbounded catalog scan. A timed-out batch is retried in smaller halves, down to a single table, with a 120-second deadline per query. Progress identifies the schema, current table batch, and completed work; discovered metadata appears incrementally and is saved as **Partial schema** if a later query fails. Other stages read tables/views, indexes, constraints, relationships, and procedures. SQLPlus MARKUP CSV (12.2 or newer) preserves quoted/multiline metadata, including LONG column defaults, and output is drained continuously.
 - In **Edit connection → Discovery schemas**, optionally enter exact Oracle owner names separated by commas, or choose **My schema**. Empty means every accessible schema. The filter also limits indexes, constraints, relationships, and procedures; MySQL remains limited to its selected database. Broad accounts can still take longer, but completed column batches are no longer discarded by a later timeout.
-- Drag schema tables into the visual canvas or free-SQL editor. The join panel proposes foreign-key-compatible joins and inserts their exact predicates.
+- Drag schema tables into the visual canvas or free-SQL editor. The join panel proposes only foreign-key relationships whose source and destination tables and columns are present in discovered metadata, then inserts their exact predicates.
+- TEMP names and names with one or two characters immediately before or after an underscore are hidden from the schema browser by default. Configure these filters per connection, reveal all filtered objects from the sidebar, or mark an exact qualified table name as **Always show** when a legitimate object was caught.
 - SQL Workspace caches each connection’s password in memory for the current app session after its first Keychain read. **Manage connections → Lock credential session** clears the cache; sleep, user-session deactivation, and workspace shutdown also clear it. Passwords are never part of the saved block flows. This removes repeated Keychain prompts, not the underlying command-line client’s per-query connection setup.
 - The schema browser puts exact table-name/qualified-name matches first, then prefixes, substring matches, and column matches. Its **Owner** picker filters tables, views, and procedures independently of discovery scope.
 - **Query blocks** provides a compact connected flow: source tables, SELECT/DISTINCT, INNER/LEFT/RIGHT/FULL/CROSS joins with editable conditions, nested AND/OR/NOT filters, GROUP BY, COUNT/SUM/AVG/MIN/MAX, HAVING, sorting, and row limits. Text/number/column values, IN lists (one value per line), ranges, NULL checks, LIKE, and custom SQL conditions are supported. Drag palette blocks into the flow; reorder joins, aggregates, sorts, and sibling filters by dragging. SQL clause categories stay in valid SQL order. Free SQL remains available for arbitrary statements and advanced dialect-specific syntax.
@@ -114,7 +118,7 @@ Writing Check captures the exact current selection through a Copy transaction, i
 
 - **Password Generator** — cryptographically secure local passwords, length 8–128, selected character classes, ambiguous-character exclusion, entropy display, and copy
 - **Document Formatter** — a dedicated temporary workspace for EDI, JSON, and XML; pretty/minify, validation, search, EDI delimiter detection and swapping, field inspection, and common transaction/envelope checks
-- **Emoji Picker** — searchable emoji paste; default double Command
+- **Emoji Picker** — the complete paged Unicode keyboard set with ranked aliases, fast bounded lookup, focus-aware paste, and automatic clipboard restoration; default double Command
 - **Focused File Launcher** — Finder-backed file/folder selection with a choice of any installed destination app
 - **Convert Timezones** — offline daylight-saving-aware conversion
 - **Force Quit Application / All Applications** — explicit confirmation; the all-app action always excludes RayPlacement

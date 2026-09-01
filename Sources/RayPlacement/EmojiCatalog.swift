@@ -7,12 +7,64 @@ struct EmojiEntry: Identifiable, Sendable {
     let group: String
     let keywords: [String]
     let searchableText: String
+    /// Parsed once when the Unicode catalog loads. Search used to rebuild this
+    /// set for every emoji on every keystroke, which made short queries feel
+    /// disproportionately expensive.
+    let searchWords: Set<String>
 }
 
 enum EmojiCatalog {
     /// Unicode's fully-qualified RGI keyboard set. Parsing is intentionally lazy:
     /// the ~650 KB source is touched only when the picker is first opened.
     static let entries: [EmojiEntry] = loadEntries()
+
+    static func search(_ query: String) -> [EmojiEntry] {
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return entries }
+        let tokens = clean.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
+        guard !tokens.isEmpty else { return entries.filter { $0.emoji.contains(clean) } }
+
+        return entries.compactMap { entry -> (EmojiEntry, Int)? in
+            let name = entry.name.lowercased()
+            let words = entry.searchWords
+            if entry.emoji.contains(clean) { return (entry, 1_000) }
+            var score = name == clean ? 900 : (name.hasPrefix(clean) ? 820 : 0)
+            for token in tokens {
+                let alternatives = [token] + (queryAliases[token] ?? [])
+                let exact = alternatives.contains { words.contains($0) }
+                let prefix = !exact && alternatives.contains { alternative in words.contains { $0.hasPrefix(alternative) } }
+                let contained = !exact && !prefix && alternatives.contains { entry.searchableText.contains($0) }
+                guard exact || prefix || contained else { return nil }
+                score += exact ? 90 : (prefix ? 60 : 35)
+            }
+            if name.contains(clean) { score += 120 }
+            return (entry, score)
+        }
+        .sorted {
+            if $0.1 == $1.1 { return $0.0.name.localizedStandardCompare($1.0.name) == .orderedAscending }
+            return $0.1 > $1.1
+        }
+        // Empty search still exposes the full paged catalog. A typed search is
+        // intentionally bounded so SwiftUI never receives thousands of nearly
+        // identical one-letter matches.
+        .prefix(360)
+        .map(\.0)
+    }
+
+    private static let queryAliases: [String: [String]] = [
+        "happy": ["smile", "grin", "joy"], "smiley": ["smile", "grinning"],
+        "laugh": ["laughing", "joy", "tears"], "funny": ["laugh", "joy"],
+        "sad": ["frown", "cry", "tear"], "angry": ["mad", "rage"],
+        "love": ["heart", "kiss"], "like": ["thumb", "up"], "dislike": ["thumb", "down"],
+        "yes": ["check", "thumb", "up"], "no": ["cross", "thumb", "down"],
+        "ok": ["okay", "check"], "party": ["celebration", "popper"],
+        "warning": ["caution", "alert"], "idea": ["bulb", "light"],
+        "email": ["mail", "envelope"], "money": ["cash", "currency", "dollar"],
+        "computer": ["laptop", "desktop"], "phone": ["telephone", "mobile"],
+        "work": ["briefcase", "office"], "food": ["meal", "fruit", "vegetable"],
+        "car": ["automobile", "vehicle"], "plane": ["airplane", "flight"],
+        "thinking": ["think", "ponder"], "shrug": ["shrugging"]
+    ]
 
     private static func loadEntries() -> [EmojiEntry] {
         guard let url = resourceURL(),
@@ -60,7 +112,8 @@ enum EmojiCatalog {
                 name: name.prefix(1).uppercased() + name.dropFirst(),
                 group: group,
                 keywords: Array(Set(words)).sorted(),
-                searchableText: searchIndex
+                searchableText: searchIndex,
+                searchWords: Set(words)
             ))
         }
         return result.isEmpty ? fallbackEntries : result
@@ -108,7 +161,11 @@ enum EmojiCatalog {
             name: name,
             group: group,
             keywords: keywords.split(separator: " ").map(String.init),
-            searchableText: "\(name) \(group) \(keywords)".lowercased()
+            searchableText: "\(name) \(group) \(keywords)".lowercased(),
+            searchWords: Set("\(name) \(group) \(keywords)"
+                .lowercased()
+                .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                .filter { !$0.isEmpty })
         )
     }
 }

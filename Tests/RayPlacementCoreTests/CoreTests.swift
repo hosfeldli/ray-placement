@@ -49,11 +49,33 @@ import Testing
         destinationTable: "ops.customers",
         destinationColumn: "id"
     )
-    let snapshot = SQLSchemaSnapshot(profileID: UUID(), foreignKeys: [key])
+    let orders = SQLTable(schema: "ops", name: "orders", columns: [SQLColumn(name: "customer_id", dataType: "NUMBER", nullable: false, ordinal: 1)])
+    let customers = SQLTable(schema: "ops", name: "customers", columns: [SQLColumn(name: "id", dataType: "NUMBER", nullable: false, ordinal: 1)])
+    let snapshot = SQLSchemaSnapshot(profileID: UUID(), tables: [orders, customers], foreignKeys: [key])
     let joins = snapshot.joins(for: ["ops.orders"])
     #expect(joins.count == 1)
     #expect(joins.first?.toTable == "ops.customers")
     #expect(snapshot.joins(for: ["ops.orders", "ops.customers"]).isEmpty)
+
+    let incomplete = SQLSchemaSnapshot(profileID: UUID(), tables: [orders, SQLTable(schema: "ops", name: "customers")], foreignKeys: [key])
+    #expect(incomplete.joins(for: ["ops.orders"]).isEmpty)
+}
+
+@Test func schemaClutterFiltersCanBeConfiguredAndOverridden() {
+    var profile = SQLConnectionProfile(name: "Test", environment: "Dev", driver: .oracle, host: "db", database: "svc", username: "user")
+    let filter = SQLSchemaFilter(profile: profile)
+    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "TEMP_EXPORT")))
+    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "AB_ORDERS")))
+    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS_X")))
+    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS")))
+    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "_ORDERS")))
+    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS_")))
+
+    profile.tableIncludeOverrides = ["OPS.AB_ORDERS"]
+    profile.tableExclusionTerms = ["ARCHIVE"]
+    let customized = SQLSchemaFilter(profile: profile)
+    #expect(!customized.isHidden(SQLTable(schema: "OPS", name: "AB_ORDERS")))
+    #expect(customized.isHidden(SQLTable(schema: "OPS", name: "ORDERS_ARCHIVE")))
 }
 
 @Test func calculatorPrecedenceAndParentheses() throws {

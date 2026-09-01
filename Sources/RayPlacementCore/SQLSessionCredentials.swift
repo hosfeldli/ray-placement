@@ -59,16 +59,20 @@ public struct SQLSchemaIndex: Sendable {
         tablesByID = Dictionary(sorted.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
     }
 
-    public func tables(query: String, owner: String, kind: String) -> [SQLTable] {
+    public func tables(query: String, owner: String, kind: String, filter: SQLSchemaFilter = .permissive) -> [SQLTable] {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         var buckets = [[SQLTable]](repeating: [], count: 4)
-        for entry in entries where (owner.isEmpty || entry.table.schema == owner) && entry.table.kind.uppercased().contains(kind) {
+        for entry in entries where (owner.isEmpty || entry.table.schema == owner) && entry.table.kind.uppercased().contains(kind) && !filter.isHidden(entry.table) {
             if query.isEmpty || entry.name == query || entry.qualified == query { buckets[0].append(entry.table) }
             else if entry.name.hasPrefix(query) { buckets[1].append(entry.table) }
             else if entry.qualified.contains(query) { buckets[2].append(entry.table) }
             else if entry.columns.contains(where: { $0.contains(query) }) { buckets[3].append(entry.table) }
         }
         return buckets.flatMap { $0 }
+    }
+
+    public func hiddenTableCount(filter: SQLSchemaFilter) -> Int {
+        entries.reduce(into: 0) { if filter.isHidden($1.table) { $0 += 1 } }
     }
 
     public func procedures(query: String, owner: String) -> [SQLProcedure] {

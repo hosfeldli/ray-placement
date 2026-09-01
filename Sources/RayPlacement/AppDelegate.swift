@@ -7,6 +7,7 @@ import ServiceManagement
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
+    private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
     private lazy var updateProgressWindow = UpdateProgressWindowController(service: updateService)
     private var launcher: LauncherController!
@@ -52,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureStatusItem()
         registerActivationHotkey()
         registerActionHotkeys()
+        configureAccessoryMouseBindings()
         registerExtensionHotkeys()
         installObservers()
         let isShowingUpdateResult = configureUpdates()
@@ -86,6 +88,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launcher?.shutdown()
         UsageMonitor.shared.flush()
         hotKeys.unregisterAll()
+        accessoryMouse.stop()
         observers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -196,6 +199,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] in self?.launcher.showSQLWorkspace() }
     }
 
+    private func configureAccessoryMouseBindings() {
+        accessoryMouse.start(bindings: SettingsStore.shared.accessoryMouseBindings) { [weak self] action, application in
+            self?.performAccessoryMouseAction(action, sourceApplication: application)
+        }
+    }
+
+    private func performAccessoryMouseAction(_ action: AccessoryMouseAction, sourceApplication: NSRunningApplication?) {
+        switch action {
+        case .none: break
+        case .previousDesktop: postShortcut(keyCode: 123, flags: .maskControl)
+        case .nextDesktop: postShortcut(keyCode: 124, flags: .maskControl)
+        case .missionControl: postShortcut(keyCode: 126, flags: .maskControl)
+        case .applicationWindows: postShortcut(keyCode: 125, flags: .maskControl)
+        case .previousWindow: postShortcut(keyCode: 50, flags: .maskCommand)
+        case .back: postShortcut(keyCode: 33, flags: .maskCommand)
+        case .forward: postShortcut(keyCode: 30, flags: .maskCommand)
+        case .launcher: launcher.toggle(from: sourceApplication)
+        case .notes: launcher.showNotes()
+        case .quickNote: launcher.showQuickNote()
+        case .dictation: launcher.showNotesAndToggleDictation()
+        case .terminal: launcher.showDeveloperTerminal()
+        case .sqlWorkspace: launcher.showSQLWorkspace()
+        }
+    }
+
+    private func postShortcut(keyCode: CGKeyCode, flags: CGEventFlags) {
+        guard WindowManager.trusted(prompt: true),
+              let source = CGEventSource(stateID: .combinedSessionState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) else { return }
+        down.flags = flags
+        up.flags = flags
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
     private func registerActionHotkey(
         identifier: String,
         displayName: String,
@@ -266,7 +305,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.registerActionHotkeys() }
+            Task { @MainActor in
+                self?.registerActionHotkeys()
+                self?.accessoryMouse.update(bindings: SettingsStore.shared.accessoryMouseBindings)
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .rayPlacementExtensionsReloadRequested,

@@ -160,8 +160,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             toast.show("Copied to the clipboard")
 
         case .pasteText(let text):
-            clipboard.copy(text)
-            pasteIntoPreviousApplication()
+            pasteTextIntoPreviousApplication(
+                text,
+                successMessage: item.id.hasPrefix("emoji.") ? "Pasted \(text)" : "Pasted text"
+            )
 
         case .replaceSelectedText(let text):
             replaceSelectedText(text)
@@ -576,6 +578,63 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 )
             } catch {
                 self.postPasteShortcut(into: previousApplication, successMessage: "Pasted as plain text")
+            }
+        }
+    }
+
+    private func pasteTextIntoPreviousApplication(_ text: String, successMessage: String) {
+        hide()
+        guard let previousApplication, !previousApplication.isTerminated else {
+            clipboard.copy(text)
+            presentError(title: "Paste", message: "The source app is no longer available. The text was copied instead.")
+            return
+        }
+        guard WindowManager.trusted(prompt: true) else {
+            clipboard.copy(text)
+            presentError(title: "Paste", message: "Enable Lima in Accessibility to paste automatically. The text was copied instead.")
+            return
+        }
+        previousApplication.unhide()
+        previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+            guard let self else { return }
+            // Prefer the live Accessibility insertion range. This avoids a
+            // clipboard/key-event race in native editors and is especially
+            // important for multi-scalar emoji. Browser, Electron, Office,
+            // terminal, and protected fields fall back to an atomic Cmd-V.
+            do {
+                let context: SelectedTextService.SelectionContext
+                if let focused = self.focusedTextContext,
+                   focused.processIdentifier == previousApplication.processIdentifier {
+                    context = focused
+                } else {
+                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
+                }
+                try SelectedTextService.replaceSelectedText(text, using: context)
+                self.focusedTextContext = nil
+                self.toast.show(successMessage)
+            } catch {
+                self.pasteTextWithKeyboard(
+                    text,
+                    into: previousApplication,
+                    successMessage: successMessage
+                )
+            }
+        }
+    }
+
+    private func pasteTextWithKeyboard(
+        _ text: String,
+        into application: NSRunningApplication,
+        successMessage: String
+    ) {
+        KeyboardSelectionService.paste(text, into: application, clipboardHistory: clipboard) { [weak self] result in
+            switch result {
+            case .success:
+                self?.toast.show(successMessage)
+            case .failure(let error):
+                self?.clipboard.copy(text)
+                self?.presentError(title: "Paste", message: "Lima could not restore focus and paste. The text was copied instead. \(error.localizedDescription)")
             }
         }
     }

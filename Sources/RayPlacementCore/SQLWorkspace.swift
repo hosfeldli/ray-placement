@@ -71,6 +71,12 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
     public var commandPath: String
     /// Empty/nil keeps all accessible schemas. Names are exact Oracle owners.
     public var discoverySchemas: [String]?
+    /// Optional clutter filters. Nil preserves the new safe defaults when
+    /// decoding older profiles.
+    public var hideTemporaryTables: Bool?
+    public var hideShortAffixTables: Bool?
+    public var tableExclusionTerms: [String]?
+    public var tableIncludeOverrides: [String]?
 
     public init(
         id: UUID = UUID(),
@@ -82,7 +88,11 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         database: String,
         username: String,
         commandPath: String? = nil,
-        discoverySchemas: [String]? = nil
+        discoverySchemas: [String]? = nil,
+        hideTemporaryTables: Bool? = true,
+        hideShortAffixTables: Bool? = true,
+        tableExclusionTerms: [String]? = nil,
+        tableIncludeOverrides: [String]? = nil
     ) {
         self.id = id
         self.name = name
@@ -94,9 +104,59 @@ public struct SQLConnectionProfile: Codable, Identifiable, Hashable, Sendable {
         self.username = username
         self.commandPath = commandPath ?? driver.defaultCommand
         self.discoverySchemas = discoverySchemas
+        self.hideTemporaryTables = hideTemporaryTables
+        self.hideShortAffixTables = hideShortAffixTables
+        self.tableExclusionTerms = tableExclusionTerms
+        self.tableIncludeOverrides = tableIncludeOverrides
     }
 
     public var displayLocation: String { "\(host):\(port)/\(database)" }
+}
+
+public struct SQLSchemaFilter: Equatable, Sendable {
+    public var hideTemporaryTables: Bool
+    public var hideShortAffixTables: Bool
+    public var exclusionTerms: [String]
+    public var includeOverrides: Set<String>
+
+    public init(profile: SQLConnectionProfile) {
+        hideTemporaryTables = profile.hideTemporaryTables ?? true
+        hideShortAffixTables = profile.hideShortAffixTables ?? true
+        exclusionTerms = (profile.tableExclusionTerms ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }.filter { !$0.isEmpty }
+        includeOverrides = Set((profile.tableIncludeOverrides ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() }.filter { !$0.isEmpty })
+    }
+
+    public static let permissive = SQLSchemaFilter(
+        hideTemporaryTables: false,
+        hideShortAffixTables: false,
+        exclusionTerms: [],
+        includeOverrides: []
+    )
+
+    public init(hideTemporaryTables: Bool, hideShortAffixTables: Bool, exclusionTerms: [String], includeOverrides: Set<String>) {
+        self.hideTemporaryTables = hideTemporaryTables
+        self.hideShortAffixTables = hideShortAffixTables
+        self.exclusionTerms = exclusionTerms
+        self.includeOverrides = includeOverrides
+    }
+
+    public func isHidden(_ table: SQLTable) -> Bool {
+        let name = table.name.uppercased()
+        let qualified = table.qualifiedName.uppercased()
+        if includeOverrides.contains(name) || includeOverrides.contains(qualified) { return false }
+        if hideTemporaryTables && name.contains("TEMP") { return true }
+        if hideShortAffixTables {
+            if let underscore = name.firstIndex(of: "_") {
+                let prefixLength = name.distance(from: name.startIndex, to: underscore)
+                if (1...2).contains(prefixLength) { return true }
+            }
+            if let underscore = name.lastIndex(of: "_") {
+                let suffixLength = name.distance(from: name.index(after: underscore), to: name.endIndex)
+                if (1...2).contains(suffixLength) { return true }
+            }
+        }
+        return exclusionTerms.contains { name.contains($0) || qualified.contains($0) }
+    }
 }
 
 public struct SQLColumn: Codable, Identifiable, Hashable, Sendable {
@@ -227,12 +287,18 @@ public struct SQLSchemaSnapshot: Codable, Hashable, Sendable {
         self.discoveryComplete = discoveryComplete
     }
 
-    public func joins(for tableNames: [String]) -> [SQLJoinSuggestion] {
+    public func joins(for tableNames: [String], filter: SQLSchemaFilter = .permissive) -> [SQLJoinSuggestion] {
         let selected = Set(tableNames)
-        return foreignKeys.compactMap { key in
+        let tablesByName = Dictionary(tables.map { ($0.qualifiedName.uppercased(), $0) }, uniquingKeysWith: { first, _ in first })
+        let viable: [SQLJoinSuggestion] = foreignKeys.compactMap { key -> SQLJoinSuggestion? in
             let sourceSelected = selected.contains(key.sourceTable)
             let destinationSelected = selected.contains(key.destinationTable)
             guard sourceSelected != destinationSelected else { return nil }
+            guard let source = tablesByName[key.sourceTable.uppercased()],
+                  let destination = tablesByName[key.destinationTable.uppercased()],
+                  !filter.isHidden(source), !filter.isHidden(destination),
+                  source.columns.contains(where: { $0.name.caseInsensitiveCompare(key.sourceColumn) == .orderedSame }),
+                  destination.columns.contains(where: { $0.name.caseInsensitiveCompare(key.destinationColumn) == .orderedSame }) else { return nil }
             return SQLJoinSuggestion(
                 name: key.name,
                 fromTable: sourceSelected ? key.sourceTable : key.destinationTable,
@@ -241,7 +307,10 @@ public struct SQLSchemaSnapshot: Codable, Hashable, Sendable {
                 toColumn: sourceSelected ? key.destinationColumn : key.sourceColumn
             )
         }
-        .sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
+        let unique = viable.reduce(into: [SQLJoinSuggestion]()) { result, suggestion in
+            if !result.contains(where: { $0.id.caseInsensitiveCompare(suggestion.id) == .orderedSame }) { result.append(suggestion) }
+        }
+        return unique.sorted { $0.label.localizedStandardCompare($1.label) == .orderedAscending }
     }
 }
 
