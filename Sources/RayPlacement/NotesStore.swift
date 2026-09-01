@@ -106,12 +106,31 @@ final class NotesStore: ObservableObject {
         guard let targetID else { return }
         guard let targetIndex = notes.firstIndex(where: { $0.id == targetID }) else { return }
         let separator = notes[targetIndex].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\n\n"
-        let candidate = notes[targetIndex].content + separator + cleanTranscript
+        let namedTranscript = applySpeakerNames(to: cleanTranscript, names: notes[targetIndex].speakerNames)
+        let candidate = notes[targetIndex].content + separator + namedTranscript
         guard candidate.count <= Self.maximumCharactersPerNote else {
             lastError = "The meeting transcript would exceed this note's \(Self.maximumCharactersPerNote.formatted())-character limit."
             return
         }
         updateNote(targetID) { note in note.content = candidate }
+    }
+
+    func renameSpeakers(_ names: [Int: String]) {
+        guard let selectedNoteID,
+              let index = notes.firstIndex(where: { $0.id == selectedNoteID }) else { return }
+        let oldNames = notes[index].speakerNames
+        updateNote(selectedNoteID) { note in
+            var content = note.content
+            for number in 1...8 {
+                let prior = oldNames[number]?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let oldLabel = (prior?.isEmpty == false ? prior! : "Speaker \(number)")
+                let proposed = names[number]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let newLabel = proposed.isEmpty ? "Speaker \(number)" : proposed
+                content = content.replacingOccurrences(of: "**\(oldLabel):**", with: "**\(newLabel):**")
+            }
+            note.content = content
+            note.speakerNames = names.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        }
     }
 
     func togglePin() {
@@ -162,6 +181,14 @@ final class NotesStore: ObservableObject {
             if $0.isPinned != $1.isPinned { return $0.isPinned }
             if $0.isFavorite != $1.isFavorite { return $0.isFavorite }
             return $0.modifiedAt > $1.modifiedAt
+        }
+    }
+
+    private func applySpeakerNames(to transcript: String, names: [Int: String]) -> String {
+        names.reduce(transcript) { output, entry in
+            let name = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty else { return output }
+            return output.replacingOccurrences(of: "**Speaker \(entry.key):**", with: "**\(name):**")
         }
     }
 

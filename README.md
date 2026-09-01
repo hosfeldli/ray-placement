@@ -1,4 +1,4 @@
-# Lima 3.1
+# Lima 3.4
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
 
@@ -9,6 +9,8 @@ Text generation has been removed. Writing correction uses deterministic local Py
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
 Version 3.3 adds virtualized, filterable SQL results; full-workspace schema and compatible-join dragging; deeper local and remote SSH file trees; context-aware terminal guidance; and administrator-approved protected-folder updates with cancellation-safe rollback.
+
+Version 3.4 makes the launcher pointer-stable: hovering a result updates its highlight without recentering or scrolling the list. Exact command names rank first, every major native workspace is directly searchable, and keyboard navigation remains the only action that intentionally scrolls selection into view. Compact, Balanced, and Comfortable interface densities now resize launcher rows and workspace presentation live. The bundled themes have clearer workflow-oriented names, workspace window positions persist, active-process notifications show elapsed time, and ambient refraction pauses while local processing is active. Notes can persist custom names for detected transcript speakers and apply them to later dictation segments in that note.
 
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
@@ -21,6 +23,7 @@ Run the bundled **Uninstall Lima** extension to remove the app from within Lima.
 ## Main workflow
 
 - Open the launcher with its configurable global shortcut, type to search, and press Return.
+- Pointer hover never moves the result list. Arrow-key and page navigation keep the selected command visible without fighting trackpad scrolling.
 - Configure or disable every extension shortcut independently in **Settings → Extensions**.
 - Configure launcher, Notes, dictation, dock-left, and dock-right shortcuts in **Settings → General**.
 - Regular RayPlacement tools join one native macOS tabbed window by default. Use the standard Window menu or drag a tab to break it into a separate window.
@@ -44,7 +47,7 @@ Developer Terminal is backed by a true local pseudo-terminal through SwiftTerm. 
 
 ## Text size
 
-**Settings → General → Appearance → Text size** changes interface text from **85% to 140%** in 5% steps, with a one-click reset. It applies live to all app-hosted tools, including Markdown text, table cells, and terminal text, without recreating windows or losing edits. The terminal’s own 9–28pt base size is saved separately and multiplied by the global setting. Native macOS menus and file dialogs keep the system’s text sizing.
+**Settings → General → Appearance** provides Compact, Balanced, and Comfortable interface density plus text sizing from **85% to 140%** in 5% steps, with a one-click reset. Both apply live without recreating windows or losing edits. Text scaling covers app-hosted Markdown, table cells, and terminal text; the terminal’s own 9–28pt base size remains separate and is multiplied by the global setting. Native macOS menus and file dialogs keep the system’s text sizing.
 
 New SwiftUI views should use `.limaFont(.system(size: …))` or semantic recipes such as `.limaFont(.caption)`, and host their roots inside `LimaTypographyRoot(content:)`. Native text views should observe `AppTypography.shared.$scale` and update fonts in place. Do not reset a view’s identity to apply typography changes.
 
@@ -89,6 +92,8 @@ Notes open in a dedicated resizable window that can join the workspace, become f
 The editor presents formatted Markdown in place instead of a separate rendered preview. It supports headings, bold, italic, lists, links, code, and native-looking tables. Pasted tabular content is converted into an editable table; table titles and column sorting are supported.
 
 Dictation records durable one-minute audio segments and can continue for hour-plus meetings even if the Notes window closes. A compact speech-level indicator remains visible while recording. Completed segments are transcribed as recording continues, so a final stop has only the remaining queue to process. The local Whisper small.en TinyDiarize build applies bounded room-audio gain, detects pauses for paragraphs, and uses best-effort speaker-turn labels. Settings provide Automatic Metal with CPU fallback, Metal, or CPU compute.
+
+For speaker-aware transcripts, use the note’s **More → Name Transcript Speakers** action. The names are stored with that local note, update existing speaker labels, and are applied automatically to new dictation segments appended to it.
 
 The most-recent-note dictation shortcut opens that note and toggles recording. Local Whisper appends each completed segment during the meeting, while the compact top-screen indicator shows audio levels and progress. The active segment is finished after Stop, and audio remains recoverable until successfully transcribed.
 

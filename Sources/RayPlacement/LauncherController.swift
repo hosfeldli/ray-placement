@@ -903,6 +903,26 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openSQLWorkspace:
             showSQLWorkspace()
 
+        case .openEndpointTester:
+            hide()
+            endpointTesterWindow.present()
+
+        case .openFocusedFileLauncher:
+            hide()
+            focusedFileLauncherWindow.present()
+
+        case .openPasswordGenerator:
+            hide()
+            passwordGeneratorWindow.present()
+
+        case .openFormatter:
+            hide()
+            formatterWindow.present()
+
+        case .openExtensionGuide:
+            hide()
+            extensionDevelopmentWindow.present()
+
         case .openSettings:
             showSettings()
 

@@ -83,6 +83,11 @@ enum SystemAction {
     case toggleNoteDictation
     case openTerminal
     case openSQLWorkspace
+    case openEndpointTester
+    case openFocusedFileLauncher
+    case openPasswordGenerator
+    case openFormatter
+    case openExtensionGuide
     case openSettings
     case quit
 }

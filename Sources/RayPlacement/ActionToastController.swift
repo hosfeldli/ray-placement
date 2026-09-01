@@ -27,6 +27,7 @@ final class ActionToastController {
 
     private let panel: NSPanel
     private var dismissWorkItem: DispatchWorkItem?
+    private var workingStartedAt: Date?
 
     init() {
         panel = NSPanel(
@@ -47,7 +48,12 @@ final class ActionToastController {
 
     func show(_ message: String, style: Style = .success, duration: TimeInterval = 1.4) {
         dismissWorkItem?.cancel()
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ActionToastView(message: message, style: style)))
+        if style == .working {
+            if workingStartedAt == nil { workingStartedAt = Date() }
+        } else {
+            workingStartedAt = nil
+        }
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ActionToastView(message: message, style: style, startedAt: workingStartedAt)))
         let screen = NSScreen.main ?? NSScreen.screens.first
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
@@ -70,6 +76,7 @@ final class ActionToastController {
     func dismiss() {
         dismissWorkItem?.cancel()
         dismissWorkItem = nil
+        workingStartedAt = nil
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.14
             panel.animator().alphaValue = 0
@@ -82,6 +89,7 @@ final class ActionToastController {
 private struct ActionToastView: View {
     let message: String
     let style: ActionToastController.Style
+    let startedAt: Date?
 
     var body: some View {
         HStack(spacing: 9) {
@@ -96,6 +104,12 @@ private struct ActionToastView: View {
                 .limaFont(.system(size: 12.5, weight: .semibold))
                 .lineLimit(2)
             Spacer(minLength: 0)
+            if let startedAt, style == .working {
+                Text(startedAt, style: .timer)
+                    .limaFont(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
         }
         .padding(.horizontal, 14)
         .frame(width: 360, height: 44)

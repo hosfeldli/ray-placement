@@ -19,7 +19,7 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: 704, height: 466)
+        .frame(width: settings.interfaceDensity.launcherWidth, height: settings.interfaceDensity.launcherHeight)
         .clipShape(PrismaticPanelShape(cut: 18))
         .overlay(
             PrismaticPanelShape(cut: 18)
@@ -196,11 +196,13 @@ struct LauncherView: View {
                     .padding(.horizontal, 13)
                     .padding(.vertical, 7)
                 }
-                .onChange(of: viewModel.selectedIndex) { newIndex in
+                .onChange(of: viewModel.navigationGeneration) { _ in
+                    let newIndex = viewModel.selectedIndex
                     guard viewModel.emojiVisibleRange.contains(newIndex),
                           viewModel.emojiMatches.indices.contains(newIndex) else { return }
                     proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
                 }
+                .scrollIndicators(.hidden)
             }
         }
         .overlay {
@@ -253,12 +255,14 @@ struct LauncherView: View {
                 .padding(.horizontal, 11)
                 .padding(.vertical, 2)
             }
-            .onChange(of: viewModel.selectedIndex) { newIndex in
+            .onChange(of: viewModel.navigationGeneration) { _ in
+                let newIndex = viewModel.selectedIndex
                 guard viewModel.results.indices.contains(newIndex) else { return }
                 withAnimation(.easeOut(duration: 0.12)) {
                     proxy.scrollTo(viewModel.results[newIndex].id, anchor: .center)
                 }
             }
+            .scrollIndicators(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -500,7 +504,20 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var footer: some View {
-        if viewModel.mode != .root {
+        if viewModel.mode == .root {
+            HStack(spacing: 12) {
+                Text("\(viewModel.results.count) available")
+                    .limaFont(.system(size: 9.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+                Spacer()
+                KeyHint(keys: "↑↓", label: "Navigate")
+                KeyHint(keys: "↩", label: primaryActionLabel)
+                KeyHint(keys: "esc", label: "Close")
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 27)
+            .padding(.bottom, 5)
+        } else {
             HStack {
                 Spacer()
                 HStack(spacing: 8) {
@@ -666,6 +683,7 @@ private struct WritingIssueRow: View {
 }
 
 private struct ResultRow: View {
+    @ObservedObject private var settings = SettingsStore.shared
     let item: LauncherItem
     let selected: Bool
     let actionLabel: String?
@@ -717,7 +735,7 @@ private struct ResultRow: View {
             }
         }
         .padding(.horizontal, 11)
-        .frame(height: 40)
+        .frame(height: settings.interfaceDensity.resultRowHeight)
         .background {
             if selected {
                 ZStack {

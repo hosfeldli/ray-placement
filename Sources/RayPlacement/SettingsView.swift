@@ -397,6 +397,15 @@ struct SettingsView: View {
             Section("Appearance") {
                 AccentThemePicker(selection: $settings.accentTheme)
                 InterfaceTextSizeControl()
+                Picker("Interface density", selection: $settings.interfaceDensity) {
+                    ForEach(AppInterfaceDensity.allCases) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.interfaceDensity.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Global hotkeys") {

@@ -28,6 +28,9 @@ final class LauncherViewModel: ObservableObject {
     /// catalog out of `results` avoids creating thousands of command models.
     @Published private(set) var emojiMatches: [EmojiEntry] = []
     @Published var selectedIndex = 0
+    /// Only keyboard/page navigation increments this value. Pointer hover may
+    /// update the highlighted row, but must never recenter the scroll view.
+    @Published private(set) var navigationGeneration = 0
     @Published private(set) var isSearching = false
     @Published private(set) var extensionIssues: [ExtensionIssue] = []
     @Published private(set) var focusGeneration = 0
@@ -236,10 +239,12 @@ final class LauncherViewModel: ObservableObject {
         if mode == .emojiPicker {
             guard !emojiMatches.isEmpty else { return }
             selectedIndex = (selectedIndex + delta + emojiMatches.count) % emojiMatches.count
+            navigationGeneration += 1
             return
         }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
+        navigationGeneration += 1
     }
 
     func select(_ index: Int) {
@@ -277,6 +282,7 @@ final class LauncherViewModel: ObservableObject {
         guard targetPage != emojiPageIndex else { return }
         let positionOnPage = selectedIndex % Self.emojiPageSize
         selectedIndex = min(targetPage * Self.emojiPageSize + positionOnPage, emojiMatches.count - 1)
+        navigationGeneration += 1
     }
 
     func executeVisibleItem(at index: Int) {
@@ -346,7 +352,8 @@ final class LauncherViewModel: ObservableObject {
 
         guard !cleanQuery.isEmpty else {
             let priority = [
-                "builtin.quick-note", "builtin.search-files", "extension.local.productivity-tools.convert-timezones",
+                "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal", "builtin.sql",
+                "builtin.endpoint-tester", "extension.local.productivity-tools.convert-timezones",
                 "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
                 "window.maximize", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
             ]
@@ -362,7 +369,13 @@ final class LauncherViewModel: ObservableObject {
             let allScore = FuzzyMatcher.score(item.searchableText, query: cleanQuery)
             let score = max(titleScore ?? -.infinity, allScore ?? -.infinity)
             guard score.isFinite else { return nil }
-            return (item, score + usage.score(for: item.id))
+            let normalizedTitle = item.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let normalizedQuery = cleanQuery.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let intentBonus: Double
+            if normalizedTitle == normalizedQuery { intentBonus = 100 }
+            else if normalizedTitle.hasPrefix(normalizedQuery) { intentBonus = 24 }
+            else { intentBonus = 0 }
+            return (item, score + intentBonus + usage.score(for: item.id))
         }
         .sorted { first, second in
             if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
@@ -592,6 +605,11 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run zsh commands with output search and editor shortcut guides", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
             LauncherItem(id: "builtin.sql", title: "SQL Workspace", subtitle: "Discover Oracle or MySQL schema, query, join, and export locally", icon: .system("cylinder.split.1x2.fill"), keywords: ["sql", "database", "oracle", "mysql", "schema", "query", "procedures"], action: .system(.openSQLWorkspace), shortcut: SettingsStore.shared.sqlHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.sqlShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "postman", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
+            LauncherItem(id: "builtin.file-launcher", title: "Focused File Launcher", subtitle: "Choose a file in Finder and open it with a specific application", icon: .system("folder.badge.gearshape"), keywords: ["file", "finder", "open with", "application"], action: .system(.openFocusedFileLauncher)),
+            LauncherItem(id: "builtin.passwords", title: "Password Generator", subtitle: "Generate and copy a strong password locally", icon: .system("key.fill"), keywords: ["password", "security", "random", "secret"], action: .system(.openPasswordGenerator)),
+            LauncherItem(id: "builtin.formatter", title: "Data Formatter", subtitle: "Inspect and format JSON, XML, and EDI", icon: .system("curlybraces.square.fill"), keywords: ["json", "xml", "edi", "format", "validate", "minify"], action: .system(.openFormatter)),
+            LauncherItem(id: "builtin.extension-guide", title: "Extension Development Guide", subtitle: "Build commands, forms, outputs, and full Lima workspaces", icon: .system("hammer.fill"), keywords: ["extension", "developer", "documentation", "manifest", "api", "template"], action: .system(.openExtensionGuide)),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
             LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),

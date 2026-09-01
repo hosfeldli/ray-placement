@@ -351,6 +351,9 @@ private struct NotesView: View {
 
     @State private var searchQuery = ""
     @State private var confirmDelete = false
+    @State private var showSpeakerNames = false
+    @State private var speakerOneName = ""
+    @State private var speakerTwoName = ""
 
     private var filteredNotes: [MarkdownNote] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -404,6 +407,30 @@ private struct NotesView: View {
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
         } message: {
             Text("This permanently removes the selected local note.")
+        }
+        .sheet(isPresented: $showSpeakerNames) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Name transcript speakers").limaFont(.title3.bold())
+                Text("Names apply to this note and to new dictation segments appended here.")
+                    .limaFont(.caption).foregroundStyle(.secondary)
+                Form {
+                    TextField("Speaker 1", text: $speakerOneName)
+                    TextField("Speaker 2", text: $speakerTwoName)
+                }
+                .formStyle(.grouped)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { showSpeakerNames = false }
+                    Button("Apply") {
+                        store.renameSpeakers([1: speakerOneName, 2: speakerTwoName])
+                        showSpeakerNames = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(22)
+            .frame(width: 430)
+            .preferredColorScheme(.dark)
         }
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
@@ -693,6 +720,11 @@ private struct NotesView: View {
                 Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
                 Divider()
                 Button("Duplicate Note") { store.duplicateSelectedNote() }
+                Button("Name Transcript Speakers…") {
+                    speakerOneName = note.speakerNames[1] ?? ""
+                    speakerTwoName = note.speakerNames[2] ?? ""
+                    showSpeakerNames = true
+                }
                 Divider()
                 Button("Delete Note…", role: .destructive) { confirmDelete = true }
                     .keyboardShortcut(.delete, modifiers: .command)

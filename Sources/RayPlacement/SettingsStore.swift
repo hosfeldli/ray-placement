@@ -2,6 +2,31 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
+enum AppInterfaceDensity: String, CaseIterable, Identifiable {
+    case compact
+    case balanced
+    case comfortable
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var detail: String {
+        switch self {
+        case .compact: return "More commands and data with tighter controls."
+        case .balanced: return "A compact default with clear breathing room."
+        case .comfortable: return "Larger targets and more spacious work areas."
+        }
+    }
+    var launcherWidth: CGFloat {
+        switch self { case .compact: return 664; case .balanced: return 704; case .comfortable: return 744 }
+    }
+    var launcherHeight: CGFloat {
+        switch self { case .compact: return 426; case .balanced: return 466; case .comfortable: return 510 }
+    }
+    var resultRowHeight: CGFloat {
+        switch self { case .compact: return 35; case .balanced: return 40; case .comfortable: return 46 }
+    }
+}
+
 enum PerformanceScale: String, CaseIterable, Identifiable {
     case eco
     case balanced
@@ -189,6 +214,7 @@ final class SettingsStore: ObservableObject {
         static let sqlShortcut = "sqlShortcut"
         static let sqlHotkeyEnabled = "sqlHotkeyEnabled"
         static let accentTheme = "accentTheme"
+        static let interfaceDensity = "interfaceDensity"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
@@ -326,6 +352,10 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var interfaceDensity: AppInterfaceDensity {
+        didSet { defaults.set(interfaceDensity.rawValue, forKey: Key.interfaceDensity) }
+    }
+
     @Published var clipboardEnabled: Bool {
         didSet {
             defaults.set(clipboardEnabled, forKey: Key.clipboardEnabled)
@@ -404,6 +434,7 @@ final class SettingsStore: ObservableObject {
         sqlShortcut = defaults.string(forKey: Key.sqlShortcut) ?? "control+option+s"
         sqlHotkeyEnabled = defaults.object(forKey: Key.sqlHotkeyEnabled) as? Bool ?? false
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
+        interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit

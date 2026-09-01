@@ -342,10 +342,12 @@ import Testing
     #expect(decoded.id == identifier)
     #expect(decoded.isPinned)
     #expect(!decoded.isFavorite)
+    #expect(decoded.speakerNames.isEmpty)
 
-    let favorite = MarkdownNote(title: "Favorite", isFavorite: true)
+    let favorite = MarkdownNote(title: "Favorite", isFavorite: true, speakerNames: [1: "Liam", 2: "Morgan"])
     let roundTrip = try JSONDecoder().decode(MarkdownNote.self, from: JSONEncoder().encode(favorite))
     #expect(roundTrip.isFavorite)
+    #expect(roundTrip.speakerNames == [1: "Liam", 2: "Morgan"])
 }
 
 @Test func meetingDictationPlanCoversOneHourWithBoundedSegments() {

@@ -15,14 +15,14 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
 
     var title: String {
         switch self {
-        case .violet: return "Ultraviolet"
-        case .blue: return "Cobalt"
-        case .cyan: return "Aqua"
-        case .green: return "Verdant"
-        case .orange: return "Solar"
-        case .rose: return "Fuchsia"
-        case .aurora: return "Aurora"
-        case .graphite: return "Mercury"
+        case .violet: return "Violet Glass"
+        case .blue: return "Deep Ocean"
+        case .cyan: return "Electric Aqua"
+        case .green: return "Graphite Lime"
+        case .orange: return "Terminal Amber"
+        case .rose: return "Prism Rose"
+        case .aurora: return "Aurora Field"
+        case .graphite: return "Obsidian Prism"
         }
     }
 
@@ -123,6 +123,7 @@ struct PrismaticPanelShape: InsettableShape {
 
 struct LiquidGlassBackdrop: View {
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var usage = UsageMonitor.shared
     var material: NSVisualEffectView.Material = .underWindowBackground
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
 
@@ -130,7 +131,7 @@ struct LiquidGlassBackdrop: View {
         ZStack {
             VisualEffectView(material: material, blendingMode: blendingMode)
             Color.black.opacity(0.49)
-            PrismaticAmbientLayer(theme: settings.accentTheme)
+            PrismaticAmbientLayer(theme: settings.accentTheme, suppressed: !usage.activeTasks.isEmpty)
             RadialGradient(
                 colors: [settings.accentTheme.primary.opacity(0.18), .clear],
                 center: .init(x: 0.12, y: 0.02),
@@ -158,11 +159,12 @@ struct LiquidGlassBackdrop: View {
 /// the transforms and stops them entirely when Reduce Motion is enabled.
 private struct PrismaticAmbientLayer: View {
     let theme: AppAccentTheme
+    let suppressed: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var drifting = false
 
     private var canAnimate: Bool {
-        !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        !suppressed && !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
     }
 
     var body: some View {
@@ -206,6 +208,15 @@ private struct PrismaticAmbientLayer: View {
                 guard canAnimate else { return }
                 withAnimation(.easeInOut(duration: 24).repeatForever(autoreverses: true)) {
                     drifting = true
+                }
+            }
+            .onChange(of: suppressed) { isSuppressed in
+                if isSuppressed {
+                    withAnimation(.linear(duration: 0.12)) { drifting = false }
+                } else if canAnimate {
+                    withAnimation(.easeInOut(duration: 24).repeatForever(autoreverses: true)) {
+                        drifting = true
+                    }
                 }
             }
         }

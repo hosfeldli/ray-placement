@@ -8,6 +8,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var modifiedAt: Date
     public var isPinned: Bool
     public var isFavorite: Bool
+    public var speakerNames: [Int: String]
 
     public init(
         id: UUID = UUID(),
@@ -16,7 +17,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         createdAt: Date = Date(),
         modifiedAt: Date = Date(),
         isPinned: Bool = false,
-        isFavorite: Bool = false
+        isFavorite: Bool = false,
+        speakerNames: [Int: String] = [:]
     ) {
         self.id = id
         self.title = title
@@ -25,10 +27,11 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         self.modifiedAt = modifiedAt
         self.isPinned = isPinned
         self.isFavorite = isFavorite
+        self.speakerNames = speakerNames
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite
+        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite, speakerNames
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +43,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         modifiedAt = try container.decode(Date.self, forKey: .modifiedAt)
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
+        speakerNames = try container.decodeIfPresent([Int: String].self, forKey: .speakerNames) ?? [:]
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -51,6 +55,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         try container.encode(modifiedAt, forKey: .modifiedAt)
         try container.encode(isPinned, forKey: .isPinned)
         try container.encode(isFavorite, forKey: .isFavorite)
+        try container.encode(speakerNames, forKey: .speakerNames)
     }
 
     public var displayTitle: String {

@@ -12,7 +12,7 @@ final class WorkspaceWindowCoordinator {
 
     private var windows: [WeakWindow] = []
     func present(_ window: NSWindow, joinWorkspace: Bool = true) {
-        register(window)
+        register(window, rememberFrame: joinWorkspace)
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -20,11 +20,18 @@ final class WorkspaceWindowCoordinator {
         window?.makeKeyAndOrderFront(nil)
     }
 
-    private func register(_ window: NSWindow) {
+    private func register(_ window: NSWindow, rememberFrame: Bool = true) {
         windows.removeAll { $0.value == nil }
         if !windows.contains(where: { $0.value === window }) { windows.append(WeakWindow(value: window)) }
         window.tabbingIdentifier = ""
         window.tabbingMode = .disallowed
         window.isReleasedWhenClosed = false
+        if rememberFrame, !window.title.isEmpty, window.frameAutosaveName.isEmpty {
+            let safeTitle = window.title
+                .lowercased()
+                .replacingOccurrences(of: " ", with: "-")
+                .filter { $0.isLetter || $0.isNumber || $0 == "-" }
+            window.setFrameAutosaveName("Lima.Workspace.\(safeTitle)")
+        }
     }
 }
