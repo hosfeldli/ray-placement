@@ -181,7 +181,7 @@ private struct TopShelfView: View {
         .prismaticShelf(accent: SettingsStore.shared.accentTheme.tertiary)
         .overlay(alignment: .bottom) {
             AudioAccentRail(
-                level: track.isPlaying ? music.outputVolume : 0,
+                level: track.isPlaying ? music.outputAudioLevel : 0,
                 accent: SettingsStore.shared.accentTheme.tertiary,
                 active: false
             )
