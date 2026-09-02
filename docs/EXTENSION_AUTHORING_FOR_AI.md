@@ -4,23 +4,23 @@ Use this document when an AI or automation creates, repairs, or reviews a Lima e
 
 ## Non-negotiable workflow
 
-1. Read `docs/extension-manifest.schema.json` completely.
-2. Read `docs/EXTENSIONS.md` and the closest bundled example.
-3. Inspect the current manifest models and executor before assuming a field or action exists.
+1. Read `https://www.liamhosfeld.com/docs/extension-manifest.schema.json` completely.
+2. Read `https://www.liamhosfeld.com/docs/EXTENSIONS.md` and the starter manifest on the same site.
+3. Treat this website kit as the complete public API; never assume an unlisted field or action exists.
 4. Choose the smallest built-in action that can satisfy the request.
 5. Use a schema-v2 form only when the command needs variable input or output.
 6. Add an executable only when the public schema cannot express the required deterministic behavior.
 7. Preserve stable extension, command, and field IDs.
-8. Validate JSON, run package tests, package the app, and verify the installed UI.
+8. Validate the JSON against the published schema, then verify loading, search, execution, and failure feedback in Lima.
 
 Do not invent undocumented action types or fields. If the public API must change, update the Swift models, decoder, executor, JSON schema, both manuals, a bundled example, and tests in the same change.
 
 ## Files and identity
 
-Source extensions are stored in `Extensions/`; user-installed extensions are stored in:
+Develop in any ordinary project folder. Install the finished extension in:
 
 ```text
-~/Library/Application Support/RayPlacement/Extensions/
+~/Library/Application Support/Lima/Extensions/
 ```
 
 Recommended shape:
@@ -53,7 +53,7 @@ Does the command have fixed input?
    └─ Does it require a large persistent workspace? → propose a native app tool
 ```
 
-Native tools stay in the single RayPlacement workspace by default and may be popped out by the user. Do not recreate the removed tab system or force ordinary workflows into separate windows.
+Native tools stay in the single Lima workspace by default and may be popped out by the user. Do not recreate the removed tab system or force ordinary workflows into separate windows.
 
 ## Minimal safe command
 
@@ -220,7 +220,7 @@ Settings. Extension code must work without its shortcut.
 
 ## Form contract, from JSON to result
 
-Forms are available only in `schemaVersion: 2`. They stay inside RayPlacement's
+Forms are available only in `schemaVersion: 2`. They stay inside Lima's
 shared workspace by default, validate locally, and show a visible result. They
 do not create a browser page or a web runtime.
 
@@ -374,32 +374,28 @@ shell, so quoting and injection tricks are neither needed nor supported.
 
 ## Development lifecycle and architecture map
 
-An agent with only this repository can implement an extension using this map:
+An agent can implement a public extension using only the versioned website kit:
 
 | Need | Read/change |
 | --- | --- |
-| Public JSON contract | `docs/extension-manifest.schema.json` |
-| Author-facing reference | `docs/EXTENSIONS.md` |
-| Codable types/template behavior | `Sources/RayPlacementCore/ExtensionManifest.swift` |
-| Manifest discovery/errors | `Sources/RayPlacement/ExtensionLoader.swift` |
-| Action execution, resource environment, output cap | `Sources/RayPlacement/ExtensionExecutor.swift` |
-| Form rendering/validation | `Sources/RayPlacement/ExtensionFormWindowController.swift` |
-| Shortcut parsing/recording | `Sources/RayPlacement/HotKeyManager.swift` and Settings |
-| Reference manifests | `Extensions/` |
-| Contract tests | `Tests/RayPlacementCoreTests/` |
+| Public JSON contract | `https://www.liamhosfeld.com/docs/extension-manifest.schema.json` |
+| Complete AI contract | `https://www.liamhosfeld.com/docs/EXTENSION_AUTHORING_FOR_AI.md` |
+| Human builder guide | `https://www.liamhosfeld.com/docs/EXTENSIONS.md` |
+| Copy-ready starter | `https://www.liamhosfeld.com/docs/starter-extension/manifest.json` |
+| Interactive documentation | `https://www.liamhosfeld.com/extensions` |
 
 The actual edit/reload loop is:
 
-1. Create `Extensions/<folder>/manifest.json` and any `bin/` or `assets/` files.
+1. Create `<extension-folder>/manifest.json` and any `bin/` or `assets/` files.
 2. Validate the manifest against the JSON schema.
 3. In the app, run **Reload Extensions**.
 4. Search command title and each keyword in the launcher.
 5. Open Settings → Extensions; verify the individual enable switch and shortcut.
-6. Exercise the failure path before the success path, then package and verify.
+6. Exercise the failure path before the success path, then verify the installed extension.
 
-Do not touch `~/Library/Application Support/RayPlacement/Extensions/` while
-developing the bundled source unless you intentionally need an installed-user
-test. The installer copies the source `Extensions/` folder into that location.
+Work in a separate project folder until validation is complete. Copy the final
+extension into `~/Library/Application Support/Lima/Extensions/` only when you
+are ready for an installed-user test.
 
 ## Failure behavior, logs, and safe repair
 
@@ -462,9 +458,9 @@ Native forms inherit Lima’s app-wide text-size setting automatically. When add
 
 Read the provided resource environment on every execution:
 
-- `RAYPLACEMENT_PERFORMANCE_SCALE`
-- `RAYPLACEMENT_THREAD_LIMIT`
-- `RAYPLACEMENT_TIMEOUT_SECONDS`
+- `LIMA_PERFORMANCE_SCALE`
+- `LIMA_THREAD_LIMIT`
+- `LIMA_TIMEOUT_SECONDS`
 - `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`
 - `TOKENIZERS_PARALLELISM`
 
@@ -484,7 +480,7 @@ Before claiming completion:
 - Secure values never appear in output, persistence, or logs.
 - Executables receive arguments without shell evaluation and honor cancellation/resource settings.
 - The workflow opens in the shared workspace and can be popped out where supported.
-- `swift test`, packaging verification, installation, and installed-app UI verification pass.
+- Schema validation, installation, Reload Extensions, and installed-app UI verification pass.
 
 Test malformed input, an empty required value, an unavailable dependency, and the largest realistic input—not only the happy path.
 
@@ -493,7 +489,7 @@ Test malformed input, an empty required value, an unavailable dependency, and th
 Copy and fill this in:
 
 ```text
-Create or update a RayPlacement extension named <name>.
+Create or update a Lima extension named <name>.
 
 Outcome:
 <one observable user outcome>
@@ -508,12 +504,12 @@ Output:
 <what the user should see or receive>
 
 Constraints:
-- Read docs/extension-manifest.schema.json and docs/EXTENSIONS.md first.
+- Read the schema and builder guide included in this copied website packet first.
 - Prefer the smallest manifest-only implementation.
 - Keep IDs stable and add no default hotkey unless specified.
 - Do not expose secrets or evaluate user input through a shell.
-- Add or update schema/docs/tests if the public API changes.
-- Run tests, package, install, and verify the command in the actual app UI.
+- Do not change the public API; implement only the extension described by this packet.
+- Validate, install, reload, and verify the command in the actual app UI when Lima is available.
 ```
 
 ## Review report template
@@ -529,4 +525,167 @@ Verification: <tests and installed UI checks>
 Known limits: <concise remaining limits>
 ```
 
-Canonical examples: `Extensions/endpoint-tester`, `Extensions/security-tools`, `Extensions/writing-tools`, `Extensions/emoji-picker`, `Extensions/vscode-directories` (Focused File Launcher), and `Examples/project-tools`.
+The copy-ready website starter is the canonical public example. Use only action,
+field, execution, and shortcut values listed in this website kit.
+
+## Self-contained resource map
+
+This manual plus the following bundled resources is the complete public SDK. An
+agent does not need private conversation history or external documentation:
+
+| Resource | Purpose | Installed app location |
+| --- | --- | --- |
+| `EXTENSION_AUTHORING_FOR_AI.md` | Exact agent contract and implementation workflow | `Lima.app/Contents/Resources/Documentation/` |
+| `EXTENSIONS.md` | Human-oriented builder guide | same directory |
+| `extension-manifest.schema.json` | Machine-readable, closed JSON Schema | same directory |
+| `starter-extension/manifest.json` | Copy-ready schema-v2 starter | same directory |
+| `starter-extension/validate.sh` | Local JSON/schema preflight | same directory |
+
+The same resources are published at `https://www.liamhosfeld.com/extensions/`.
+The website kit is the canonical public reference. If the website describes a
+newer schema than the installed app, target the installed app's bundled schema.
+
+### Field value semantics
+
+Every form value reaches template substitution as text:
+
+| Field | Runtime value |
+| --- | --- |
+| `text`, `secure`, `multiline`, `file`, `directory`, `date` | exact user-entered or selected string |
+| `number`, `slider` | locale-independent decimal text |
+| `toggle` | `true` or `false` |
+| `picker` | the exact selected option |
+| `keyValue` | newline-separated `key=value` pairs |
+
+Substitution is literal. It does not URL-encode, JSON-escape, shell-escape, or
+interpret values. Design the receiving API or executable accordingly. For HTTP
+JSON bodies, keep the template valid JSON and reject values that cannot be
+represented safely. For executable actions, each substituted array element is
+one argument; never combine multiple logical arguments into a command string.
+
+### Output and user feedback
+
+- Built-in actions report success or a compact actionable error.
+- Form HTTP results show status, headers, and response text in the shared
+  extension workspace.
+- Form executable results show bounded combined output. Exit status zero is
+  success; any other status is failure.
+- `runInBackground` keeps the launcher available and reports completion in a
+  compact bottom notification. It does not create a daemon.
+- Copy/paste actions must preserve unrelated clipboard content whenever the
+  platform workflow permits it.
+
+An extension cannot currently define arbitrary SwiftUI, retain a background
+service, request new app entitlements, add a database, or store a secret in the
+manifest. Build such a capability as an reviewed native Lima tool, then expose
+one explicit native action through the public manifest API.
+
+## Copy-ready schema-v2 starter
+
+The bundled `starter-extension/manifest.json` is a working extension with
+conditional authentication, secure input, environment selection, and an HTTP
+result. Copy its directory, change all IDs, then remove fields you do not need.
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "local.example.service-check",
+  "name": "Service Check",
+  "version": "1.0.0",
+  "description": "Check a service endpoint without exposing its token",
+  "commands": [
+    {
+      "id": "request",
+      "title": "Check Service",
+      "subtitle": "Send a bounded request and inspect the response",
+      "keywords": ["http", "endpoint", "health"],
+      "icon": "network",
+      "action": {
+        "type": "form",
+        "value": "",
+        "form": {
+          "title": "Service Check",
+          "submitLabel": "Send Request",
+          "fields": [
+            {"id": "environment", "label": "Environment", "type": "picker", "options": ["Development", "Staging", "Production"], "defaultValue": "Development", "required": true, "section": "Request"},
+            {"id": "endpoint", "label": "Endpoint", "type": "text", "placeholder": "https://api.example.com/health", "required": true, "section": "Request"},
+            {"id": "useToken", "label": "Use bearer token", "type": "toggle", "defaultValue": "false", "section": "Authentication"},
+            {"id": "token", "label": "Bearer token", "type": "secure", "required": true, "section": "Authentication", "visibleWhen": {"field": "useToken", "equals": "true"}}
+          ],
+          "execution": {
+            "type": "httpRequest",
+            "method": "GET",
+            "url": "{{endpoint}}",
+            "headers": {"Authorization": "Bearer {{token}}", "Accept": "application/json"},
+            "timeoutSeconds": 30
+          }
+        }
+      }
+    }
+  ]
+}
+```
+
+When authentication is optional, create two commands or an executable that
+omits the header. Do not send an empty `Authorization` header to production.
+
+## Install, reload, and debug without hidden context
+
+1. Put the extension directory in
+   `~/Library/Application Support/Lima/Extensions/`.
+2. In Lima, open **Extension Development** and choose **Reload Extensions**.
+3. Search using the title and every keyword. Confirm the command's icon,
+   subtitle, enablement, and shortcut state.
+4. Run success, validation-failure, dependency-failure, timeout, and cancel
+   paths. Inspect visible output rather than assuming the process ran.
+5. Open Settings → Usage & Logs for bounded operational diagnostics. Secret
+   values, request authorization, selected text, and form bodies must not be
+   present.
+
+If a command does not appear, check in this order: JSON syntax, schema version,
+unique extension ID, unique command IDs, exact action spelling, required
+`value`, and whether the command is disabled in Settings. If a form opens but
+cannot run, check visible required fields, template IDs, executable path,
+working directory, timeout, and GUI-safe `PATH`. If it runs in Terminal but not
+Lima, it is probably relying on shell initialization, an alias, an environment
+variable, an interactive prompt, or a relative executable.
+
+## Public API change protocol
+
+An AI may extend the public SDK only when the requested workflow cannot be
+expressed with the current contract. A complete API change updates all of:
+
+1. The manifest model and template behavior.
+2. Loader validation and execution behavior.
+3. The published JSON schema with `additionalProperties: false`.
+4. The website builder guide and this agent contract.
+5. The in-app Extension Development resource bundle and website resource copy.
+6. At least one minimal bundled example.
+7. Decode, invalid-input, execution, cancellation, and UI-discovery tests.
+
+Never ship a decoder-only field, a documented-but-unimplemented action, or a
+private action value that bypasses schema validation. Backward compatibility
+means existing schema-v1 and schema-v2 manifests continue to decode and behave
+the same way.
+
+## Final AI handoff packet
+
+Before finishing, an agent must be able to answer every line below from the
+files it produced. “Not applicable” is valid; omission is not.
+
+```text
+User outcome:
+Extension / command / field IDs:
+Schema version:
+Built-in action or execution type:
+Files and directories read:
+Files and directories written:
+Network hosts and methods:
+Destructive actions and confirmations:
+Secret lifetime and storage:
+Timeout, thread use, output cap, cancellation:
+Visible success and failure feedback:
+Keyboard path and shortcut behavior:
+Tests and installed-app verification:
+Known limitations:
+```

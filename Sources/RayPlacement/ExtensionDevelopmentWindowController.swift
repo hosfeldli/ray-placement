@@ -17,7 +17,7 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
         window.backgroundColor = .clear
         window.appearance = NSAppearance(named: .darkAqua)
         window.minSize = NSSize(width: 760, height: 520)
-        window.setAccessibilityLabel("RayPlacement extension development manuals")
+        window.setAccessibilityLabel("Lima extension development manuals")
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionDevelopmentView().preferredColorScheme(.dark)))
     }

@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "id": "local.example.service-check",
+  "name": "Service Check",
+  "version": "1.0.0",
+  "description": "A safe starting point for a Lima form extension",
+  "commands": [
+    {
+      "id": "request",
+      "title": "Check Service",
+      "subtitle": "Send a bounded request and inspect the response",
+      "keywords": ["http", "endpoint", "health"],
+      "icon": "network",
+      "action": {
+        "type": "form",
+        "value": "",
+        "form": {
+          "title": "Service Check",
+          "submitLabel": "Send Request",
+          "fields": [
+            {"id": "endpoint", "label": "Endpoint", "type": "text", "placeholder": "https://api.example.com/health", "required": true, "section": "Request"}
+          ],
+          "execution": {"type": "httpRequest", "method": "GET", "url": "{{endpoint}}", "headers": {"Accept": "application/json"}, "timeoutSeconds": 30}
+        }
+      }
+    }
+  ]
+}

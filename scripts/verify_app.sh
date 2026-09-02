@@ -25,6 +25,7 @@ test -f "$RESOURCES/Whisper/REVISION"
 test -f "$RESOURCES/Documentation/EXTENSIONS.md"
 test -f "$RESOURCES/Documentation/EXTENSION_AUTHORING_FOR_AI.md"
 test -f "$RESOURCES/Documentation/extension-manifest.schema.json"
+test -f "$RESOURCES/Documentation/starter-extension/manifest.json"
 test -f "$RESOURCES/Emoji/emoji-test.txt"
 [[ "$(/usr/bin/grep -c '; fully-qualified' "$RESOURCES/Emoji/emoji-test.txt")" -ge 3900 ]]
 plutil -lint "$APP_DIRECTORY/Contents/Info.plist" >/dev/null

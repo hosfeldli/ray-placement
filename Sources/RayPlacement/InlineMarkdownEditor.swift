@@ -6,9 +6,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     @ObservedObject private var typography = AppTypography.shared
     @Binding var text: String
     var compact = false
+    var fontStyle: NotesFontStyle = .system
+    var fontSize: Double = 15.5
+    var lineSpacing: Double = 3.5
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -60,6 +63,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
         context.coordinator.text = $text
+        let styleChanged = context.coordinator.fontStyle != fontStyle
+            || context.coordinator.fontSize != fontSize
+            || context.coordinator.lineSpacing != lineSpacing
+        context.coordinator.fontStyle = fontStyle
+        context.coordinator.fontSize = fontSize
+        context.coordinator.lineSpacing = lineSpacing
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -67,7 +76,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         if context.coordinator.lastMarkdown != text {
             context.coordinator.render(markdown: text, preservingSelection: true)
         }
-        if context.coordinator.lastTextScale != typography.scale {
+        if context.coordinator.lastTextScale != typography.scale || styleChanged {
             context.coordinator.lastTextScale = typography.scale
             context.coordinator.applyStyles(immediately: true)
         }
@@ -80,10 +89,16 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var isApplyingExternalUpdate = false
         fileprivate var lastMarkdown = ""
         fileprivate var lastTextScale = AppTypography.shared.scale
+        var fontStyle: NotesFontStyle
+        var fontSize: Double
+        var lineSpacing: Double
         private var stylingWorkItem: DispatchWorkItem?
 
-        init(text: Binding<String>) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double) {
             self.text = text
+            self.fontStyle = fontStyle
+            self.fontSize = fontSize
+            self.lineSpacing = lineSpacing
         }
 
         func textDidChange(_ notification: Notification) {
@@ -144,7 +159,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             stylingWorkItem?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let textView = self.textView else { return }
-                MarkdownInlineStyler.apply(to: textView)
+                MarkdownInlineStyler.apply(
+                    to: textView,
+                    fontStyle: self.fontStyle,
+                    fontSize: self.fontSize,
+                    lineSpacing: self.lineSpacing
+                )
                 textView.updateTableOverlays()
             }
             stylingWorkItem = work
@@ -446,19 +466,19 @@ final class MarkdownTextView: NSTextView {
 }
 
 private enum MarkdownInlineStyler {
-    private static var baseFont: NSFont { NSFont.systemFont(ofSize: AppTypography.size(15.5)) }
-    private static var monoFont: NSFont { NSFont.monospacedSystemFont(ofSize: AppTypography.size(14), weight: .regular) }
     private static let codeBackground = NSColor.controlBackgroundColor.withAlphaComponent(0.78)
     private static let hiddenMarkerFont = NSFont.systemFont(ofSize: 0.1)
 
-    static func apply(to textView: NSTextView) {
+    static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double) {
+        let baseFont = font(style: fontStyle, size: CGFloat(fontSize), weight: .regular)
+        let monoFont = NSFont.monospacedSystemFont(ofSize: AppTypography.size(CGFloat(max(12, fontSize - 1.5))), weight: .regular)
         guard let storage = textView.textStorage else { return }
         let source = storage.string as NSString
         let fullRange = NSRange(location: 0, length: source.length)
         let selection = textView.selectedRanges
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = 3.5
-        paragraph.paragraphSpacing = 7
+        paragraph.lineSpacing = CGFloat(lineSpacing)
+        paragraph.paragraphSpacing = 5 + CGFloat(lineSpacing) * 0.6
         let fencedCodePattern = #"(?ms)^```([^\n]*)\n(.*?)^```[ \t]*$"#
         let fencedCodeMatches = matches(pattern: fencedCodePattern, in: source)
         let fencedCodeRanges = fencedCodeMatches.map(\.range)
@@ -486,7 +506,7 @@ private enum MarkdownInlineStyler {
             headingParagraph.paragraphSpacingBefore = level <= 2 ? 12 : 8
             headingParagraph.paragraphSpacing = level <= 2 ? 9 : 6
             storage.addAttributes([
-                .font: NSFont.systemFont(ofSize: AppTypography.size(sizes[level - 1]), weight: level <= 3 ? .bold : .semibold),
+                .font: font(style: fontStyle, size: sizes[level - 1] * CGFloat(fontSize / 15.5), weight: level <= 3 ? .bold : .semibold),
                 .paragraphStyle: headingParagraph
             ], range: contentRange)
             let markerRange = NSRange(location: match.range.location, length: contentRange.location - match.range.location)
@@ -527,7 +547,7 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"\*\*([^*\n]+)\*\*|__([^_\n]+)__"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let contentRange = match.range(at: match.range(at: 1).location == NSNotFound ? 2 : 1)
-            storage.addAttribute(.font, value: NSFont.systemFont(ofSize: AppTypography.size(15.5), weight: .bold), range: contentRange)
+            storage.addAttribute(.font, value: font(style: fontStyle, size: CGFloat(fontSize), weight: .bold), range: contentRange)
             styleMarkers(around: contentRange, in: match.range, storage: storage)
         }
         apply(pattern: #"(?<!\*)\*([^*\n]+)\*(?!\*)|(?<!_)_([^_\n]+)_(?!_)"#, to: source) { match in
@@ -579,6 +599,24 @@ private enum MarkdownInlineStyler {
         storage.endEditing()
         textView.selectedRanges = selection
         textView.typingAttributes = [.font: baseFont, .foregroundColor: NSColor.labelColor]
+    }
+
+    private static func font(style: NotesFontStyle, size: CGFloat, weight: NSFont.Weight) -> NSFont {
+        let scaled = AppTypography.size(size)
+        switch style {
+        case .system: return NSFont.systemFont(ofSize: scaled, weight: weight)
+        case .rounded:
+            let base = NSFont.systemFont(ofSize: scaled, weight: weight)
+            if let descriptor = base.fontDescriptor.withDesign(.rounded),
+               let designed = NSFont(descriptor: descriptor, size: scaled) { return designed }
+            return base
+        case .serif:
+            let base = NSFont.systemFont(ofSize: scaled, weight: weight)
+            if let descriptor = base.fontDescriptor.withDesign(.serif),
+               let designed = NSFont(descriptor: descriptor, size: scaled) { return designed }
+            return base
+        case .monospaced: return NSFont.monospacedSystemFont(ofSize: scaled, weight: weight)
+        }
     }
 
     private static func apply(pattern: String, to source: NSString, block: (NSTextCheckingResult) -> Void) {

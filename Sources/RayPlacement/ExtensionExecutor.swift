@@ -250,6 +250,10 @@ final class ExtensionExecutor {
             "MKL_NUM_THREADS": String(performance.threadLimit),
             "VECLIB_MAXIMUM_THREADS": String(performance.threadLimit),
             "TOKENIZERS_PARALLELISM": "false",
+            "LIMA_PERFORMANCE_SCALE": performance.rawValue,
+            "LIMA_THREAD_LIMIT": String(performance.threadLimit),
+            "LIMA_TIMEOUT_SECONDS": String(Int(performance.extensionTimeout)),
+            // Compatibility for extensions installed before the Lima rename.
             "RAYPLACEMENT_PERFORMANCE_SCALE": performance.rawValue,
             "RAYPLACEMENT_THREAD_LIMIT": String(performance.threadLimit),
             "RAYPLACEMENT_TIMEOUT_SECONDS": String(Int(performance.extensionTimeout))

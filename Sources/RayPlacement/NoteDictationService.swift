@@ -44,6 +44,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     @Published private(set) var recordingElapsed: TimeInterval = 0
     @Published private(set) var destinationNoteTitle = "Current Note"
     @Published private(set) var semiLiveSegmentCount = 0
+    @Published private(set) var livePreviewText = ""
     @Published private(set) var recoveryAudioURL: URL?
     @Published var lastError: String?
 
@@ -259,10 +260,9 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             let performance = SettingsStore.shared.runtimeDictationPerformance
             activePerformance = performance
             activeEngine = SettingsStore.shared.dictationEngine
-            // Local Whisper always runs as a rolling semi-live pipeline. The
-            // active segment keeps recording while each completed segment is
-            // transcribed and appended to the destination note.
-            activeTranscribeWhileRecording = activeEngine == .localWhisper
+            // Both engines use a rolling live pipeline. A fresh segment keeps
+            // recording while the completed window is appended to Notes.
+            activeTranscribeWhileRecording = true
             let directory = ApplicationPaths.dictationScratch
                 .appendingPathComponent("note-dictation-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -348,7 +348,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         do {
             try startNextRecordingSegment()
             rotatingRecorder = false
-            beginLiveLocalWhisperIfNeeded()
+            beginLiveTranscriptionIfNeeded()
         } catch {
             rotatingRecorder = false
             fail(error)
@@ -381,10 +381,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
         speechRecognizer = recognizer
         totalChunkCount = recordingSegmentURLs.count
-        currentChunkIndex = 0
         currentChunkRetryCount = 0
-        chunkTranscripts = []
-        skippedChunkCount = 0
         transcribeNextChunk()
     }
 
@@ -418,6 +415,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             case .success(let transcript):
                 let cleanTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 if !cleanTranscript.isEmpty {
+                    self.livePreviewText = cleanTranscript
                     self.chunkTranscripts.append(cleanTranscript)
                     if self.phase == .recording {
                         self.onTranscript(cleanTranscript, self.destinationNoteID)
@@ -472,12 +470,34 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         beginNextLocalWhisperSegment()
     }
 
-    private func transcribeNextChunk() {
-        guard phase == .transcribing else { return }
-        guard currentChunkIndex < totalChunkCount else {
-            finishTranscription()
+    private func beginLiveTranscriptionIfNeeded() {
+        guard phase == .recording, activeTranscribeWhileRecording, !liveTranscriptionPaused else { return }
+        if activeEngine == .localWhisper {
+            beginLiveLocalWhisperIfNeeded()
             return
         }
+        if speechRecognizer == nil {
+            guard let recognizer = SFSpeechRecognizer(locale: Locale.current),
+                  recognizer.isAvailable,
+                  recognizer.supportsOnDeviceRecognition else {
+                liveTranscriptionPaused = true
+                transcriptionProgress = "Live recognition is unavailable; the recording will retry after Stop."
+                return
+            }
+            speechRecognizer = recognizer
+        }
+        totalChunkCount = recordingSegmentURLs.count
+        transcribeNextChunk()
+    }
+
+    private func transcribeNextChunk() {
+        guard phase == .recording || phase == .transcribing, recognitionTask == nil else { return }
+        guard currentChunkIndex < totalChunkCount else {
+            if phase == .transcribing { finishTranscription() }
+            return
+        }
+        guard recordingSegmentDurations.indices.contains(currentChunkIndex),
+              recordingSegmentDurations[currentChunkIndex] > 0 else { return }
 
         let displayIndex = currentChunkIndex + 1
         transcriptionProgress = "Preparing segment \(displayIndex) of \(totalChunkCount)…"
@@ -485,7 +505,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func startRecognition(of url: URL) {
-        guard phase == .transcribing, let recognizer = speechRecognizer else { return }
+        guard phase == .recording || phase == .transcribing, let recognizer = speechRecognizer else { return }
         let displayIndex = currentChunkIndex + 1
         transcriptionProgress = "Transcribing segment \(displayIndex) of \(totalChunkCount) on device…"
 
@@ -500,12 +520,15 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
         recognitionTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
             Task { @MainActor in
-                guard let self, self.phase == .transcribing,
+                guard let self, self.phase == .recording || self.phase == .transcribing,
                       self.recognitionIdentifier == identifier else { return }
                 if let result {
                     let transcript = result.bestTranscription.formattedString
                         .trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !transcript.isEmpty { self.currentPartialTranscript = transcript }
+                    if !transcript.isEmpty {
+                        self.currentPartialTranscript = transcript
+                        self.livePreviewText = transcript
+                    }
                     if result.isFinal {
                         self.finishCurrentChunk(with: transcript)
                         return
@@ -535,6 +558,12 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             return
         }
 
+        if phase == .recording {
+            liveTranscriptionPaused = true
+            transcriptionProgress = "A live window will retry after Stop: \(detail)"
+            return
+        }
+
         skippedChunkCount += 1
         let start = Double(currentChunkIndex) * MeetingDictationPlan.segmentDuration
         let end = min(recordedDuration, start + MeetingDictationPlan.segmentDuration)
@@ -546,7 +575,20 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         recognitionIdentifier = nil
         recognitionTask?.cancel()
         recognitionTask = nil
-        if !transcript.isEmpty { chunkTranscripts.append(transcript) }
+        let cleanTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanTranscript.isEmpty {
+            chunkTranscripts.append(cleanTranscript)
+            if phase == .recording {
+                onTranscript(cleanTranscript, destinationNoteID)
+                deliveredTranscriptCount = chunkTranscripts.count
+                deliveredCharacterCount += cleanTranscript.count
+                semiLiveSegmentCount += 1
+                transcriptionProgress = "Live · added window \(semiLiveSegmentCount) to \(destinationNoteTitle)"
+                if recordingSegmentURLs.indices.contains(currentChunkIndex) {
+                    try? FileManager.default.removeItem(at: recordingSegmentURLs[currentChunkIndex])
+                }
+            }
+        }
         currentChunkIndex += 1
         currentChunkRetryCount = 0
         currentPartialTranscript = ""
@@ -699,6 +741,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         audioLevel = 0
         recordingElapsed = 0
         semiLiveSegmentCount = 0
+        livePreviewText = ""
     }
 
     private func finishUsage(succeeded: Bool, outputCharacters: Int = 0, detail: String? = nil) {

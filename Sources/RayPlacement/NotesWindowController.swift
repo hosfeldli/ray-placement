@@ -352,6 +352,7 @@ private struct NotesView: View {
     @State private var searchQuery = ""
     @State private var confirmDelete = false
     @State private var showSpeakerNames = false
+    @State private var showAppearance = false
     @State private var speakerOneName = ""
     @State private var speakerTwoName = ""
 
@@ -371,6 +372,13 @@ private struct NotesView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            LinearGradient(
+                colors: notesThemeColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .opacity(0.42)
+            .ignoresSafeArea()
             VStack(spacing: 10) {
                 windowChrome
                     .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.024)
@@ -434,6 +442,7 @@ private struct NotesView: View {
         }
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
+        .animation(.easeInOut(duration: 0.24), value: settings.notesVisualTheme)
     }
 
     private var windowChrome: some View {
@@ -456,6 +465,13 @@ private struct NotesView: View {
             }
 
             Spacer(minLength: 8)
+
+            NotesChromeButton(symbol: "slider.horizontal.3", label: "Customize Notes") {
+                showAppearance.toggle()
+            }
+            .popover(isPresented: $showAppearance, arrowEdge: .bottom) {
+                NotesAppearancePanel(settings: settings)
+            }
 
             if presentation.mode == .workspace {
                 NotesChromeButton(
@@ -690,15 +706,17 @@ private struct NotesView: View {
                 .textFieldStyle(.plain)
                 .limaFont(.system(size: presentation.mode.isDocked ? 17 : 21, weight: .semibold))
 
-                HStack(spacing: 5) {
-                    Text("\(wordCount(note.content)) words")
-                    if !presentation.mode.isDocked {
-                        Text("·")
-                        Text("edited \(relativeTimestamp(note.modifiedAt))")
+                if settings.notesShowMetadata {
+                    HStack(spacing: 5) {
+                        Text("\(wordCount(note.content)) words")
+                        if !presentation.mode.isDocked {
+                            Text("·")
+                            Text("edited \(relativeTimestamp(note.modifiedAt))")
+                        }
                     }
+                    .limaFont(.caption2)
+                    .foregroundStyle(.secondary)
                 }
-                .limaFont(.caption2)
-                .foregroundStyle(.secondary)
             }
 
             Spacer(minLength: 6)
@@ -750,17 +768,21 @@ private struct NotesView: View {
                 get: { store.selectedNote?.content ?? "" },
                 set: store.updateContent
             ),
-            compact: presentation.mode.isDocked
+            compact: presentation.mode.isDocked,
+            fontStyle: settings.notesFontStyle,
+            fontSize: settings.notesFontSize,
+            lineSpacing: settings.notesLineSpacing
         )
         .accessibilityLabel("Inline formatted Markdown editor")
 
-        if presentation.mode == .fullScreen {
+        if presentation.mode == .fullScreen || settings.notesContentWidth != .fluid {
             HStack(spacing: 0) {
-                Spacer(minLength: 30)
+                Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
                 markdownEditor
-                    .frame(maxWidth: 920)
-                    .liquidGlass(cornerRadius: 16, depth: .recessed, accentOpacity: 0.006)
-                Spacer(minLength: 30)
+                    .frame(maxWidth: settings.notesContentWidth.maximum)
+                    .background(noteCanvasColor.opacity(0.42))
+                    .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.008)
+                Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
             .background(Color.clear)
         } else {
@@ -906,6 +928,126 @@ private struct NotesView: View {
         if elapsed < 86_400 { return "\(Int(elapsed / 3_600))h ago" }
         if elapsed < 604_800 { return "\(Int(elapsed / 86_400))d ago" }
         return date.formatted(.dateTime.month(.abbreviated).day())
+    }
+
+    private var notesThemeColors: [Color] {
+        switch settings.notesVisualTheme {
+        case .prism: return [settings.accentTheme.primary.opacity(0.26), Color.cyan.opacity(0.08), Color.black.opacity(0.08)]
+        case .graphite: return [Color(white: 0.18), Color(white: 0.07), Color.black.opacity(0.28)]
+        case .midnight: return [Color(red: 0.05, green: 0.09, blue: 0.20), Color(red: 0.09, green: 0.05, blue: 0.18), .black.opacity(0.32)]
+        case .aurora: return [Color.teal.opacity(0.20), Color.indigo.opacity(0.23), Color.purple.opacity(0.12)]
+        case .ink: return [Color(red: 0.17, green: 0.13, blue: 0.10), Color(red: 0.08, green: 0.07, blue: 0.07), Color.orange.opacity(0.06)]
+        }
+    }
+
+    private var noteCanvasColor: Color {
+        switch settings.notesVisualTheme {
+        case .prism: return Color(red: 0.08, green: 0.09, blue: 0.13)
+        case .graphite: return Color(white: 0.08)
+        case .midnight: return Color(red: 0.035, green: 0.05, blue: 0.10)
+        case .aurora: return Color(red: 0.035, green: 0.08, blue: 0.09)
+        case .ink: return Color(red: 0.09, green: 0.075, blue: 0.065)
+        }
+    }
+}
+
+private struct NotesAppearancePanel: View {
+    @ObservedObject var settings: SettingsStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Label("Note appearance", systemImage: "paintpalette.fill")
+                    .limaFont(.headline)
+                Spacer()
+                Button("Reset") {
+                    settings.notesVisualTheme = .prism
+                    settings.notesFontStyle = .system
+                    settings.notesFontSize = 15.5
+                    settings.notesLineSpacing = 3.5
+                    settings.notesContentWidth = .wide
+                    settings.notesShowMetadata = true
+                }
+                .buttonStyle(.borderless)
+                .controlSize(.small)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text("COLOR").notesAppearanceLabel()
+                HStack(spacing: 7) {
+                    ForEach(NotesVisualTheme.allCases) { theme in
+                        Button {
+                            settings.notesVisualTheme = theme
+                        } label: {
+                            Circle()
+                                .fill(theme.gradient)
+                                .frame(width: 24, height: 24)
+                                .overlay(Circle().stroke(.white.opacity(settings.notesVisualTheme == theme ? 0.9 : 0.18), lineWidth: settings.notesVisualTheme == theme ? 2 : 0.7))
+                        }
+                        .buttonStyle(.plain)
+                        .help(theme.title)
+                        .accessibilityLabel("Use \(theme.title) notes theme")
+                    }
+                }
+            }
+
+            Picker("Typeface", selection: $settings.notesFontStyle) {
+                ForEach(NotesFontStyle.allCases) { style in Text(style.title).tag(style) }
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Page width", selection: $settings.notesContentWidth) {
+                ForEach(NotesContentWidth.allCases) { width in Text(width.title).tag(width) }
+            }
+            .pickerStyle(.segmented)
+
+            NotesAppearanceSlider(title: "Text", value: $settings.notesFontSize, range: 13...24, valueLabel: "\(Int(settings.notesFontSize)) pt")
+            NotesAppearanceSlider(title: "Leading", value: $settings.notesLineSpacing, range: 1...12, valueLabel: String(format: "%.1f", settings.notesLineSpacing))
+
+            Toggle("Show word count and edit time", isOn: $settings.notesShowMetadata)
+                .toggleStyle(.switch)
+                .controlSize(.small)
+        }
+        .padding(16)
+        .frame(width: 330)
+        .background(.ultraThinMaterial)
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct NotesAppearanceSlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let valueLabel: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title).frame(width: 52, alignment: .leading)
+            Slider(value: $value, in: range)
+            Text(valueLabel).monospacedDigit().foregroundStyle(.secondary).frame(width: 42, alignment: .trailing)
+        }
+        .limaFont(.caption)
+    }
+}
+
+private extension Text {
+    func notesAppearanceLabel() -> some View {
+        limaFont(.system(size: 9, weight: .bold)).tracking(0.8).foregroundStyle(.secondary)
+    }
+}
+
+private extension NotesVisualTheme {
+    var gradient: LinearGradient {
+        let colors: [Color]
+        switch self {
+        case .prism: colors = [.purple, .cyan]
+        case .graphite: colors = [Color(white: 0.48), Color(white: 0.12)]
+        case .midnight: colors = [.blue, .indigo]
+        case .aurora: colors = [.teal, .purple]
+        case .ink: colors = [.orange, Color(red: 0.20, green: 0.12, blue: 0.09)]
+        }
+        return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
     }
 }
 

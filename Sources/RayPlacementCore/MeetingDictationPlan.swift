@@ -13,9 +13,13 @@ public struct MeetingDictationSegment: Equatable, Sendable {
 public enum MeetingDictationPlan {
     // Two hours gives a full one-hour meeting a generous overrun buffer.
     public static let maximumDuration: TimeInterval = 2 * 60 * 60
-    public static let appleSpeechSegmentDuration: TimeInterval = 45
-    public static let localWhisperSegmentDuration: TimeInterval = 60
-    public static let segmentDuration = appleSpeechSegmentDuration
+    // Rolling windows keep transcription visibly live while a fresh file keeps
+    // recording. The windows stay long enough to preserve sentence context.
+    public static let appleSpeechSegmentDuration: TimeInterval = 8
+    public static let localWhisperSegmentDuration: TimeInterval = 15
+    // Offline planning/storage estimates keep the stable 45-second unit; the
+    // recorder uses the shorter engine-specific live windows above.
+    public static let segmentDuration: TimeInterval = 45
     public static let recordingBytesPerSecond = 32_000
 
     public static func segments(for duration: TimeInterval) -> [MeetingDictationSegment] {

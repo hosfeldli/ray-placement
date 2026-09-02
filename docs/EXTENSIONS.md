@@ -5,10 +5,10 @@ Lima extensions add searchable commands and compact native workflows without reb
 Installed extensions live at:
 
 ```text
-~/Library/Application Support/RayPlacement/Extensions/
+~/Library/Application Support/Lima/Extensions/
 ```
 
-Open that folder from RayPlacement, add or edit an extension, then run **Reload Extensions**. Commands appear in search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
+Open that folder from Lima, add or edit an extension, then run **Reload Extensions**. Commands appear in search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
 
 ## Choose the smallest tool
 
@@ -19,7 +19,7 @@ Open that folder from RayPlacement, add or edit an extension, then run **Reload 
 | Ask for a few inputs and return output | A schema-v2 `form` |
 | Make an HTTP request | A form with `httpRequest` execution |
 | Run trusted local logic | A form or command with `shell` execution |
-| Build a large persistent workspace | Add a native tool to RayPlacement itself |
+| Build a large persistent workspace | Add a reviewed native tool to Lima itself |
 
 Prefer built-in actions and forms. They inherit keyboard navigation, validation, safe argument handling, compact feedback, and the current prismatic interface automatically.
 
@@ -175,7 +175,7 @@ A form execution is either:
 - `httpRequest`: `method`, `url`, `headers`, `body`, and `timeoutSeconds`. Only HTTP(S) is accepted.
 - `shell`: `executable`, `arguments`, `workingDirectory`, and `timeoutSeconds`.
 
-Insert a form value with an exact placeholder such as `{{url}}`. Substitution happens independently inside each string. RayPlacement does not concatenate or evaluate a shell command.
+Insert a form value with an exact placeholder such as `{{url}}`. Substitution happens independently inside each string. Lima does not concatenate or evaluate a shell command.
 
 For shell execution, pass every argument separately:
 
@@ -192,13 +192,13 @@ Never use `eval`, `zsh -c`, or another command interpreter to process user input
 
 ## Feedback, performance, and privacy
 
-Use `runInBackground: true` for work that does not require the form to stay open. RayPlacement shows a compact status indicator and leaves the launcher available. Commands receive cooperative resource settings on every run:
+Use `runInBackground: true` for work that does not require the form to stay open. Lima shows a compact status indicator and leaves the launcher available. Commands receive cooperative resource settings on every run:
 
 | Variable | Meaning |
 | --- | --- |
-| `RAYPLACEMENT_PERFORMANCE_SCALE` | `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
-| `RAYPLACEMENT_THREAD_LIMIT` | Requested worker ceiling |
-| `RAYPLACEMENT_TIMEOUT_SECONDS` | Wall-clock limit; `0` means explicitly unbounded |
+| `LIMA_PERFORMANCE_SCALE` | `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
+| `LIMA_THREAD_LIMIT` | Requested worker ceiling |
+| `LIMA_TIMEOUT_SECONDS` | Wall-clock limit; `0` means explicitly unbounded |
 | `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native worker limits |
 | `TOKENIZERS_PARALLELISM` | `false` |
 
@@ -213,7 +213,7 @@ Rules for sensitive data:
 
 ## Validate and debug
 
-Use [extension-manifest.schema.json](extension-manifest.schema.json) as the source of truth. Before sharing an extension:
+Use the [published manifest schema](https://www.liamhosfeld.com/docs/extension-manifest.schema.json) as the source of truth. Before sharing an extension:
 
 1. Confirm the manifest is valid JSON and conforms to the schema.
 2. Reload extensions and search by title and every important keyword.
@@ -221,8 +221,8 @@ Use [extension-manifest.schema.json](extension-manifest.schema.json) as the sour
 4. Record, disable, restore, and invoke the command shortcut.
 5. Confirm secure fields never appear in saved files or logs.
 6. Confirm a background command leaves the launcher responsive.
-7. Test the packaged app, not only a development build.
+7. Test the installed extension in Lima, not only its executable in Terminal.
 
-Bundled references include `Extensions/endpoint-tester`, `Extensions/security-tools`, `Extensions/writing-tools`, `Extensions/emoji-picker`, `Extensions/vscode-directories` (Focused File Launcher), and `Examples/project-tools`.
+Start from the [copy-ready public manifest](https://www.liamhosfeld.com/docs/starter-extension/manifest.json). It is versioned with this guide and uses only supported public fields.
 
-For a strict implementation contract and a copyable prompt for coding agents, read [EXTENSION_AUTHORING_FOR_AI.md](EXTENSION_AUTHORING_FOR_AI.md).
+For a strict implementation contract and a copyable prompt for coding agents, read the [AI authoring contract](https://www.liamhosfeld.com/docs/EXTENSION_AUTHORING_FOR_AI.md).

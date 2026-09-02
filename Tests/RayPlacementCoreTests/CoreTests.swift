@@ -388,8 +388,8 @@ import Testing
 }
 
 @Test func meetingDictationUsesShortRollingAudioSegments() {
-    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 60)
-    #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 45)
+    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 15)
+    #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 8)
     #expect(MeetingDictationPlan.maximumDuration >= 60 * 60)
 }
 

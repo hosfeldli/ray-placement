@@ -27,6 +27,50 @@ enum AppInterfaceDensity: String, CaseIterable, Identifiable {
     }
 }
 
+enum NotesVisualTheme: String, CaseIterable, Identifiable {
+    case prism
+    case graphite
+    case midnight
+    case aurora
+    case ink
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+enum NotesFontStyle: String, CaseIterable, Identifiable {
+    case system
+    case rounded
+    case serif
+    case monospaced
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .rounded: return "Rounded"
+        case .serif: return "Editorial"
+        case .monospaced: return "Mono"
+        }
+    }
+}
+
+enum NotesContentWidth: String, CaseIterable, Identifiable {
+    case focused
+    case wide
+    case fluid
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var maximum: CGFloat? {
+        switch self {
+        case .focused: return 760
+        case .wide: return 980
+        case .fluid: return nil
+        }
+    }
+}
+
 enum PerformanceScale: String, CaseIterable, Identifiable {
     case eco
     case balanced
@@ -145,9 +189,9 @@ enum DictationEngine: String, CaseIterable, Identifiable {
     var detail: String {
         switch self {
         case .localWhisper:
-            return "More reliable for meetings and distant speech. Runs locally on one-minute audio segments and needs only Microphone access."
+            return "More reliable for meetings and distant speech. Adds local transcript windows while you keep recording and needs only Microphone access."
         case .appleSpeech:
-            return "Uses macOS on-device recognition. Smaller and usually faster, but some recordings can return incomplete results."
+            return "Uses macOS on-device recognition for the fastest live updates, with short local windows and no cloud transcription."
         }
     }
 }
@@ -170,7 +214,19 @@ enum DictationComputeMode: String, CaseIterable, Identifiable {
 enum ApplicationPaths {
     static let applicationSupport: URL = {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return root.appendingPathComponent("RayPlacement", isDirectory: true)
+        let current = root.appendingPathComponent("Lima", isDirectory: true)
+        let legacy = root.appendingPathComponent("RayPlacement", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: current.path),
+           FileManager.default.fileExists(atPath: legacy.path) {
+            do {
+                try FileManager.default.moveItem(at: legacy, to: current)
+            } catch {
+                // Never strand an existing workspace because a migration could
+                // not complete (for example, a transient file lock).
+                return legacy
+            }
+        }
+        return current
     }()
 
     static let extensions = applicationSupport.appendingPathComponent("Extensions", isDirectory: true)
@@ -216,6 +272,12 @@ final class SettingsStore: ObservableObject {
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let interfaceDensity = "interfaceDensity"
+        static let notesVisualTheme = "notesVisualTheme"
+        static let notesFontStyle = "notesFontStyle"
+        static let notesFontSize = "notesFontSize"
+        static let notesLineSpacing = "notesLineSpacing"
+        static let notesContentWidth = "notesContentWidth"
+        static let notesShowMetadata = "notesShowMetadata"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
@@ -364,6 +426,36 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(interfaceDensity.rawValue, forKey: Key.interfaceDensity) }
     }
 
+    @Published var notesVisualTheme: NotesVisualTheme {
+        didSet { defaults.set(notesVisualTheme.rawValue, forKey: Key.notesVisualTheme) }
+    }
+
+    @Published var notesFontStyle: NotesFontStyle {
+        didSet { defaults.set(notesFontStyle.rawValue, forKey: Key.notesFontStyle) }
+    }
+
+    @Published var notesFontSize: Double {
+        didSet {
+            notesFontSize = min(max(notesFontSize, 13), 24)
+            defaults.set(notesFontSize, forKey: Key.notesFontSize)
+        }
+    }
+
+    @Published var notesLineSpacing: Double {
+        didSet {
+            notesLineSpacing = min(max(notesLineSpacing, 1), 12)
+            defaults.set(notesLineSpacing, forKey: Key.notesLineSpacing)
+        }
+    }
+
+    @Published var notesContentWidth: NotesContentWidth {
+        didSet { defaults.set(notesContentWidth.rawValue, forKey: Key.notesContentWidth) }
+    }
+
+    @Published var notesShowMetadata: Bool {
+        didSet { defaults.set(notesShowMetadata, forKey: Key.notesShowMetadata) }
+    }
+
     @Published var clipboardEnabled: Bool {
         didSet {
             defaults.set(clipboardEnabled, forKey: Key.clipboardEnabled)
@@ -444,6 +536,14 @@ final class SettingsStore: ObservableObject {
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
+        notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
+        notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system
+        let storedNotesFontSize = defaults.double(forKey: Key.notesFontSize)
+        notesFontSize = storedNotesFontSize == 0 ? 15.5 : storedNotesFontSize
+        let storedNotesLineSpacing = defaults.double(forKey: Key.notesLineSpacing)
+        notesLineSpacing = storedNotesLineSpacing == 0 ? 3.5 : storedNotesLineSpacing
+        notesContentWidth = NotesContentWidth(rawValue: defaults.string(forKey: Key.notesContentWidth) ?? "") ?? .wide
+        notesShowMetadata = defaults.object(forKey: Key.notesShowMetadata) as? Bool ?? true
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
