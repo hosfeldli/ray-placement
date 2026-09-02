@@ -31,7 +31,7 @@ Run the bundled **Uninstall Lima** extension to remove the app from within Lima.
 - Configure or disable every extension shortcut independently in **Settings → Extensions**.
 - Configure launcher, Notes, dictation, dock-left, and dock-right shortcuts in **Settings → General**.
 - Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, Terminal, and SQL Workspace.
-- Regular RayPlacement tools join one native macOS tabbed window by default. Use the standard Window menu or drag a tab to break it into a separate window.
+- Lima tools join one native macOS workspace by default and can be broken into separate windows when needed.
 - Background extension work reports compact progress without blocking the launcher.
 
 Version 2.0 introduces a higher-contrast prismatic visual system across every workspace: sharper glass edges, clearer selected states, tighter controls, calmer ambient motion, and reduced-motion support through macOS. Keyboard hints appear only at the point of use.
@@ -70,7 +70,7 @@ Endpoint Tester is a native Postman-style workspace:
 - no auth, Bearer, Basic, and API-key auth in either headers or query strings
 - Postman collection v2.0/v2.1 imports with nested folders and collection/folder/request auth inheritance
 - Postman environment imports, enabled variables, collection variables, and `{{variable}}` resolution
-- collection runner with user-selected iteration count and delay, per-request results, and cancellation; RayPlacement imposes no product credit or runner-count cap
+- collection runner with user-selected iteration count and delay, per-request results, and cancellation; Lima imposes no product credit or runner-count cap
 - local workspace persistence in Application Support with restrictive file permissions; request secrets are never included in usage logs
 
 ## SQL Workspace
@@ -95,7 +95,7 @@ SQL Workspace is a native Oracle and MySQL client that uses the installed `sqlpl
 
 Notes open in a dedicated resizable window that can join the workspace, become full screen, or dock as a narrow quick-note panel on either side. Pressing the Notes shortcut again closes the Notes window. Notes save locally while typing and can be searched, pinned, favorited, and reordered by those groups.
 
-The editor presents formatted Markdown in place instead of a separate rendered preview. It supports headings, bold, italic, lists, links, code, and native-looking tables. Pasted tabular content is converted into an editable table; table titles and column sorting are supported.
+The editor presents formatted Markdown in place instead of a separate rendered preview. It supports headings, bold, italic, links, code, managed image attachments, native bar/line chart blocks, interactive task checkboxes with completion progress, and native-looking tables. Pasted images are copied into Lima's local Note Assets folder; pasted tabular content becomes an editable table with titles and column sorting. Double-click a rendered chart or image to edit its portable Markdown source.
 
 Dictation records durable one-minute audio segments and can continue for hour-plus meetings even if the Notes window closes. A compact speech-level indicator remains visible while recording. Completed segments are transcribed as recording continues, so a final stop has only the remaining queue to process. The local Whisper small.en TinyDiarize build applies bounded room-audio gain, detects pauses for paragraphs, and uses best-effort speaker-turn labels. Settings provide Automatic Metal with CPU fallback, Metal, or CPU compute.
 
@@ -121,7 +121,7 @@ Writing Check captures the exact current selection through a Copy transaction, i
 - **Emoji Picker** — the complete paged Unicode keyboard set with ranked aliases, fast bounded lookup, focus-aware paste, and automatic clipboard restoration; default double Command
 - **Focused File Launcher** — Finder-backed file/folder selection with a choice of any installed destination app
 - **Convert Timezones** — offline daylight-saving-aware conversion
-- **Force Quit Application / All Applications** — explicit confirmation; the all-app action always excludes RayPlacement
+- **Force Quit Application / All Applications** — explicit confirmation; the all-app action always excludes Lima
 
 Formatter is separate from Notes and never appears as a note type.
 
@@ -135,7 +135,7 @@ See [docs/EXTENSIONS.md](docs/EXTENSIONS.md), the JSON [manifest schema](docs/ex
 
 Settings provides separate performance scales for Writing, Dictation, and executable Extensions, including explicit **Unbounded**. Beta Dynamic treats the configured value as a ceiling and backs down under Low Power Mode or thermal pressure. Dictation additionally exposes Automatic Metal+CPU fallback, Metal, and CPU compute.
 
-Writing resources are process-based and exit after each correction. Whisper processes completed audio segments and exits after its queue is empty. Extension processes receive thread, numerical-library, and timeout environment limits; Unbounded removes the RayPlacement wall-clock timeout but does not turn third-party code into a sandbox.
+Writing resources are process-based and exit after each correction. Whisper processes completed audio segments and exits after its queue is empty. Extension processes receive thread, numerical-library, and timeout environment limits; Unbounded removes the Lima wall-clock timeout but does not turn third-party code into a sandbox.
 
 **Settings → Usage** shows active tasks, durations, thread counts, input/output sizes, outcomes, and a locally stored diagnostic log. Passwords, auth values, note bodies, selected text, and dictated content are not logged.
 
@@ -161,7 +161,7 @@ LIMA_TEST_STABLE_SIGNING=1 /bin/zsh scripts/test_approved_lima_update.sh
 ./scripts/verify_liamflow_app.sh build/Lima.app
 ```
 
-`scripts/assemble_whisper_model.sh` restores the verified model from an existing RayPlacement app or downloads the exact pinned asset. `scripts/fetch_vendor_assets.sh` prepares only the dictation asset; there is no text-model asset fetch.
+`scripts/assemble_whisper_model.sh` restores the verified model from an existing Lima app or downloads the exact pinned asset. `scripts/fetch_vendor_assets.sh` prepares only the dictation asset; there is no text-model asset fetch.
 
 Important source areas:
 

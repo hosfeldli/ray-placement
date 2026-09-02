@@ -1,6 +1,7 @@
 import AppKit
 import RayPlacementCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct InlineMarkdownEditor: NSViewRepresentable {
     @ObservedObject private var typography = AppTypography.shared
@@ -9,9 +10,10 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     var fontStyle: NotesFontStyle = .system
     var fontSize: Double = 15.5
     var lineSpacing: Double = 3.5
+    var theme: NotesVisualTheme = .prism
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -53,6 +55,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.attachmentDeleteHandler = { [weak coordinator = context.coordinator] attachment in
             coordinator?.deleteTable(attachment)
         }
+        textView.documentChangeHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.tableDidChange()
+        }
+        textView.richContentRenderHandler = { [weak coordinator = context.coordinator] in
+            coordinator?.rerenderCurrentDocument()
+        }
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
@@ -66,9 +74,11 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         let styleChanged = context.coordinator.fontStyle != fontStyle
             || context.coordinator.fontSize != fontSize
             || context.coordinator.lineSpacing != lineSpacing
+            || context.coordinator.theme != theme
         context.coordinator.fontStyle = fontStyle
         context.coordinator.fontSize = fontSize
         context.coordinator.lineSpacing = lineSpacing
+        context.coordinator.theme = theme
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -92,13 +102,15 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var fontStyle: NotesFontStyle
         var fontSize: Double
         var lineSpacing: Double
+        var theme: NotesVisualTheme
         private var stylingWorkItem: DispatchWorkItem?
 
-        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
             self.text = text
             self.fontStyle = fontStyle
             self.fontSize = fontSize
             self.lineSpacing = lineSpacing
+            self.theme = theme
         }
 
         func textDidChange(_ notification: Notification) {
@@ -115,18 +127,30 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             lastMarkdown = markdown
             text.wrappedValue = markdown
             textView.updateTableOverlays()
+            applyStyles(immediately: true)
+        }
+
+        func rerenderCurrentDocument() {
+            guard let textView else { return }
+            let markdown = MarkdownTableDocumentCodec.markdown(from: textView.attributedString())
+            lastMarkdown = markdown
+            text.wrappedValue = markdown
+            DispatchQueue.main.async { [weak self] in
+                self?.render(markdown: markdown, preservingSelection: true)
+            }
         }
 
         func render(markdown: String, preservingSelection: Bool) {
             guard let textView else { return }
             let selection = textView.selectedRange()
             isApplyingExternalUpdate = true
-            textView.textStorage?.setAttributedString(
-                MarkdownTableDocumentCodec.attributedString(
+            let tables = MarkdownTableDocumentCodec.attributedString(
                     from: markdown,
                     onTableChange: { [weak self] in self?.tableDidChange() },
                     onTableDelete: { [weak self] attachment in self?.deleteTable(attachment) }
                 )
+            textView.textStorage?.setAttributedString(
+                MarkdownRichDocumentCodec.enrich(tables) { [weak self] in self?.tableDidChange() }
             )
             lastMarkdown = markdown
             if preservingSelection {
@@ -163,7 +187,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
                     to: textView,
                     fontStyle: self.fontStyle,
                     fontSize: self.fontSize,
-                    lineSpacing: self.lineSpacing
+                    lineSpacing: self.lineSpacing,
+                    theme: self.theme
                 )
                 textView.updateTableOverlays()
             }
@@ -196,12 +221,17 @@ enum MarkdownEditorActions {
     static func italic() { withEditor { $0.toggleItalic() } }
     static func link() { withEditor { $0.editLink() } }
     static func table() { withEditor { $0.insertTable() } }
+    static func image() { withEditor { $0.chooseImage() } }
+    static func chart() { withEditor { $0.insertChart() } }
+    static func checklist() { withEditor { $0.insertRichMarkdownBlock("- [ ] First task\n- [ ] Next task") } }
     static func insert(_ markdown: String) { withEditor { $0.insertMarkdownBlock(markdown) } }
 }
 
 final class MarkdownTextView: NSTextView {
     var attachmentChangeHandler: (() -> Void)?
     var attachmentDeleteHandler: ((MarkdownTableAttachment) -> Void)?
+    var documentChangeHandler: (() -> Void)?
+    var richContentRenderHandler: (() -> Void)?
     private var tableOverlays: [ObjectIdentifier: MarkdownNativeTableView] = [:]
 
     override func becomeFirstResponder() -> Bool {
@@ -282,6 +312,9 @@ final class MarkdownTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
+        if let image = NSImage(pasteboard: pasteboard), insertImage(image, alt: "Pasted image") {
+            return
+        }
         let plainText = pasteboard.string(forType: .string) ?? ""
         let html = pasteboard.string(forType: .html)
         guard let data = TabularDataParser.parse(text: plainText, html: html) else {
@@ -291,6 +324,33 @@ final class MarkdownTextView: NSTextView {
         insertTable(data)
     }
 
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        if let layoutManager, let textContainer {
+            var point = local
+            point.x -= textContainerOrigin.x
+            point.y -= textContainerOrigin.y
+            let glyph = layoutManager.glyphIndex(for: point, in: textContainer)
+            let character = layoutManager.characterIndexForGlyph(at: glyph)
+            if character < attributedString().length,
+               let task = attributedString().attribute(.attachment, at: character, effectiveRange: nil) as? MarkdownTaskAttachment {
+                task.toggle()
+                layoutManager.invalidateDisplay(forCharacterRange: NSRange(location: character, length: 1))
+                return
+            }
+            if event.clickCount == 2, character < attributedString().length,
+               let media = attributedString().attribute(.attachment, at: character, effectiveRange: nil) as? MarkdownMediaAttachment {
+                let range = NSRange(location: character, length: 1)
+                guard shouldChangeText(in: range, replacementString: media.markdownSource) else { return }
+                textStorage?.replaceCharacters(in: range, with: media.markdownSource)
+                didChangeText()
+                setSelectedRange(NSRange(location: character, length: (media.markdownSource as NSString).length))
+                return
+            }
+        }
+        super.mouseDown(with: event)
+    }
+
     override func insertNewline(_ sender: Any?) {
         let source = string as NSString
         let selection = selectedRange()
@@ -298,7 +358,7 @@ final class MarkdownTextView: NSTextView {
         let line = source.substring(with: lineRange).trimmingCharacters(in: .newlines)
 
         let continuation: String?
-        if let match = line.firstMatch(pattern: #"^(\s*)- \[[ xX]\] (.*)$"#) {
+        if let match = line.firstMatch(pattern: #"^(\s*)- (?:\[[ xX]\]|\u{FFFC}) (.*)$"#) {
             continuation = match[2].isEmpty ? nil : "\n\(match[1])- [ ] "
         } else if let match = line.firstMatch(pattern: #"^(\s*)[-*+] (.*)$"#) {
             continuation = match[2].isEmpty ? nil : "\n\(match[1])- "
@@ -362,12 +422,51 @@ final class MarkdownTextView: NSTextView {
         )
     }
 
+    func insertRichMarkdownBlock(_ markdown: String) {
+        insertMarkdownBlock(markdown)
+        richContentRenderHandler?()
+    }
+
     func insertTable() {
         insertTable(TabularData(rows: [
             ["Column 1", "Column 2", "Column 3"],
             ["", "", ""],
             ["", "", ""]
         ]))
+    }
+
+    func chooseImage() {
+        let panel = NSOpenPanel()
+        panel.title = "Add Image to Note"
+        panel.prompt = "Add Image"
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard response == .OK, let url = panel.url,
+                  let reference = MarkdownNoteAssetStore.importFile(url) else { return }
+            self?.insertRichMarkdownBlock("![\(url.deletingPathExtension().lastPathComponent)](\(reference))")
+        }
+        if let window { panel.beginSheetModal(for: window, completionHandler: finish) }
+        else { finish(panel.runModal()) }
+    }
+
+    func insertChart() {
+        insertRichMarkdownBlock("""
+        ```chart
+        title: New chart
+        type: bar
+        Item A, 12
+        Item B, 18
+        Item C, 9
+        ```
+        """)
+    }
+
+    @discardableResult
+    private func insertImage(_ image: NSImage, alt: String) -> Bool {
+        guard let reference = MarkdownNoteAssetStore.importImage(image) else { return false }
+        insertRichMarkdownBlock("![\(alt)](\(reference))")
+        return true
     }
 
     private func insertTable(_ data: TabularData) {
@@ -465,11 +564,12 @@ final class MarkdownTextView: NSTextView {
 
 }
 
+@MainActor
 private enum MarkdownInlineStyler {
-    private static let codeBackground = NSColor.controlBackgroundColor.withAlphaComponent(0.78)
     private static let hiddenMarkerFont = NSFont.systemFont(ofSize: 0.1)
 
-    static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double) {
+    static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
+        let palette = NotesEditorPalette(theme: theme)
         let baseFont = font(style: fontStyle, size: CGFloat(fontSize), weight: .regular)
         let monoFont = NSFont.monospacedSystemFont(ofSize: AppTypography.size(CGFloat(max(12, fontSize - 1.5))), weight: .regular)
         guard let storage = textView.textStorage else { return }
@@ -490,11 +590,23 @@ private enum MarkdownInlineStyler {
         storage.beginEditing()
         storage.setAttributes([
             .font: baseFont,
-            .foregroundColor: NSColor.labelColor,
+            .foregroundColor: palette.text,
             .paragraphStyle: paragraph
         ], range: fullRange)
         for attachment in attachments {
             storage.addAttribute(.attachment, value: attachment.value, range: attachment.range)
+        }
+        for attachment in attachments {
+            guard let task = attachment.value as? MarkdownTaskAttachment else { continue }
+            let lineRange = source.lineRange(for: attachment.range)
+            let textStart = min(NSMaxRange(lineRange), NSMaxRange(attachment.range) + 1)
+            let textRange = NSRange(location: textStart, length: max(0, NSMaxRange(lineRange) - textStart))
+            if task.checked, textRange.length > 0 {
+                storage.addAttributes([
+                    .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+                    .foregroundColor: NSColor.secondaryLabelColor
+                ], range: textRange)
+            }
         }
 
         apply(pattern: #"(?m)^(#{1,6})[ \t]+(.+)$"#, to: source) { match in
@@ -522,7 +634,7 @@ private enum MarkdownInlineStyler {
             codeParagraph.paragraphSpacing = 1
             storage.addAttributes([
                 .font: monoFont,
-                .backgroundColor: codeBackground,
+                .backgroundColor: palette.codeBackground,
                 .paragraphStyle: codeParagraph
             ], range: contentRange)
             let openingRange = NSRange(
@@ -540,7 +652,7 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"`([^`\n]+)`"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let contentRange = match.range(at: 1)
-            storage.addAttributes([.font: monoFont, .backgroundColor: codeBackground], range: contentRange)
+            storage.addAttributes([.font: monoFont, .backgroundColor: palette.codeBackground], range: contentRange)
             styleMarkers(around: contentRange, in: match.range, storage: storage)
         }
 
@@ -562,7 +674,7 @@ private enum MarkdownInlineStyler {
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let labelRange = match.range(at: 1)
             let destinationRange = match.range(at: 2)
-            storage.addAttributes([.foregroundColor: NSColor.linkColor, .underlineStyle: NSUnderlineStyle.single.rawValue], range: labelRange)
+            storage.addAttributes([.foregroundColor: palette.accent, .underlineStyle: NSUnderlineStyle.single.rawValue], range: labelRange)
             styleMarkers(around: labelRange, in: match.range, storage: storage)
             if let url = URL(string: source.substring(with: destinationRange)) {
                 storage.addAttribute(.link, value: url, range: labelRange)
@@ -571,19 +683,19 @@ private enum MarkdownInlineStyler {
 
         apply(pattern: #"(?m)^(\s*)([-*+]|\d+[.)])\s+"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
-            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: match.range)
+            storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range)
         }
         apply(pattern: #"(?m)^(\s*)- \[([ xX])\]\s+(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let checked = source.substring(with: match.range(at: 2)).lowercased() == "x"
-            storage.addAttribute(.foregroundColor, value: checked ? NSColor.systemGreen : NSColor.controlAccentColor, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
+            storage.addAttribute(.foregroundColor, value: checked ? NSColor.systemGreen : palette.accent, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
             if checked {
                 storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 3))
             }
         }
         apply(pattern: #"(?m)^(\s*>\s?)(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
-            storage.addAttribute(.foregroundColor, value: NSColor.controlAccentColor, range: match.range(at: 1))
+            storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range(at: 1))
             let italic = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
             storage.addAttributes([.font: italic, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 2))
         }
@@ -598,7 +710,7 @@ private enum MarkdownInlineStyler {
 
         storage.endEditing()
         textView.selectedRanges = selection
-        textView.typingAttributes = [.font: baseFont, .foregroundColor: NSColor.labelColor]
+        textView.typingAttributes = [.font: baseFont, .foregroundColor: palette.text]
     }
 
     private static func font(style: NotesFontStyle, size: CGFloat, weight: NSFont.Weight) -> NSFont {
@@ -662,6 +774,37 @@ private enum MarkdownInlineStyler {
         ], range: range)
     }
 
+}
+
+private struct NotesEditorPalette {
+    let text: NSColor
+    let accent: NSColor
+    let codeBackground: NSColor
+
+    init(theme: NotesVisualTheme) {
+        switch theme {
+        case .prism:
+            text = NSColor(calibratedRed: 0.92, green: 0.93, blue: 0.98, alpha: 1)
+            accent = NSColor(calibratedRed: 0.67, green: 0.48, blue: 1, alpha: 1)
+            codeBackground = NSColor(calibratedRed: 0.10, green: 0.08, blue: 0.18, alpha: 0.92)
+        case .graphite:
+            text = NSColor(calibratedWhite: 0.90, alpha: 1)
+            accent = NSColor(calibratedWhite: 0.72, alpha: 1)
+            codeBackground = NSColor(calibratedWhite: 0.04, alpha: 0.92)
+        case .midnight:
+            text = NSColor(calibratedRed: 0.84, green: 0.90, blue: 1, alpha: 1)
+            accent = NSColor(calibratedRed: 0.30, green: 0.68, blue: 1, alpha: 1)
+            codeBackground = NSColor(calibratedRed: 0.02, green: 0.05, blue: 0.13, alpha: 0.94)
+        case .aurora:
+            text = NSColor(calibratedRed: 0.84, green: 0.98, blue: 0.94, alpha: 1)
+            accent = NSColor(calibratedRed: 0.22, green: 0.91, blue: 0.74, alpha: 1)
+            codeBackground = NSColor(calibratedRed: 0.02, green: 0.12, blue: 0.12, alpha: 0.94)
+        case .ink:
+            text = NSColor(calibratedRed: 0.96, green: 0.89, blue: 0.79, alpha: 1)
+            accent = NSColor(calibratedRed: 1, green: 0.59, blue: 0.28, alpha: 1)
+            codeBackground = NSColor(calibratedRed: 0.13, green: 0.08, blue: 0.05, alpha: 0.94)
+        }
+    }
 }
 
 private extension String {

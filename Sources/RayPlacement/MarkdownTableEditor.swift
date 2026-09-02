@@ -690,13 +690,16 @@ enum MarkdownTableDocumentCodec {
         var cursor = 0
         while cursor < attributedString.length {
             var range = NSRange(location: 0, length: 0)
-            let attachment = attributedString.attribute(
+            let value = attributedString.attribute(
                 .attachment,
                 at: cursor,
                 effectiveRange: &range
-            ) as? MarkdownTableAttachment
-            if let attachment {
+            )
+            if let attachment = value as? MarkdownTableAttachment {
                 markdown += attachment.table.markdown
+                cursor = NSMaxRange(range)
+            } else if let attachment = value as? MarkdownPersistedAttachment {
+                markdown += attachment.markdownSource
                 cursor = NSMaxRange(range)
             } else {
                 let next = NSMaxRange(range)

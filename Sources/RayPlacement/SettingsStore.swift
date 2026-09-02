@@ -233,6 +233,7 @@ enum ApplicationPaths {
     static let clipboardHistory = applicationSupport.appendingPathComponent("clipboard-history.json")
     static let harperDictionary = applicationSupport.appendingPathComponent("harper-dictionary.txt")
     static let notes = applicationSupport.appendingPathComponent("notes.json")
+    static let noteAssets = applicationSupport.appendingPathComponent("Note Assets", isDirectory: true)
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
     static let failedDictations = applicationSupport.appendingPathComponent("Failed Dictations", isDirectory: true)
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
@@ -243,6 +244,7 @@ enum ApplicationPaths {
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: failedDictations, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: noteAssets, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
     }

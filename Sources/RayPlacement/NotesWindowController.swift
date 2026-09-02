@@ -771,7 +771,8 @@ private struct NotesView: View {
             compact: presentation.mode.isDocked,
             fontStyle: settings.notesFontStyle,
             fontSize: settings.notesFontSize,
-            lineSpacing: settings.notesLineSpacing
+            lineSpacing: settings.notesLineSpacing,
+            theme: settings.notesVisualTheme
         )
         .accessibilityLabel("Inline formatted Markdown editor")
 
@@ -780,7 +781,13 @@ private struct NotesView: View {
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
                 markdownEditor
                     .frame(maxWidth: settings.notesContentWidth.maximum)
-                    .background(noteCanvasColor.opacity(0.42))
+                    .background(
+                        LinearGradient(
+                            colors: [noteCanvasColor.opacity(0.96), notesThemeColors[0].opacity(0.34), noteCanvasColor.opacity(0.88)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.008)
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
@@ -836,6 +843,8 @@ private struct NotesView: View {
                         Button("Quote") { MarkdownEditorActions.insert("> Quote") }
                         Button("Divider") { MarkdownEditorActions.insert("---") }
                         Button("Table") { MarkdownEditorActions.table() }
+                        Button("Image…") { MarkdownEditorActions.image() }
+                        Button("Chart") { MarkdownEditorActions.chart() }
                     } label: {
                         Image(systemName: "textformat")
                             .limaFont(.system(size: 11, weight: .semibold))
@@ -849,7 +858,9 @@ private struct NotesView: View {
                     MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)", action: MarkdownEditorActions.bold)
                     MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)", action: MarkdownEditorActions.italic)
                     MarkdownInsertButton(symbol: "list.bullet", help: "Insert list item") { MarkdownEditorActions.insert("- List item") }
-                    MarkdownInsertButton(symbol: "checklist", help: "Insert task") { MarkdownEditorActions.insert("- [ ] Task") }
+                    MarkdownInsertButton(symbol: "checklist", help: "Insert interactive task list", action: MarkdownEditorActions.checklist)
+                    MarkdownInsertButton(symbol: "photo", help: "Add an image from Finder", action: MarkdownEditorActions.image)
+                    MarkdownInsertButton(symbol: "chart.bar.xaxis", help: "Insert a native chart", action: MarkdownEditorActions.chart)
                     MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert formatted code block") {
                         MarkdownEditorActions.insert("```\ncode\n```")
                     }
@@ -859,6 +870,17 @@ private struct NotesView: View {
                 .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
                 Spacer(minLength: 5)
+
+                let tasks = taskProgress(note.content)
+                if tasks.total > 0 {
+                    Label("\(tasks.complete)/\(tasks.total)", systemImage: tasks.complete == tasks.total ? "checkmark.circle.fill" : "circle.dashed")
+                        .limaFont(.caption2.weight(.semibold))
+                        .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
+                        .padding(.horizontal, 8)
+                        .frame(height: 26)
+                        .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+                        .help("Completed tasks")
+                }
 
                 dictationControl(compact: presentation.mode.isDocked)
             }
@@ -919,6 +941,13 @@ private struct NotesView: View {
 
     private func wordCount(_ text: String) -> Int {
         text.split(whereSeparator: { $0.isWhitespace }).count
+    }
+
+    private func taskProgress(_ text: String) -> (complete: Int, total: Int) {
+        let lines = text.components(separatedBy: .newlines)
+        let taskLines = lines.filter { $0.range(of: #"^\s*- \[[ xX]\]\s+"#, options: .regularExpression) != nil }
+        let complete = taskLines.filter { $0.range(of: #"^\s*- \[[xX]\]\s+"#, options: .regularExpression) != nil }.count
+        return (complete, taskLines.count)
     }
 
     private func relativeTimestamp(_ date: Date) -> String {
