@@ -11,7 +11,7 @@ final class DictationHUDController {
 
     init(dictation: NoteDictationService) {
         panel = DictationHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56))
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: TopShelfView(
+        panel.contentView = ShelfHostingView(rootView: LimaTypographyRoot(content: TopShelfView(
             dictation: dictation,
             music: music,
             focus: focus
@@ -40,12 +40,23 @@ final class DictationHUDController {
                 y: visibleFrame.maxY - panel.frame.height - 12
             ))
         }
-        panel.orderFrontRegardless()
+        // `orderFrontRegardless()` only makes the shelf visible. A borderless
+        // non-activating panel can still remain non-key, which causes SwiftUI
+        // buttons to miss their first mouse-down. Make the panel key without
+        // activating Lima so the controls receive clicks immediately.
+        panel.makeKeyAndOrderFront(nil)
     }
 
     private func hide() {
         panel.orderOut(nil)
     }
+}
+
+private final class ShelfHostingView<Content: View>: NSHostingView<Content> {
+    // The shelf is commonly clicked while another app owns focus. Accept the
+    // first mouse event at the view that actually receives the SwiftUI event
+    // instead of requiring a focus click followed by a control click.
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 private final class DictationHUDPanel: NSPanel {
@@ -63,14 +74,16 @@ private final class DictationHUDPanel: NSPanel {
     ) {
         super.init(
             contentRect: contentRect,
-            styleMask: [.borderless],
+            styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
         )
-        // Remains non-activating, but accepts deliberate clicks on compact
-        // transport and dictation controls without taking keyboard focus.
+        // Keep the shelf above other windows without activating Lima when a
+        // control is clicked. The panel must still become key so SwiftUI can
+        // deliver button presses through its responder chain.
         ignoresMouseEvents = false
-        becomesKeyOnlyIfNeeded = true
+        acceptsMouseMovedEvents = true
+        becomesKeyOnlyIfNeeded = false
         level = .statusBar
         isFloatingPanel = true
         hidesOnDeactivate = false
@@ -142,65 +155,86 @@ private struct TopShelfView: View {
 
     private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
         let accent = track.source.accent
-        return HStack(spacing: 8) {
-            musicArtwork(for: track, accent: accent)
-            .frame(width: 38, height: 38)
-            .clipShape(PrismaticPanelShape(cut: 7))
-            .overlay(PrismaticPanelShape(cut: 7).stroke(accent.opacity(0.48), lineWidth: 0.8))
-
+        let statusMessage = music.transportMessage ?? music.controlAvailabilityMessage
+        return HStack(spacing: 10) {
             Button {
                 music.openSource()
                 focus.restoreSoon()
             } label: {
-                VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
-                        Image(systemName: track.source.symbol)
-                            .limaFont(.system(size: 8, weight: .bold))
-                            .foregroundStyle(accent)
-                        Text(track.source.title.uppercased())
-                            .limaFont(.system(size: 8, weight: .bold, design: .rounded))
-                            .tracking(0.6)
-                            .foregroundStyle(.secondary)
-                        if track.isPlaying {
-                            MusicActivityIndicator(level: music.outputAudioLevel, color: accent)
-                        } else {
-                            Text("PAUSED")
-                                .limaFont(.system(size: 7.5, weight: .bold, design: .rounded))
-                                .foregroundStyle(.tertiary)
+                HStack(spacing: 9) {
+                    musicArtwork(for: track, accent: accent)
+                        .frame(width: 38, height: 38)
+                        .clipShape(PrismaticPanelShape(cut: 8))
+                        .overlay {
+                            PrismaticPanelShape(cut: 8)
+                                .stroke(accent.opacity(0.50), lineWidth: 0.8)
+                                .allowsHitTesting(false)
                         }
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 5) {
+                            Image(systemName: track.source.symbol)
+                                .limaFont(.system(size: 8, weight: .bold))
+                                .foregroundStyle(accent)
+                            Text(track.source.title.uppercased())
+                                .limaFont(.system(size: 8, weight: .bold, design: .rounded))
+                                .tracking(0.7)
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 2)
+                            HStack(spacing: 3) {
+                                Circle()
+                                    .fill(track.isPlaying ? accent : Color.secondary.opacity(0.55))
+                                    .frame(width: 5, height: 5)
+                                Text(track.isPlaying ? "PLAYING" : "PAUSED")
+                                    .limaFont(.system(size: 7.5, weight: .bold, design: .rounded))
+                                    .foregroundStyle(track.isPlaying ? AnyShapeStyle(accent) : AnyShapeStyle(.tertiary))
+                            }
+                        }
+                        Text(track.title)
+                            .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Text(statusMessage ?? mediaSubtitle(track))
+                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(statusMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                            .lineLimit(1)
                     }
-                    Text(track.title)
-                        .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                    Text(music.transportMessage ?? music.controlAvailabilityMessage ?? mediaSubtitle(track))
-                        .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle((music.transportMessage == nil && music.controlAvailabilityMessage == nil) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                        .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Open \(track.source.title)")
             .accessibilityLabel("Open \(track.source.title): \(track.title)")
 
-            HStack(spacing: 2) {
+            HStack(spacing: 3) {
                 mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
                 Button {
                     runMediaAction(.playPause)
                 } label: {
                     Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .frame(width: 30, height: 30)
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 29, height: 29)
                         .foregroundStyle(.white)
-                        .background(accent.gradient, in: PrismaticPanelShape(cut: 6))
-                        .overlay(PrismaticPanelShape(cut: 6).stroke(Color.white.opacity(0.34), lineWidth: 0.6))
-                        .shadow(color: accent.opacity(0.28), radius: 6, y: 2)
+                        .background(accent.gradient, in: Circle())
+                        .overlay {
+                            Circle()
+                                .stroke(Color.white.opacity(0.38), lineWidth: 0.7)
+                                .allowsHitTesting(false)
+                        }
+                        .shadow(color: accent.opacity(0.30), radius: 6, y: 2)
                 }
                 .buttonStyle(.plain)
                 .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
                 .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
                 mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
+            }
+            .padding(4)
+            .background(Color.black.opacity(0.20), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(Color.white.opacity(0.14), lineWidth: 0.7)
+                    .allowsHitTesting(false)
             }
             .opacity(music.isPerformingTransport ? 0.55 : 1)
             .disabled(music.isPerformingTransport)
@@ -243,11 +277,12 @@ private struct TopShelfView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 9.5, weight: .bold))
-                .frame(width: 25, height: 25)
+                .frame(width: 30, height: 30)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(Color.white.opacity(0.055), in: PrismaticPanelShape(cut: 5))
+        .contentShape(Rectangle())
         .help(label)
         .accessibilityLabel(label)
     }
@@ -258,8 +293,8 @@ private struct TopShelfView: View {
     }
 
     private func mediaSubtitle(_ track: MediaNowPlayingSnapshot) -> String {
-        let detail = track.artist.isEmpty ? track.album : track.artist
-        return detail.isEmpty ? track.source.title : "\(track.source.title) · \(detail)"
+        let details = [track.artist, track.album].filter { !$0.isEmpty }
+        return details.isEmpty ? track.source.title : details.joined(separator: " · ")
     }
 
     @ViewBuilder
@@ -399,6 +434,7 @@ private extension View {
                         )
                     )
                     .blendMode(.screen)
+                    .allowsHitTesting(false)
             )
             .overlay(
                 PrismaticPanelShape(cut: 8)
@@ -410,6 +446,7 @@ private extension View {
                         ),
                         lineWidth: 0.75
                     )
+                    .allowsHitTesting(false)
             )
             .shadow(color: accent.opacity(0.16), radius: 10, y: 5)
     }
