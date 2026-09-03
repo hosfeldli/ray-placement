@@ -540,8 +540,23 @@ private struct NotesView: View {
                 .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
                 Menu {
-                    ForEach(MarkdownNoteTemplate.allCases) { template in
-                        Button(template.title) { store.createNote(template: template) }
+                    Section("New Note") {
+                        ForEach(MarkdownNoteTemplate.allCases) { template in
+                            Button {
+                                store.createNote(template: template)
+                            } label: {
+                                Label {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(template.title)
+                                        Text(template.detail)
+                                            .limaFont(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                } icon: {
+                                    Image(systemName: template == .blank ? "square.and.pencil" : "doc.text.fill")
+                                }
+                            }
+                        }
                     }
                 } label: {
                     Image(systemName: "square.and.pencil")
@@ -743,6 +758,10 @@ private struct NotesView: View {
                                 .foregroundStyle(Color.accentColor)
                         }
                     }
+                } else if settings.notesShowMetadata {
+                    Text("No tags · use … to organize")
+                        .limaFont(.system(size: 9, weight: .regular))
+                        .foregroundStyle(.tertiary)
                 }
             }
 
@@ -1168,30 +1187,77 @@ private struct RevisionHistorySheet: View {
     let revisions: [NoteRevision]
     let onRestore: (NoteRevision) -> Void
     @Environment(\.dismiss) private var dismiss
+    @State private var pendingRestore: NoteRevision?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Revision History").limaFont(.title3.bold())
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Revision History").limaFont(.title3.bold())
+                    Text("\(revisions.count) saved \(revisions.count == 1 ? "version" : "versions")")
+                        .limaFont(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "clock.arrow.circlepath")
+                    .foregroundStyle(Color.accentColor)
+            }
             if revisions.isEmpty {
                 Text("Revisions appear after a note has been edited.").foregroundStyle(.secondary)
             } else {
                 List(revisions.reversed()) { revision in
-                    HStack {
-                        VStack(alignment: .leading) {
+                    HStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(revision.title.isEmpty ? "Untitled Note" : revision.title)
-                            Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened))
-                                .limaFont(.caption).foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            Text(revisionPreview(revision.content))
+                                .limaFont(.caption)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                            HStack(spacing: 6) {
+                                Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                Text("·")
+                                Text("\(wordCount(revision.content)) words")
+                            }
+                            .limaFont(.caption2)
+                            .foregroundStyle(.tertiary)
                         }
-                        Spacer()
-                        Button("Restore") { onRestore(revision); dismiss() }
+                        Spacer(minLength: 8)
+                        Button("Restore") { pendingRestore = revision }
                     }
+                    .padding(.vertical, 3)
                 }
             }
             HStack { Spacer(); Button("Close") { dismiss() } }
         }
         .padding(18)
-        .frame(width: 520, height: 360)
+        .frame(width: 560, height: 410)
         .preferredColorScheme(.dark)
+        .alert("Restore this revision?", isPresented: Binding(
+            get: { pendingRestore != nil },
+            set: { if !$0 { pendingRestore = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingRestore = nil }
+            Button("Restore") {
+                if let pendingRestore { onRestore(pendingRestore) }
+                pendingRestore = nil
+                dismiss()
+            }
+        } message: {
+            Text("Your current note will be saved as a new revision before this version is restored.")
+        }
+    }
+
+    private func revisionPreview(_ content: String) -> String {
+        let clean = content
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty } ?? "Empty note"
+        return String(clean.prefix(120))
+    }
+
+    private func wordCount(_ content: String) -> Int {
+        content.split(whereSeparator: { $0.isWhitespace }).count
     }
 }
 
@@ -1240,9 +1306,15 @@ private struct NoteListRow: View {
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(relativeTimestamp(note.modifiedAt))
-                    .limaFont(.caption2)
-                    .foregroundStyle(.tertiary)
+                HStack(spacing: 5) {
+                    Text(relativeTimestamp(note.modifiedAt))
+                    if !note.tags.isEmpty {
+                        Text("·")
+                        Text("\(note.tags.count) \(note.tags.count == 1 ? "tag" : "tags")")
+                    }
+                }
+                .limaFont(.caption2)
+                .foregroundStyle(.tertiary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

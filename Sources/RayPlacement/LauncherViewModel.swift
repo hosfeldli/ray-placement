@@ -653,6 +653,7 @@ final class LauncherViewModel: ObservableObject {
                 icon: .system("text.badge.checkmark"),
                 keywords: ["selection", "spell", "grammar", "proofread"],
                 action: .checkSelectedText,
+                shortcut: "⌘1",
                 accessory: "Review"
             ),
             LauncherItem(
@@ -662,6 +663,7 @@ final class LauncherViewModel: ObservableObject {
                 icon: .system("doc.plaintext"),
                 keywords: ["selection", "plain", "text", "copy"],
                 action: .copyText(text),
+                shortcut: "⌘2",
                 accessory: "Copy"
             ),
             LauncherItem(
@@ -671,6 +673,7 @@ final class LauncherViewModel: ObservableObject {
                 icon: .system("note.text.badge.plus"),
                 keywords: ["selection", "note", "save", "capture"],
                 action: .saveSelectionToQuickNote(text),
+                shortcut: "⌘3",
                 accessory: "Save"
             ),
             LauncherItem(
@@ -680,6 +683,7 @@ final class LauncherViewModel: ObservableObject {
                 icon: .system("list.bullet"),
                 keywords: ["selection", "markdown", "format", "bullets", "list"],
                 action: .replaceSelectedText(bullets),
+                shortcut: "⌘4",
                 accessory: "Replace"
             ),
         ]

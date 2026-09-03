@@ -228,8 +228,13 @@ struct LauncherView: View {
     private var resultList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 3) {
-                    ForEach(Array(viewModel.results.enumerated()), id: \.element.id) { index, item in
+                VStack(alignment: .leading, spacing: 8) {
+                    if viewModel.mode == .root, viewModel.contextualSelectionText != nil {
+                        contextualSelectionHeader
+                    }
+
+                    LazyVStack(spacing: 3) {
+                        ForEach(Array(viewModel.results.enumerated()), id: \.element.id) { index, item in
                         if viewModel.isActionable(item) {
                             Button {
                                 viewModel.select(index)
@@ -256,6 +261,7 @@ struct LauncherView: View {
                                 .accessibilityLabel(Text(accessibilityLabel(for: item)))
                                 .id(item.id)
                         }
+                        }
                     }
                 }
                 .padding(.horizontal, 11)
@@ -271,6 +277,48 @@ struct LauncherView: View {
             .scrollIndicators(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var contextualSelectionHeader: some View {
+        let text = viewModel.contextualSelectionText ?? ""
+        let preview = text.replacingOccurrences(of: "\n", with: " ")
+        let clippedPreview = String(preview.prefix(132))
+        let lineCount = max(1, text.components(separatedBy: .newlines).count)
+
+        return HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
+                Image(systemName: "text.cursor")
+                    .limaFont(.system(size: 13, weight: .bold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text("For Your Selection")
+                    .limaFont(.system(size: 11.5, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                Text(clippedPreview.isEmpty ? "Selected text" : clippedPreview + (preview.count > clippedPreview.count ? "…" : ""))
+                    .limaFont(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(alignment: .trailing, spacing: 2) {
+                Text("\(text.count.formatted()) chars")
+                Text("\(lineCount) \(lineCount == 1 ? "line" : "lines")")
+            }
+            .limaFont(.system(size: 9.5, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 11)
+        .frame(minHeight: 52)
+        .liquidGlass(cornerRadius: 11, depth: .recessed, accentOpacity: 0.018)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Actions for selected text, \(text.count) characters")
     }
 
     private func outputView(title: String, text: String, state: LauncherOutputState) -> some View {

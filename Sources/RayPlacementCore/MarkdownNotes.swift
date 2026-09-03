@@ -40,6 +40,15 @@ public enum MarkdownNoteTemplate: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    public var detail: String {
+        switch self {
+        case .blank: return "Start with an empty page"
+        case .meetingNotes: return "Agenda, discussion, decisions, and action items"
+        case .projectBrief: return "Scope, success criteria, and dependencies"
+        case .dailyPlan: return "Priorities, notes, and completed work"
+        }
+    }
+
     public var content: String {
         switch self {
         case .blank: return ""

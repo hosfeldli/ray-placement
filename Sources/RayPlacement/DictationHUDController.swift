@@ -141,46 +141,65 @@ private struct TopShelfView: View {
     }
 
     private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
-        HStack(spacing: 8) {
-            Group {
-                if let artwork = music.artwork {
-                    Image(nsImage: artwork)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    ZStack {
-                        SettingsStore.shared.accentTheme.gradient.opacity(0.24)
-                        Image(systemName: track.source.symbol)
-                            .limaFont(.system(size: 13, weight: .bold))
-                            .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
-                    }
-                }
-            }
+        let accent = track.source.accent
+        return HStack(spacing: 8) {
+            musicArtwork(for: track, accent: accent)
             .frame(width: 38, height: 38)
             .clipShape(PrismaticPanelShape(cut: 7))
-            .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.30), lineWidth: 0.7))
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Image(systemName: track.source.symbol)
-                        .limaFont(.system(size: 8, weight: .bold))
-                        .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
-                    Text(track.source.title.uppercased())
-                        .limaFont(.system(size: 8, weight: .bold, design: .rounded))
-                        .tracking(0.6)
-                        .foregroundStyle(.secondary)
+            .overlay(PrismaticPanelShape(cut: 7).stroke(accent.opacity(0.48), lineWidth: 0.8))
+
+            Button {
+                music.openSource()
+                focus.restoreSoon()
+            } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 5) {
+                        Image(systemName: track.source.symbol)
+                            .limaFont(.system(size: 8, weight: .bold))
+                            .foregroundStyle(accent)
+                        Text(track.source.title.uppercased())
+                            .limaFont(.system(size: 8, weight: .bold, design: .rounded))
+                            .tracking(0.6)
+                            .foregroundStyle(.secondary)
+                        if track.isPlaying {
+                            MusicActivityIndicator(level: music.outputAudioLevel, color: accent)
+                        } else {
+                            Text("PAUSED")
+                                .limaFont(.system(size: 7.5, weight: .bold, design: .rounded))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+                    Text(track.title)
+                        .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Text(music.transportMessage ?? music.controlAvailabilityMessage ?? mediaSubtitle(track))
+                        .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                        .foregroundStyle((music.transportMessage == nil && music.controlAvailabilityMessage == nil) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                        .lineLimit(1)
                 }
-                Text(track.title)
-                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(music.transportMessage ?? music.controlAvailabilityMessage ?? mediaSubtitle(track))
-                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
-                    .foregroundStyle((music.transportMessage == nil && music.controlAvailabilityMessage == nil) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                    .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
+            .help("Open \(track.source.title)")
+            .accessibilityLabel("Open \(track.source.title): \(track.title)")
+
             HStack(spacing: 2) {
                 mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
-                mediaButton(track.isPlaying ? "pause.fill" : "play.fill", label: track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)") { runMediaAction(.playPause) }
+                Button {
+                    runMediaAction(.playPause)
+                } label: {
+                    Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 10.5, weight: .bold))
+                        .frame(width: 30, height: 30)
+                        .foregroundStyle(.white)
+                        .background(accent.gradient, in: PrismaticPanelShape(cut: 6))
+                        .overlay(PrismaticPanelShape(cut: 6).stroke(Color.white.opacity(0.34), lineWidth: 0.6))
+                        .shadow(color: accent.opacity(0.28), radius: 6, y: 2)
+                }
+                .buttonStyle(.plain)
+                .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
+                .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
                 mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
             }
             .opacity(music.isPerformingTransport ? 0.55 : 1)
@@ -188,16 +207,36 @@ private struct TopShelfView: View {
         }
         .padding(.horizontal, 10)
         .frame(height: 56)
-        .prismaticShelf(accent: SettingsStore.shared.accentTheme.tertiary)
+        .prismaticShelf(accent: accent)
         .overlay(alignment: .bottom) {
             AudioAccentRail(
                 level: track.isPlaying ? music.outputAudioLevel : 0,
-                accent: SettingsStore.shared.accentTheme.tertiary,
-                active: false
+                accent: accent,
+                active: track.isPlaying
             )
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(track.source.title), \(track.isPlaying ? "playing" : "paused"): \(track.title) by \(track.artist)")
+    }
+
+    @ViewBuilder
+    private func musicArtwork(for track: MediaNowPlayingSnapshot, accent: Color) -> some View {
+        if let artwork = music.artwork {
+            Image(nsImage: artwork)
+                .resizable()
+                .scaledToFill()
+        } else {
+            ZStack {
+                LinearGradient(
+                    colors: [accent.opacity(0.34), SettingsStore.shared.accentTheme.primary.opacity(0.16)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                Image(systemName: track.source.symbol)
+                    .limaFont(.system(size: 13, weight: .bold))
+                    .foregroundStyle(accent)
+            }
+        }
     }
 
     private func mediaButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
@@ -373,6 +412,28 @@ private extension View {
                     )
             )
             .shadow(color: accent.opacity(0.16), radius: 10, y: 5)
+    }
+}
+
+private struct MusicActivityIndicator: View {
+    let level: Double
+    let color: Color
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 1.5) {
+            ForEach(0..<4, id: \.self) { index in
+                Capsule()
+                    .fill(color)
+                    .frame(width: 2, height: barHeight(for: index))
+            }
+        }
+        .frame(width: 13, height: 10, alignment: .center)
+        .accessibilityHidden(true)
+    }
+
+    private func barHeight(for index: Int) -> CGFloat {
+        let multiplier: Double = index.isMultiple(of: 2) ? 1 : 1.65
+        return CGFloat(3 + 7 * max(0.25, level) * multiplier)
     }
 }
 

@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AudioToolbox
 import Foundation
+import SwiftUI
 
 /// Metadata for the actively playing supported local media source. This is
 /// intentionally opt-in: RayPlacement never opens, starts, or scans a player.
@@ -35,6 +36,13 @@ struct MediaNowPlayingSnapshot: Equatable, Sendable {
             switch self {
             case .spotify: return "waveform"
             case .appleMusic: return "music.note"
+            }
+        }
+
+        var accent: Color {
+            switch self {
+            case .spotify: return Color(red: 0.30, green: 0.86, blue: 0.48)
+            case .appleMusic: return Color(red: 1.00, green: 0.35, blue: 0.46)
             }
         }
     }
@@ -102,6 +110,12 @@ final class MusicNowPlayingService: ObservableObject {
         timer?.invalidate()
         volumeTimer?.invalidate()
         audioLevelMonitor?.stop()
+    }
+
+    func openSource() {
+        guard let source = nowPlaying?.source ?? firstRunningSource,
+              let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: source.bundleIdentifier) else { return }
+        NSWorkspace.shared.open(applicationURL)
     }
 
     func perform(_ action: TransportAction) {
