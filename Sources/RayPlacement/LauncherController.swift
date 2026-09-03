@@ -282,6 +282,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     NSApp.terminate(nil)
                     return nil
                 }
+                if characters == "k", self.viewModel.mode == .root {
+                    self.viewModel.enter(.history)
+                    return nil
+                }
                 if characters == "c", case .writingReview(let review) = self.viewModel.mode {
                     self.viewModel.copyWritingResult(review)
                     return nil

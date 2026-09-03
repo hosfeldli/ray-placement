@@ -517,6 +517,9 @@ struct LauncherView: View {
                     .foregroundStyle(.tertiary)
                 Spacer()
                 KeyHint(keys: "↑↓", label: "Navigate")
+                if viewModel.mode == .root {
+                    KeyHint(keys: "⌘K", label: "History")
+                }
                 KeyHint(keys: "↩", label: primaryActionLabel)
                 KeyHint(keys: "esc", label: "Close")
             }
@@ -966,6 +969,7 @@ private extension LauncherMode {
         case .forceQuitPicker: return "force-quit"
         case .emojiPicker: return "emoji"
         case .clipboard: return "clipboard"
+        case .history: return "history"
         case .writingReview: return "writing-review"
         case .output: return "output"
         }

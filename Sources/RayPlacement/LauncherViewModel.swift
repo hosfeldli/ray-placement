@@ -81,6 +81,7 @@ final class LauncherViewModel: ObservableObject {
         case .forceQuitPicker: return "Search running applications…"
         case .emojiPicker: return "Search emojis…"
         case .clipboard: return "Search clipboard history…"
+        case .history: return "Search command history…"
         case .writingReview: return "Writing review"
         case .output: return "Command output"
         }
@@ -326,6 +327,9 @@ final class LauncherViewModel: ObservableObject {
             results = []
         case .clipboard:
             refreshClipboardResults()
+        case .history:
+            isSearching = false
+            results = historyItems()
         case .writingReview:
             isSearching = false
             results = []
@@ -355,13 +359,19 @@ final class LauncherViewModel: ObservableObject {
                 "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal", "builtin.sql",
                 "builtin.endpoint-tester", "extension.local.productivity-tools.convert-timezones",
                 "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
-                "window.maximize", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
+                "window.maximize", "builtin.command-history", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
             ]
             let defaults = priority.compactMap { id in items.first { $0.id == id } }
-            let recent = items
-                .filter { !priority.contains($0.id) && usage.score(for: $0.id) > 0 }
-                .sorted { usage.score(for: $0.id) > usage.score(for: $1.id) }
-            return Array((recent + defaults).prefix(11))
+            let recent: [LauncherItem] = usage.recentIdentifiers(limit: 8).compactMap { identifier in
+                guard let item = items.first(where: { $0.id == identifier }) else { return nil }
+                var recentItem = item
+                recentItem.accessory = "Recent"
+                return recentItem
+            }
+            let ordered = recent + defaults.filter { defaultItem in
+                !recent.contains(where: { $0.id == defaultItem.id })
+            }
+            return Array(ordered.prefix(11))
         }
 
         let ranked = items.compactMap { item -> (LauncherItem, Double)? in
@@ -572,6 +582,30 @@ final class LauncherViewModel: ObservableObject {
         )
     }
 
+    private func historyItems() -> [LauncherItem] {
+        let items = builtInItems() + extensionItems() + applicationItems()
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let recent = usage.recentIdentifiers(limit: 50).compactMap { identifier in
+            items.first { $0.id == identifier }
+        }
+        let matching = cleanQuery.isEmpty ? recent : recent.filter {
+            FuzzyMatcher.score($0.searchableText, query: cleanQuery) != nil
+        }
+        guard !matching.isEmpty else {
+            return [placeholderItem(
+                id: "history.empty",
+                title: cleanQuery.isEmpty ? "No command history yet" : "No matching history",
+                subtitle: cleanQuery.isEmpty ? "Run a command and it will appear here" : "Try another command name",
+                icon: cleanQuery.isEmpty ? "clock" : "magnifyingglass"
+            )]
+        }
+        return matching.enumerated().map { offset, item in
+            var recentItem = item
+            recentItem.accessory = offset == 0 ? "Most recent" : "Recent"
+            return recentItem
+        }
+    }
+
     private func extensionItems() -> [LauncherItem] {
         extensionCommands.filter(SettingsStore.shared.isCommandEnabled).map { loaded in
             LauncherItem(
@@ -603,6 +637,7 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.formatter", title: "Data Formatter", subtitle: "Inspect and format JSON, XML, and EDI", icon: .system("curlybraces.square.fill"), keywords: ["json", "xml", "edi", "format", "validate", "minify"], action: .system(.openFormatter)),
             LauncherItem(id: "builtin.extension-guide", title: "Extension Development Guide", subtitle: "Build commands, forms, outputs, and full Lima workspaces", icon: .system("hammer.fill"), keywords: ["extension", "developer", "documentation", "manifest", "api", "template"], action: .system(.openExtensionGuide)),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
+            LauncherItem(id: "builtin.command-history", title: "Command History", subtitle: "Re-run recently used commands and tools", icon: .system("clock.arrow.circlepath"), keywords: ["recent", "history", "last", "again", "commands"], action: .enterMode(.history)),
             LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
             LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),
             LauncherItem(id: "builtin.sleep", title: "Put Mac to Sleep", subtitle: "System", icon: .system("moon.zzz.fill"), keywords: ["system", "power"], action: .system(.sleep)),
@@ -676,16 +711,27 @@ final class LauncherViewModel: ObservableObject {
 }
 
 private final class UsageStore {
-    private let key = "commandUsage"
+    private let scoreKey = "commandUsage"
+    private let historyKey = "commandHistory"
     private var values: [String: Double]
+    private var order: [String]
 
     init() {
-        values = UserDefaults.standard.dictionary(forKey: key) as? [String: Double] ?? [:]
+        values = UserDefaults.standard.dictionary(forKey: scoreKey) as? [String: Double] ?? [:]
+        order = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
     }
 
     func record(_ identifier: String) {
         values[identifier] = Date().timeIntervalSince1970
-        UserDefaults.standard.set(values, forKey: key)
+        order.removeAll { $0 == identifier }
+        order.insert(identifier, at: 0)
+        if order.count > 100 { order = Array(order.prefix(100)) }
+        UserDefaults.standard.set(values, forKey: scoreKey)
+        UserDefaults.standard.set(order, forKey: historyKey)
+    }
+
+    func recentIdentifiers(limit: Int) -> [String] {
+        Array(order.prefix(max(0, limit)))
     }
 
     func score(for identifier: String) -> Double {
