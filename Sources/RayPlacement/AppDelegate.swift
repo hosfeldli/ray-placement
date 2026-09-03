@@ -75,6 +75,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsStore.shared.refreshLaunchAtLogin()
     }
 
+    func application(_ application: NSApplication, open urls: [URL]) {
+        // ASWebAuthenticationSession normally consumes its callback directly.
+        // Keep the app-level URL event handled so a future/manual callback does
+        // not reopen a blank document or get routed to another command.
+        guard urls.contains(where: { $0.scheme?.lowercased() == "rayplacement" }) else { return }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if updateService.isInstalling || updateService.completionResult != nil {
             updateProgressWindow.present()

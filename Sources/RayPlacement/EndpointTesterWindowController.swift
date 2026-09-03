@@ -25,6 +25,7 @@ final class EndpointTesterWindowController: NSWindowController {
         window.minSize = NSSize(width: 820, height: 560)
         window.setAccessibilityLabel("RayPlacement endpoint tester")
         self.init(window: window)
+        model.presentationWindow = window
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: EndpointTesterView(model: model)))
     }
 
@@ -92,8 +93,12 @@ private struct CollectionRunResult: Identifiable {
     let statusCode: Int?
     let elapsed: TimeInterval
     let error: String?
+    let tests: [PostmanTestResult]
 
-    var succeeded: Bool { statusCode.map { (200..<400).contains($0) } ?? false }
+    var succeeded: Bool {
+        statusCode.map { (200..<400).contains($0) } ?? false
+            && tests.allSatisfy(\.passed)
+    }
 }
 
 @MainActor
@@ -123,6 +128,7 @@ private final class EndpointTesterModel: ObservableObject {
         case bearer = "Bearer Token"
         case basic = "Basic Auth"
         case apiKey = "API Key"
+        case oauth2 = "OAuth 2.0 / SSO"
         var id: String { rawValue }
     }
 
@@ -137,6 +143,9 @@ private final class EndpointTesterModel: ObservableObject {
         case json = "JSON"
         case text = "Text"
         case xml = "XML"
+        case urlEncoded = "URL-encoded"
+        case multipart = "Multipart"
+        case file = "File"
         var id: String { rawValue }
 
         var contentType: String? {
@@ -145,6 +154,8 @@ private final class EndpointTesterModel: ObservableObject {
             case .json: return "application/json"
             case .text: return "text/plain; charset=utf-8"
             case .xml: return "application/xml"
+            case .urlEncoded: return "application/x-www-form-urlencoded"
+            case .multipart, .file: return nil
             }
         }
     }
@@ -162,8 +173,14 @@ private final class EndpointTesterModel: ObservableObject {
     @Published var apiKeyName = ""
     @Published var apiKeyValue = ""
     @Published var apiKeyLocation: APIKeyLocation = .header
+    @Published var oauthConfiguration = PostmanOAuthConfiguration()
+    @Published var oauthStatus = "Not connected"
+    @Published var isOAuthConfigurationPresented = false
+    @Published var oauthClientSecret = ""
     @Published var bodyKind: BodyKind = .none
     @Published var body = ""
+    @Published var bodyFields = [EndpointKeyValueRow()]
+    @Published var binaryFilePath = ""
     @Published var response: EndpointResponse?
     @Published var history: [EndpointRequestSnapshot] = []
     @Published var error: String?
@@ -177,6 +194,9 @@ private final class EndpointTesterModel: ObservableObject {
     @Published var isRunnerPresented = false
     @Published var runnerIterations = 1
     @Published var runnerDelayMilliseconds = 0
+    @Published var runnerStopOnError = false
+    @Published var runnerDataRows: [[String: String]] = []
+    @Published var runnerDataFileName = "No data file"
     @Published var runnerResults: [CollectionRunResult] = []
     @Published var runnerProgress = ""
     @Published var isRunnerRunning = false
@@ -189,6 +209,9 @@ private final class EndpointTesterModel: ObservableObject {
     private var usageTask: UUID?
     private var runnerTask: Task<Void, Never>?
     private var editingEnvironmentID: UUID?
+    private var oauthAccessToken = ""
+    private let oauthCoordinator = OAuthSSOCoordinator()
+    var presentationWindow: NSWindow?
 
     init() {
         loadWorkspace()
@@ -270,11 +293,20 @@ private final class EndpointTesterModel: ObservableObject {
         headers = request.headers.map { EndpointKeyValueRow(enabled: $0.enabled, key: $0.key, value: $0.value) }
         if headers.isEmpty { headers = [EndpointKeyValueRow()] }
         body = request.body
-        switch request.contentType?.lowercased() {
-        case let type where type?.contains("json") == true: bodyKind = .json
-        case let type where type?.contains("xml") == true: bodyKind = .xml
-        case .some: bodyKind = request.body.isEmpty ? .none : .text
-        case .none: bodyKind = request.body.isEmpty ? .none : .text
+        bodyFields = (request.bodyFields ?? []).map { EndpointKeyValueRow(enabled: $0.enabled, key: $0.key, value: $0.value) }
+        if bodyFields.isEmpty { bodyFields = [EndpointKeyValueRow()] }
+        binaryFilePath = request.binaryFilePath ?? ""
+        switch request.bodyMode?.lowercased() {
+        case "urlencoded": bodyKind = .urlEncoded
+        case "formdata": bodyKind = .multipart
+        case "file": bodyKind = .file
+        default:
+            switch request.contentType?.lowercased() {
+            case let type where type?.contains("json") == true: bodyKind = .json
+            case let type where type?.contains("xml") == true: bodyKind = .xml
+            case .some: bodyKind = request.body.isEmpty ? .none : .text
+            case .none: bodyKind = request.body.isEmpty ? .none : .text
+            }
         }
         apply(request.authorization)
         error = nil
@@ -371,11 +403,33 @@ private final class EndpointTesterModel: ObservableObject {
         isRunnerPresented = true
     }
 
+    func importRunnerData() {
+        let panel = NSOpenPanel()
+        panel.title = "Import runner data"
+        panel.prompt = "Use Data"
+        panel.allowedContentTypes = [.json, .commaSeparatedText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let rows = try PostmanDataFileParser.parse(Data(contentsOf: url), fileExtension: url.pathExtension)
+            runnerDataRows = rows
+            runnerDataFileName = "\(url.lastPathComponent) · \(rows.count) rows"
+            runnerProgress = "Data ready · \(rows.count) iterations"
+        } catch {
+            self.error = error.localizedDescription
+        }
+    }
+
+    func clearRunnerData() {
+        runnerDataRows = []
+        runnerDataFileName = "No data file"
+    }
+
     func startRunner() {
         guard !isRunnerRunning, let collection = selectedCollection else { return }
-        let iterations = max(1, runnerIterations)
+        let requestedIterations = max(1, runnerIterations)
+        let rows = runnerDataRows.isEmpty ? Array(repeating: [String: String](), count: requestedIterations) : runnerDataRows
         let delay = max(0, runnerDelayMilliseconds)
-        let (total, overflowed) = iterations.multipliedReportingOverflow(by: collection.requests.count)
+        let (total, overflowed) = rows.count.multipliedReportingOverflow(by: collection.requests.count)
         guard !collection.requests.isEmpty else {
             runnerProgress = "This collection has no requests."
             return
@@ -389,7 +443,7 @@ private final class EndpointTesterModel: ObservableObject {
         runnerTask = Task { [weak self] in
             guard let self else { return }
             var completed = 0
-            for iteration in 1...iterations {
+            for (rowIndex, dataVariables) in rows.enumerated() {
                 for imported in collection.requests {
                     guard !Task.isCancelled else {
                         self.isRunnerRunning = false
@@ -399,26 +453,56 @@ private final class EndpointTesterModel: ObservableObject {
                     self.runnerProgress = "\(completed + 1) of \(total) · \(imported.name)"
                     let started = Date()
                     do {
-                        let request = try self.buildRequest(for: imported, collection: collection)
-                        let (_, response) = try await URLSession.shared.data(for: request)
-                        let status = (response as? HTTPURLResponse)?.statusCode
-                        self.runnerResults.append(CollectionRunResult(
+                        var variables = collection.variables
+                        if let environment = self.environments.first(where: { $0.id == self.selectedEnvironmentID }) {
+                            variables.merge(environment.resolvedValues) { _, environmentValue in environmentValue }
+                        }
+                        // Postman iteration data overrides environment and collection values.
+                        variables.merge(dataVariables) { _, dataValue in dataValue }
+                        PostmanScriptInterpreter.apply(imported.preRequestScript, to: &variables)
+                        let request = try self.buildRequest(for: imported, collection: collection, variables: variables)
+                        let (data, response) = try await URLSession.shared.data(for: request)
+                        guard let http = response as? HTTPURLResponse else { throw EndpointTesterError.nonHTTPResponse }
+                        let bodyText = Self.formattedBody(Data(data.prefix(2_000_000)))
+                        let snapshot = PostmanResponseSnapshot(
+                            statusCode: http.statusCode,
+                            statusText: HTTPURLResponse.localizedString(forStatusCode: http.statusCode),
+                            body: bodyText,
+                            headers: http.allHeaderFields.reduce(into: [String: String]()) { result, entry in result[String(describing: entry.key)] = String(describing: entry.value) }
+                        )
+                        let tests = PostmanTestEvaluator.evaluate(imported.testScript, response: snapshot)
+                        let result = CollectionRunResult(
                             requestName: imported.name,
-                            iteration: iteration,
-                            statusCode: status,
+                            iteration: rowIndex + 1,
+                            statusCode: http.statusCode,
                             elapsed: Date().timeIntervalSince(started),
-                            error: nil
-                        ))
+                            error: nil,
+                            tests: tests
+                        )
+                        self.runnerResults.append(result)
+                        completed += 1
+                        if self.runnerStopOnError && !result.succeeded {
+                            self.isRunnerRunning = false
+                            self.runnerProgress = "Stopped on error · \(completed)/\(total)"
+                            return
+                        }
                     } catch {
-                        self.runnerResults.append(CollectionRunResult(
+                        let result = CollectionRunResult(
                             requestName: imported.name,
-                            iteration: iteration,
+                            iteration: rowIndex + 1,
                             statusCode: nil,
                             elapsed: Date().timeIntervalSince(started),
-                            error: error.localizedDescription
-                        ))
+                            error: error.localizedDescription,
+                            tests: []
+                        )
+                        self.runnerResults.append(result)
+                        completed += 1
+                        if self.runnerStopOnError {
+                            self.isRunnerRunning = false
+                            self.runnerProgress = "Stopped on error · \(completed)/\(total)"
+                            return
+                        }
                     }
-                    completed += 1
                     if delay > 0, completed < total {
                         try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
                     }
@@ -433,6 +517,52 @@ private final class EndpointTesterModel: ObservableObject {
         runnerTask?.cancel()
         runnerTask = nil
         isRunnerRunning = false
+    }
+
+    func saveOAuthConfiguration() {
+        OAuthTokenVault.saveClientSecret(oauthClientSecret, for: oauthConfiguration)
+        saveWorkspace()
+        if let saved = OAuthTokenVault.load(for: oauthConfiguration), !saved.isExpired {
+            oauthAccessToken = saved.accessToken
+            bearerToken = saved.accessToken
+            oauthStatus = "Connected · token loaded from Keychain"
+        }
+    }
+
+    func startOAuthFlow() {
+        guard authKind == .oauth2 else { return }
+        oauthStatus = "Opening SSO…"
+        error = nil
+        var configuration = oauthConfiguration
+        configuration.clientSecret = oauthClientSecret
+        oauthCoordinator.start(configuration: configuration, window: presentationWindow) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let token):
+                self.oauthAccessToken = token.accessToken
+                self.bearerToken = token.accessToken
+                self.oauthStatus = "Connected · token stored in Keychain"
+                OAuthTokenVault.save(token, for: self.oauthConfiguration)
+            case .failure(let error):
+                self.oauthStatus = "Not connected"
+                self.error = error.localizedDescription
+            }
+        }
+    }
+
+    func addBodyField() { bodyFields.append(EndpointKeyValueRow()) }
+
+    func removeBodyField(_ id: UUID) {
+        bodyFields.removeAll { $0.id == id }
+        if bodyFields.isEmpty { bodyFields = [EndpointKeyValueRow()] }
+    }
+
+    func chooseBinaryFile() {
+        let panel = NSOpenPanel()
+        panel.title = "Choose request body file"
+        panel.prompt = "Use File"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        binaryFilePath = url.path
     }
 
     func prettyPrintJSON() {
@@ -601,9 +731,17 @@ private final class EndpointTesterModel: ObservableObject {
             if apiKeyLocation == .header, !apiKeyName.isEmpty {
                 request.setValue(resolve(apiKeyValue, with: variables), forHTTPHeaderField: resolve(apiKeyName, with: variables))
             }
+        case .oauth2:
+            if !oauthAccessToken.isEmpty {
+                request.setValue("Bearer \(resolve(oauthAccessToken, with: variables))", forHTTPHeaderField: "Authorization")
+            } else if !bearerToken.isEmpty {
+                request.setValue("Bearer \(resolve(bearerToken, with: variables))", forHTTPHeaderField: "Authorization")
+            }
         }
 
-        if bodyKind != .none {
+        switch bodyKind {
+        case .none: break
+        case .json, .text, .xml:
             if bodyKind == .json, !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 let resolvedBody = resolve(body, with: variables)
                 guard let data = resolvedBody.data(using: .utf8), (try? JSONSerialization.jsonObject(with: data)) != nil else {
@@ -611,16 +749,34 @@ private final class EndpointTesterModel: ObservableObject {
                 }
             }
             request.httpBody = Data(resolve(body, with: variables).utf8)
-            if request.value(forHTTPHeaderField: "Content-Type") == nil, let contentType = bodyKind.contentType {
-                request.setValue(contentType, forHTTPHeaderField: "Content-Type")
+            if let contentType = bodyKind.contentType { request.setValue(contentType, forHTTPHeaderField: "Content-Type") }
+        case .urlEncoded:
+            let fields = bodyFields.filter(\.enabled).map {
+                let key = resolve($0.key, with: variables).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.key
+                let value = resolve($0.value, with: variables).addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0.value
+                return "\(key)=\(value)"
             }
+            request.httpBody = Data(fields.joined(separator: "&").utf8)
+            request.setValue(bodyKind.contentType, forHTTPHeaderField: "Content-Type")
+        case .multipart:
+            let boundary = "RayPlacementBoundary-\(UUID().uuidString)"
+            var data = Data()
+            for field in bodyFields where field.enabled {
+                data.append(Data("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(resolve(field.key, with: variables))\"\r\n\r\n\(resolve(field.value, with: variables))\r\n".utf8))
+            }
+            data.append(Data("--\(boundary)--\r\n".utf8))
+            request.httpBody = data
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        case .file:
+            guard !binaryFilePath.isEmpty else { throw EndpointTesterError.invalidURL }
+            request.httpBody = try Data(contentsOf: URL(fileURLWithPath: resolve(binaryFilePath, with: variables)))
         }
         return request
     }
 
-    private func buildRequest(for imported: PostmanRequest, collection: PostmanCollection) throws -> URLRequest {
-        var variables = collection.variables
-        if let environment = environments.first(where: { $0.id == selectedEnvironmentID }) {
+    private func buildRequest(for imported: PostmanRequest, collection: PostmanCollection, variables: [String: String]? = nil) throws -> URLRequest {
+        var variables = variables ?? collection.variables
+        if variables == collection.variables, let environment = environments.first(where: { $0.id == selectedEnvironmentID }) {
             variables.merge(environment.resolvedValues) { _, environmentValue in environmentValue }
         }
         let rawURL = resolve(imported.url, with: variables)
@@ -651,13 +807,46 @@ private final class EndpointTesterModel: ObservableObject {
             request.setValue(resolve(header.value, with: variables), forHTTPHeaderField: resolve(header.key, with: variables))
         }
         apply(imported.authorization, to: &request, variables: variables)
-        if !imported.body.isEmpty {
+        try applyBody(of: imported, to: &request, variables: variables)
+        return request
+    }
+
+    private func applyBody(of imported: PostmanRequest, to request: inout URLRequest, variables: [String: String]) throws {
+        switch imported.bodyMode?.lowercased() {
+        case "formdata":
+            let boundary = "RayPlacementBoundary-\(UUID().uuidString)"
+            var data = Data()
+            for field in imported.bodyFields ?? [] where field.enabled {
+                let fieldName = resolve(field.key, with: variables)
+                data.append(Data("--\(boundary)\r\n".utf8))
+                if field.type?.lowercased() == "file", let filePath = field.filePath, !filePath.isEmpty {
+                    let fileURL = URL(fileURLWithPath: resolve(filePath, with: variables))
+                    let filename = fileURL.lastPathComponent
+                    data.append(Data("Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(filename)\"\r\n".utf8))
+                    data.append(Data("Content-Type: application/octet-stream\r\n\r\n".utf8))
+                    data.append(try Data(contentsOf: fileURL))
+                    data.append(Data("\r\n".utf8))
+                } else {
+                    data.append(Data("Content-Disposition: form-data; name=\"\(fieldName)\"\r\n\r\n".utf8))
+                    data.append(Data("\(resolve(field.value, with: variables))\r\n".utf8))
+                }
+            }
+            data.append(Data("--\(boundary)--\r\n".utf8))
+            request.httpBody = data
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        case "file":
+            guard let path = imported.binaryFilePath, !path.isEmpty else { return }
+            request.httpBody = try Data(contentsOf: URL(fileURLWithPath: resolve(path, with: variables)))
+            if request.value(forHTTPHeaderField: "Content-Type") == nil, let type = imported.contentType {
+                request.setValue(type, forHTTPHeaderField: "Content-Type")
+            }
+        default:
+            guard !imported.body.isEmpty else { return }
             request.httpBody = Data(resolve(imported.body, with: variables).utf8)
             if request.value(forHTTPHeaderField: "Content-Type") == nil, let type = imported.contentType {
                 request.setValue(type, forHTTPHeaderField: "Content-Type")
             }
         }
-        return request
     }
 
     private func apply(_ authorization: PostmanAuthorization) {
@@ -676,6 +865,16 @@ private final class EndpointTesterModel: ObservableObject {
             apiKeyName = authorization.values["key"] ?? ""
             apiKeyValue = authorization.values["value"] ?? ""
             apiKeyLocation = authorization.values["in"]?.lowercased() == "query" ? .query : .header
+        case .oauth2:
+            authKind = .oauth2
+            bearerToken = authorization.values["accessToken"] ?? authorization.values["token"] ?? ""
+            oauthAccessToken = bearerToken
+            oauthClientSecret = OAuthTokenVault.loadClientSecret(for: oauthConfiguration)
+            if let saved = OAuthTokenVault.load(for: oauthConfiguration), !saved.isExpired {
+                oauthAccessToken = saved.accessToken
+                bearerToken = saved.accessToken
+                oauthStatus = "Connected · token loaded from Keychain"
+            }
         }
     }
 
@@ -695,6 +894,9 @@ private final class EndpointTesterModel: ObservableObject {
             if authorization.values["in"]?.lowercased() != "query", !key.isEmpty {
                 request.setValue(value, forHTTPHeaderField: key)
             }
+        case .oauth2:
+            let token = oauthAccessToken.isEmpty ? authorization.values["accessToken"] ?? authorization.values["token"] ?? "" : oauthAccessToken
+            if !token.isEmpty { request.setValue("Bearer \(resolve(token, with: variables))", forHTTPHeaderField: "Authorization") }
         }
     }
 
@@ -706,6 +908,7 @@ private final class EndpointTesterModel: ObservableObject {
         var collections: [PostmanCollection]
         var environments: [PostmanEnvironment]
         var selectedEnvironmentID: UUID?
+        var oauthConfiguration: PostmanOAuthConfiguration?
     }
 
     private var workspaceURL: URL {
@@ -718,6 +921,10 @@ private final class EndpointTesterModel: ObservableObject {
         collections = saved.collections
         environments = saved.environments
         selectedEnvironmentID = saved.selectedEnvironmentID
+        if let configuration = saved.oauthConfiguration {
+            oauthConfiguration = configuration
+            oauthClientSecret = OAuthTokenVault.loadClientSecret(for: configuration)
+        }
         selectedCollectionID = collections.first?.id
     }
 
@@ -727,7 +934,8 @@ private final class EndpointTesterModel: ObservableObject {
             let data = try JSONEncoder().encode(SavedWorkspace(
                 collections: collections,
                 environments: environments,
-                selectedEnvironmentID: selectedEnvironmentID
+                selectedEnvironmentID: selectedEnvironmentID,
+                oauthConfiguration: oauthConfiguration
             ))
             try data.write(to: workspaceURL, options: .atomic)
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: workspaceURL.path)
@@ -775,11 +983,13 @@ private final class EndpointTesterModel: ObservableObject {
 private enum EndpointTesterError: LocalizedError {
     case invalidURL
     case invalidJSON
+    case nonHTTPResponse
 
     var errorDescription: String? {
         switch self {
         case .invalidURL: return "Enter a complete HTTP or HTTPS endpoint."
         case .invalidJSON: return "The JSON request body is not valid."
+        case .nonHTTPResponse: return "The endpoint did not return an HTTP response."
         }
     }
 }
@@ -815,6 +1025,9 @@ private struct EndpointTesterView: View {
         }
         .sheet(isPresented: $model.isEnvironmentEditorPresented) {
             environmentEditor
+        }
+        .sheet(isPresented: $model.isOAuthConfigurationPresented) {
+            oauthConfigurationEditor
         }
     }
 
@@ -1005,6 +1218,10 @@ private struct EndpointTesterView: View {
                         .frame(width: 105)
                     TextField("Delay (ms)", value: $model.runnerDelayMilliseconds, format: .number)
                         .frame(width: 120)
+                    Toggle("Stop on error", isOn: $model.runnerStopOnError)
+                        .toggleStyle(.checkbox)
+                    Button("Data…", action: model.importRunnerData).buttonStyle(.bordered)
+                    if !model.runnerDataRows.isEmpty { Button("Clear data", action: model.clearRunnerData).buttonStyle(.bordered) }
                     Spacer()
                     if model.isRunnerRunning {
                         Button("Cancel", action: model.cancelRunner).buttonStyle(.bordered)
@@ -1013,6 +1230,7 @@ private struct EndpointTesterView: View {
                     }
                 }
                 .textFieldStyle(.roundedBorder)
+                Text(model.runnerDataFileName).limaFont(.caption2).foregroundStyle(.secondary)
                 ScrollView {
                     LazyVStack(spacing: 5) {
                         ForEach(model.runnerResults) { result in
@@ -1023,6 +1241,10 @@ private struct EndpointTesterView: View {
                                 Spacer()
                                 if let status = result.statusCode { Text(String(status)).limaFont(.caption.monospacedDigit().bold()) }
                                 Text(String(format: "%.0f ms", result.elapsed * 1_000)).limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                if !result.tests.isEmpty {
+                                    Text("\(result.tests.filter(\.passed).count)/\(result.tests.count) tests")
+                                        .limaFont(.caption2.monospacedDigit()).foregroundStyle(result.tests.allSatisfy(\.passed) ? .green : .orange)
+                                }
                                 if let error = result.error { Text(error).limaFont(.caption2).foregroundStyle(.orange).lineLimit(1).frame(maxWidth: 180) }
                             }
                             .padding(.horizontal, 10)
@@ -1209,25 +1431,7 @@ private struct EndpointTesterView: View {
                 ForEach(EndpointTesterModel.AuthKind.allCases) { Text($0.rawValue).tag($0) }
             }
             .frame(width: 220)
-            Group {
-                switch model.authKind {
-                case .none:
-                    Text("This request does not add authorization.").foregroundStyle(.secondary)
-                case .bearer:
-                    SecureField("Token", text: $model.bearerToken)
-                case .basic:
-                    HStack { TextField("Username", text: $model.username); SecureField("Password", text: $model.password) }
-                case .apiKey:
-                    HStack {
-                        TextField("Key name", text: $model.apiKeyName)
-                        SecureField("Value", text: $model.apiKeyValue)
-                        Picker("Location", selection: $model.apiKeyLocation) {
-                            ForEach(EndpointTesterModel.APIKeyLocation.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        .frame(width: 155)
-                    }
-                }
-            }
+            authorizationFields
             .textFieldStyle(.plain)
             .padding(.horizontal, 10)
             .frame(height: 34)
@@ -1235,6 +1439,88 @@ private struct EndpointTesterView: View {
             Spacer(minLength: 0)
         }
         .padding(11)
+    }
+
+    @ViewBuilder
+    private var authorizationFields: some View {
+        switch model.authKind {
+        case .none:
+            Text("This request does not add authorization.").foregroundStyle(.secondary)
+        case .bearer:
+            SecureField("Token", text: $model.bearerToken)
+        case .basic:
+            HStack { TextField("Username", text: $model.username); SecureField("Password", text: $model.password) }
+        case .apiKey:
+            HStack {
+                TextField("Key name", text: $model.apiKeyName)
+                SecureField("Value", text: $model.apiKeyValue)
+                Picker("Location", selection: $model.apiKeyLocation) {
+                    ForEach(EndpointTesterModel.APIKeyLocation.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .frame(width: 155)
+            }
+        case .oauth2:
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 6) {
+                    Text("SSO").limaFont(.caption.weight(.semibold))
+                    Text(model.oauthStatus).limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    Spacer()
+                    Button { model.isOAuthConfigurationPresented = true } label: { Image(systemName: "gearshape") }
+                        .buttonStyle(.plain)
+                        .help("Configure SSO")
+                    Button("Get SSO token") { model.startOAuthFlow() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                }
+                HStack(spacing: 6) {
+                    TextField("Authorization URL", text: $model.oauthConfiguration.authorizationURL)
+                    TextField("Token URL", text: $model.oauthConfiguration.tokenURL)
+                }
+                HStack(spacing: 6) {
+                    TextField("Client ID", text: $model.oauthConfiguration.clientID)
+                    TextField("Scope", text: $model.oauthConfiguration.scope)
+                }
+                HStack(spacing: 6) {
+                    TextField("Redirect URI", text: $model.oauthConfiguration.redirectURI)
+                    TextField("Audience (optional)", text: $model.oauthConfiguration.audience)
+                }
+            }
+        }
+    }
+
+    private var oauthConfigurationEditor: some View {
+        ZStack {
+            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            VStack(alignment: .leading, spacing: 11) {
+                HStack {
+                    Label("SSO configuration", systemImage: "lock.shield").limaFont(.headline)
+                    Spacer()
+                    Button("Done") { model.isOAuthConfigurationPresented = false }
+                        .buttonStyle(.borderedProminent)
+                }
+                Text("Use your identity provider’s OAuth 2.0 authorization-code endpoints. The redirect URI must be registered as rayplacement://oauth/callback.")
+                    .limaFont(.caption).foregroundStyle(.secondary)
+                TextField("Authorization URL", text: $model.oauthConfiguration.authorizationURL)
+                TextField("Token URL", text: $model.oauthConfiguration.tokenURL)
+                TextField("Client ID", text: $model.oauthConfiguration.clientID)
+                SecureField("Client secret (optional; Keychain only)", text: $model.oauthClientSecret)
+                TextField("Scope", text: $model.oauthConfiguration.scope)
+                TextField("Audience (optional)", text: $model.oauthConfiguration.audience)
+                TextField("Redirect URI", text: $model.oauthConfiguration.redirectURI)
+                HStack {
+                    Spacer()
+                    Button("Save configuration") {
+                        model.saveOAuthConfiguration()
+                        model.isOAuthConfigurationPresented = false
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+            .textFieldStyle(.roundedBorder)
+            .padding(18)
+        }
+        .frame(width: 560, height: 360)
+        .preferredColorScheme(.dark)
     }
 
     private var bodyEditor: some View {
@@ -1247,6 +1533,15 @@ private struct EndpointTesterView: View {
                 Spacer()
                 if model.bodyKind == .json {
                     Button("Pretty", action: model.prettyPrintJSON).buttonStyle(.plain).limaFont(.caption.weight(.medium))
+                }
+            }
+            if model.bodyKind == .urlEncoded || model.bodyKind == .multipart {
+                keyValueEditor(rows: $model.bodyFields, add: model.addBodyField, remove: model.removeBodyField, keyPlaceholder: "Field")
+                    .frame(maxHeight: 130)
+            } else if model.bodyKind == .file {
+                HStack {
+                    TextField("Binary file path", text: $model.binaryFilePath)
+                    Button("Choose…", action: model.chooseBinaryFile).buttonStyle(.bordered)
                 }
             }
             TextEditor(text: $model.body)

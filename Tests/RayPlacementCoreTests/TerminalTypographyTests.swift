@@ -22,6 +22,10 @@ import Testing
     #expect(!TerminalWorkspaceInput.isSafeSingleLine("\u{1b}[200~exit"))
     #expect(!TerminalWorkspaceInput.isSafeSingleLine("\u{03}"))
     #expect(TerminalWorkspaceInput.shellQuote("/tmp/Liam's project") == "'/tmp/Liam'\\''s project'")
+    #expect(TerminalWorkspaceInput.normalizedRemotePath("") == "~")
+    #expect(TerminalWorkspaceInput.normalizedRemotePath(" project/one ") == "~/project/one")
+    #expect(TerminalWorkspaceInput.normalizedRemotePath("~/project") == "~/project")
+    #expect(TerminalWorkspaceInput.normalizedRemotePath("/var/log") == "/var/log")
 }
 
 @Test func terminalDirectoryUsesLocalFileURLsWithoutCorruptingLiteralPaths() {
@@ -39,6 +43,11 @@ import Testing
     #expect(TerminalWorkspaceInput.sshDestination(from: "ssh build-vm") == "build-vm")
     #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -p 2222 liam@build-vm") == "liam@build-vm")
     #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -J jump liam@build-vm") == "liam@build-vm")
+    #expect(TerminalWorkspaceInput.sshProcessArguments(from: "ssh -p 2222 liam@build-vm") == ["-p", "2222", "--", "liam@build-vm"])
+    #expect(TerminalWorkspaceInput.sshProcessArguments(from: "ssh -J jump -i ~/.ssh/id_ed25519 build-vm") == ["-J", "jump", "-i", "~/.ssh/id_ed25519", "--", "build-vm"])
+    #expect(TerminalWorkspaceInput.sshProcessArguments(from: "ssh -o IdentitiesOnly=yes build-vm") == ["-o", "IdentitiesOnly=yes", "--", "build-vm"])
+    #expect(TerminalWorkspaceInput.sshProcessArguments(from: "ssh -p 0 build-vm") == nil)
+    #expect(TerminalWorkspaceInput.sshProcessArguments(from: "ssh -o ProxyCommand=bad build-vm") == nil)
     #expect(TerminalWorkspaceInput.sshDestination(from: "ssh -o ProxyCommand=bad host;rm") == nil)
     #expect(TerminalWorkspaceInput.sshDestination(from: "printf ssh") == nil)
     #expect(TerminalWorkspaceInput.primaryCommand(in: "  git status") == "git")

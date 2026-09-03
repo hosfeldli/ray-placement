@@ -60,13 +60,24 @@ public struct SQLSchemaIndex: Sendable {
     }
 
     public func tables(query: String, owner: String, kind: String, filter: SQLSchemaFilter = .permissive) -> [SQLTable] {
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let tokens = normalizedQuery.split(whereSeparator: { $0.isWhitespace }).map(String.init)
         var buckets = [[SQLTable]](repeating: [], count: 4)
+
         for entry in entries where (owner.isEmpty || entry.table.schema == owner) && entry.table.kind.uppercased().contains(kind) && !filter.isHidden(entry.table) {
-            if query.isEmpty || entry.name == query || entry.qualified == query { buckets[0].append(entry.table) }
-            else if entry.name.hasPrefix(query) { buckets[1].append(entry.table) }
-            else if entry.qualified.contains(query) { buckets[2].append(entry.table) }
-            else if entry.columns.contains(where: { $0.contains(query) }) { buckets[3].append(entry.table) }
+            guard tokens.isEmpty || tokens.allSatisfy({ token in
+                entry.name.contains(token) || entry.qualified.contains(token) || entry.columns.contains { $0.contains(token) }
+            }) else { continue }
+
+            if tokens.isEmpty || (tokens.count == 1 && (entry.name == normalizedQuery || entry.qualified == normalizedQuery)) {
+                buckets[0].append(entry.table)
+            } else if tokens.allSatisfy({ entry.name.hasPrefix($0) }) {
+                buckets[1].append(entry.table)
+            } else if tokens.allSatisfy({ entry.qualified.contains($0) }) {
+                buckets[2].append(entry.table)
+            } else {
+                buckets[3].append(entry.table)
+            }
         }
         return buckets.flatMap { $0 }
     }

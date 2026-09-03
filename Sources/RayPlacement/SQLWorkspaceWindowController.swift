@@ -877,6 +877,8 @@ private struct SQLWorkspaceView: View {
     @State private var showsBlockSQL = true
     @State private var showsSchemaBrowser = true
     @State private var showsInspector = true
+    @State private var columnSearch = ""
+    @State private var showsAllColumns = false
     @FocusState private var schemaSearchFocused: Bool
 
     var body: some View {
@@ -897,6 +899,10 @@ private struct SQLWorkspaceView: View {
         .sheet(isPresented: $model.showsConnectionEditor, onDismiss: { model.secretDraft = "" }) { SQLConnectionEditor(model: model) }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in model.lockSession() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in model.lockSession() }
+        .onChange(of: model.selectedTableID) { _ in
+            columnSearch = ""
+            showsAllColumns = false
+        }
         .alert("Run a write statement?", isPresented: $model.requiresWriteConfirmation) {
             Button("Cancel", role: .cancel) {}
             Button("Run Statement", role: .destructive) { model.runConfirmedWrite() }
@@ -1296,19 +1302,63 @@ private struct SQLWorkspaceView: View {
                     Button(action: { model.addTable(table) }) { Image(systemName: "plus.square.on.square") }.buttonStyle(.bordered).controlSize(.mini).help("Add to canvas")
                 }
                 if let description = table.description, !description.isEmpty { Text(description).limaFont(.caption).foregroundStyle(.secondary) }
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Columns").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
-                        ForEach(table.columns) { column in
-                            HStack(alignment: .top, spacing: 5) {
-                                Image(systemName: column.nullable ? "circle" : "key.fill").limaFont(.system(size: 8)).foregroundStyle(column.nullable ? Color.secondary : Color.yellow)
-                                VStack(alignment: .leading, spacing: 1) { Text(column.name).limaFont(.system(size: 10.5, weight: .medium, design: .monospaced)); Text(column.dataType).limaFont(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary) }
-                            }.contextMenu { Button("Insert column") { model.insertDroppedSQL("\(table.qualifiedName).\(column.name)") } }
+                let filteredColumns = table.columns.filter { item in columnSearch.isEmpty || item.name.localizedCaseInsensitiveContains(columnSearch) || item.dataType.localizedCaseInsensitiveContains(columnSearch) || (item.description?.localizedCaseInsensitiveContains(columnSearch) ?? false) }
+                let visibleColumns = showsAllColumns ? filteredColumns : Array(filteredColumns.prefix(250))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Text("Columns · \(filteredColumns.count)/\(table.columns.count)").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
+                        Spacer()
+                        if table.columns.count > 250 && !showsAllColumns {
+                            Button("Show all") { showsAllColumns = true }.buttonStyle(.borderless).limaFont(.caption2)
                         }
-                        if !table.indexes.isEmpty { Divider(); Text("Indexes").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.indexes) { index in Text("\(index.unique ? "UNIQUE " : "")\(index.name) · \(index.column)").limaFont(.system(size: 9.5, design: .monospaced)).foregroundStyle(.secondary) } }
-                        if !table.constraints.isEmpty { Divider(); Text("Constraints").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.constraints, id: \.self) { Text($0).limaFont(.caption2).foregroundStyle(.secondary) } }
-                    }.padding(.vertical, 2)
+                    }
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Find column or type…", text: $columnSearch).textFieldStyle(.plain)
+                        if !columnSearch.isEmpty {
+                            Button { columnSearch = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }.buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 7)
+                    .frame(height: 27)
+                    .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 3) {
+                            ForEach(visibleColumns) { column in
+                                HStack(alignment: .center, spacing: 5) {
+                                    Image(systemName: column.nullable ? "circle" : "key.fill")
+                                        .limaFont(.system(size: 8))
+                                        .foregroundStyle(column.nullable ? Color.secondary : Color.yellow)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(column.name).limaFont(.system(size: 10.5, weight: .medium, design: .monospaced)).lineLimit(1)
+                                        Text(column.dataType + (column.nullable ? " · nullable" : " · required"))
+                                            .limaFont(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
+                                    }
+                                    Spacer(minLength: 2)
+                                    Button { model.insertDroppedSQL("\(table.qualifiedName).\(column.name)") } label: { Image(systemName: "plus") }
+                                        .buttonStyle(.plain).foregroundStyle(settings.accentTheme.tertiary).help("Insert qualified column in Free SQL")
+                                }
+                                .padding(.horizontal, 5)
+                                .frame(minHeight: 29)
+                                .contentShape(Rectangle())
+                                .contextMenu {
+                                    Button("Insert qualified column") { model.insertDroppedSQL("\(table.qualifiedName).\(column.name)") }
+                                    Button("Insert column name") { model.insertDroppedSQL(column.name) }
+                                    Button("Copy column name") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(column.name, forType: .string) }
+                                }
+                            }
+                            if visibleColumns.count < filteredColumns.count {
+                                Button("Show remaining \(filteredColumns.count - visibleColumns.count) columns") { showsAllColumns = true }
+                                    .buttonStyle(.borderless).limaFont(.caption2).padding(.vertical, 5)
+                            } else if filteredColumns.isEmpty {
+                                Text("No matching columns.").limaFont(.caption2).foregroundStyle(.secondary).padding(.vertical, 7)
+                            }
+                        }
+                    }
+                    .frame(minHeight: 80, maxHeight: 310)
                 }
+                if !table.indexes.isEmpty { Divider(); Text("Indexes").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.indexes) { index in Text("\(index.unique ? "UNIQUE " : "")\(index.name) · \(index.column)").limaFont(.system(size: 9.5, design: .monospaced)).foregroundStyle(.secondary) } }
+                if !table.constraints.isEmpty { Divider(); Text("Constraints").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary); ForEach(table.constraints, id: \.self) { Text($0).limaFont(.caption2).foregroundStyle(.secondary) } }
             } else {
                 emptyState("tablecells", "Select a table", "Details, keys, and columns appear here.")
             }

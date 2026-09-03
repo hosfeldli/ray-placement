@@ -124,6 +124,24 @@ private struct TerminalCommandReference: Identifiable, Hashable {
     ]
 }
 
+private struct TerminalContextCard: Identifiable, Hashable, Sendable {
+    let label: String
+    let value: String
+    let detail: String
+    let symbol: String
+
+    var id: String { label }
+}
+
+private struct TerminalContextData: Sendable {
+    var host: String
+    var path: String
+    var git: String
+    var disk: String
+    var remote: Bool
+    var reachable: Bool
+}
+
 private struct TerminalFileNode: Identifiable, Hashable {
     let url: URL
     let isDirectory: Bool
@@ -141,8 +159,12 @@ private final class TerminalDirectoryExplorer: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var remoteTarget: String?
 
+    var currentRemotePath: String { remotePath ?? "~" }
+    var currentNavigationPath: String { root?.url.path ?? remotePath ?? directoryURL?.path ?? "/" }
+
     private var directoryURL: URL?
     private var remotePath: String?
+    private var remoteSSHArguments: [String] = []
     private var watcher: DispatchSourceFileSystemObject?
     private var descriptor: Int32 = -1
     private var refreshWorkItem: DispatchWorkItem?
@@ -153,17 +175,20 @@ private final class TerminalDirectoryExplorer: ObservableObject {
         guard directoryURL != url || remoteTarget != nil else { return }
         remoteTarget = nil
         remotePath = nil
+        remoteSSHArguments = []
         directoryURL = url
         refresh()
         startWatching(url)
     }
 
-    func setRemote(target: String, path: String) {
-        let normalizedPath = path.hasPrefix("/") ? path : "~"
-        guard remoteTarget != target || directoryURL?.path != normalizedPath else { return }
+    func setRemote(target: String, path: String, sshArguments: [String] = []) {
+        let normalizedPath = Self.normalizedRemotePath(path)
+        let normalizedArguments = sshArguments.isEmpty ? ["--", target] : sshArguments
+        guard remoteTarget != target || remotePath != normalizedPath || remoteSSHArguments != normalizedArguments else { return }
         stopWatching()
         remoteTarget = target
         remotePath = normalizedPath
+        remoteSSHArguments = normalizedArguments
         directoryURL = Self.remoteURL(target: target, path: normalizedPath)
         refresh()
     }
@@ -221,11 +246,19 @@ private final class TerminalDirectoryExplorer: ObservableObject {
     nonisolated private static func remoteURL(target: String, path: String) -> URL {
         var components = URLComponents()
         components.scheme = "ssh"
-        if let split = target.lastIndex(of: "@") {
-            components.user = String(target[..<split])
-            components.host = String(target[target.index(after: split)...])
+        let userAndHost = target.lastIndex(of: "@").map { (String(target[..<$0]), String(target[target.index(after: $0)...])) } ?? (nil, target)
+        components.user = userAndHost.0
+        let host = userAndHost.1
+        if host.hasPrefix("["), let closing = host.firstIndex(of: "]") {
+            let suffix = String(host[host.index(after: closing)...])
+            components.host = String(host[host.index(after: host.startIndex)..<closing])
+            if suffix.hasPrefix(":"), let port = Int(suffix.dropFirst()), (1...65_535).contains(port) { components.port = port }
+        } else if let colon = host.lastIndex(of: ":"), host[..<colon].firstIndex(of: ":") == nil,
+                  let port = Int(host[host.index(after: colon)...]), (1...65_535).contains(port) {
+            components.host = String(host[..<colon])
+            components.port = port
         } else {
-            components.host = target
+            components.host = host
         }
         components.path = path.hasPrefix("/") ? path : "/"
         return components.url ?? URL(string: "ssh://invalid/")!
@@ -233,13 +266,14 @@ private final class TerminalDirectoryExplorer: ObservableObject {
 
     private func refreshRemote(target: String, path: String, request: UUID) {
         let hidden = showHidden
+        let connectionArguments = remoteSSHArguments.isEmpty ? ["--", target] : remoteSSHArguments
         DispatchQueue.global(qos: .utility).async { [weak self] in
             let process = Process(), output = Pipe(), errors = Pipe()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-            let quoted = path == "~" ? "\"$HOME\"" : TerminalWorkspaceInput.shellQuote(path)
+            let quoted = Self.remoteShellPath(path)
             let hiddenFilter = hidden ? "" : " ! -name '.*'"
-            let command = "( /usr/bin/find \(quoted) -maxdepth 16 -type d\(hiddenFilter) -print | /usr/bin/head -n 600; /usr/bin/printf '\\n__LIMA_FILES__\\n'; /usr/bin/find \(quoted) -maxdepth 16\(hiddenFilter) -print | /usr/bin/head -n 1200 )"
-            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6", "--", target, command]
+            let command = "( cd -- \(quoted) 2>/dev/null || exit 1; root=\"$PWD\"; /usr/bin/printf '__LIMA_ROOT__%s\\n' \"$root\"; /usr/bin/find \"$root\" -maxdepth 16 -type d\(hiddenFilter) -print | /usr/bin/head -n 600; /usr/bin/printf '\\n__LIMA_FILES__\\n'; /usr/bin/find \"$root\" -maxdepth 16\(hiddenFilter) -print | /usr/bin/head -n 1200 )"
+            process.arguments = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6"] + connectionArguments + [command]
             process.standardOutput = output
             process.standardError = errors
             do {
@@ -267,12 +301,27 @@ private final class TerminalDirectoryExplorer: ObservableObject {
         }
     }
 
+    nonisolated private static func normalizedRemotePath(_ path: String) -> String {
+        TerminalWorkspaceInput.normalizedRemotePath(path)
+    }
+
+    nonisolated private static func remoteShellPath(_ path: String) -> String {
+        if path == "~" { return "\"$HOME\"" }
+        if path.hasPrefix("~/") {
+            let suffix = String(path.dropFirst(2))
+            return "\"$HOME\"/" + TerminalWorkspaceInput.shellQuote(suffix)
+        }
+        return TerminalWorkspaceInput.shellQuote(path)
+    }
+
     nonisolated private static func makeRemoteTree(target: String, requestedRoot: String, output: String) -> TerminalFileNode? {
         let halves = output.components(separatedBy: "\n__LIMA_FILES__\n")
         guard halves.count == 2 else { return nil }
-        let directoryLines = halves[0].split(separator: "\n").map(String.init)
+        let headerLines = halves[0].split(separator: "\n").map(String.init)
+        guard let rootMarker = headerLines.first(where: { $0.hasPrefix("__LIMA_ROOT__") }) else { return nil }
+        let rootPath = String(rootMarker.dropFirst("__LIMA_ROOT__".count))
+        let directoryLines = headerLines.filter { !$0.hasPrefix("__LIMA_ROOT__") }
         let directories = Set(directoryLines)
-        let rootPath = requestedRoot == "~" ? (directoryLines.first ?? requestedRoot) : requestedRoot
         let paths = halves[1].split(separator: "\n").map(String.init).filter { $0 == rootPath || $0.hasPrefix(rootPath + "/") }
         guard !paths.isEmpty else { return nil }
         func node(_ path: String) -> TerminalFileNode {
@@ -340,7 +389,10 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     @Published private(set) var isLive = false
     @Published private(set) var terminalTitle = "Local zsh"
     @Published private(set) var workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path {
-        didSet { explorer.setDirectory(workingDirectory) }
+        didSet {
+            explorer.setDirectory(workingDirectory)
+            if oldValue != workingDirectory { refreshContextData() }
+        }
     }
     @Published var optionAsMeta = true { didSet { terminalView.optionAsMetaKey = optionAsMeta } }
     @Published private(set) var fontSize: CGFloat = 13
@@ -357,7 +409,17 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     @Published var helpPanelWidth: CGFloat = 330
     @Published private(set) var commandHistory: [String]
     @Published private(set) var activeContext = "Ready for a command"
-    @Published private(set) var activeRemoteTarget: String?
+    @Published private(set) var activeRemoteTarget: String? {
+        didSet {
+            if oldValue != activeRemoteTarget {
+                if let target = activeRemoteTarget {
+                    contextCards = Self.makeContextCards(.init(host: target, path: explorer.currentRemotePath, git: "Reading…", disk: "Reading…", remote: true, reachable: true))
+                }
+                refreshContextData()
+            }
+        }
+    }
+    @Published private(set) var contextCards: [TerminalContextCard] = []
 
     var onEditorChanged: ((TerminalEditorOverlayController.Editor?) -> Void)?
     let terminalView = ContextAwareTerminalView(frame: .zero)
@@ -371,6 +433,8 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private var pendingCommandBytes: [UInt8] = []
     private var discardingEscapeSequence = false
     private var activeEditor: TerminalEditorOverlayController.Editor?
+    private var activeRemoteSSHArguments: [String] = []
+    private var contextRevision = UUID()
 
     override init() {
         commandHistory = Array(UserDefaults.standard.stringArray(forKey: "terminalAssistantHistory") ?? []).prefix(24).map { $0 }
@@ -391,6 +455,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         terminalView.getTerminal().setCursorStyle(.steadyBar)
         terminalView.setAccessibilityLabel("Interactive terminal. Shell completion, Control, and Option Meta keys are supported.")
         explorer.setDirectory(workingDirectory)
+        contextCards = Self.makeContextCards(.init(host: ProcessInfo.processInfo.hostName, path: workingDirectory, git: "Reading…", disk: "Reading…", remote: false, reachable: true))
         typographySubscription = AppTypography.shared.$scale.sink { [weak self] scale in
             guard let self else { return }
             self.terminalView.font = .monospacedSystemFont(ofSize: self.fontSize * scale, weight: .regular)
@@ -450,6 +515,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
             Task { @MainActor in self?.refreshShellDirectory() }
         }
         directoryTimer?.tolerance = 0.5
+        refreshContextData()
         focus()
     }
 
@@ -476,7 +542,10 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     func focus() { terminalView.window?.makeFirstResponder(terminalView) }
     func toggleHelp() { helpVisible.toggle(); if helpVisible { explorerVisible = false; loadManualIfNeeded() }; focus() }
     func toggleExplorer() { explorerVisible.toggle(); if explorerVisible { helpVisible = false; refreshExplorer() }; focus() }
-    func refreshExplorer() { explorer.refresh() }
+    func refreshExplorer() {
+        explorer.refresh()
+        refreshContextData()
+    }
     func adjustHelpWidth(by amount: CGFloat) { helpPanelWidth = min(560, max(250, helpPanelWidth + amount)) }
     func requestComposerFocus() { composerVisible = true; composerFocusToken = UUID() }
 
@@ -515,9 +584,51 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         useSuggestion("cd -- \(TerminalWorkspaceInput.shellQuote(url.path))")
     }
 
+    func navigate(to url: URL) {
+        guard isLive else { return }
+        let path = url.path.isEmpty ? "/" : url.path
+        let command = "cd -- \(TerminalWorkspaceInput.shellQuote(path))"
+        sendText(command)
+        send(bytes: [0x0d])
+        if let target = activeRemoteTarget, url.scheme == "ssh" {
+            explorer.setRemote(target: target, path: path, sshArguments: activeRemoteSSHArguments)
+            refreshContextData()
+            activeContext = "Remote directory · \(path)"
+        } else if url.isFileURL {
+            workingDirectory = path
+            activeContext = "Local directory · \(path)"
+        }
+        focus()
+    }
+
+    func navigateUp() {
+        guard isLive else { return }
+        if let target = activeRemoteTarget {
+            let current = explorer.currentNavigationPath
+            let parent = URL(fileURLWithPath: current).deletingLastPathComponent().path
+            guard current != "/", !parent.isEmpty, parent != current else { return }
+            sendText("cd -- \(TerminalWorkspaceInput.shellQuote(parent))")
+            send(bytes: [0x0d])
+            explorer.setRemote(target: target, path: parent, sshArguments: activeRemoteSSHArguments)
+            refreshContextData()
+            activeContext = "Remote directory · \(parent)"
+        } else {
+            let current = URL(fileURLWithPath: workingDirectory).standardizedFileURL
+            let parent = current.deletingLastPathComponent()
+            guard parent.path != current.path else { return }
+            navigate(to: parent)
+        }
+        focus()
+    }
+
     func copyPath(_ url: URL) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(url.path, forType: .string)
+        if url.scheme == "ssh", let host = url.host {
+            let destination = [url.user, host].compactMap { $0 }.joined(separator: "@")
+            NSPasteboard.general.setString("\(destination):\(url.path)", forType: .string)
+        } else {
+            NSPasteboard.general.setString(url.path, forType: .string)
+        }
     }
 
     func openPath(_ url: URL) { guard url.isFileURL else { insertPath(url); return }; NSWorkspace.shared.open(url) }
@@ -558,9 +669,11 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
             UserDefaults.standard.set(commandHistory, forKey: historyKey)
         }
         if let destination = TerminalWorkspaceInput.sshDestination(from: command) {
+            activeRemoteSSHArguments = TerminalWorkspaceInput.sshProcessArguments(from: command) ?? ["--", destination]
             activeRemoteTarget = destination
             activeContext = "Connecting to \(destination) · remote file explorer ready"
-            explorer.setRemote(target: destination, path: "~")
+            explorer.setRemote(target: destination, path: "~", sshArguments: activeRemoteSSHArguments)
+            refreshContextData()
             if explorerVisible { explorer.refresh() }
             return
         }
@@ -570,7 +683,9 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         else { setActiveEditor(nil) }
         if primary == "exit", activeRemoteTarget != nil {
             activeRemoteTarget = nil
+            activeRemoteSSHArguments = []
             explorer.setDirectory(workingDirectory)
+            refreshContextData()
             activeContext = "Returning to local shell"
         } else {
             activeContext = contextDescription(for: primary)
@@ -638,6 +753,96 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         }
     }
 
+    private func refreshContextData() {
+        let request = UUID()
+        contextRevision = request
+        let target = activeRemoteTarget
+        let localPath = workingDirectory
+        let remotePath = explorer.currentRemotePath
+        let remoteSSHArguments = activeRemoteSSHArguments
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let data: TerminalContextData
+            if let target {
+                data = Self.collectRemoteContext(target: target, path: remotePath, sshArguments: remoteSSHArguments)
+            } else {
+                data = Self.collectLocalContext(path: localPath)
+            }
+            DispatchQueue.main.async {
+                guard let self, self.contextRevision == request else { return }
+                self.contextCards = Self.makeContextCards(data)
+            }
+        }
+    }
+
+    nonisolated private static func collectLocalContext(path: String) -> TerminalContextData {
+        let host = ProcessInfo.processInfo.hostName
+        let branch = runProcess("/usr/bin/git", arguments: ["-C", path, "branch", "--show-current"]).trimmingCharacters(in: .whitespacesAndNewlines)
+        let status = runProcess("/usr/bin/git", arguments: ["-C", path, "status", "--porcelain"]).split(whereSeparator: \.isNewline).count
+        let disk = diskSummary(runProcess("/bin/df", arguments: ["-h", path]))
+        let git = branch.isEmpty ? "No Git repository" : "\(branch) · \(status == 0 ? "clean" : "\(status) changes")"
+        return TerminalContextData(host: host, path: path, git: git, disk: disk, remote: false, reachable: true)
+    }
+
+    nonisolated private static func collectRemoteContext(target: String, path: String, sshArguments: [String]) -> TerminalContextData {
+        let quotedPath: String
+        if path == "~" { quotedPath = "\"$HOME\"" }
+        else if path.hasPrefix("~/") { quotedPath = "\"$HOME\"/" + TerminalWorkspaceInput.shellQuote(String(path.dropFirst(2))) }
+        else { quotedPath = TerminalWorkspaceInput.shellQuote(path) }
+        let command = "cd -- \(quotedPath) 2>/dev/null || exit 1; printf '__LIMA_HOST__%s\n' \"$(hostname)\"; printf '__LIMA_PATH__%s\n' \"$PWD\"; printf '__LIMA_BRANCH__%s\n' \"$(git branch --show-current 2>/dev/null)\"; printf '__LIMA_STATUS__%s\n' \"$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')\"; printf '__LIMA_DISK__%s\n' \"$(df -h . 2>/dev/null | tail -n 1)\""
+        let connectionArguments = sshArguments.isEmpty ? ["--", target] : sshArguments
+        let output = runProcess("/usr/bin/ssh", arguments: ["-o", "BatchMode=yes", "-o", "ConnectTimeout=6"] + connectionArguments + [command])
+        let host = markerValue("__LIMA_HOST__", in: output) ?? target
+        let resolvedPath = markerValue("__LIMA_PATH__", in: output) ?? path
+        let branch = markerValue("__LIMA_BRANCH__", in: output) ?? ""
+        let count = Int(markerValue("__LIMA_STATUS__", in: output) ?? "") ?? 0
+        let disk = diskSummary(markerValue("__LIMA_DISK__", in: output) ?? "")
+        let git = branch.isEmpty ? "No Git repository" : "\(branch) · \(count == 0 ? "clean" : "\(count) changes")"
+        let reachable = output.contains("__LIMA_HOST__")
+        return TerminalContextData(host: host, path: resolvedPath, git: git, disk: disk, remote: true, reachable: reachable)
+    }
+
+    nonisolated private static func runProcess(_ executable: String, arguments: [String]) -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        do {
+            try process.run()
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            return String(decoding: data, as: UTF8.self)
+        } catch {
+            return ""
+        }
+    }
+
+    nonisolated private static func markerValue(_ marker: String, in output: String) -> String? {
+        output.split(whereSeparator: \.isNewline).first(where: { $0.starts(with: marker) }).map {
+            String($0.dropFirst(marker.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+    }
+
+    nonisolated private static func diskSummary(_ output: String) -> String {
+        let line = output.split(whereSeparator: \.isNewline).last.map(String.init) ?? output
+        let fields = line.split(whereSeparator: \.isWhitespace)
+        guard fields.count >= 5 else { return "Disk unavailable" }
+        return "\(fields[2]) used · \(fields[3]) free (\(fields[4]))"
+    }
+
+    nonisolated private static func makeContextCards(_ data: TerminalContextData) -> [TerminalContextCard] {
+        let session = data.remote ? (data.reachable ? "SSH connected" : "SSH unavailable") : "Local shell"
+        let sessionDetail = data.remote ? "Remote file navigation uses \(data.host) through the configured SSH identity." : "Interactive local shell on this Mac."
+        return [
+            TerminalContextCard(label: "Session", value: session, detail: sessionDetail, symbol: data.remote ? "network" : "terminal"),
+            TerminalContextCard(label: "Host", value: data.host, detail: data.remote ? "Remote VM host" : "Local computer", symbol: "desktopcomputer"),
+            TerminalContextCard(label: "Path", value: data.path, detail: "Explorer and shell working directory", symbol: "folder"),
+            TerminalContextCard(label: "Git", value: data.git, detail: "Repository state at the active path", symbol: "arrow.triangle.branch"),
+            TerminalContextCard(label: "Disk", value: data.disk, detail: "Filesystem capacity at the active path", symbol: "internaldrive")
+        ]
+    }
+
     private func setFontSize(_ value: CGFloat) {
         fontSize = min(28, max(9, value))
         UserDefaults.standard.set(fontSize, forKey: "terminalFontSize")
@@ -703,11 +908,25 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
             activeRemoteTarget = nil
             workingDirectory = path
         } else if let remote = TerminalWorkspaceInput.remoteDirectory(directory) {
-            let target = activeRemoteTarget.flatMap { $0.hasSuffix("@\(remote.host)") || $0 == remote.host ? $0 : nil } ?? remote.host
+            let target = activeRemoteTarget.flatMap { Self.sshTarget($0, matchesHost: remote.host) ? $0 : nil } ?? remote.host
+            if target != activeRemoteTarget { activeRemoteSSHArguments = ["--", target] }
             activeRemoteTarget = target
-            explorer.setRemote(target: target, path: remote.path)
+            explorer.setRemote(target: target, path: remote.path, sshArguments: activeRemoteSSHArguments)
+            refreshContextData()
             activeContext = "Remote \(target) · \(remote.path)"
         }
+    }
+
+    private static func sshTarget(_ target: String, matchesHost host: String) -> Bool {
+        let endpoint = target.split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false).last.map(String.init) ?? target
+        if endpoint.hasPrefix("["), let closing = endpoint.firstIndex(of: "]") {
+            return String(endpoint[endpoint.index(after: endpoint.startIndex)..<closing]).caseInsensitiveCompare(host) == .orderedSame
+        }
+        if let colon = endpoint.lastIndex(of: ":"), endpoint[..<colon].firstIndex(of: ":") == nil,
+           Int(endpoint[endpoint.index(after: colon)...]) != nil {
+            return String(endpoint[..<colon]).caseInsensitiveCompare(host) == .orderedSame
+        }
+        return endpoint.caseInsensitiveCompare(host) == .orderedSame
     }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
@@ -716,6 +935,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         directoryTimer = nil
         setActiveEditor(nil)
         activeRemoteTarget = nil
+        activeRemoteSSHArguments = []
         guard !shuttingDown, restartWhenTerminated else { return }
         restartWhenTerminated = false
         DispatchQueue.main.async { [weak self] in self?.startIfNeeded() }
@@ -738,6 +958,7 @@ private struct DeveloperTerminalView: View {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: 8) {
                 toolbar
+                contextStrip
                 GeometryReader { geometry in
                   HStack(spacing: 0) {
                     terminalSurface
@@ -813,6 +1034,28 @@ private struct DeveloperTerminalView: View {
         .padding(.horizontal, 13)
         .frame(minHeight: 39)
         .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.035)
+    }
+
+    private var contextStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.contextCards) { card in
+                    HStack(spacing: 5) {
+                        Image(systemName: card.symbol).foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text(card.label.uppercased()).limaFont(.system(size: 7.5, weight: .bold)).foregroundStyle(.tertiary)
+                            Text(card.value).limaFont(.system(size: 9.5, design: .monospaced)).lineLimit(1)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(height: 31)
+                    .liquidGlass(cornerRadius: 8, depth: .recessed, accentOpacity: 0.012)
+                    .help(card.detail)
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+        .frame(height: 33)
     }
 
     private var terminalSurface: some View {
@@ -954,6 +1197,8 @@ private struct TerminalExplorerPanel: View {
                     get: { model.explorer.showHidden },
                     set: { model.explorer.showHidden = $0 }
                 )).labelsHidden().toggleStyle(.checkbox).help("Show hidden files")
+                Button(action: model.navigateUp) { Image(systemName: "arrow.up") }
+                    .help("Navigate to the parent directory")
                 Button(action: model.refreshExplorer) { Image(systemName: "arrow.clockwise") }.help("Refresh project tree (⌘⇧R)")
                 Button(action: model.toggleExplorer) { Image(systemName: "xmark") }.help("Close project explorer (⌘⇧E)")
             }
@@ -1031,7 +1276,10 @@ private struct TerminalExplorerRow: View {
             Menu {
                 Button("Insert Path") { model.insertPath(node.url) }
                 Button("Copy Path") { model.copyPath(node.url) }
-                if node.isDirectory { Button("Prepare cd Command") { model.changeDirectory(to: node.url) } }
+                if node.isDirectory {
+                    Button("Navigate") { model.navigate(to: node.url) }
+                    Button("Prepare cd Command") { model.changeDirectory(to: node.url) }
+                }
                 if !node.isRemote {
                     Button("Open") { model.openPath(node.url) }
                     Button("Reveal in Finder") { model.revealPath(node.url) }
@@ -1040,8 +1288,8 @@ private struct TerminalExplorerRow: View {
             .menuStyle(.borderlessButton).fixedSize()
         }
         .contentShape(Rectangle())
-        .onTapGesture(count: 2) { node.isDirectory ? model.changeDirectory(to: node.url) : model.insertPath(node.url) }
-        .help(node.isDirectory ? "Double-click to prepare a cd command" : "Double-click to prepare a shell-escaped path")
+        .onTapGesture(count: 2) { node.isDirectory ? model.navigate(to: node.url) : model.insertPath(node.url) }
+        .help(node.isDirectory ? "Double-click to navigate into this directory" : "Double-click to prepare a shell-escaped path")
     }
 }
 
