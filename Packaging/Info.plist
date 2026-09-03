@@ -2,45 +2,45 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleDevelopmentRegion</key>
-    <string>en</string>
-    <key>CFBundleDisplayName</key>
-    <string>RayPlacement</string>
-    <key>CFBundleExecutable</key>
-    <string>RayPlacement</string>
-    <key>CFBundleIconFile</key>
-    <string>RayPlacement</string>
-    <key>CFBundleIdentifier</key>
-    <string>dev.liam.rayplacement</string>
-    <key>CFBundleInfoDictionaryVersion</key>
-    <string>6.0</string>
-    <key>CFBundleName</key>
-    <string>RayPlacement</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>LimaUpdateMetadataURL</key>
-    <string>https://www.liamhosfeld.com/updates/latest.json</string>
-    <key>CFBundleShortVersionString</key>
-    <string>3.7.0</string>
-    <key>CFBundleVersion</key>
-    <string>370</string>
-    <key>LSMinimumSystemVersion</key>
-    <string>13.0</string>
-    <key>LSUIElement</key>
-    <false/>
-    <key>NSHighResolutionCapable</key>
-    <true/>
-    <key>NSHumanReadableCopyright</key>
-    <string>Built for personal use.</string>
-    <key>NSPrincipalClass</key>
-    <string>NSApplication</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleDisplayName</key>
+	<string>RayPlacement</string>
+	<key>CFBundleExecutable</key>
+	<string>RayPlacement</string>
+	<key>CFBundleIconFile</key>
+	<string>RayPlacement</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.liam.rayplacement</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>RayPlacement</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>3.8.0</string>
+	<key>CFBundleVersion</key>
+	<string>380</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>LimaUpdateMetadataURL</key>
+	<string>https://www.liamhosfeld.com/updates/latest.json</string>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>RayPlacement uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>RayPlacement uses Apple Events only to show the current Apple Music or Spotify track and run the playback controls you press.</string>
-    <key>NSMicrophoneUsageDescription</key>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Built for personal use.</string>
+	<key>NSMicrophoneUsageDescription</key>
 	<string>RayPlacement records audio only after you press Dictate in Notes and transcribes short local segments on this Mac.</string>
-    <key>NSSpeechRecognitionUsageDescription</key>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>RayPlacement uses on-device speech recognition to transcribe short recorded segments into the note you chose.</string>
 </dict>
 </plist>
