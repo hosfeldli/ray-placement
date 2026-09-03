@@ -33,12 +33,44 @@ while (( $# > 0 )); do
 done
 
 require_cmd() { command -v "$1" >/dev/null || { echo "Missing required command: $1" >&2; exit 1; }; }
+retry() {
+  local attempts=0
+  while true; do
+    if "$@"; then return 0; fi
+    (( attempts++ ))
+    if (( attempts >= 3 )); then return 1; fi
+    echo "Command failed; retrying in $((attempts * 5)) seconds…" >&2
+    sleep $((attempts * 5))
+  done
+}
 for cmd in gh swift codesign shasum rsync hdiutil split; do require_cmd "$cmd"; done
 [[ -f "$PROJECT_DIR/Package.swift" ]] || { echo "Not a Lima project: $PROJECT_DIR" >&2; exit 1; }
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJECT_DIR/Packaging/Info.plist")"
 [[ -n "$TAG" ]] || TAG="v$VERSION"
-[[ "$TAG" =~ '^v[0-9]+\.[0-9]+\.[0-9]+$' ]] || { echo "Invalid tag: $TAG" >&2; exit 1; }
+[[ "$TAG" =~ '^v[0-9]+\.[0-9]+\.[0-9]+$' ]] || { echo "Invalid tag: $TAG (use vX.Y.Z, for example v3.9.0)" >&2; exit 1; }
+REQUESTED_VERSION="${TAG#v}"
+BUILD_NUMBER="${REQUESTED_VERSION//./}"
+
+# The release tag is the source of truth. This lets one command prepare the
+# version metadata instead of requiring a separate manual plist edit.
+if [[ "$VERSION" != "$REQUESTED_VERSION" ]]; then
+  if [[ -n "$(git -C "$PROJECT_DIR" status --porcelain)" ]]; then
+    echo "Working tree is not clean; refusing to change release metadata" >&2
+    git -C "$PROJECT_DIR" status --short >&2
+    exit 1
+  fi
+  BRANCH="$(git -C "$PROJECT_DIR" branch --show-current)"
+  [[ -n "$BRANCH" ]] || { echo "Deployment must run from a named Git branch" >&2; exit 1; }
+  echo "==> Updating app version $VERSION → $REQUESTED_VERSION (build $BUILD_NUMBER)"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $REQUESTED_VERSION" "$PROJECT_DIR/Packaging/Info.plist"
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$PROJECT_DIR/Packaging/Info.plist"
+  git -C "$PROJECT_DIR" diff --check
+  git -C "$PROJECT_DIR" add Packaging/Info.plist
+  git -C "$PROJECT_DIR" commit -m "Bump Lima version to $REQUESTED_VERSION"
+  git -C "$PROJECT_DIR" push origin "$BRANCH"
+  VERSION="$REQUESTED_VERSION"
+fi
 [[ "$TAG" == "v$VERSION" ]] || { echo "Tag $TAG does not match app version $VERSION" >&2; exit 1; }
 gh auth status >/dev/null
 
@@ -104,18 +136,25 @@ if gh release view "$TAG" >/dev/null 2>&1; then
 else
   gh release create "$TAG" --draft --title "Lima $TAG" --generate-notes
 fi
-gh release upload "$TAG" \
+retry gh release upload "$TAG" \
   "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima.dmg.sha256" --clobber
 
 printf '%s\n' "==> Uploading DMG"
-if ! gh release upload "$TAG" "$DIST/Lima.dmg" --clobber; then
+if ! retry gh release upload "$TAG" "$DIST/Lima.dmg" --clobber; then
   echo "Direct DMG upload failed; using verified multipart workflow."
+  rm -rf "$PART_DIR"
+  mkdir -p "$PART_DIR"
   split -b 24m -a 2 "$DIST/Lima.dmg" "$PART_DIR/Lima.dmg.part-"
-  PART_COUNT="$(find "$PART_DIR" -type f -name 'Lima.dmg.part-*' | wc -l | tr -d ' ')"
-  for part in "$PART_DIR"/Lima.dmg.part-*; do gh release upload "$TAG" "$part" --clobber; done
-  gh workflow run assemble-signed-dmg.yml \
+  PART_COUNT="$(printf '%s\n' "$PART_DIR"/Lima.dmg.part-* | wc -l | tr -d ' ')"
+  [[ "$PART_COUNT" =~ '^[1-9][0-9]*$' ]] || { echo "DMG multipart split produced no parts" >&2; exit 1; }
+  for part in "$PART_DIR"/Lima.dmg.part-*; do
+    retry gh release upload "$TAG" "$part" --clobber
+  done
+  retry gh workflow run assemble-signed-dmg.yml \
     -f release_tag="$TAG" -f sha256="$DMG_SHA" -f part_count="$PART_COUNT"
+  sleep 5
   RUN_ID="$(gh run list --workflow assemble-signed-dmg.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+  [[ -n "$RUN_ID" ]] || { echo "Could not find DMG assembly workflow run" >&2; exit 1; }
   gh run watch "$RUN_ID" --exit-status
 fi
 
