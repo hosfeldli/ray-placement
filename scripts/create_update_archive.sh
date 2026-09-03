@@ -23,6 +23,7 @@ rsync -a \
     --exclude dist/ \
     --exclude Downloads/ \
     --exclude 'Packaging/Vendor/Whisper/**' \
+    --exclude 'Packaging/Vendor/Whisper/model/**' \
     --exclude 'Packaging/Vendor/CoEdit/**' \
     --exclude 'Packaging/Vendor/Qwen/**' \
     --exclude .DS_Store \

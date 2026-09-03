@@ -42,6 +42,14 @@ VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$PROJ
 [[ "$TAG" == "v$VERSION" ]] || { echo "Tag $TAG does not match app version $VERSION" >&2; exit 1; }
 gh auth status >/dev/null
 
+# Swift builds plus the full DMG require several GB of transient storage.
+AVAILABLE_KB="$(df -Pk "$PROJECT_DIR" | awk 'NR==2 {print $4}')"
+MINIMUM_KB=$((5 * 1024 * 1024))
+(( AVAILABLE_KB >= MINIMUM_KB )) || {
+  echo "Insufficient disk space: need at least 5 GB free, have $((AVAILABLE_KB / 1024 / 1024)) GB" >&2
+  exit 1
+}
+
 SIGN_DIR="$HOME/Library/Application Support/RayPlacement/Signing"
 SIGN_KEYCHAIN="$SIGN_DIR/RayPlacementSigning.keychain-db"
 SIGN_PASSWORD="$SIGN_DIR/keychain-password"
