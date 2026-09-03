@@ -89,8 +89,11 @@ RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
   "$PROJECT_DIR/scripts/create_liamflow_dmg.sh" "$DIST"
 
 codesign --verify --deep --strict "$PROJECT_DIR/build/Lima.app"
-shasum -a 256 --check "$DIST/Lima-Update.sha256"
-shasum -a 256 --check "$DIST/Lima.dmg.sha256"
+(
+  cd "$DIST"
+  shasum -a 256 --check Lima-Update.sha256
+  shasum -a 256 --check Lima.dmg.sha256
+)
 UPDATE_SHA="$(shasum -a 256 "$DIST/Lima-Update.zip" | awk '{print $1}')"
 DMG_SHA="$(shasum -a 256 "$DIST/Lima.dmg" | awk '{print $1}')"
 
