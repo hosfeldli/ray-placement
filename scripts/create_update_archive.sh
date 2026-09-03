@@ -22,9 +22,9 @@ rsync -a \
     --exclude build/ \
     --exclude dist/ \
     --exclude Downloads/ \
-    --exclude Packaging/Vendor/Whisper/ \
-    --exclude Packaging/Vendor/CoEdit/ \
-    --exclude Packaging/Vendor/Qwen/ \
+    --exclude 'Packaging/Vendor/Whisper/**' \
+    --exclude 'Packaging/Vendor/CoEdit/**' \
+    --exclude 'Packaging/Vendor/Qwen/**' \
     --exclude .DS_Store \
     "$PROJECT_DIRECTORY/" "$STAGED_SOURCE/"
 
