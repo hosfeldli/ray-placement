@@ -160,20 +160,30 @@ private struct TopShelfView: View {
             .clipShape(PrismaticPanelShape(cut: 7))
             .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.30), lineWidth: 0.7))
             VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 4) {
+                    Image(systemName: track.source.symbol)
+                        .limaFont(.system(size: 8, weight: .bold))
+                        .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                    Text(track.source.title.uppercased())
+                        .limaFont(.system(size: 8, weight: .bold, design: .rounded))
+                        .tracking(0.6)
+                        .foregroundStyle(.secondary)
+                }
                 Text(track.title)
                     .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
-                Text(music.transportMessage ?? mediaSubtitle(track))
+                Text(music.transportMessage ?? music.controlAvailabilityMessage ?? mediaSubtitle(track))
                     .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(music.transportMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .foregroundStyle((music.transportMessage == nil && music.controlAvailabilityMessage == nil) ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 2) {
                 mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
-                mediaButton(track.isPlaying ? "pause.fill" : "play.fill", label: track.isPlaying ? "Pause" : "Play") { runMediaAction(.playPause) }
+                mediaButton(track.isPlaying ? "pause.fill" : "play.fill", label: track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)") { runMediaAction(.playPause) }
                 mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
             }
+            .opacity(music.isPerformingTransport ? 0.55 : 1)
             .disabled(music.isPerformingTransport)
         }
         .padding(.horizontal, 10)
@@ -187,7 +197,7 @@ private struct TopShelfView: View {
             )
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(track.source.title), now playing \(track.title) by \(track.artist)")
+        .accessibilityLabel("\(track.source.title), \(track.isPlaying ? "playing" : "paused"): \(track.title) by \(track.artist)")
     }
 
     private func mediaButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {

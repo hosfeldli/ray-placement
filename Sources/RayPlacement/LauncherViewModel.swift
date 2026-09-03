@@ -41,6 +41,7 @@ final class LauncherViewModel: ObservableObject {
         didSet { UserDefaults.standard.set(timezoneDestinationID, forKey: "timezoneDestinationID") }
     }
     @Published private(set) var timezoneDidCopy = false
+    @Published private(set) var contextualSelectionText: String?
 
     weak var delegate: LauncherViewModelDelegate?
 
@@ -175,6 +176,17 @@ final class LauncherViewModel: ObservableObject {
     func isActionable(_ item: LauncherItem) -> Bool {
         if case .noOp = item.action { return false }
         return true
+    }
+
+    func setContextualSelection(_ text: String?) {
+        let clean = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        contextualSelectionText = clean?.isEmpty == false ? clean : nil
+        if mode == .root { refreshResults() }
+    }
+
+    func resetContextualSelection() {
+        contextualSelectionText = nil
+        if mode == .root { refreshResults() }
     }
 
     func resetForPresentation() {
@@ -348,6 +360,9 @@ final class LauncherViewModel: ObservableObject {
 
     private func rootResults() -> [LauncherItem] {
         var items = builtInItems() + extensionItems() + applicationItems()
+        if let selection = contextualSelectionText {
+            items.insert(contentsOf: contextualItems(for: selection), at: 0)
+        }
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
@@ -621,6 +636,53 @@ final class LauncherViewModel: ObservableObject {
                     : nil
             )
         }
+    }
+
+    private func contextualItems(for text: String) -> [LauncherItem] {
+        let bullets = text.components(separatedBy: .newlines)
+            .map { line in
+                let clean = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                return clean.hasPrefix("- ") || clean.hasPrefix("* ") ? clean : "- \(clean)"
+            }
+            .joined(separator: "\n")
+        return [
+            LauncherItem(
+                id: "context.check-writing",
+                title: "Check Spelling & Grammar",
+                subtitle: "Review the current selection locally",
+                icon: .system("text.badge.checkmark"),
+                keywords: ["selection", "spell", "grammar", "proofread"],
+                action: .checkSelectedText,
+                accessory: "Review"
+            ),
+            LauncherItem(
+                id: "context.copy-plain-text",
+                title: "Copy as Plain Text",
+                subtitle: "Copy the current selection without rich formatting",
+                icon: .system("doc.plaintext"),
+                keywords: ["selection", "plain", "text", "copy"],
+                action: .copyText(text),
+                accessory: "Copy"
+            ),
+            LauncherItem(
+                id: "context.quick-note",
+                title: "Save Selection to Quick Note",
+                subtitle: "Create a local note from the current selection",
+                icon: .system("note.text.badge.plus"),
+                keywords: ["selection", "note", "save", "capture"],
+                action: .saveSelectionToQuickNote(text),
+                accessory: "Save"
+            ),
+            LauncherItem(
+                id: "context.markdown-bullets",
+                title: "Convert Selection to Markdown Bullets",
+                subtitle: "Prefix each selected line with a Markdown bullet",
+                icon: .system("list.bullet"),
+                keywords: ["selection", "markdown", "format", "bullets", "list"],
+                action: .replaceSelectedText(bullets),
+                accessory: "Replace"
+            ),
+        ]
     }
 
     private func builtInItems() -> [LauncherItem] {

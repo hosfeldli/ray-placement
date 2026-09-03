@@ -59,6 +59,7 @@ final class MusicNowPlayingService: ObservableObject {
     @Published private(set) var artwork: NSImage?
     @Published private(set) var isPerformingTransport = false
     @Published private(set) var transportMessage: String?
+    @Published private(set) var controlAvailabilityMessage: String?
     @Published private(set) var outputVolume: Double = 0
     @Published private(set) var outputAudioLevel: Double = 0
 
@@ -113,6 +114,7 @@ final class MusicNowPlayingService: ObservableObject {
                 self?.isPerformingTransport = false
                 self?.refresh()
             }
+            controlAvailabilityMessage = nil
             clearTransportMessageSoon(action.feedback)
             return
         }
@@ -127,7 +129,10 @@ final class MusicNowPlayingService: ObservableObject {
             DispatchQueue.main.async {
                 self?.transportMessage = outcome.succeeded
                     ? action.feedback
-                    : "Playback failed · allow Lima in Automation"
+                    : "Playback unavailable · allow Lima in Automation"
+                self?.controlAvailabilityMessage = outcome.succeeded
+                    ? nil
+                    : "Allow Lima to control \(source.title) in System Settings → Privacy & Security → Automation."
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     self?.refresh()
                 }

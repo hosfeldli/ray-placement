@@ -102,6 +102,8 @@ enum LauncherAction {
     case copyText(String)
     case pasteText(String)
     case replaceSelectedText(String)
+    case saveSelectionToQuickNote(String)
+    case checkSelectedText
     case forceQuitApplication(processIdentifier: Int32, name: String)
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)

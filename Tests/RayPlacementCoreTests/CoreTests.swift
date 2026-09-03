@@ -442,3 +442,19 @@ import Testing
     #expect(manifest.id == "local.document-formatter")
     #expect(manifest.commands.map(\.action.type) == [.openFormatterWorkspace])
 }
+
+@Test func markdownNotesSupportTagsWikiLinksAndTemplates() {
+    #expect(MarkdownNoteLinks.normalizedTags([" #Work ", "work", "", "follow-up"]) == ["Work", "follow-up"])
+    #expect(MarkdownNoteLinks.targets(in: "See [[Project Brief]] and [[abc]]; [[Project Brief]].") == ["Project Brief", "abc"])
+    #expect(MarkdownNoteTemplate.meetingNotes.content.contains("## Action Items"))
+    #expect(MarkdownNoteTemplate.projectBrief.content.contains("## Success Criteria"))
+}
+
+@Test func markdownNoteNewFieldsRemainBackwardCompatible() throws {
+    let note = MarkdownNote(title: "New", tags: ["work"], revisionHistory: [NoteRevision(title: "Old", content: "Before")])
+    let encoded = try JSONEncoder().encode(note)
+    let decoded = try JSONDecoder().decode(MarkdownNote.self, from: encoded)
+    #expect(decoded.tags == ["work"])
+    #expect(decoded.revisionHistory.count == 1)
+    #expect(decoded.revisionHistory.first?.content == "Before")
+}

@@ -5,6 +5,7 @@ import RayPlacementCore
 final class NotesStore: ObservableObject {
     static let maximumNotes = 250
     static let maximumCharactersPerNote = 200_000
+    static let maximumRevisionsPerNote = 30
 
     @Published private(set) var notes: [MarkdownNote]
     @Published var selectedNoteID: UUID?
@@ -12,6 +13,9 @@ final class NotesStore: ObservableObject {
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
     private var pendingSave: DispatchWorkItem?
+    private var pendingRevisionSnapshots: [UUID: NoteRevision] = [:]
+    private var revisionWorkItems: [UUID: DispatchWorkItem] = [:]
+    private var revisionGenerations: [UUID: UUID] = [:]
 
     init() {
         notes = Self.loadNotes()
@@ -51,16 +55,75 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    func createNote() {
+    func createNote(template: MarkdownNoteTemplate = .blank) {
         guard notes.count < Self.maximumNotes else {
             lastError = "Lima Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."
             return
         }
-        let note = MarkdownNote()
+        let note = MarkdownNote(title: template.noteTitle, content: template.content)
         notes.insert(note, at: 0)
         selectedNoteID = note.id
         lastError = nil
         scheduleSave()
+    }
+
+    func createQuickNote(with text: String) {
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        guard clean.count <= Self.maximumCharactersPerNote else {
+            lastError = "A quick note can contain up to \(Self.maximumCharactersPerNote.formatted()) characters."
+            return
+        }
+        guard notes.count < Self.maximumNotes else {
+            lastError = "Lima Notes is limited to \(Self.maximumNotes) notes."
+            return
+        }
+        let title = "Quick Note · \(Date().formatted(date: .abbreviated, time: .shortened))"
+        let note = MarkdownNote(title: title, content: clean)
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        scheduleSave()
+    }
+
+    func replaceTags(_ tags: [String]) {
+        updateSelected { note in note.tags = MarkdownNoteLinks.normalizedTags(tags) }
+    }
+
+    func addTag(_ tag: String) {
+        guard let note = selectedNote else { return }
+        replaceTags(note.tags + [tag])
+    }
+
+    func removeTag(_ tag: String) {
+        replaceTags((selectedNote?.tags ?? []).filter { $0.caseInsensitiveCompare(tag) != .orderedSame })
+    }
+
+    func referencedNotes(for noteID: UUID? = nil) -> [MarkdownNote] {
+        guard let note = noteID.flatMap({ id in notes.first { $0.id == id } }) ?? selectedNote else { return [] }
+        let targets = MarkdownNoteLinks.targets(in: note.content)
+        return notes.filter { candidate in
+            candidate.id != note.id && targets.contains { target in
+                target.caseInsensitiveCompare(candidate.displayTitle) == .orderedSame || target == candidate.id.uuidString
+            }
+        }
+    }
+
+    func backlinks(for noteID: UUID? = nil) -> [MarkdownNote] {
+        guard let target = noteID.flatMap({ id in notes.first { $0.id == id } }) ?? selectedNote else { return [] }
+        return notes.filter { note in
+            guard note.id != target.id else { return false }
+            return MarkdownNoteLinks.targets(in: note.content).contains { link in
+                link.caseInsensitiveCompare(target.displayTitle) == .orderedSame || link == target.id.uuidString
+            }
+        }
+    }
+
+    func restore(_ revision: NoteRevision) {
+        guard let selectedNoteID else { return }
+        updateNote(selectedNoteID) { note in
+            note.title = revision.title
+            note.content = revision.content
+        }
     }
 
     func deleteSelectedNote() {
@@ -159,6 +222,16 @@ final class NotesStore: ObservableObject {
     func flush() {
         pendingSave?.cancel()
         pendingSave = nil
+        for (identifier, snapshot) in pendingRevisionSnapshots {
+            if let index = notes.firstIndex(where: { $0.id == identifier }) {
+                notes[index].revisionHistory.append(snapshot)
+                notes[index].revisionHistory = Array(notes[index].revisionHistory.suffix(Self.maximumRevisionsPerNote))
+            }
+        }
+        pendingRevisionSnapshots.removeAll()
+        revisionWorkItems.values.forEach { $0.cancel() }
+        revisionWorkItems.removeAll()
+        revisionGenerations.removeAll()
         let snapshot = notes
         persistenceQueue.sync { Self.persist(snapshot) }
     }
@@ -170,10 +243,38 @@ final class NotesStore: ObservableObject {
 
     private func updateNote(_ identifier: UUID, _ change: (inout MarkdownNote) -> Void) {
         guard let index = notes.firstIndex(where: { $0.id == identifier }) else { return }
+        let before = notes[index]
         change(&notes[index])
+        let contentChanged = before.title != notes[index].title || before.content != notes[index].content
+        if contentChanged { queueRevision(identifier, before: before) }
+        notes[index].tags = MarkdownNoteLinks.normalizedTags(notes[index].tags)
         notes[index].modifiedAt = Date()
         lastError = nil
         scheduleSave()
+    }
+
+    private func queueRevision(_ identifier: UUID, before: MarkdownNote) {
+        if pendingRevisionSnapshots[identifier] == nil {
+            pendingRevisionSnapshots[identifier] = NoteRevision(title: before.title, content: before.content)
+        }
+        revisionWorkItems[identifier]?.cancel()
+        let generation = UUID()
+        revisionGenerations[identifier] = generation
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            DispatchQueue.main.async {
+                guard self.revisionGenerations[identifier] == generation,
+                      let snapshot = self.pendingRevisionSnapshots.removeValue(forKey: identifier),
+                      let index = self.notes.firstIndex(where: { $0.id == identifier }) else { return }
+                self.revisionGenerations.removeValue(forKey: identifier)
+                self.revisionWorkItems.removeValue(forKey: identifier)
+                self.notes[index].revisionHistory.append(snapshot)
+                self.notes[index].revisionHistory = Array(self.notes[index].revisionHistory.suffix(Self.maximumRevisionsPerNote))
+                self.scheduleSave()
+            }
+        }
+        revisionWorkItems[identifier] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9, execute: work)
     }
 
     private func sortNotes() {
@@ -209,6 +310,8 @@ final class NotesStore: ObservableObject {
                 var bounded = note
                 bounded.title = String(note.title.prefix(200))
                 bounded.content = String(note.content.prefix(maximumCharactersPerNote))
+                bounded.tags = MarkdownNoteLinks.normalizedTags(note.tags)
+                bounded.revisionHistory = Array(note.revisionHistory.suffix(maximumRevisionsPerNote))
                 return bounded
             }
     }

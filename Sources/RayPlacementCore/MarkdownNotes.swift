@@ -1,5 +1,136 @@
 import Foundation
 
+public struct NoteRevision: Codable, Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public let title: String
+    public let content: String
+    public let timestamp: Date
+
+    public init(id: UUID = UUID(), title: String, content: String, timestamp: Date = Date()) {
+        self.id = id
+        self.title = title
+        self.content = content
+        self.timestamp = timestamp
+    }
+}
+
+public enum MarkdownNoteTemplate: String, CaseIterable, Identifiable, Sendable {
+    case blank
+    case meetingNotes
+    case projectBrief
+    case dailyPlan
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .blank: return "Blank"
+        case .meetingNotes: return "Meeting Notes"
+        case .projectBrief: return "Project Brief"
+        case .dailyPlan: return "Daily Plan"
+        }
+    }
+
+    public var noteTitle: String {
+        switch self {
+        case .blank: return "Untitled Note"
+        case .meetingNotes: return "Meeting Notes"
+        case .projectBrief: return "Project Brief"
+        case .dailyPlan: return "Daily Plan"
+        }
+    }
+
+    public var content: String {
+        switch self {
+        case .blank: return ""
+        case .meetingNotes:
+            return """
+            # Meeting Notes
+
+            **Date:** \(Date().formatted(date: .abbreviated, time: .omitted))
+            **Attendees:**
+
+            ## Agenda
+            -
+
+            ## Discussion
+            -
+
+            ## Decisions
+            -
+
+            ## Action Items
+            - [ ]
+            """
+        case .projectBrief:
+            return """
+            # Project Brief
+
+            ## Objective
+
+
+            ## Scope
+            - In scope:
+            - Out of scope:
+
+            ## Success Criteria
+            - [ ]
+
+            ## Risks and Dependencies
+            -
+            """
+        case .dailyPlan:
+            return """
+            # Daily Plan — \(Date().formatted(date: .abbreviated, time: .omitted))
+
+            ## Top Priorities
+            - [ ]
+            - [ ]
+            - [ ]
+
+            ## Notes
+
+
+            ## Done
+            -
+            """
+        }
+    }
+}
+
+public enum MarkdownNoteLinks {
+    /// Returns unique wiki-link targets in source order. Both `[[Title]]` and
+    /// `[[UUID]]` are accepted; display titles are resolved by NotesStore.
+    public static func targets(in markdown: String) -> [String] {
+        let pattern = #"\[\[([^\]\n]+)\]\]"#
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(markdown.startIndex..<markdown.endIndex, in: markdown)
+        var result: [String] = []
+        for match in expression.matches(in: markdown, range: range) {
+            guard let valueRange = Range(match.range(at: 1), in: markdown) else { continue }
+            let value = String(markdown[valueRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty && !result.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) {
+                result.append(value)
+            }
+        }
+        return result
+    }
+
+    public static func normalizedTags(_ tags: [String]) -> [String] {
+        var result: [String] = []
+        for tag in tags {
+            let clean = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "#", with: "")
+            guard !clean.isEmpty else { continue }
+            let value = String(clean.prefix(40))
+            if !result.contains(where: { $0.caseInsensitiveCompare(value) == .orderedSame }) {
+                result.append(value)
+            }
+        }
+        return Array(result.prefix(20))
+    }
+}
+
 public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var title: String
@@ -9,6 +140,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var isPinned: Bool
     public var isFavorite: Bool
     public var speakerNames: [Int: String]
+    public var tags: [String]
+    public var revisionHistory: [NoteRevision]
 
     public init(
         id: UUID = UUID(),
@@ -18,7 +151,9 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         modifiedAt: Date = Date(),
         isPinned: Bool = false,
         isFavorite: Bool = false,
-        speakerNames: [Int: String] = [:]
+        speakerNames: [Int: String] = [:],
+        tags: [String] = [],
+        revisionHistory: [NoteRevision] = []
     ) {
         self.id = id
         self.title = title
@@ -28,10 +163,12 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         self.isPinned = isPinned
         self.isFavorite = isFavorite
         self.speakerNames = speakerNames
+        self.tags = tags
+        self.revisionHistory = revisionHistory
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite, speakerNames
+        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite, speakerNames, tags, revisionHistory
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +181,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         isPinned = try container.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
         isFavorite = try container.decodeIfPresent(Bool.self, forKey: .isFavorite) ?? false
         speakerNames = try container.decodeIfPresent([Int: String].self, forKey: .speakerNames) ?? [:]
+        tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
+        revisionHistory = try container.decodeIfPresent([NoteRevision].self, forKey: .revisionHistory) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -56,6 +195,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         try container.encode(isPinned, forKey: .isPinned)
         try container.encode(isFavorite, forKey: .isFavorite)
         try container.encode(speakerNames, forKey: .speakerNames)
+        try container.encode(tags, forKey: .tags)
+        try container.encode(revisionHistory, forKey: .revisionHistory)
     }
 
     public var displayTitle: String {

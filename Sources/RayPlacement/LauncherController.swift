@@ -72,6 +72,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func show(from sourceApplication: NSRunningApplication? = nil) {
         rememberFrontmostApplication(preferred: sourceApplication)
+        viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
         presentPanel()
     }
@@ -167,6 +168,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .replaceSelectedText(let text):
             replaceSelectedText(text)
+
+        case .saveSelectionToQuickNote(let text):
+            hide()
+            notesWindow.store.createQuickNote(with: text)
+            notesWindow.presentQuickNote()
+
+        case .checkSelectedText:
+            performWritingCheck()
 
         case .forceQuitApplication(let processIdentifier, let name):
             confirmForceQuit(processIdentifier: processIdentifier, name: name)

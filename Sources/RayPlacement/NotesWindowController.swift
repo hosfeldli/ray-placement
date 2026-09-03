@@ -353,6 +353,8 @@ private struct NotesView: View {
     @State private var confirmDelete = false
     @State private var showSpeakerNames = false
     @State private var showAppearance = false
+    @State private var showTags = false
+    @State private var showRevisions = false
     @State private var speakerOneName = ""
     @State private var speakerTwoName = ""
 
@@ -362,6 +364,7 @@ private struct NotesView: View {
         return store.notes.filter { note in
             note.displayTitle.lowercased().contains(query)
                 || note.content.prefix(20_000).lowercased().contains(query)
+                || note.tags.contains { $0.lowercased().contains(query) }
         }
     }
 
@@ -439,6 +442,18 @@ private struct NotesView: View {
             .padding(22)
             .frame(width: 430)
             .preferredColorScheme(.dark)
+        }
+        .sheet(isPresented: $showTags) {
+            TagEditorSheet(tags: store.selectedNote?.tags ?? []) { tags in
+                store.replaceTags(tags)
+                showTags = false
+            }
+        }
+        .sheet(isPresented: $showRevisions) {
+            RevisionHistorySheet(revisions: store.selectedNote?.revisionHistory ?? []) { revision in
+                store.restore(revision)
+                showRevisions = false
+            }
         }
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
         .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
@@ -524,15 +539,18 @@ private struct NotesView: View {
                 .frame(height: 30)
                 .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
-                Button {
-                    store.createNote()
+                Menu {
+                    ForEach(MarkdownNoteTemplate.allCases) { template in
+                        Button(template.title) { store.createNote(template: template) }
+                    }
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .frame(width: 28, height: 28)
                 }
+                .menuStyle(.borderlessButton)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .help("New Note (Command-N)")
+                .help("New Note or Template (Command-N)")
                 .keyboardShortcut("n", modifiers: .command)
 
             }
@@ -717,6 +735,15 @@ private struct NotesView: View {
                     .limaFont(.caption2)
                     .foregroundStyle(.secondary)
                 }
+                if !note.tags.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(note.tags.prefix(4), id: \.self) { tag in
+                            Text("#\(tag)")
+                                .limaFont(.system(size: 9, weight: .medium))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                    }
+                }
             }
 
             Spacer(minLength: 6)
@@ -738,6 +765,8 @@ private struct NotesView: View {
                 Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
                 Divider()
                 Button("Duplicate Note") { store.duplicateSelectedNote() }
+                Button("Edit Tags…") { showTags = true }
+                Button("Revision History…") { showRevisions = true }
                 Button("Name Transcript Speakers…") {
                     speakerOneName = note.speakerNames[1] ?? ""
                     speakerTwoName = note.speakerNames[2] ?? ""
@@ -870,6 +899,30 @@ private struct NotesView: View {
                 .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
 
                 Spacer(minLength: 5)
+
+                if !store.referencedNotes().isEmpty || !store.backlinks().isEmpty {
+                    Menu {
+                        if !store.referencedNotes().isEmpty {
+                            Section("References") {
+                                ForEach(store.referencedNotes()) { linked in
+                                    Button(linked.displayTitle) { store.selectedNoteID = linked.id }
+                                }
+                            }
+                        }
+                        if !store.backlinks().isEmpty {
+                            Section("Backlinks") {
+                                ForEach(store.backlinks()) { linked in
+                                    Button(linked.displayTitle) { store.selectedNoteID = linked.id }
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Links", systemImage: "link")
+                            .limaFont(.caption2.weight(.semibold))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .help("References and backlinks")
+                }
 
                 let tasks = taskProgress(note.content)
                 if tasks.total > 0 {
@@ -1077,6 +1130,68 @@ private extension NotesVisualTheme {
         case .ink: colors = [.orange, Color(red: 0.20, green: 0.12, blue: 0.09)]
         }
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+private struct TagEditorSheet: View {
+    let initialTags: [String]
+    let onSave: ([String]) -> Void
+    @State private var text: String
+
+    init(tags: [String], onSave: @escaping ([String]) -> Void) {
+        initialTags = tags
+        self.onSave = onSave
+        _text = State(initialValue: tags.joined(separator: ", "))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit Tags").limaFont(.title3.bold())
+            Text("Separate tags with commas. Tags are stored locally.").foregroundStyle(.secondary)
+            TextField("project, follow-up, personal", text: $text)
+                .textFieldStyle(.roundedBorder)
+            HStack {
+                Spacer()
+                Button("Save") {
+                    onSave(text.split(separator: ",").map(String.init))
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
+        .preferredColorScheme(.dark)
+    }
+}
+
+private struct RevisionHistorySheet: View {
+    let revisions: [NoteRevision]
+    let onRestore: (NoteRevision) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Revision History").limaFont(.title3.bold())
+            if revisions.isEmpty {
+                Text("Revisions appear after a note has been edited.").foregroundStyle(.secondary)
+            } else {
+                List(revisions.reversed()) { revision in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(revision.title.isEmpty ? "Untitled Note" : revision.title)
+                            Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened))
+                                .limaFont(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button("Restore") { onRestore(revision); dismiss() }
+                    }
+                }
+            }
+            HStack { Spacer(); Button("Close") { dismiss() } }
+        }
+        .padding(18)
+        .frame(width: 520, height: 360)
+        .preferredColorScheme(.dark)
     }
 }
 
