@@ -4,6 +4,8 @@ import Foundation
 import RayPlacementCore
 
 private let rayPlacementUpdateAssetMaximumBytes = 100 * 1_024 * 1_024
+private let rayPlacementUpdateMetadataTimeout: TimeInterval = 20
+private let rayPlacementUpdateDownloadTimeout: TimeInterval = 15 * 60
 
 @MainActor
 final class UpdateService: ObservableObject {
@@ -169,6 +171,7 @@ final class UpdateService: ObservableObject {
         let usingSiteMetadata = Self.siteMetadataURL != nil
         var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = rayPlacementUpdateMetadataTimeout
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
@@ -252,8 +255,13 @@ final class UpdateService: ObservableObject {
         onInstallStarted?()
         var request = URLRequest(url: asset.browserDownloadURL)
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = rayPlacementUpdateDownloadTimeout
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
-        let task = URLSession.shared.downloadTask(with: request) { [weak self] temporaryURL, response, error in
+        let configuration = URLSessionConfiguration.default
+        configuration.waitsForConnectivity = true
+        configuration.timeoutIntervalForRequest = rayPlacementUpdateDownloadTimeout
+        configuration.timeoutIntervalForResource = rayPlacementUpdateDownloadTimeout
+        let task = URLSession(configuration: configuration).downloadTask(with: request) { [weak self] temporaryURL, response, error in
             guard let self else { return }
             Task { @MainActor in self.stopDownloadProgressMonitoring() }
             if let error {

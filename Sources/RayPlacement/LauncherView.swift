@@ -60,13 +60,19 @@ struct LauncherView: View {
     private var searchHeader: some View {
         HStack(spacing: 10) {
             if viewModel.mode == .root {
-                ZStack {
-                    PrismaticPanelShape(cut: 7).fill(RayColors.heroGradient)
-                    Image(systemName: "sparkle.magnifyingglass")
-                        .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
+                HStack(spacing: 7) {
+                    ZStack {
+                        PrismaticPanelShape(cut: 7).fill(RayColors.heroGradient)
+                        Image(systemName: "sparkle.magnifyingglass")
+                            .limaFont(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .frame(width: 27, height: 27)
+                    Text("LIMA")
+                        .limaFont(.system(size: 11, weight: .black, design: .rounded))
+                        .tracking(1.6)
+                        .foregroundStyle(.primary)
                 }
-                .frame(width: 27, height: 27)
                 .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.48), lineWidth: 0.7))
                 .shadow(color: RayColors.indigo.opacity(0.30), radius: 12, y: 5)
                 .accessibilityHidden(true)
