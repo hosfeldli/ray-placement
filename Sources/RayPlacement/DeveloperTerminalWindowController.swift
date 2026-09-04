@@ -340,6 +340,8 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
     @Published var helpPanelWidth: CGFloat = 330
     @Published private(set) var commandHistory: [String]
     @Published private(set) var activeContext = "Ready for a command"
+    @Published private(set) var terminalActivity = "Ready"
+    @Published private(set) var activityIsTransient = false
     @Published private(set) var activeEditor: TerminalEditor?
     @Published private(set) var activeRemoteTarget: String? {
         didSet {
@@ -365,6 +367,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
     private var discardingEscapeSequence = false
     private var activeRemoteSSHArguments: [String] = []
     private var contextRevision = UUID()
+    private var activityResetWorkItem: DispatchWorkItem?
 
     override init() {
         commandHistory = Array(UserDefaults.standard.stringArray(forKey: "terminalAssistantHistory") ?? []).prefix(24).map { $0 }
@@ -440,6 +443,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
             currentDirectory: workingDirectory
         )
         isLive = true
+        setTerminalActivity("Ready", transient: false)
         directoryTimer?.invalidate()
         directoryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.refreshShellDirectory() }
@@ -463,6 +467,8 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     func shutdown() {
         shuttingDown = true
+        activityResetWorkItem?.cancel()
+        activityResetWorkItem = nil
         directoryTimer?.invalidate()
         directoryTimer = nil
         restartWhenTerminated = false
@@ -576,14 +582,17 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
             case 0x03:
                 pendingCommandBytes.removeAll(keepingCapacity: true)
                 activeContext = "Interrupted · terminal remains ready"
+                setTerminalActivity("Interrupted", transient: true)
             case 0x08, 0x7f:
                 if !pendingCommandBytes.isEmpty { pendingCommandBytes.removeLast() }
+                setTerminalActivity("Editing command", transient: true)
             case 0x0a, 0x0d:
                 let command = String(decoding: pendingCommandBytes, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
                 pendingCommandBytes.removeAll(keepingCapacity: true)
                 if !command.isEmpty { commandSubmitted(command) }
             case 0x20...0x7e:
                 if pendingCommandBytes.count < 8_192 { pendingCommandBytes.append(byte) }
+                setTerminalActivity("Typing command", transient: true)
             default:
                 break
             }
@@ -592,6 +601,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     private func commandSubmitted(_ command: String) {
         inputStatus = ""
+        setTerminalActivity("Running · \(String(command.prefix(42)))", transient: false)
         if isSafeToRemember(command) {
             commandHistory.removeAll { $0 == command }
             commandHistory.insert(command, at: 0)
@@ -623,6 +633,20 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
                 if helpVisible { loadManualIfNeeded() }
             }
         }
+    }
+
+    private func setTerminalActivity(_ message: String, transient: Bool) {
+        activityResetWorkItem?.cancel()
+        terminalActivity = message
+        activityIsTransient = transient
+        guard transient else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.terminalActivity == message else { return }
+            self.terminalActivity = self.isLive ? "Ready" : "Shell exited"
+            self.activityIsTransient = false
+        }
+        activityResetWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: work)
     }
 
     private func contextDescription(for command: String) -> String {
@@ -911,6 +935,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isLive = false
+        setTerminalActivity("Shell exited", transient: false)
         directoryTimer?.invalidate()
         directoryTimer = nil
         setActiveEditor(nil)
@@ -938,8 +963,8 @@ struct DeveloperTerminalView: View {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: 8) {
                 toolbar
+                activityStrip
                 contextStrip
-                editorShortcutGuide
                 GeometryReader { geometry in
                   HStack(spacing: 0) {
                     terminalSurface
@@ -1015,6 +1040,40 @@ struct DeveloperTerminalView: View {
         .padding(.horizontal, 13)
         .frame(minHeight: 39)
         .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.035)
+    }
+
+    private var activityStrip: some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill((model.activityIsTransient ? SettingsStore.shared.accentTheme.primary : Color.green).opacity(0.16))
+                Circle()
+                    .stroke(model.activityIsTransient ? SettingsStore.shared.accentTheme.primary.opacity(0.55) : Color.green.opacity(0.45), lineWidth: 1)
+                    .padding(2)
+                Circle()
+                    .fill(model.activityIsTransient ? SettingsStore.shared.accentTheme.primary : Color.green)
+                    .frame(width: 4, height: 4)
+            }
+            .frame(width: 18, height: 18)
+            Text(model.terminalActivity)
+                .limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .animation(.easeOut(duration: 0.16), value: model.terminalActivity)
+            Spacer()
+            if let editor = model.activeEditor {
+                TerminalStatusBadge(text: "\(editor.rawValue.uppercased()) ACTIVE", color: SettingsStore.shared.accentTheme.primary)
+            } else if model.activeRemoteTarget != nil {
+                TerminalStatusBadge(text: "REMOTE SESSION", color: SettingsStore.shared.accentTheme.tertiary)
+            } else {
+                Text("LIVE INPUT")
+                    .limaFont(.system(size: 8.5, weight: .bold, design: .rounded))
+                    .tracking(0.8)
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 11)
+        .frame(height: 27)
+        .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.018)
     }
 
     private var contextStrip: some View {
@@ -1152,6 +1211,22 @@ struct DeveloperTerminalView: View {
             Text(model.optionAsMeta ? "⌃ Control · ⌥ Meta" : "⌃ Control").limaFont(.caption2.monospaced()).foregroundStyle(.tertiary)
         }
         .padding(.horizontal, 11).frame(height: 22)
+    }
+}
+
+private struct TerminalStatusBadge: View {
+    let text: String
+    let color: SwiftUI.Color
+
+    var body: some View {
+        Text(text)
+            .limaFont(.system(size: 8.5, weight: .bold, design: .rounded))
+            .tracking(0.55)
+            .foregroundStyle(color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.11), in: PrismaticPanelShape(cut: 5))
+            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.26), lineWidth: 0.75))
     }
 }
 
