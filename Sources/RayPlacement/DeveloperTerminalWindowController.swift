@@ -6,81 +6,7 @@ import RayPlacementCore
 import SwiftTerm
 import SwiftUI
 
-@MainActor
-final class DeveloperTerminalWindowController: NSWindowController {
-    private let model = DeveloperTerminalModel()
-    private let shortcutGuide = TerminalEditorOverlayController()
-    private var keyMonitor: Any?
-    private var hasPresented = false
-
-    convenience init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_140, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Terminal"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 820, height: 500)
-        window.setAccessibilityLabel("Lima developer terminal")
-        self.init(window: window)
-        model.onEditorChanged = { [weak self] editor in
-            guard let self else { return }
-            if let editor { self.shortcutGuide.show(editor: editor) }
-            else { self.shortcutGuide.dismiss() }
-        }
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: DeveloperTerminalView(model: model)))
-        installKeyMonitor()
-    }
-
-    deinit {
-        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
-    }
-
-    func present() {
-        model.startIfNeeded()
-        if !hasPresented { window?.center(); hasPresented = true }
-        if let window { WorkspaceWindowCoordinator.shared.present(window) }
-        NSApp.activate(ignoringOtherApps: true)
-        DispatchQueue.main.async { [weak self] in self?.model.focus() }
-    }
-
-    func shutdown() {
-        model.shutdown()
-        shortcutGuide.dismiss()
-    }
-
-    private func installKeyMonitor() {
-        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, event.window === self.window else { return event }
-            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-            let commandShift = flags.contains([.command, .shift])
-            let key = event.charactersIgnoringModifiers?.lowercased()
-            if event.keyCode == 122 { // F1
-                self.model.toggleHelp()
-                return nil
-            }
-            guard commandShift else { return event }
-            switch key {
-            case "h": self.model.toggleHelp()
-            case "e": self.model.toggleExplorer()
-            case "l": self.model.requestComposerFocus()
-            case "r": self.model.refreshExplorer()
-            case "[": self.model.adjustHelpWidth(by: -36)
-            case "]": self.model.adjustHelpWidth(by: 36)
-            default: return event
-            }
-            return nil
-        }
-    }
-}
-
-private struct TerminalCommandReference: Identifiable, Hashable {
+struct TerminalCommandReference: Identifiable, Hashable {
     let command: String
     let synopsis: String
     let summary: String
@@ -124,7 +50,7 @@ private struct TerminalCommandReference: Identifiable, Hashable {
     ]
 }
 
-private struct TerminalContextCard: Identifiable, Hashable, Sendable {
+struct TerminalContextCard: Identifiable, Hashable, Sendable {
     let label: String
     let value: String
     let detail: String
@@ -133,7 +59,7 @@ private struct TerminalContextCard: Identifiable, Hashable, Sendable {
     var id: String { label }
 }
 
-private struct TerminalContextData: Sendable {
+struct TerminalContextData: Sendable {
     var host: String
     var path: String
     var git: String
@@ -142,7 +68,7 @@ private struct TerminalContextData: Sendable {
     var reachable: Bool
 }
 
-private struct TerminalFileNode: Identifiable, Hashable {
+struct TerminalFileNode: Identifiable, Hashable {
     let url: URL
     let isDirectory: Bool
     let children: [TerminalFileNode]?
@@ -153,7 +79,7 @@ private struct TerminalFileNode: Identifiable, Hashable {
 }
 
 @MainActor
-private final class TerminalDirectoryExplorer: ObservableObject {
+final class TerminalDirectoryExplorer: ObservableObject {
     @Published private(set) var root: TerminalFileNode?
     @Published var showHidden = false { didSet { refresh() } }
     @Published private(set) var status = ""
@@ -375,7 +301,7 @@ private final class TerminalDirectoryExplorer: ObservableObject {
 }
 
 @MainActor
-private final class ContextAwareTerminalView: LocalProcessTerminalView {
+final class ContextAwareTerminalView: LocalProcessTerminalView {
     var onUserInput: ((ArraySlice<UInt8>) -> Void)?
 
     override func send(source: TerminalView, data: ArraySlice<UInt8>) {
@@ -384,8 +310,13 @@ private final class ContextAwareTerminalView: LocalProcessTerminalView {
     }
 }
 
+enum TerminalEditor: String, CaseIterable, Equatable, Sendable {
+    case vim
+    case nano
+}
+
 @MainActor
-private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency LocalProcessTerminalViewDelegate {
+final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency LocalProcessTerminalViewDelegate {
     @Published private(set) var isLive = false
     @Published private(set) var terminalTitle = "Local zsh"
     @Published private(set) var workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path {
@@ -409,6 +340,7 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     @Published var helpPanelWidth: CGFloat = 330
     @Published private(set) var commandHistory: [String]
     @Published private(set) var activeContext = "Ready for a command"
+    @Published private(set) var activeEditor: TerminalEditor?
     @Published private(set) var activeRemoteTarget: String? {
         didSet {
             if oldValue != activeRemoteTarget {
@@ -421,7 +353,6 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     }
     @Published private(set) var contextCards: [TerminalContextCard] = []
 
-    var onEditorChanged: ((TerminalEditorOverlayController.Editor?) -> Void)?
     let terminalView = ContextAwareTerminalView(frame: .zero)
     let explorer = TerminalDirectoryExplorer()
     private var restartWhenTerminated = false
@@ -432,7 +363,6 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private var manualCache: [String: String] = [:]
     private var pendingCommandBytes: [UInt8] = []
     private var discardingEscapeSequence = false
-    private var activeEditor: TerminalEditorOverlayController.Editor?
     private var activeRemoteSSHArguments: [String] = []
     private var contextRevision = UUID()
 
@@ -669,12 +599,10 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
             UserDefaults.standard.set(commandHistory, forKey: historyKey)
         }
         if let destination = TerminalWorkspaceInput.sshDestination(from: command) {
-            activeRemoteSSHArguments = TerminalWorkspaceInput.sshProcessArguments(from: command) ?? ["--", destination]
-            activeRemoteTarget = destination
-            activeContext = "Connecting to \(destination) · remote file explorer ready"
-            explorer.setRemote(target: destination, path: "~", sshArguments: activeRemoteSSHArguments)
-            refreshContextData()
-            if explorerVisible { explorer.refresh() }
+            beginRemoteSession(
+                destination: destination,
+                sshArguments: TerminalWorkspaceInput.sshProcessArguments(from: command) ?? ["--", destination]
+            )
             return
         }
         let primary = TerminalWorkspaceInput.primaryCommand(in: command)?.lowercased() ?? "command"
@@ -876,7 +804,9 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
     private func sendText(_ text: String) { send(bytes: Array(text.utf8)) }
     private func send(bytes: [UInt8]) { terminalView.send(source: terminalView, data: bytes[...]) }
     private func refreshShellDirectory() {
-        guard isLive, terminalView.window?.isVisible == true, activeRemoteTarget == nil else { return }
+        guard isLive, terminalView.window?.isVisible == true else { return }
+        detectSSHChildProcess()
+        guard activeRemoteTarget == nil else { return }
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
         guard proc_pidinfo(terminalView.process.shellPid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return }
@@ -888,6 +818,47 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
 
     func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
 
+    private func detectSSHChildProcess() {
+        guard activeRemoteTarget == nil else { return }
+        let shellPID = terminalView.process.shellPid
+        guard shellPID > 0 else { return }
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let output = Self.runProcess("/bin/ps", arguments: ["-ww", "-axo", "pid=,ppid=,command="])
+            let rows = output.split(whereSeparator: \.isNewline).compactMap { line -> (pid: Int32, ppid: Int32, command: String)? in
+                let fields = line.split(maxSplits: 2, whereSeparator: \.isWhitespace)
+                guard fields.count == 3,
+                      let pid = Int32(fields[0]),
+                      let ppid = Int32(fields[1]) else { return nil }
+                return (pid, ppid, String(fields[2]))
+            }
+            var descendants: Set<Int32> = [shellPID]
+            var changed = true
+            while changed {
+                changed = false
+                for row in rows where descendants.contains(row.ppid) && !descendants.contains(row.pid) {
+                    descendants.insert(row.pid)
+                    changed = true
+                }
+            }
+            guard let ssh = rows.first(where: { descendants.contains($0.pid) && TerminalWorkspaceInput.sshDestination(from: $0.command) != nil }),
+                  let destination = TerminalWorkspaceInput.sshDestination(from: ssh.command) else { return }
+            let arguments = TerminalWorkspaceInput.sshProcessArguments(from: ssh.command) ?? ["--", destination]
+            DispatchQueue.main.async {
+                guard let self, self.activeRemoteTarget == nil else { return }
+                self.beginRemoteSession(destination: destination, sshArguments: arguments)
+            }
+        }
+    }
+
+    private func beginRemoteSession(destination: String, sshArguments: [String]) {
+        activeRemoteSSHArguments = sshArguments.isEmpty ? ["--", destination] : sshArguments
+        activeRemoteTarget = destination
+        activeContext = "Connected to \(destination) · remote file explorer ready"
+        explorer.setRemote(target: destination, path: "~", sshArguments: activeRemoteSSHArguments)
+        refreshContextData()
+        if explorerVisible { explorer.refresh() }
+    }
+
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {
         terminalTitle = title.isEmpty ? "Local zsh" : title
         let normalized = title.lowercased()
@@ -896,20 +867,29 @@ private final class DeveloperTerminalModel: NSObject, ObservableObject, @preconc
         else if normalized.contains("zsh") || normalized.contains("shell") { setActiveEditor(nil) }
     }
 
-    private func setActiveEditor(_ editor: TerminalEditorOverlayController.Editor?) {
+    private func setActiveEditor(_ editor: TerminalEditor?) {
         guard activeEditor != editor else { return }
         activeEditor = editor
-        onEditorChanged?(editor)
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
         guard let directory, !directory.isEmpty else { return }
-        if let path = TerminalWorkspaceInput.localDirectory(directory) {
+        // Once an SSH command has been submitted, every file:// path belongs
+        // to the guest—even when OSC 7 omits the host or reports localhost.
+        // Keep the original SSH alias as the connection identity.
+        if let target = activeRemoteTarget,
+           let remotePath = TerminalWorkspaceInput.remotePath(directory) {
+            activeRemoteSSHArguments = activeRemoteSSHArguments.isEmpty ? ["--", target] : activeRemoteSSHArguments
+            explorer.setRemote(target: target, path: remotePath, sshArguments: activeRemoteSSHArguments)
+            refreshContextData()
+            activeContext = "Remote \(target) · \(remotePath)"
+        } else if let path = TerminalWorkspaceInput.localDirectory(directory) {
             activeRemoteTarget = nil
+            activeRemoteSSHArguments = []
             workingDirectory = path
         } else if let remote = TerminalWorkspaceInput.remoteDirectory(directory) {
-            let target = activeRemoteTarget.flatMap { Self.sshTarget($0, matchesHost: remote.host) ? $0 : nil } ?? remote.host
-            if target != activeRemoteTarget { activeRemoteSSHArguments = ["--", target] }
+            let target = remote.host
+            activeRemoteSSHArguments = ["--", target]
             activeRemoteTarget = target
             explorer.setRemote(target: target, path: remote.path, sshArguments: activeRemoteSSHArguments)
             refreshContextData()
@@ -948,7 +928,7 @@ private struct TerminalSurface: NSViewRepresentable {
     func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) { nsView.optionAsMetaKey = model.optionAsMeta }
 }
 
-private struct DeveloperTerminalView: View {
+struct DeveloperTerminalView: View {
     @ObservedObject var model: DeveloperTerminalModel
     @FocusState private var composerFocused: Bool
     @State private var inspectorDragStart: CGFloat?
@@ -959,6 +939,7 @@ private struct DeveloperTerminalView: View {
             VStack(spacing: 8) {
                 toolbar
                 contextStrip
+                editorShortcutGuide
                 GeometryReader { geometry in
                   HStack(spacing: 0) {
                     terminalSurface
@@ -1056,6 +1037,75 @@ private struct DeveloperTerminalView: View {
             .padding(.horizontal, 2)
         }
         .frame(height: 33)
+    }
+
+    private var editorShortcutGuide: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 7) {
+                Image(systemName: "keyboard")
+                    .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                Text("EDITOR KEYS")
+                    .limaFont(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.0)
+                    .foregroundStyle(.secondary)
+                if let editor = model.activeEditor {
+                    Text("· \(editor.rawValue.uppercased()) ACTIVE")
+                        .limaFont(.system(size: 8.5, weight: .bold, design: .monospaced))
+                        .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                }
+                Spacer(minLength: 0)
+                Text("Vim and Nano shortcuts stay in this window")
+                    .limaFont(.system(size: 8.5, weight: .medium))
+                    .foregroundStyle(.tertiary)
+            }
+            HStack(spacing: 6) {
+                editorShortcutCard(
+                    title: "VIM",
+                    active: model.activeEditor == .vim,
+                    keys: [("i", "Insert"), ("Esc", "Normal"), (":w", "Save"), (":q", "Quit"), ("u", "Undo"), ("/", "Find")]
+                )
+                editorShortcutCard(
+                    title: "NANO",
+                    active: model.activeEditor == .nano,
+                    keys: [("⌃O ↩", "Save"), ("⌃X", "Exit"), ("⌃W", "Find"), ("⌃K", "Cut"), ("⌃U", "Paste"), ("⌃_", "Line")]
+                )
+            }
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0.014)
+    }
+
+    private func editorShortcutCard(
+        title: String,
+        active: Bool,
+        keys: [(String, String)]
+    ) -> some View {
+        HStack(spacing: 7) {
+            Text(title)
+                .limaFont(.system(size: 9, weight: .black, design: .rounded))
+                .foregroundStyle(active ? SettingsStore.shared.accentTheme.primary : .secondary)
+                .frame(width: 38, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 9) {
+                    ForEach(Array(keys.enumerated()), id: \.offset) { _, item in
+                        HStack(spacing: 3) {
+                            Text(item.0)
+                                .limaFont(.system(size: 9.5, weight: .bold, design: .monospaced))
+                            Text(item.1)
+                                .limaFont(.system(size: 8.5, weight: .medium))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, minHeight: 29, alignment: .leading)
+        .background(active ? SettingsStore.shared.accentTheme.primary.opacity(0.09) : Color.white.opacity(0.035), in: PrismaticPanelShape(cut: 7))
+        .overlay(PrismaticPanelShape(cut: 7).stroke(active ? SettingsStore.shared.accentTheme.primary.opacity(0.34) : Color.white.opacity(0.08), lineWidth: 0.7))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(title) editor shortcuts: \(keys.map { "\($0.0) \($0.1)" }.joined(separator: ", "))")
     }
 
     private var terminalSurface: some View {
@@ -1290,56 +1340,5 @@ private struct TerminalExplorerRow: View {
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { node.isDirectory ? model.navigate(to: node.url) : model.insertPath(node.url) }
         .help(node.isDirectory ? "Double-click to navigate into this directory" : "Double-click to prepare a shell-escaped path")
-    }
-}
-
-@MainActor
-final class TerminalEditorOverlayController {
-    enum Editor { case vim, nano }
-    private let panel: NSPanel
-
-    init() {
-        panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 880, height: 64), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
-        panel.level = .statusBar
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
-        panel.setAccessibilityLabel("Editor shortcut guide")
-    }
-
-    func show(editor: Editor) {
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: TerminalEditorOverlayView(editor: editor) { [weak self] in self?.panel.orderOut(nil) }))
-        if let frame = (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame { panel.setFrameOrigin(NSPoint(x: frame.midX - panel.frame.width / 2, y: frame.minY + 24)) }
-        panel.orderFrontRegardless()
-    }
-
-    func dismiss() { panel.orderOut(nil) }
-}
-
-private struct TerminalEditorOverlayView: View {
-    let editor: TerminalEditorOverlayController.Editor
-    let dismiss: () -> Void
-    private var keys: [(String, String)] {
-        switch editor {
-        case .vim: return [("i", "Insert"), ("Esc", "Normal"), (":w", "Save"), (":q", "Quit"), (":wq", "Save + quit"), ("u", "Undo"), ("⌃R", "Redo"), ("dd", "Delete line"), ("yy / p", "Copy / paste"), ("/ / n", "Find / next")]
-        case .nano: return [("⌃O ↩", "Save"), ("⌃X", "Exit"), ("⌃W", "Find"), ("⌃K", "Cut line"), ("⌃U", "Paste"), ("⌥U", "Undo"), ("⌥E", "Redo"), ("⌃_", "Go to line"), ("⌃C", "Position")]
-        }
-    }
-    var body: some View {
-        HStack(spacing: 11) {
-            Text(editor == .vim ? "VIM" : "NANO").limaFont(.caption2.bold()).foregroundStyle(SettingsStore.shared.accentTheme.primary)
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 11) {
-                    ForEach(Array(keys.enumerated()), id: \.offset) { _, item in HStack(spacing: 4) { Text(item.0).limaFont(.caption.monospaced().bold()); Text(item.1).limaFont(.caption2).foregroundStyle(.secondary) } }
-                }
-            }
-            Spacer(minLength: 0)
-            Button(action: dismiss) { Image(systemName: "xmark") }.buttonStyle(.plain).help("Close editor shortcut guide")
-        }
-        .padding(.horizontal, 14).frame(width: 880, height: 64)
-        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 10)).overlay(PrismaticPanelShape(cut: 10).stroke(Color.white.opacity(0.2), lineWidth: 0.8))
-        .shadow(color: .black.opacity(0.35), radius: 18, y: 8).preferredColorScheme(.dark)
     }
 }

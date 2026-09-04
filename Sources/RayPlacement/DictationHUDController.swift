@@ -40,11 +40,10 @@ final class DictationHUDController {
                 y: visibleFrame.maxY - panel.frame.height - 12
             ))
         }
-        // `orderFrontRegardless()` only makes the shelf visible. A borderless
-        // non-activating panel can still remain non-key, which causes SwiftUI
-        // buttons to miss their first mouse-down. Make the panel key without
-        // activating Lima so the controls receive clicks immediately.
-        panel.makeKeyAndOrderFront(nil)
+        // The shelf is informational and must never interrupt the application
+        // that owns keyboard focus. `orderFrontRegardless()` raises the panel
+        // without making it key or activating Lima.
+        panel.orderFrontRegardless()
     }
 
     private func hide() {
@@ -53,17 +52,15 @@ final class DictationHUDController {
 }
 
 private final class ShelfHostingView<Content: View>: NSHostingView<Content> {
-    // The shelf is commonly clicked while another app owns focus. Accept the
-    // first mouse event at the view that actually receives the SwiftUI event
-    // instead of requiring a focus click followed by a control click.
+    // Allow controls to receive the first click without requiring the shelf to
+    // become the key window. Passive shelf updates never change focus.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
 private final class DictationHUDPanel: NSPanel {
-    // SwiftUI buttons inside a non-activating panel still require a key-capable
-    // responder chain to complete their press gesture. The panel remains
-    // non-activating at the app level, so this does not switch applications.
-    override var canBecomeKey: Bool { true }
+    // This shelf must never become the key window. In particular, showing
+    // music metadata while the user is typing elsewhere must not steal input.
+    override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
     override init(
@@ -78,9 +75,11 @@ private final class DictationHUDPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        // Keep the shelf above other windows without activating Lima when a
-        // control is clicked. The panel must still become key so SwiftUI can
-        // deliver button presses through its responder chain.
+        // Keep the shelf above other windows without activating Lima or
+        // changing the active application's key window.
+        // The shelf can receive deliberate clicks, but it cannot become key.
+        // This prevents state updates from redirecting keyboard input while
+        // retaining the music and dictation controls.
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
         becomesKeyOnlyIfNeeded = false

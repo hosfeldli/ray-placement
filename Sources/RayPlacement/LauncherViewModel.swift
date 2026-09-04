@@ -83,6 +83,7 @@ final class LauncherViewModel: ObservableObject {
         case .emojiPicker: return "Search emojis…"
         case .clipboard: return "Search clipboard history…"
         case .history: return "Search command history…"
+        case .terminal: return "Interactive terminal"
         case .writingReview: return "Writing review"
         case .output: return "Command output"
         }
@@ -193,11 +194,16 @@ final class LauncherViewModel: ObservableObject {
         searchWorkItem?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
-        mode = .root
-        query = ""
-        selectedIndex = 0
+        // The terminal is a persistent workspace inside the launcher. Reopen
+        // the launcher to the same terminal surface instead of resetting the
+        // shell to the root command list.
+        if mode != .terminal {
+            mode = .root
+            query = ""
+            selectedIndex = 0
+            refreshResults()
+        }
         focusGeneration += 1
-        refreshResults()
     }
 
     func enter(_ newMode: LauncherMode) {
@@ -342,6 +348,9 @@ final class LauncherViewModel: ObservableObject {
         case .history:
             isSearching = false
             results = historyItems()
+        case .terminal:
+            isSearching = false
+            results = []
         case .writingReview:
             isSearching = false
             results = []

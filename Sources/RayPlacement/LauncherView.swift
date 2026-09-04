@@ -4,9 +4,15 @@ import SwiftUI
 
 struct LauncherView: View {
     @ObservedObject var viewModel: LauncherViewModel
+    @ObservedObject var terminalModel: DeveloperTerminalModel
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
+
+    init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
+        self.viewModel = viewModel
+        self.terminalModel = terminalModel
+    }
 
     var body: some View {
         ZStack {
@@ -52,9 +58,25 @@ struct LauncherView: View {
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
         .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
-        .onAppear { focusSearch() }
-        .onChange(of: viewModel.focusGeneration) { _ in focusSearch() }
-        .onChange(of: viewModel.mode.visualIdentity) { _ in focusSearch() }
+        .onAppear {
+            if viewModel.mode == .terminal {
+                terminalModel.startIfNeeded()
+            } else {
+                focusSearch()
+            }
+        }
+        .onChange(of: viewModel.focusGeneration) { _ in
+            if viewModel.mode != .terminal { focusSearch() }
+        }
+        .onChange(of: viewModel.mode.visualIdentity) { _ in
+            if viewModel.mode == .terminal {
+                searchFocused = false
+                timezoneFocused = false
+                terminalModel.startIfNeeded()
+            } else {
+                focusSearch()
+            }
+        }
     }
 
     private var searchHeader: some View {
@@ -102,6 +124,19 @@ struct LauncherView: View {
             if viewModel.mode == .timezoneConverter {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: RayColors.cyan)
+            } else if viewModel.mode == .terminal {
+                TextField("Search or draft a terminal command…", text: $terminalModel.commandComposer)
+                    .textFieldStyle(.plain)
+                    .limaFont(.system(size: 16, weight: .medium, design: .monospaced))
+                    .focused($searchFocused)
+                    .onSubmit { terminalModel.insertComposer() }
+                    .accessibilityLabel("Terminal command search")
+                if !terminalModel.commandComposer.isEmpty {
+                    Text("↩ insert")
+                        .limaFont(.system(size: 9.5, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                }
+                StatusCapsule(text: terminalModel.isLive ? "LIVE" : "STOPPED", color: terminalModel.isLive ? .green : .orange)
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
@@ -144,6 +179,8 @@ struct LauncherView: View {
             writingReviewView(review)
         case .output(let title, let text, let state):
             outputView(title: title, text: text, state: state)
+        case .terminal:
+            DeveloperTerminalView(model: terminalModel)
         case .emojiPicker:
             emojiGrid
         default:
@@ -558,7 +595,9 @@ struct LauncherView: View {
 
     @ViewBuilder
     private var footer: some View {
-        if viewModel.mode == .root {
+        if viewModel.mode == .terminal {
+            EmptyView()
+        } else if viewModel.mode == .root {
             HStack(spacing: 12) {
                 Text("\(viewModel.results.count) available")
                     .limaFont(.system(size: 9.5, weight: .medium, design: .monospaced))
@@ -669,7 +708,7 @@ struct LauncherView: View {
     }
 
     private func focusSearch() {
-        guard !isOutputMode else { return }
+        guard !isOutputMode, viewModel.mode != .terminal else { return }
         DispatchQueue.main.async {
             if viewModel.mode == .timezoneConverter {
                 timezoneFocused = true
@@ -1022,6 +1061,7 @@ private extension LauncherMode {
         case .emojiPicker: return "emoji"
         case .clipboard: return "clipboard"
         case .history: return "history"
+        case .terminal: return "terminal"
         case .writingReview: return "writing-review"
         case .output: return "output"
         }

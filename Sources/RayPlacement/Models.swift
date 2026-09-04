@@ -17,6 +17,7 @@ enum LauncherMode: Equatable {
     case emojiPicker
     case clipboard
     case history
+    case terminal
     case writingReview(WritingReview)
     case output(title: String, text: String, state: LauncherOutputState)
 
@@ -29,6 +30,7 @@ enum LauncherMode: Equatable {
         case .emojiPicker: return "Emoji Picker"
         case .clipboard: return "Clipboard History"
         case .history: return "Command History"
+        case .terminal: return "Developer Terminal"
         case .writingReview: return "Writing Review"
         case .output(let title, _, _): return title
         }

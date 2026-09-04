@@ -21,7 +21,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
     private let notesWindow = NotesWindowController()
-    private lazy var terminalWindow = DeveloperTerminalWindowController()
+    private let terminalModel: DeveloperTerminalModel
     private lazy var endpointTesterWindow = EndpointTesterWindowController()
     private lazy var sqlWorkspaceWindow = SQLWorkspaceWindowController()
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
@@ -48,13 +48,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let clipboard = ClipboardHistoryService()
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
+        self.terminalModel = DeveloperTerminalModel()
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
 
         viewModel.delegate = self
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel)))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
         rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }
@@ -87,7 +88,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         toast.dismiss()
         clipboard.flush()
         notesWindow.shutdown()
-        terminalWindow.shutdown()
+        terminalModel.shutdown()
         endpointTesterWindow.shutdown()
         sqlWorkspaceWindow.shutdown()
         formatterWindow.shutdown()
@@ -123,7 +124,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.presentMostRecentAndToggleDictation()
     }
 
-    func showDeveloperTerminal() { hide(); terminalWindow.present() }
+    func showDeveloperTerminal() {
+        viewModel.enter(.terminal)
+        presentPanel()
+        DispatchQueue.main.async { [weak self] in
+            self?.terminalModel.startIfNeeded()
+            self?.terminalModel.focus()
+        }
+    }
     func showSQLWorkspace() { hide(); sqlWorkspaceWindow.present() }
     func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
 
@@ -281,6 +289,35 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             guard let self, self.panel.isVisible else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+            // The terminal owns ordinary keystrokes—including Escape, Return,
+            // arrows, Control-C, and Vim/Nano commands. Only intercept the
+            // terminal's documented workspace shortcuts here.
+            if viewModel.mode == .terminal {
+                if event.keyCode == 122 { // F1
+                    terminalModel.toggleHelp()
+                    return nil
+                }
+                // The command field is the terminal search/composer. Let its
+                // normal text-editing events reach SwiftUI; the embedded
+                // terminal receives every other ordinary key unchanged.
+                if event.window?.firstResponder is NSTextView,
+                   event.window?.firstResponder !== terminalModel.terminalView,
+                   !flags.contains([.command, .shift]) {
+                    return event
+                }
+                guard flags.contains([.command, .shift]) else { return event }
+                switch characters {
+                case "h": terminalModel.toggleHelp()
+                case "e": terminalModel.toggleExplorer()
+                case "l": terminalModel.requestComposerFocus()
+                case "r": terminalModel.refreshExplorer()
+                case "[": terminalModel.adjustHelpWidth(by: -36)
+                case "]": terminalModel.adjustHelpWidth(by: 36)
+                default: return event
+                }
+                return nil
+            }
 
             if flags.contains(.command) {
                 if characters == "," {
