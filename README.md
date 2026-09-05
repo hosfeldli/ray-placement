@@ -1,4 +1,4 @@
-# Lima 3.12.0
+# Lima 3.12.1
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and private local dictation conversations without accounts or analytics.
 
@@ -9,6 +9,8 @@ Text generation has been removed. Writing correction uses deterministic local Py
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
 The 3.12.0 release repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
+
+The 3.12.1 fix release removes completed transport feedback from the music shelf and lets accessory mouse buttons invoke Lima/macOS actions or recorded keyboard shortcuts.
 
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
