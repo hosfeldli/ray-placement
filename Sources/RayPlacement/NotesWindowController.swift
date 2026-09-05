@@ -188,13 +188,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Lima Notes"
-        window.setAccessibilityLabel("Lima Notes")
-        window.titleVisibility = NSWindow.TitleVisibility.hidden
-        window.titlebarAppearsTransparent = true
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
+        LimaWindowChrome.configure(
+            window,
+            title: "Lima Notes",
+            accessibilityLabel: "Lima Notes",
+            movableByBackground: false
+        )
         window.tabbingMode = NSWindow.TabbingMode.preferred
         window.isReleasedWhenClosed = false
         window.hasShadow = true
@@ -340,6 +339,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 }
 
 private struct NotesView: View {
+    private enum NotesSection { case notes, dictation }
     @ObservedObject var store: NotesStore
     @ObservedObject var dictation: NoteDictationService
     @ObservedObject var presentation: NotesPresentationModel
@@ -357,6 +357,8 @@ private struct NotesView: View {
     @State private var showRevisions = false
     @State private var speakerOneName = ""
     @State private var speakerTwoName = ""
+    @State private var section: NotesSection = .notes
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var filteredNotes: [MarkdownNote] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -382,7 +384,7 @@ private struct NotesView: View {
             )
             .opacity(0.42)
             .ignoresSafeArea()
-            VStack(spacing: 10) {
+            VStack(spacing: LimaDesign.panelGap) {
                 windowChrome
                     .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.024)
                 if presentation.mode.isDocked {
@@ -403,15 +405,15 @@ private struct NotesView: View {
                         .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.bottom, 10)
+            .padding(.horizontal, LimaDesign.windowPadding)
+            .padding(.bottom, LimaDesign.windowPadding)
             .padding(.top, presentation.mode == .fullScreen ? 10 : 7)
         }
         .frame(
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
         )
-        .tint(settings.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.primary)
         .preferredColorScheme(.dark)
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
@@ -436,7 +438,7 @@ private struct NotesView: View {
                         store.renameSpeakers([1: speakerOneName, 2: speakerTwoName])
                         showSpeakerNames = false
                     }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                 }
             }
             .padding(22)
@@ -455,31 +457,28 @@ private struct NotesView: View {
                 showRevisions = false
             }
         }
-        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.sidebarVisible)
-        .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: presentation.mode)
-        .animation(.easeInOut(duration: 0.24), value: settings.notesVisualTheme)
+        .limaAnimation(LimaDesign.spring(0.34), value: presentation.sidebarVisible)
+        .limaAnimation(LimaDesign.spring(0.34), value: presentation.mode)
+        .limaAnimation(.easeInOut(duration: 0.24), value: settings.notesVisualTheme)
     }
 
     private var windowChrome: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 8) {
-                ZStack {
-                    PrismaticPanelShape(cut: 7)
-                        .fill(LinearGradient(
-                            colors: [settings.accentTheme.primary, settings.accentTheme.secondary],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ))
-                    Image(systemName: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus")
-                        .limaFont(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .frame(width: 28, height: 28)
-                Text(presentation.mode.isDocked ? "Quick Note" : "Notes")
-                    .limaFont(.system(size: 14, weight: .semibold))
-            }
+            LimaToolbarTitle(
+                symbol: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus",
+                title: presentation.mode.isDocked ? "Quick Note" : "Notes",
+                subtitle: section == .dictation ? "Local dictation" : "Local Markdown workspace"
+            )
 
             Spacer(minLength: 8)
+
+            Picker("Notes section", selection: $section) {
+                Label("Notes", systemImage: "note.text").tag(NotesSection.notes)
+                Label("Dictation", systemImage: "waveform").tag(NotesSection.dictation)
+            }
+            .pickerStyle(.segmented)
+            .frame(width: 170)
+            .controlSize(.small)
 
             NotesChromeButton(symbol: "slider.horizontal.3", label: "Customize Notes") {
                 showAppearance.toggle()
@@ -524,7 +523,7 @@ private struct NotesView: View {
         }
         .padding(.leading, presentation.mode == .fullScreen ? 18 : 78)
         .padding(.trailing, 10)
-        .frame(height: 44)
+        .frame(height: LimaDesign.toolbarHeight)
     }
 
     private var sidebar: some View {
@@ -563,7 +562,7 @@ private struct NotesView: View {
                         .frame(width: 28, height: 28)
                 }
                 .menuStyle(.borderlessButton)
-                .buttonStyle(.borderedProminent)
+                .limaButton(prominent: true)
                 .controlSize(.small)
                 .help("New Note or Template (Command-N)")
                 .keyboardShortcut("n", modifiers: .command)
@@ -610,7 +609,7 @@ private struct NotesView: View {
             HStack(spacing: 6) {
                 Image(systemName: "lock.fill")
                     .limaFont(.caption2)
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                 Text("Local")
                 Spacer()
                 Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
@@ -618,7 +617,7 @@ private struct NotesView: View {
             .limaFont(.caption)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
-            .frame(height: 34)
+            .frame(height: LimaDesign.statusHeight)
         }
         .background(Color.clear)
     }
@@ -641,7 +640,7 @@ private struct NotesView: View {
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "note.text")
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                         Text(store.selectedNote?.displayTitle ?? "Choose a note")
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
@@ -659,7 +658,8 @@ private struct NotesView: View {
                 }
                 .padding(.horizontal, 8)
                 .frame(width: 116, height: 28)
-                .background(PrismaticPanelShape(cut: 5).fill(Color.primary.opacity(0.055)))
+                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
 
                 NotesChromeButton(symbol: "plus", label: "New Quick Note") { store.createNote() }
                     .keyboardShortcut("n", modifiers: .command)
@@ -680,7 +680,8 @@ private struct NotesView: View {
                                     .lineLimit(1)
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 5)
-                                    .background(PrismaticPanelShape(cut: 4).fill(Color.accentColor.opacity(0.12)))
+                                    .background(SettingsStore.shared.accentTheme.primary.opacity(0.10), in: PrismaticPanelShape(cut: 4))
+                                    .overlay(PrismaticPanelShape(cut: 4).stroke(SettingsStore.shared.accentTheme.primary.opacity(0.20), lineWidth: LimaDesign.borderWidth))
                             }
                             .buttonStyle(.plain)
                         }
@@ -688,7 +689,7 @@ private struct NotesView: View {
                     .padding(.horizontal, 10)
                     .padding(.bottom, 7)
                 }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
 
             Divider().opacity(0.6)
@@ -698,7 +699,9 @@ private struct NotesView: View {
 
     @ViewBuilder
     private var editor: some View {
-        if let note = store.selectedNote {
+        if section == .dictation {
+            dictationSection
+        } else if let note = store.selectedNote {
             VStack(spacing: 0) {
                 editorHeader(note)
                 GlassHairline()
@@ -709,10 +712,10 @@ private struct NotesView: View {
         } else {
             VStack(spacing: 14) {
                 ZStack {
-                    Circle().fill(Color.accentColor.opacity(0.12))
+                    Circle().fill(SettingsStore.shared.accentTheme.primary.opacity(0.12))
                     Image(systemName: "note.text.badge.plus")
                         .limaFont(.system(size: 28, weight: .medium))
-                        .foregroundStyle(Color.accentColor)
+                        .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                 }
                 .frame(width: 66, height: 66)
                 Text("Start a quick thought").limaFont(.title3.bold())
@@ -720,10 +723,55 @@ private struct NotesView: View {
                     .limaFont(.subheadline)
                     .foregroundStyle(.secondary)
                 Button("Create Note") { store.createNote() }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var dictationSection: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 10) {
+                Image(systemName: "waveform.and.mic")
+                    .font(.system(size: 24, weight: .semibold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Dictation")
+                        .limaFont(.title2.weight(.semibold))
+                    Text("Record directly into the selected note without opening the editor.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Divider()
+            if let note = store.selectedNote {
+                Label("Destination: \(note.displayTitle)", systemImage: "note.text")
+                    .foregroundStyle(.secondary)
+                HStack(spacing: 10) {
+                    dictationControl(compact: false)
+                    if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
+                        Button("Retry") { dictation.retryFailedRecording() }
+                            .limaButton()
+                    }
+                    Button("Name Speakers…") {
+                        speakerOneName = note.speakerNames[1] ?? ""
+                        speakerTwoName = note.speakerNames[2] ?? ""
+                        showSpeakerNames = true
+                    }
+                    .limaButton()
+                }
+                if let status = activeStatus {
+                    Text(status).foregroundStyle(.secondary)
+                }
+            } else {
+                Text("Create or select a note to choose a dictation destination.")
+                    .foregroundStyle(.secondary)
+                Button("Create Note") { store.createNote() }
+                    .limaButton(prominent: true)
+            }
+            Spacer()
+        }
+        .padding(28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func editorHeader(_ note: MarkdownNote) -> some View {
@@ -755,7 +803,7 @@ private struct NotesView: View {
                         ForEach(note.tags.prefix(4), id: \.self) { tag in
                             Text("#\(tag)")
                                 .limaFont(.system(size: 9, weight: .medium))
-                                .foregroundStyle(Color.accentColor)
+                                .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                         }
                     }
                 } else if settings.notesShowMetadata {
@@ -798,7 +846,7 @@ private struct NotesView: View {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
                     .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
-                    .overlay(PrismaticPanelShape(cut: 6).stroke(Color.white.opacity(0.24), lineWidth: 0.6))
+                    .overlay(PrismaticPanelShape(cut: 6).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 30)
@@ -842,7 +890,7 @@ private struct NotesView: View {
             .background(Color.clear)
         } else {
             markdownEditor
-                .background(Color(nsColor: .textBackgroundColor).opacity(0.18))
+                .background(LimaDesign.editorFill)
         }
     }
 
@@ -854,14 +902,14 @@ private struct NotesView: View {
                         ProgressView().controlSize(.small)
                     } else {
                         Circle()
-                            .fill((store.lastError ?? dictation.lastError) == nil ? Color.accentColor : Color.orange)
+                            .fill((store.lastError ?? dictation.lastError) == nil ? SettingsStore.shared.accentTheme.primary : Color.orange)
                             .frame(width: 6, height: 6)
                     }
                     Text(status).lineLimit(1)
                     Spacer()
                     if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
                         Button("Retry") { dictation.retryFailedRecording() }
-                            .buttonStyle(.borderedProminent)
+                            .limaButton(prominent: true)
                             .controlSize(.mini)
                         if let recoveryURL = dictation.recoveryAudioURL {
                             Button {
@@ -905,8 +953,8 @@ private struct NotesView: View {
 
                     MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)", action: MarkdownEditorActions.bold)
                     MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)", action: MarkdownEditorActions.italic)
-                    MarkdownInsertButton(symbol: "list.bullet", help: "Insert list item") { MarkdownEditorActions.insert("- List item") }
-                    MarkdownInsertButton(symbol: "checklist", help: "Insert interactive task list", action: MarkdownEditorActions.checklist)
+                    MarkdownInsertButton(symbol: "list.bullet", help: "Apply bullets to selected lines", action: MarkdownEditorActions.bullets)
+                    MarkdownInsertButton(symbol: "checklist", help: "Apply checkboxes to selected lines", action: MarkdownEditorActions.checklist)
                     MarkdownInsertButton(symbol: "photo", help: "Add an image from Finder", action: MarkdownEditorActions.image)
                     MarkdownInsertButton(symbol: "chart.bar.xaxis", help: "Insert a native chart", action: MarkdownEditorActions.chart)
                     MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert formatted code block") {
@@ -950,7 +998,8 @@ private struct NotesView: View {
                         .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
                         .padding(.horizontal, 8)
                         .frame(height: 26)
-                        .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+                        .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                        .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
                         .help("Completed tasks")
                 }
 
@@ -959,7 +1008,7 @@ private struct NotesView: View {
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
-        .background(.ultraThinMaterial)
+        .background(LimaDesign.recessedFill)
     }
 
     @ViewBuilder
@@ -978,9 +1027,9 @@ private struct NotesView: View {
                 Label(dictation.actionTitle, systemImage: dictation.phase == .recording ? "stop.circle.fill" : "mic.fill")
             }
         }
-        .buttonStyle(.borderedProminent)
+        .limaButton(prominent: true)
         .controlSize(.small)
-        .tint(dictation.phase == .recording ? .red : .accentColor)
+        .tint(dictation.phase == .recording ? .red : SettingsStore.shared.accentTheme.primary)
         .disabled(
             dictation.phase == .requestingPermission
                 || dictation.phase == .transcribing
@@ -1033,7 +1082,7 @@ private struct NotesView: View {
 
     private var notesThemeColors: [Color] {
         switch settings.notesVisualTheme {
-        case .prism: return [settings.accentTheme.primary.opacity(0.26), Color.cyan.opacity(0.08), Color.black.opacity(0.08)]
+        case .prism: return [SettingsStore.shared.accentTheme.primary.opacity(0.26), Color.cyan.opacity(0.08), Color.black.opacity(0.08)]
         case .graphite: return [Color(white: 0.18), Color(white: 0.07), Color.black.opacity(0.28)]
         case .midnight: return [Color(red: 0.05, green: 0.09, blue: 0.20), Color(red: 0.09, green: 0.05, blue: 0.18), .black.opacity(0.32)]
         case .aurora: return [Color.teal.opacity(0.20), Color.indigo.opacity(0.23), Color.purple.opacity(0.12)]
@@ -1168,13 +1217,13 @@ private struct TagEditorSheet: View {
             Text("Edit Tags").limaFont(.title3.bold())
             Text("Separate tags with commas. Tags are stored locally.").foregroundStyle(.secondary)
             TextField("project, follow-up, personal", text: $text)
-                .textFieldStyle(.roundedBorder)
+                .limaInputSurface()
             HStack {
                 Spacer()
                 Button("Save") {
                     onSave(text.split(separator: ",").map(String.init))
                 }
-                .buttonStyle(.borderedProminent)
+                .limaButton(prominent: true)
             }
         }
         .padding(22)
@@ -1200,7 +1249,7 @@ private struct RevisionHistorySheet: View {
                 }
                 Spacer()
                 Image(systemName: "clock.arrow.circlepath")
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
             }
             if revisions.isEmpty {
                 Text("Revisions appear after a note has been edited.").foregroundStyle(.secondary)
@@ -1292,7 +1341,7 @@ private struct NoteListRow: View {
                     if note.isPinned {
                         Image(systemName: "pin.fill")
                             .limaFont(.system(size: 8))
-                            .foregroundStyle(Color.accentColor)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                             .accessibilityHidden(true)
                     }
                     if note.isFavorite {
@@ -1324,7 +1373,7 @@ private struct NoteListRow: View {
             if selected {
                 ZStack {
                     PrismaticPanelShape(cut: 6).fill(.ultraThinMaterial)
-                    PrismaticPanelShape(cut: 6).fill(Color.accentColor.opacity(0.09))
+                    PrismaticPanelShape(cut: 6).fill(SettingsStore.shared.accentTheme.primary.opacity(0.09))
                 }
             }
         }
@@ -1334,7 +1383,7 @@ private struct NoteListRow: View {
                     .strokeBorder(Color.white.opacity(0.38), lineWidth: 0.7)
             }
         }
-        .shadow(color: selected ? Color.accentColor.opacity(0.10) : .clear, radius: 8, y: 3)
+        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.07) : .clear, radius: 6, y: 2)
         .contentShape(PrismaticPanelShape(cut: 6))
     }
 

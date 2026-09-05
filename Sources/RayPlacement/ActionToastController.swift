@@ -18,7 +18,7 @@ final class ActionToastController {
 
         var color: Color {
             switch self {
-            case .working: return .accentColor
+            case .working: return .cyan
             case .success: return .green
             case .error: return .orange
             }
@@ -111,15 +111,15 @@ private struct ActionToastView: View {
                     .monospacedDigit()
             }
         }
-        .padding(.horizontal, 14)
-        .frame(width: 360, height: 44)
-        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
-        .background(Color.black.opacity(0.28), in: PrismaticPanelShape(cut: 8))
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(width: 360, height: LimaDesign.toolbarHeight)
+        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
+        .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
         .overlay(
-            PrismaticPanelShape(cut: 8)
-                .stroke(Color.white.opacity(0.22), lineWidth: 0.8)
+            PrismaticPanelShape(cut: LimaDesign.compactCorner)
+                .stroke(style.color.opacity(0.34), lineWidth: 0.7)
         )
-        .shadow(color: style.color.opacity(0.16), radius: 18, y: 8)
+        .shadow(color: style.color.opacity(0.07), radius: 8, y: 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(message)
     }

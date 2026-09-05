@@ -16,14 +16,12 @@ final class EndpointTesterWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Endpoint Tester"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 820, height: 560)
-        window.setAccessibilityLabel("RayPlacement endpoint tester")
+        LimaWindowChrome.configure(
+            window,
+            title: "Endpoint Tester",
+            accessibilityLabel: "RayPlacement endpoint tester",
+            minSize: NSSize(width: 820, height: 560)
+        )
         self.init(window: window)
         model.presentationWindow = window
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: EndpointTesterView(model: model)))
@@ -1001,7 +999,7 @@ private struct EndpointTesterView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            VStack(spacing: 9) {
+            VStack(spacing: LimaDesign.panelGap) {
                 header
                 HSplitView {
                     sidebar
@@ -1032,11 +1030,12 @@ private struct EndpointTesterView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
-            Image(systemName: "network")
-                .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
-            Text("Endpoint Tester")
-                .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
+        HStack(spacing: LimaDesign.controlGap) {
+            LimaToolbarTitle(
+                symbol: "network",
+                title: "Endpoint Tester",
+                subtitle: model.selectedEnvironmentName
+            )
             Spacer()
             if model.isRunning {
                 ProgressView().controlSize(.small)
@@ -1069,12 +1068,12 @@ private struct EndpointTesterView: View {
             Button(action: model.presentRunner) { Image(systemName: "play.rectangle.on.rectangle") }
                 .help("Run selected collection")
             Button("cURL", action: model.copyAsCURL)
-                .buttonStyle(.bordered)
+                .limaButton()
                 .controlSize(.small)
         }
-        .padding(.horizontal, 13)
-        .frame(height: 44)
-        .liquidGlass(cornerRadius: 15, depth: .raised, accentOpacity: 0.038)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: LimaDesign.toolbarHeight)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.024)
     }
 
     private var sidebar: some View {
@@ -1192,7 +1191,7 @@ private struct EndpointTesterView: View {
             Image(systemName: symbol).limaFont(.system(size: 18)).foregroundStyle(.tertiary)
             Text(title).limaFont(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center)
             if model.sidebarMode == .collections {
-                Button("Import", action: model.importPostmanDocuments).buttonStyle(.bordered).controlSize(.small)
+                Button("Import", action: model.importPostmanDocuments).limaButton().controlSize(.small)
             }
             Spacer()
         }
@@ -1220,16 +1219,16 @@ private struct EndpointTesterView: View {
                         .frame(width: 120)
                     Toggle("Stop on error", isOn: $model.runnerStopOnError)
                         .toggleStyle(.checkbox)
-                    Button("Data…", action: model.importRunnerData).buttonStyle(.bordered)
-                    if !model.runnerDataRows.isEmpty { Button("Clear data", action: model.clearRunnerData).buttonStyle(.bordered) }
+                    Button("Data…", action: model.importRunnerData).limaButton()
+                    if !model.runnerDataRows.isEmpty { Button("Clear data", action: model.clearRunnerData).limaButton() }
                     Spacer()
                     if model.isRunnerRunning {
-                        Button("Cancel", action: model.cancelRunner).buttonStyle(.bordered)
+                        Button("Cancel", action: model.cancelRunner).limaButton()
                     } else {
-                        Button("Run", action: model.startRunner).buttonStyle(.borderedProminent)
+                        Button("Run", action: model.startRunner).limaButton(prominent: true)
                     }
                 }
-                .textFieldStyle(.roundedBorder)
+                .limaInputSurface()
                 Text(model.runnerDataFileName).limaFont(.caption2).foregroundStyle(.secondary)
                 ScrollView {
                     LazyVStack(spacing: 5) {
@@ -1277,13 +1276,13 @@ private struct EndpointTesterView: View {
                         Button(role: .destructive, action: model.requestDeleteEditingEnvironment) {
                             Image(systemName: "trash")
                         }
-                        .buttonStyle(.bordered)
+                        .limaButton()
                         .help("Delete this environment")
                     }
                     Button("Cancel") { model.isEnvironmentEditorPresented = false }
-                        .buttonStyle(.bordered)
+                        .limaButton()
                     Button("Save", action: model.saveEnvironment)
-                        .buttonStyle(.borderedProminent)
+                        .limaButton(prominent: true)
                         .keyboardShortcut(.return, modifiers: [.command])
                 }
                 .padding(.horizontal, 13)
@@ -1351,11 +1350,11 @@ private struct EndpointTesterView: View {
                 .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.012)
             if model.isRunning {
                 Button("Cancel", action: model.cancel)
-                    .buttonStyle(.bordered)
+                    .limaButton()
                     .controlSize(.regular)
             } else {
                 Button("Send", action: model.send)
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                     .controlSize(.regular)
                     .keyboardShortcut(.return, modifiers: [.command])
             }
@@ -1469,7 +1468,7 @@ private struct EndpointTesterView: View {
                         .buttonStyle(.plain)
                         .help("Configure SSO")
                     Button("Get SSO token") { model.startOAuthFlow() }
-                        .buttonStyle(.borderedProminent)
+                        .limaButton(prominent: true)
                         .controlSize(.small)
                 }
                 HStack(spacing: 6) {
@@ -1496,7 +1495,7 @@ private struct EndpointTesterView: View {
                     Label("SSO configuration", systemImage: "lock.shield").limaFont(.headline)
                     Spacer()
                     Button("Done") { model.isOAuthConfigurationPresented = false }
-                        .buttonStyle(.borderedProminent)
+                        .limaButton(prominent: true)
                 }
                 Text("Use your identity provider’s OAuth 2.0 authorization-code endpoints. The redirect URI must be registered as rayplacement://oauth/callback.")
                     .limaFont(.caption).foregroundStyle(.secondary)
@@ -1513,10 +1512,10 @@ private struct EndpointTesterView: View {
                         model.saveOAuthConfiguration()
                         model.isOAuthConfigurationPresented = false
                     }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                 }
             }
-            .textFieldStyle(.roundedBorder)
+            .limaInputSurface()
             .padding(18)
         }
         .frame(width: 560, height: 360)
@@ -1541,7 +1540,7 @@ private struct EndpointTesterView: View {
             } else if model.bodyKind == .file {
                 HStack {
                     TextField("Binary file path", text: $model.binaryFilePath)
-                    Button("Choose…", action: model.chooseBinaryFile).buttonStyle(.bordered)
+                    Button("Choose…", action: model.chooseBinaryFile).limaButton()
                 }
             }
             TextEditor(text: $model.body)

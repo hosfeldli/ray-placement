@@ -13,13 +13,12 @@ final class ExtensionFormWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.titlebarAppearsTransparent = true
-        window.titleVisibility = .hidden
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 620, height: 460)
-        window.setAccessibilityLabel("RayPlacement extension workflow")
+        LimaWindowChrome.configure(
+            window,
+            title: "Extension Workflow",
+            accessibilityLabel: "RayPlacement extension workflow",
+            minSize: NSSize(width: 620, height: 460)
+        )
         self.init(window: window)
     }
 
@@ -136,7 +135,7 @@ private struct ExtensionFormView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            VStack(spacing: 0) {
+            VStack(spacing: LimaDesign.panelGap) {
                 header
                 GlassHairline()
                 HSplitView {
@@ -146,40 +145,31 @@ private struct ExtensionFormView: View {
                         .frame(minWidth: 300)
                 }
             }
-            .padding(10)
+            .padding(LimaDesign.windowPadding)
         }
         .preferredColorScheme(.dark)
         .tint(SettingsStore.shared.accentTheme.primary)
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Image(systemName: model.command.command.icon ?? "square.stack.3d.up.fill")
-                .limaFont(.system(size: 13, weight: .semibold))
-                .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
-                .frame(width: 29, height: 29)
-                .liquidGlass(cornerRadius: 9, depth: .floating, accentOpacity: 0.1)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.definition.title ?? model.command.command.title)
-                    .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
-                if model.command.extensionName != (model.definition.title ?? model.command.command.title) {
-                    Text(model.command.extensionName)
-                        .limaFont(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-            }
+        HStack(spacing: LimaDesign.controlGap) {
+            LimaToolbarTitle(
+                symbol: model.command.command.icon ?? "square.stack.3d.up.fill",
+                title: model.definition.title ?? model.command.command.title,
+                subtitle: model.command.extensionName
+            )
             Spacer()
             if model.phase == .running { ProgressView().controlSize(.small) }
             Button(model.phase == .finished ? "Run Again" : (model.definition.submitLabel ?? "Run")) {
                 model.run()
             }
-            .buttonStyle(.borderedProminent)
+            .limaButton(prominent: true)
             .controlSize(.small)
             .disabled(!model.canRun)
         }
-        .padding(.horizontal, 12)
-        .frame(height: 52)
-        .liquidGlass(cornerRadius: 16, depth: .raised, accentOpacity: 0.035)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: LimaDesign.toolbarHeight)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.022)
     }
 
     private var form: some View {
@@ -188,16 +178,14 @@ private struct ExtensionFormView: View {
                 ForEach(Array(model.visibleFields.enumerated()), id: \.element.id) { index, field in
                     if let section = field.section,
                        index == 0 || model.visibleFields[index - 1].section != section {
-                        Text(section.uppercased())
-                            .limaFont(.caption2.weight(.bold))
-                            .tracking(0.7)
+                        LimaSectionLabel(section, detail: "Required fields marked *")
                             .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                             .padding(.top, index == 0 ? 0 : 7)
                     }
                     fieldView(field)
                 }
             }
-            .padding(14)
+            .padding(LimaDesign.sectionGap)
         }
         .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.018)
         .padding(.top, 10)
@@ -231,7 +219,8 @@ private struct ExtensionFormView: View {
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 110)
-                    .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0.01)
+                    .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
+                    .liquidGlass(cornerRadius: LimaDesign.compactCorner, depth: .recessed, accentOpacity: 0.006)
             case .toggle:
                 Toggle(field.label, isOn: Binding(
                     get: { model.values[field.id, default: "false"] == "true" },
@@ -249,7 +238,7 @@ private struct ExtensionFormView: View {
                         .textFieldStyle(.plain)
                         .limaFont(.caption.monospaced())
                     Button("Choose…") { model.choosePath(for: field) }
-                        .buttonStyle(.bordered)
+                        .limaButton()
                         .controlSize(.small)
                 }
                 .padding(.horizontal, 10)
@@ -306,8 +295,8 @@ private struct ExtensionFormView: View {
                         .help("Copy output")
                 }
             }
-            .padding(.horizontal, 13)
-            .frame(height: 42)
+            .padding(.horizontal, LimaDesign.toolbarPadding)
+            .frame(height: LimaDesign.toolbarHeight - 2)
             GlassHairline()
             ScrollView(.vertical) {
                 Text(model.result?.output ?? (model.phase == .running ? "Waiting for a response…" : "Run this flow to inspect its result."))

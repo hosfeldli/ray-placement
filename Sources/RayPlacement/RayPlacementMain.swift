@@ -26,7 +26,11 @@ enum RayPlacementMain {
             application.windowsMenu = windowMenu
             let inspector = NSWindow(contentRect: NSRect(x: 90, y: 100, width: 500, height: 420),
                                      styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-            inspector.title = "Typography Preview"
+            LimaWindowChrome.configure(
+                inspector,
+                title: "Typography Preview",
+                accessibilityLabel: "Typography Preview"
+            )
             inspector.contentView = NSHostingView(rootView: LimaTypographyRoot(content: TypographyPreview()))
             inspector.makeKeyAndOrderFront(nil)
             if CommandLine.arguments.contains("--typography-first") { inspector.makeKeyAndOrderFront(nil) }

@@ -13,13 +13,12 @@ final class FormatterWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Document Formatter"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 760, height: 520)
-        window.setAccessibilityLabel("RayPlacement document formatter")
+        LimaWindowChrome.configure(
+            window,
+            title: "Document Formatter",
+            accessibilityLabel: "RayPlacement document formatter",
+            minSize: NSSize(width: 760, height: 520)
+        )
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
@@ -181,22 +180,26 @@ struct FormatterWorkspaceView: View {
     @State private var inspectorMode = 0
 
     var body: some View {
-        VStack(spacing: 0) {
+        VStack(spacing: LimaDesign.panelGap) {
             header
-            Divider()
             HSplitView {
                 editorPane(title: "SOURCE", text: $model.source, editable: true)
                 editorPane(title: "FORMATTED", text: $model.output, editable: false)
             }
-            Divider()
             inspector
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .padding(LimaDesign.windowPadding)
+        .background(Color.clear)
     }
 
     private var header: some View {
         VStack(spacing: 7) {
-            HStack(spacing: 9) {
+            HStack(spacing: LimaDesign.controlGap) {
+                LimaToolbarTitle(
+                    symbol: "wand.and.stars",
+                    title: "Document Formatter",
+                    subtitle: "Format, inspect, and copy local documents"
+                )
                 Picker("Format", selection: $model.kind) {
                     ForEach(FormatterDocumentKind.allCases, id: \.self) { Text($0.title).tag($0) }
                 }
@@ -212,7 +215,7 @@ struct FormatterWorkspaceView: View {
                     .frame(width: 170)
                 }
                 Button { model.format() } label: { Label("Format", systemImage: "wand.and.stars") }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                     .keyboardShortcut(.return, modifiers: [.command])
                 Spacer()
                 Button("Open File…", action: model.openFile)
@@ -226,32 +229,36 @@ struct FormatterWorkspaceView: View {
                 Spacer()
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .padding(.vertical, 7)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.018)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
         VStack(spacing: 0) {
             HStack {
-                Text(title).limaFont(.caption2.bold()).tracking(1.1).foregroundStyle(.secondary)
+                LimaSectionLabel(title)
                 Spacer()
                 if !editable {
                     TextField("Search output", text: $model.searchQuery)
-                        .textFieldStyle(.roundedBorder)
+                        .limaInputSurface()
                         .frame(width: 150)
                     if !model.searchQuery.isEmpty {
                         Text(model.searchLines.isEmpty ? "No matches" : "Lines \(model.searchLines.prefix(6).map(String.init).joined(separator: ", "))")
                             .limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
                     }
                     Button { model.copyOutput() } label: { Image(systemName: "doc.on.doc") }
-                        .buttonStyle(.borderless).help("Copy formatted output")
+                        .buttonStyle(LimaToolbarIconButtonStyle(tint: SettingsStore.shared.accentTheme.primary))
+                        .help("Copy formatted output")
                     Button { model.useOutputAsInput() } label: { Image(systemName: "arrow.left") }
-                        .buttonStyle(.borderless).help("Use formatted output as source")
+                        .buttonStyle(LimaToolbarIconButtonStyle(tint: SettingsStore.shared.accentTheme.primary))
+                        .help("Use formatted output as source")
                 }
             }
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            Divider()
+            .padding(.horizontal, LimaDesign.toolbarPadding)
+            .frame(height: LimaDesign.compactControlHeight + 4)
+            .background(LimaDesign.recessedFill)
+            GlassHairline()
             if editable {
                 TextEditor(text: text)
                     .limaFont(.system(size: 12.5, design: .monospaced))
@@ -270,6 +277,8 @@ struct FormatterWorkspaceView: View {
             }
         }
         .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+        .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: LimaDesign.standardCorner))
+        .clipShape(PrismaticPanelShape(cut: LimaDesign.standardCorner))
     }
 
     private var inspector: some View {
@@ -288,9 +297,10 @@ struct FormatterWorkspaceView: View {
                         .limaFont(.caption.monospaced()).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 38)
-            Divider()
+            .padding(.horizontal, LimaDesign.toolbarPadding)
+            .frame(height: LimaDesign.toolbarHeight - 6)
+            .background(LimaDesign.recessedFill)
+            GlassHairline()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 7) {
                     if inspectorMode == 0 {

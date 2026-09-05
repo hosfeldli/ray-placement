@@ -213,7 +213,7 @@ private enum MarkdownChartRenderer {
         NSColor.white.withAlphaComponent(0.12).setStroke()
         let axis = NSBezierPath(); axis.move(to: chartRect.origin); axis.line(to: NSPoint(x: chartRect.minX, y: chartRect.maxY)); axis.move(to: chartRect.origin); axis.line(to: NSPoint(x: chartRect.maxX, y: chartRect.minY)); axis.stroke()
         let maxValue = max(points.map { abs($0.value) }.max() ?? 1, 1)
-        let color = NSColor.systemPurple
+        let color = LimaAppKitDesign.accent
         if type == "line" {
             let path = NSBezierPath(); path.lineWidth = 3
             for (index, point) in points.enumerated() {

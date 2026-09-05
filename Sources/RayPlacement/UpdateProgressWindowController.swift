@@ -10,9 +10,11 @@ final class UpdateProgressWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Lima Update"
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
+        LimaWindowChrome.configure(
+            window,
+            title: "Lima Update",
+            accessibilityLabel: "Lima Update"
+        )
         window.isReleasedWhenClosed = false
         window.center()
         super.init(window: window)
@@ -33,6 +35,7 @@ final class UpdateProgressWindowController: NSWindowController {
 private struct UpdateProgressView: View {
     @ObservedObject var service: UpdateService
     @ObservedObject private var settings = SettingsStore.shared
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let close: () -> Void
 
     var body: some View {
@@ -40,14 +43,14 @@ private struct UpdateProgressView: View {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .withinWindow)
             if let result = service.completionResult {
                 completionView(result)
-                    .transition(.opacity.combined(with: .scale(scale: 0.985)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.985)))
             } else {
                 progressView.transition(.opacity)
             }
         }
         .frame(width: 620, height: 470)
         .tint(settings.accentTheme.primary)
-        .animation(.easeOut(duration: 0.18), value: service.completionResult)
+        .limaAnimation(.easeOut(duration: 0.18), value: service.completionResult)
     }
 
     private var progressView: some View {
@@ -64,7 +67,7 @@ private struct UpdateProgressView: View {
                 Spacer()
                 if service.canCancelInstallation {
                     Button("Cancel Update") { service.cancelInstallation() }
-                        .buttonStyle(.bordered)
+                        .limaButton()
                         .keyboardShortcut(.cancelAction)
                 } else {
                     Label("Lima stays open until replacement is ready", systemImage: "shield.checkered")
@@ -78,16 +81,14 @@ private struct UpdateProgressView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: LimaDesign.controlGap) {
+            LimaToolbarTitle(
+                symbol: "arrow.down.app.fill",
+                title: "Lima Update",
+                subtitle: service.installingVersion.map { "Installing version \($0)" } ?? "Preparing a verified update"
+            )
             UpdatePulse(color: settings.accentTheme.primary, gradient: settings.accentTheme.gradient)
                 .frame(width: 48, height: 48)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Lima Update")
-                    .limaFont(.system(size: 21, weight: .bold, design: .rounded))
-                Text(service.installingVersion.map { "Installing version \($0)" } ?? "Preparing a verified update")
-                    .limaFont(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
             Spacer()
             TimelineView(.periodic(from: .now, by: 1)) { context in
                 Text(elapsedText(at: context.date))
@@ -117,7 +118,7 @@ private struct UpdateProgressView: View {
                     Capsule()
                         .fill(settings.accentTheme.gradient)
                         .frame(width: max(4, proxy.size.width * service.installationProgress))
-                        .shadow(color: settings.accentTheme.primary.opacity(0.35), radius: 7)
+                        .shadow(color: settings.accentTheme.primary.opacity(0.22), radius: 5)
                 }
             }
             .frame(height: 6)
@@ -127,8 +128,8 @@ private struct UpdateProgressView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .padding(15)
-        .liquidGlass(cornerRadius: 11, depth: .raised, accentOpacity: 0.035)
+        .padding(LimaDesign.sectionGap)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.024)
     }
 
     private var steps: some View {
@@ -234,27 +235,28 @@ private struct UpdateProgressView: View {
 
             Spacer()
             HStack(spacing: 10) {
-                Button("Show Log") { service.revealUpdateLog() }.buttonStyle(.borderless)
+                Button("Show Log") { service.revealUpdateLog() }
+                    .buttonStyle(LimaToolbarTextButtonStyle())
                 if !result.succeeded {
-                    Button("Download DMG") { service.openManualDownload() }.buttonStyle(.bordered)
+                    Button("Download DMG") { service.openManualDownload() }.limaButton()
                 }
                 Spacer()
                 if !result.succeeded && service.canRetryInstallation {
-                    Button("Retry") { service.retryInstallation() }.buttonStyle(.borderedProminent)
+                    Button("Retry") { service.retryInstallation() }.limaButton(prominent: true)
                 }
                 if result.succeeded {
                     Button("Done") {
                         service.dismissCompletion()
                         close()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                     .keyboardShortcut(.defaultAction)
                 } else {
                     Button("Close") {
                         service.dismissCompletion()
                         close()
                     }
-                    .buttonStyle(.bordered)
+                    .limaButton()
                     .keyboardShortcut(.defaultAction)
                 }
             }

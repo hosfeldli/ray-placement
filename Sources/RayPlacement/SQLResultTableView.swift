@@ -18,15 +18,18 @@ struct SQLResultTableView: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = true
-        scroll.backgroundColor = NSColor(calibratedWhite: 0.035, alpha: 0.5)
+        scroll.backgroundColor = LimaAppKitDesign.recessedBackground
 
         let table = NSTableView()
         table.dataSource = context.coordinator
         table.delegate = context.coordinator
-        table.rowHeight = 23
+        table.rowHeight = LimaDesign.tableRowHeight
         table.intercellSpacing = NSSize(width: 1, height: 1)
-        table.gridStyleMask = [.solidVerticalGridLineMask]
-        table.gridColor = NSColor.white.withAlphaComponent(0.055)
+        table.gridStyleMask = [.solidVerticalGridLineMask, .solidHorizontalGridLineMask]
+        table.gridColor = LimaAppKitDesign.separator
+        table.backgroundColor = LimaAppKitDesign.editorBackground
+        table.selectionHighlightStyle = .regular
+        table.focusRingType = .default
         table.usesAlternatingRowBackgroundColors = true
         table.columnAutoresizingStyle = .noColumnAutoresizing
         table.allowsMultipleSelection = true
@@ -148,11 +151,23 @@ private final class SQLResultFilterHeaderView: NSTableHeaderView {
     private weak var filterCoordinator: SQLResultTableView.Coordinator?
     private var labels: [NSTextField] = []
     private var filters: [NSSearchField] = []
+    private var accentObserver: NSObjectProtocol?
 
     init(tableView: NSTableView, coordinator: SQLResultTableView.Coordinator) {
         self.filterCoordinator = coordinator
-        super.init(frame: NSRect(x: 0, y: 0, width: 0, height: 51))
+        super.init(frame: NSRect(x: 0, y: 0, width: 0, height: LimaDesign.tableHeaderHeight))
         self.tableView = tableView
+        accentObserver = NotificationCenter.default.addObserver(
+            forName: .rayPlacementAccentChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.applyPalette() }
+        }
+    }
+
+    deinit {
+        if let accentObserver { NotificationCenter.default.removeObserver(accentObserver) }
     }
 
     required init?(coder: NSCoder) { nil }
@@ -163,7 +178,7 @@ private final class SQLResultFilterHeaderView: NSTableHeaderView {
         labels = columns.enumerated().map { index, name in
             let label = NSTextField(labelWithString: name)
             label.font = .monospacedSystemFont(ofSize: 10, weight: .semibold)
-            label.textColor = .systemCyan
+            label.textColor = LimaAppKitDesign.primaryText
             label.lineBreakMode = .byTruncatingTail
             label.toolTip = name
             addSubview(label)
@@ -171,6 +186,14 @@ private final class SQLResultFilterHeaderView: NSTableHeaderView {
             filter.identifier = NSUserInterfaceItemIdentifier(String(index))
             filter.placeholderString = "Filter"
             filter.font = .systemFont(ofSize: 10)
+            filter.textColor = LimaAppKitDesign.primaryText
+            filter.focusRingType = .default
+            filter.wantsLayer = true
+            filter.layer?.cornerRadius = 4
+            filter.layer?.borderWidth = LimaDesign.borderWidth
+            filter.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+            filter.backgroundColor = LimaAppKitDesign.recessedBackground
+            filter.drawsBackground = true
             filter.delegate = filterCoordinator
             filter.sendsSearchStringImmediately = true
             filter.controlSize = .small
@@ -184,18 +207,28 @@ private final class SQLResultFilterHeaderView: NSTableHeaderView {
     override func layout() {
         super.layout()
         guard let tableView else { return }
-        frame.size.height = 51
+        frame.size.height = LimaDesign.tableHeaderHeight
         for index in tableView.tableColumns.indices where labels.indices.contains(index) && filters.indices.contains(index) {
             let rect = tableView.rect(ofColumn: index).insetBy(dx: 5, dy: 0)
-            labels[index].frame = NSRect(x: rect.minX, y: 29, width: rect.width, height: 16)
-            filters[index].frame = NSRect(x: rect.minX, y: 3, width: rect.width, height: 23)
+            labels[index].frame = NSRect(x: rect.minX, y: 30, width: rect.width, height: 16)
+            filters[index].frame = NSRect(x: rect.minX, y: 4, width: rect.width, height: 23)
         }
     }
 
+    private func applyPalette() {
+        labels.forEach { $0.textColor = LimaAppKitDesign.primaryText }
+        filters.forEach {
+            $0.textColor = LimaAppKitDesign.primaryText
+            $0.backgroundColor = LimaAppKitDesign.recessedBackground
+            $0.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+        }
+        needsDisplay = true
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(calibratedWhite: 0.07, alpha: 0.98).setFill()
+        LimaAppKitDesign.windowBackground.setFill()
         dirtyRect.fill()
-        NSColor.white.withAlphaComponent(0.08).setStroke()
+        LimaAppKitDesign.strongSeparator.setStroke()
         let line = NSBezierPath()
         line.move(to: NSPoint(x: dirtyRect.minX, y: 0.5))
         line.line(to: NSPoint(x: dirtyRect.maxX, y: 0.5))

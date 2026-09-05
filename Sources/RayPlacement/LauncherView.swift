@@ -8,6 +8,7 @@ struct LauncherView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
         self.viewModel = viewModel
@@ -21,7 +22,7 @@ struct LauncherView: View {
                 searchHeader
                 content
                     .id(viewModel.mode.visualIdentity)
-                    .transition(.opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
                 footer
             }
         }
@@ -31,7 +32,7 @@ struct LauncherView: View {
             PrismaticPanelShape(cut: 18)
                 .strokeBorder(
                     LinearGradient(
-                        colors: [Color.white.opacity(0.82), RayColors.cyan.opacity(0.54), RayColors.indigo.opacity(0.34), Color.black.opacity(0.28)],
+                        colors: [Color.white.opacity(0.82), LimaLauncherPalette.cyan.opacity(0.54), LimaLauncherPalette.indigo.opacity(0.34), Color.black.opacity(0.28)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
@@ -45,7 +46,7 @@ struct LauncherView: View {
         )
         .overlay(alignment: .topTrailing) {
             LinearGradient(
-                colors: [.clear, RayColors.cyan.opacity(0.44), Color.white.opacity(0.36)],
+                colors: [.clear, LimaLauncherPalette.cyan.opacity(0.44), Color.white.opacity(0.36)],
                 startPoint: .leading,
                 endPoint: .trailing
             )
@@ -53,11 +54,11 @@ struct LauncherView: View {
             .padding(.trailing, 31)
             .padding(.top, 0.7)
         }
-        .shadow(color: RayColors.indigo.opacity(0.18), radius: 38, y: 16)
-        .shadow(color: .black.opacity(0.48), radius: 30, y: 16)
+        .shadow(color: LimaLauncherPalette.indigo.opacity(0.08), radius: 18, y: 7)
+        .shadow(color: .black.opacity(0.22), radius: 14, y: 7)
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
-        .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.86), value: viewModel.mode.visualIdentity)
+        .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
             if viewModel.mode == .terminal {
                 terminalModel.startIfNeeded()
@@ -84,7 +85,7 @@ struct LauncherView: View {
             if viewModel.mode == .root {
                 HStack(spacing: 7) {
                     ZStack {
-                        PrismaticPanelShape(cut: 7).fill(RayColors.heroGradient)
+                        PrismaticPanelShape(cut: 7).fill(LimaLauncherPalette.heroGradient)
                         Image(systemName: "sparkle.magnifyingglass")
                             .limaFont(.system(size: 14, weight: .bold))
                             .foregroundStyle(.white)
@@ -96,7 +97,7 @@ struct LauncherView: View {
                         .foregroundStyle(.primary)
                 }
                 .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.48), lineWidth: 0.7))
-                .shadow(color: RayColors.indigo.opacity(0.30), radius: 12, y: 5)
+                .shadow(color: LimaLauncherPalette.indigo.opacity(0.20), radius: 8, y: 3)
                 .accessibilityHidden(true)
             } else {
                 Button {
@@ -123,7 +124,7 @@ struct LauncherView: View {
 
             if viewModel.mode == .timezoneConverter {
                 Spacer()
-                StatusCapsule(text: "OFFLINE", color: RayColors.cyan)
+                StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
             } else if viewModel.mode == .terminal {
                 TextField("Search or draft a terminal command…", text: $terminalModel.commandComposer)
                     .textFieldStyle(.plain)
@@ -165,7 +166,7 @@ struct LauncherView: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
-        .liquidGlass(cornerRadius: 13, depth: .raised, accentOpacity: 0.032)
+        .liquidGlass(cornerRadius: 13, depth: .raised, accentOpacity: 0.024)
         .padding(.horizontal, 8)
         .padding(.top, 8)
     }
@@ -307,7 +308,7 @@ struct LauncherView: View {
             .onChange(of: viewModel.navigationGeneration) { _ in
                 let newIndex = viewModel.selectedIndex
                 guard viewModel.results.indices.contains(newIndex) else { return }
-                withAnimation(.easeOut(duration: 0.12)) {
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
                     proxy.scrollTo(viewModel.results[newIndex].id, anchor: .center)
                 }
             }
@@ -362,12 +363,12 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 12) {
             if case .running = state {
                 HStack(spacing: 12) {
-                    TaskOrbitView(color: isWritingOutput(title) ? RayColors.violet : RayColors.cyan)
+                    TaskOrbitView(color: isWritingOutput(title) ? LimaLauncherPalette.violet : LimaLauncherPalette.cyan)
                         .frame(width: 36, height: 36)
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(title).limaFont(.system(size: 16, weight: .bold))
-                            StatusCapsule(text: isWritingOutput(title) ? "LOCAL RULES" : "RUNNING", color: isWritingOutput(title) ? RayColors.violet : RayColors.cyan)
+                            StatusCapsule(text: isWritingOutput(title) ? "LOCAL RULES" : "RUNNING", color: isWritingOutput(title) ? LimaLauncherPalette.violet : LimaLauncherPalette.cyan)
                         }
                         Text(text.isEmpty ? "Working…" : text)
                             .limaFont(.system(size: 13, weight: .medium))
@@ -427,8 +428,8 @@ struct LauncherView: View {
                         .limaFont(.system(size: 14, weight: .bold))
                         .foregroundStyle(.white)
                         .frame(width: 38, height: 38)
-                        .background(RayColors.heroGradient, in: Circle())
-                        .shadow(color: RayColors.indigo.opacity(0.28), radius: 9, y: 4)
+                        .background(LimaLauncherPalette.heroGradient, in: Circle())
+                        .shadow(color: LimaLauncherPalette.indigo.opacity(0.28), radius: 9, y: 4)
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, -3)
@@ -451,8 +452,8 @@ struct LauncherView: View {
                 } label: {
                     Label(viewModel.timezoneDidCopy ? "Copied" : "Copy result", systemImage: viewModel.timezoneDidCopy ? "checkmark" : "doc.on.doc")
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(RayColors.indigo)
+                .limaButton(prominent: true)
+                .tint(LimaLauncherPalette.indigo)
                 .disabled(viewModel.timezoneConversion == nil)
             }
         }
@@ -472,7 +473,7 @@ struct LauncherView: View {
                 Text(title)
                     .limaFont(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
-                    .foregroundStyle(isSource ? RayColors.indigo : RayColors.cyan)
+                    .foregroundStyle(isSource ? LimaLauncherPalette.indigo : LimaLauncherPalette.cyan)
                 Spacer()
                 Picker("", selection: selection) {
                     ForEach(LauncherViewModel.timezoneOptions) { option in
@@ -511,10 +512,10 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 ZStack {
-                    Circle().fill((review.issues.isEmpty ? Color.green : RayColors.violet).opacity(0.14))
+                    Circle().fill((review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet).opacity(0.14))
                     Image(systemName: review.issues.isEmpty ? "checkmark" : "wand.and.stars")
                         .limaFont(.system(size: 16, weight: .bold))
-                        .foregroundStyle(review.issues.isEmpty ? Color.green : RayColors.violet)
+                        .foregroundStyle(review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet)
                 }
                 .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
@@ -528,13 +529,13 @@ struct LauncherView: View {
                 Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
                     viewModel.copyWritingResult(review)
                 }
-                .buttonStyle(.bordered)
+                .limaButton()
                 .accessibilityHint("Copies the reviewed text")
                 Button("Replace \(review.hasSuggestedChanges ? "Selection" : "Selected Text")") {
                     viewModel.pasteWritingResult(review)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(RayColors.indigo)
+                .limaButton(prominent: true)
+                .tint(LimaLauncherPalette.indigo)
                 .accessibilityHint("Revalidates and replaces the exact original selection")
                 .keyboardShortcut(.return, modifiers: [])
             }
@@ -551,7 +552,7 @@ struct LauncherView: View {
                         writingComparisonPanel(
                             title: review.hasSuggestedChanges ? "CORRECTED TEXT" : "CHECKED TEXT",
                             text: review.hasSuggestedChanges ? review.suggestedText : review.sourceText,
-                            color: review.hasSuggestedChanges ? RayColors.violet : .green,
+                            color: review.hasSuggestedChanges ? LimaLauncherPalette.violet : .green,
                             symbol: review.hasSuggestedChanges ? "wand.and.stars" : "checkmark.circle.fill"
                         )
                     }
@@ -599,9 +600,13 @@ struct LauncherView: View {
             EmptyView()
         } else if viewModel.mode == .root {
             HStack(spacing: 12) {
-                Text("\(viewModel.results.count) available")
-                    .limaFont(.system(size: 9.5, weight: .medium, design: .monospaced))
-                    .foregroundStyle(.tertiary)
+                LimaStatusLine(
+                    "\(viewModel.results.count) available",
+                    symbol: "circle.grid.2x2.fill",
+                    tint: SettingsStore.shared.accentTheme.tertiary,
+                    compact: true
+                )
+                .frame(maxWidth: 160)
                 Spacer()
                 KeyHint(keys: "↑↓", label: "Navigate")
                 if viewModel.mode == .root {
@@ -668,7 +673,7 @@ struct LauncherView: View {
 
     private func outputStateColor(_ state: LauncherOutputState) -> Color {
         switch state {
-        case .running: return .accentColor
+        case .running: return settings.accentTheme.primary
         case .success: return .green
         case .error: return .orange
         }
@@ -750,7 +755,7 @@ private struct WritingIssueRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: issue.kind == .spelling ? "character.cursor.ibeam" : "text.badge.checkmark")
-                .foregroundStyle(issue.kind == .spelling ? Color.orange : Color.accentColor)
+                .foregroundStyle(issue.kind == .spelling ? Color.orange : SettingsStore.shared.accentTheme.primary)
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
@@ -858,10 +863,10 @@ private struct ResultRow: View {
                     )
             }
         }
-        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.10) : .clear, radius: 11, y: 5)
+        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.07) : .clear, radius: 8, y: 3)
         .opacity(selected ? 1 : 0.97)
         .scaleEffect(selected ? 1 : 0.998)
-        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: selected)
+        .limaAnimation(LimaDesign.spring(0.24), value: selected)
     }
 }
 
@@ -918,7 +923,7 @@ private struct EmojiGridTile: View {
                         lineWidth: selected ? 1.1 : 0.6
                     )
             }
-            .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.18) : .clear, radius: 5, y: 2)
+            .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.12) : .clear, radius: 4, y: 2)
             .scaleEffect(selected ? 1.02 : 1)
     }
 }
@@ -970,8 +975,13 @@ private struct StatusCapsule: View {
 
 private struct TaskOrbitView: View {
     let color: Color
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var spinning = false
     @State private var pulsing = false
+
+    private var motionAllowed: Bool {
+        !reduceMotion && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+    }
 
     var body: some View {
         ZStack {
@@ -981,7 +991,7 @@ private struct TaskOrbitView: View {
             Circle()
                 .trim(from: 0.08, to: 0.72)
                 .stroke(
-                    AngularGradient(colors: [color.opacity(0.05), color, RayColors.cyan], center: .center),
+                    AngularGradient(colors: [color.opacity(0.05), color, LimaLauncherPalette.cyan], center: .center),
                     style: StrokeStyle(lineWidth: 3, lineCap: .round)
                 )
                 .rotationEffect(.degrees(spinning ? 360 : 0))
@@ -991,8 +1001,18 @@ private struct TaskOrbitView: View {
                 .foregroundStyle(color)
         }
         .onAppear {
+            guard motionAllowed else { return }
             withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) { spinning = true }
             withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) { pulsing = true }
+        }
+        .onChange(of: reduceMotion) { isReduced in
+            if isReduced {
+                spinning = false
+                pulsing = false
+            } else if motionAllowed {
+                withAnimation(.linear(duration: 1.35).repeatForever(autoreverses: false)) { spinning = true }
+                withAnimation(.easeInOut(duration: 1.05).repeatForever(autoreverses: true)) { pulsing = true }
+            }
         }
         .accessibilityHidden(true)
     }
@@ -1012,7 +1032,7 @@ private struct ActivityTimeline: View {
                 HStack(spacing: 7) {
                     ZStack {
                         Circle()
-                            .fill(index <= activeStep ? RayColors.indigo : Color.primary.opacity(0.09))
+                            .fill(index <= activeStep ? LimaLauncherPalette.indigo : Color.primary.opacity(0.09))
                             .frame(width: 14, height: 14)
                         if index < activeStep {
                             Image(systemName: "checkmark")
@@ -1030,7 +1050,7 @@ private struct ActivityTimeline: View {
                 }
                 if index < labels.count - 1 {
                     Rectangle()
-                        .fill(index < activeStep ? RayColors.indigo.opacity(0.6) : Color.primary.opacity(0.08))
+                        .fill(index < activeStep ? LimaLauncherPalette.indigo.opacity(0.6) : Color.primary.opacity(0.08))
                         .frame(height: 1)
                 }
             }
@@ -1042,7 +1062,7 @@ private struct ActivityTimeline: View {
 }
 
 @MainActor
-private enum RayColors {
+private enum LimaLauncherPalette {
     static var indigo: Color { SettingsStore.shared.accentTheme.primary }
     static var violet: Color { SettingsStore.shared.accentTheme.secondary }
     static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }

@@ -13,13 +13,12 @@ final class PasswordGeneratorWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Password Generator"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 520, height: 360)
-        window.setAccessibilityLabel("RayPlacement password generator")
+        LimaWindowChrome.configure(
+            window,
+            title: "Password Generator",
+            accessibilityLabel: "RayPlacement password generator",
+            minSize: NSSize(width: 520, height: 360)
+        )
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: PasswordGeneratorView(model: model)))
     }
@@ -124,18 +123,21 @@ private struct PasswordGeneratorView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            VStack(spacing: 10) {
-                HStack(spacing: 9) {
-                    Image(systemName: "key.fill").foregroundStyle(SettingsStore.shared.accentTheme.gradient)
-                    Text("Password Generator").limaFont(.system(size: 15, weight: .semibold, design: .rounded))
+            VStack(spacing: LimaDesign.panelGap) {
+                HStack(spacing: LimaDesign.controlGap) {
+                    LimaToolbarTitle(
+                        symbol: "key.fill",
+                        title: "Password Generator",
+                        subtitle: "Cryptographically secure local generation"
+                    )
                     Spacer()
                     Text("\(model.entropyBits) bits · \(model.strength)")
                         .limaFont(.caption.monospacedDigit().weight(.medium))
                         .foregroundStyle(model.entropyBits >= 80 ? .green : .secondary)
                 }
-                .padding(.horizontal, 13)
-                .frame(height: 42)
-                .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.04)
+                .padding(.horizontal, LimaDesign.toolbarPadding)
+                .frame(height: LimaDesign.toolbarHeight)
+                .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.022)
 
                 HStack(spacing: 10) {
                     Text(model.password)
@@ -147,10 +149,10 @@ private struct PasswordGeneratorView: View {
                     Button(action: model.copy) {
                         Label(model.copied ? "Copied" : "Copy", systemImage: model.copied ? "checkmark" : "doc.on.doc")
                     }
-                    .buttonStyle(.borderedProminent)
+                    .limaButton(prominent: true)
                 }
-                .padding(14)
-                .liquidGlass(cornerRadius: 16, depth: .floating, accentOpacity: 0.035)
+                .padding(LimaDesign.sectionGap)
+                .liquidGlass(cornerRadius: LimaDesign.panelCorner, depth: .raised, accentOpacity: 0.024)
 
                 VStack(spacing: 13) {
                     HStack {
@@ -173,8 +175,8 @@ private struct PasswordGeneratorView: View {
                 .onChange(of: model.numbers) { _ in model.generate() }
                 .onChange(of: model.symbols) { _ in model.generate() }
                 .onChange(of: model.excludeAmbiguous) { _ in model.generate() }
-                .padding(15)
-                .liquidGlass(cornerRadius: 16, depth: .recessed, accentOpacity: 0.015)
+                .padding(LimaDesign.sectionGap)
+                .liquidGlass(cornerRadius: LimaDesign.panelCorner, depth: .recessed, accentOpacity: 0.010)
                 Spacer(minLength: 0)
             }
             .padding(10)

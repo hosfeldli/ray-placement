@@ -53,6 +53,8 @@ struct MediaNowPlayingSnapshot: Equatable, Sendable {
     let album: String
     let isPlaying: Bool
     let artworkURL: URL?
+    let duration: Double
+    let position: Double
 }
 
 @MainActor
@@ -77,6 +79,7 @@ final class MusicNowPlayingService: ObservableObject {
     )
     private var timer: Timer?
     private var volumeTimer: Timer?
+    private var progressTimer: Timer?
     private var audioLevelMonitor: SystemAudioLevelMonitor?
     private var hasLiveOutputMeter = false
     private var queryInFlight = false
@@ -93,6 +96,10 @@ final class MusicNowPlayingService: ObservableObject {
             Task { @MainActor in self?.refreshOutputVolume() }
         }
         volumeTimer?.tolerance = 0.08
+        progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.refresh() }
+        }
+        progressTimer?.tolerance = 0.2
         refreshOutputVolume()
         if #available(macOS 14.2, *) {
             let monitor = SystemAudioLevelMonitor { [weak self] level in
@@ -109,6 +116,7 @@ final class MusicNowPlayingService: ObservableObject {
     deinit {
         timer?.invalidate()
         volumeTimer?.invalidate()
+        progressTimer?.invalidate()
         audioLevelMonitor?.stop()
     }
 
@@ -162,6 +170,30 @@ final class MusicNowPlayingService: ObservableObject {
         }
     }
 
+    func setOutputVolume(_ value: Double) {
+        let clamped = min(1, max(0, value))
+        guard Self.setDefaultOutputVolume(clamped) else { return }
+        outputVolume = clamped
+    }
+
+    func searchSpotify() {
+        let alert = NSAlert()
+        alert.messageText = "Search Spotify"
+        alert.informativeText = "Search for a song, artist, or album."
+        let field = NSTextField(string: "")
+        field.placeholderString = "Search Spotify"
+        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Search")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty,
+              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "spotify:search:\(encoded)") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     private func refreshOutputVolume() {
         outputVolume = Self.defaultOutputVolume() ?? outputVolume
         if !hasLiveOutputMeter { outputAudioLevel = outputVolume }
@@ -208,6 +240,26 @@ final class MusicNowPlayingService: ObservableObject {
         size = UInt32(MemoryLayout<Float32>.size)
         guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &volume) == noErr else { return nil }
         return min(1, max(0, Double(volume)))
+    }
+
+    nonisolated private static func setDefaultOutputVolume(_ value: Double) -> Bool {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != 0 else { return false }
+        address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwareServiceDeviceProperty_VirtualMainVolume,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var volume = Float32(value)
+        size = UInt32(MemoryLayout<Float32>.size)
+        return AudioObjectSetPropertyData(device, &address, 0, nil, size, &volume) == noErr
     }
 
     func refresh() {
@@ -281,7 +333,9 @@ final class MusicNowPlayingService: ObservableObject {
             artist: pieces[1],
             album: pieces[2],
             isPlaying: pieces[3] == "playing",
-            artworkURL: pieces.count > 4 ? URL(string: pieces[4]) : nil
+            artworkURL: pieces.count > 4 ? URL(string: pieces[4]) : nil,
+            duration: pieces.count > 5 ? Double(pieces[5]) ?? 0 : 0,
+            position: pieces.count > 6 ? Double(pieces[6]) ?? 0 : 0
         )
     }
 
@@ -297,7 +351,7 @@ final class MusicNowPlayingService: ObservableObject {
                 try
                     set artAddress to artwork url of current track
                 end try
-                return name of current track & ASCII character 31 & artist of current track & ASCII character 31 & album of current track & ASCII character 31 & playState & ASCII character 31 & artAddress
+                return name of current track & ASCII character 31 & artist of current track & ASCII character 31 & album of current track & ASCII character 31 & playState & ASCII character 31 & artAddress & ASCII character 31 & (duration of current track as string) & ASCII character 31 & (player position as string)
             end tell
             """
         case .appleMusic:
@@ -312,7 +366,7 @@ final class MusicNowPlayingService: ObservableObject {
                     set artistName to artist of current track
                     set albumName to album of current track
                 end try
-                return trackName & ASCII character 31 & artistName & ASCII character 31 & albumName & ASCII character 31 & playState & ASCII character 31
+                return trackName & ASCII character 31 & artistName & ASCII character 31 & albumName & ASCII character 31 & playState & ASCII character 31 & ASCII character 31 & (duration of current track as string) & ASCII character 31 & (player position as string)
             end tell
             """
         }

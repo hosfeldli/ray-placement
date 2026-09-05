@@ -17,14 +17,12 @@ final class SQLWorkspaceWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "SQL Workspace"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isMovableByWindowBackground = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 920, height: 600)
-        window.setAccessibilityLabel("RayPlacement SQL workspace")
+        LimaWindowChrome.configure(
+            window,
+            title: "SQL Workspace",
+            accessibilityLabel: "RayPlacement SQL workspace",
+            minSize: NSSize(width: 920, height: 600)
+        )
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: SQLWorkspaceView(model: model)))
     }
@@ -884,14 +882,14 @@ private struct SQLWorkspaceView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            VStack(spacing: 8) {
+            VStack(spacing: LimaDesign.panelGap) {
                 toolbar
                 workspaceContent
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .layoutPriority(1)
                 statusBar
             }
-            .padding(10)
+            .padding(LimaDesign.windowPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .tint(settings.accentTheme.primary)
@@ -921,16 +919,12 @@ private struct SQLWorkspaceView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "cylinder.split.1x2.fill")
-                .foregroundStyle(settings.accentTheme.gradient)
-                .frame(width: 29, height: 29)
-                .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
-            VStack(alignment: .leading, spacing: 0) {
-                Text("SQL Workspace").limaFont(.system(size: 14, weight: .semibold, design: .rounded))
-                Text(model.selectedConnection?.environment ?? "No environment")
-                    .limaFont(.system(size: 9.5, weight: .semibold)).foregroundStyle(.secondary)
-            }
+        HStack(spacing: LimaDesign.controlGap) {
+            LimaToolbarTitle(
+                symbol: "cylinder.split.1x2.fill",
+                title: "SQL Workspace",
+                subtitle: model.selectedConnection?.environment ?? "No environment"
+            )
             Menu {
                 ForEach(model.connections) { connection in
                     Button("\(connection.name) · \(connection.environment)") {
@@ -946,7 +940,8 @@ private struct SQLWorkspaceView: View {
                 }
                 .limaFont(.system(size: 11.5, weight: .medium))
                 .padding(.horizontal, 9).frame(height: 28)
-                .background(Color.white.opacity(0.07), in: PrismaticPanelShape(cut: 5))
+                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
             }
             .menuStyle(.borderlessButton)
             .fixedSize(horizontal: true, vertical: false)
@@ -954,13 +949,15 @@ private struct SQLWorkspaceView: View {
                 Label(model.isBusy ? "Working" : "Discover", systemImage: model.isBusy ? "arrow.triangle.2.circlepath" : "rectangle.stack.badge.magnifyingglass")
             }
             .disabled(model.isBusy || model.selectedConnection == nil)
-            .buttonStyle(.bordered)
+            .limaButton()
             .controlSize(.small)
             Spacer()
             Button { showsSchemaBrowser.toggle() } label: { Image(systemName: "sidebar.left") }
-                .buttonStyle(.borderless).help("Toggle schema browser · ⌘⌥1").keyboardShortcut("1", modifiers: [.command, .option])
+                .buttonStyle(LimaToolbarIconButtonStyle(tint: settings.accentTheme.primary))
+                .help("Toggle schema browser · ⌘⌥1").keyboardShortcut("1", modifiers: [.command, .option])
             Button { showsInspector.toggle() } label: { Image(systemName: "sidebar.right") }
-                .buttonStyle(.borderless).help("Toggle table details · ⌘⌥2").keyboardShortcut("2", modifiers: [.command, .option])
+                .buttonStyle(LimaToolbarIconButtonStyle(tint: settings.accentTheme.primary))
+                .help("Toggle table details · ⌘⌥2").keyboardShortcut("2", modifiers: [.command, .option])
             Picker("Mode", selection: $model.mode) {
                 ForEach(SQLWorkspaceModel.Mode.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -984,8 +981,9 @@ private struct SQLWorkspaceView: View {
             .menuStyle(.borderlessButton)
             .frame(width: 28, height: 28)
         }
-        .padding(.horizontal, 11).frame(height: 46)
-        .liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.025)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: LimaDesign.toolbarHeight)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.022)
     }
 
     @ViewBuilder private var workspaceContent: some View {
@@ -1022,7 +1020,7 @@ private struct SQLWorkspaceView: View {
             .limaFont(.caption.weight(.medium))
             .foregroundStyle(.secondary)
             Button("Add Connection…", action: model.newConnection)
-                .buttonStyle(.borderedProminent)
+                .limaButton(prominent: true)
                 .controlSize(.regular)
             Spacer(minLength: 20)
         }
@@ -1048,7 +1046,8 @@ private struct SQLWorkspaceView: View {
                 }
                 if model.isSearchingSchema { ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 12, height: 12) }
             }.padding(.horizontal, 9).frame(height: 30)
-                .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
             if model.schemaSection != .procedures, model.filteredTableCount > 0 {
                 HStack(spacing: 6) {
                     Toggle("Show \(model.filteredTableCount) filtered", isOn: $model.showFilteredTables)
@@ -1135,10 +1134,10 @@ private struct SQLWorkspaceView: View {
                 Label("Query blocks", systemImage: "point.3.connected.trianglepath.dotted")
                     .limaFont(.system(size: 12.5, weight: .semibold))
                 Spacer()
-                Button(action: model.saveBlocks) { Image(systemName: "bookmark") }.help("Save query blocks for this connection").buttonStyle(.bordered).controlSize(.small)
+                Button(action: model.saveBlocks) { Image(systemName: "bookmark") }.help("Save query blocks for this connection").limaButton().controlSize(.small)
                 Button("Edit SQL") { model.queryText = model.visualQuery.sql(for: model.selectedConnection?.driver ?? .mysql); model.mode = .sql }
-                    .buttonStyle(.bordered).controlSize(.small)
-                Button(action: model.runCanvas) { Label("Run query", systemImage: "play.fill") }.buttonStyle(.borderedProminent).controlSize(.small)
+                    .limaButton().controlSize(.small)
+                Button(action: model.runCanvas) { Label("Run query", systemImage: "play.fill") }.limaButton(prominent: true).controlSize(.small)
                     .keyboardShortcut(.return, modifiers: [.command])
                     .disabled(model.canvasIssue != nil || model.isBusy)
                     .help(model.canvasIssue ?? "Run read-only query · ⌘Return")
@@ -1172,10 +1171,10 @@ private struct SQLWorkspaceView: View {
             HStack(spacing: 7) {
                 Label("Free SQL", systemImage: "chevron.left.forwardslash.chevron.right").limaFont(.system(size: 12.5, weight: .semibold))
                 Spacer()
-                TextField("Save query as", text: $model.savedQueryName).textFieldStyle(.roundedBorder).frame(width: 140)
-                Button(action: model.saveCurrentQuery) { Image(systemName: "bookmark") }.buttonStyle(.bordered).controlSize(.small)
-                Button("Read-only", action: model.runReadOnly).buttonStyle(.bordered).controlSize(.small).disabled(model.isBusy)
-                Button("Run", action: model.runFreeSQL).buttonStyle(.borderedProminent).controlSize(.small).disabled(model.isBusy)
+                TextField("Save query as", text: $model.savedQueryName).limaInputSurface().frame(width: 140)
+                Button(action: model.saveCurrentQuery) { Image(systemName: "bookmark") }.limaButton().controlSize(.small)
+                Button("Read-only", action: model.runReadOnly).limaButton().controlSize(.small).disabled(model.isBusy)
+                Button("Run", action: model.runFreeSQL).limaButton(prominent: true).controlSize(.small).disabled(model.isBusy)
             }
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $model.queryText)
@@ -1187,7 +1186,7 @@ private struct SQLWorkspaceView: View {
                 }
             }
             .frame(minHeight: 195)
-            .background(Color.black.opacity(0.24), in: PrismaticPanelShape(cut: 7))
+            .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: 7))
             .onDrop(of: [.plainText], isTargeted: nil) { providers in
                 providers.first?.loadObject(ofClass: NSString.self) { value, _ in
                     if let text = value as? String { DispatchQueue.main.async { model.insertDroppedSQL(text) } }
@@ -1196,7 +1195,7 @@ private struct SQLWorkspaceView: View {
             }
             if !model.savedQueries.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) { ForEach(model.savedQueries) { saved in Button(saved.name) { model.loadQuery(saved) }.buttonStyle(.bordered).controlSize(.mini) } }
+                    HStack(spacing: 5) { ForEach(model.savedQueries) { saved in Button(saved.name) { model.loadQuery(saved) }.limaButton().controlSize(.mini) } }
                 }
             }
             resultsView
@@ -1211,7 +1210,7 @@ private struct SQLWorkspaceView: View {
                 Spacer()
                 if !model.result.rows.isEmpty {
                     Text("\(model.result.rows.count) rows").limaFont(.caption2.monospacedDigit()).foregroundStyle(.secondary)
-                    Button("Export range", action: model.exportResultRange).buttonStyle(.bordered).controlSize(.mini)
+                    Button("Export range", action: model.exportResultRange).limaButton().controlSize(.mini)
                 }
             }
             if model.result.columns.isEmpty {
@@ -1220,7 +1219,7 @@ private struct SQLWorkspaceView: View {
                 SQLResultTableView(result: model.result, revision: model.resultRevision)
                     .frame(minHeight: 150, maxHeight: 310)
                     .clipShape(PrismaticPanelShape(cut: 7))
-                    .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.075), lineWidth: 0.7).allowsHitTesting(false))
+                    .overlay(PrismaticPanelShape(cut: 7).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth).allowsHitTesting(false))
             }
         }
     }
@@ -1240,18 +1239,18 @@ private struct SQLWorkspaceView: View {
             Text("Saved locally · no remote service").limaFont(.caption2).foregroundStyle(.secondary)
             Spacer()
             Button("Reveal file") { NSWorkspace.shared.activateFileViewerSelecting([ApplicationPaths.applicationSupport.appendingPathComponent("sql-workspace.json")]) }
-                .buttonStyle(.bordered).controlSize(.small)
+                .limaButton().controlSize(.small)
         }
     }
 
     private var storageExportControls: some View {
         HStack(spacing: 7) {
-            TextField("Collection name", text: $model.exportCollectionName).textFieldStyle(.roundedBorder)
+            TextField("Collection name", text: $model.exportCollectionName).limaInputSurface()
             Text("Rows").limaFont(.caption).foregroundStyle(.secondary)
-            TextField("1", value: $model.exportStart, format: .number).frame(width: 44).textFieldStyle(.roundedBorder)
+            TextField("1", value: $model.exportStart, format: .number).frame(width: 44).limaInputSurface()
             Text("–").foregroundStyle(.secondary)
-            TextField("250", value: $model.exportEnd, format: .number).frame(width: 52).textFieldStyle(.roundedBorder)
-            Button("Export current result", action: model.exportResultRange).buttonStyle(.borderedProminent).controlSize(.small)
+            TextField("250", value: $model.exportEnd, format: .number).frame(width: 52).limaInputSurface()
+            Button("Export current result", action: model.exportResultRange).limaButton(prominent: true).controlSize(.small)
         }
     }
 
@@ -1290,7 +1289,8 @@ private struct SQLWorkspaceView: View {
                     Text(document[key] ?? "").limaFont(.system(size: 10.5, design: .monospaced)).textSelection(.enabled)
                 }
             }
-        }.padding(8).background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 6))
+        }.padding(8).background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 6))
+        .overlay(PrismaticPanelShape(cut: 6).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
     }
 
     private var inspector: some View {
@@ -1299,7 +1299,7 @@ private struct SQLWorkspaceView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) { Text(table.name).limaFont(.system(size: 13, weight: .semibold)); Text(table.schema).limaFont(.caption2).foregroundStyle(.secondary) }
                     Spacer()
-                    Button(action: { model.addTable(table) }) { Image(systemName: "plus.square.on.square") }.buttonStyle(.bordered).controlSize(.mini).help("Add to canvas")
+                    Button(action: { model.addTable(table) }) { Image(systemName: "plus.square.on.square") }.limaButton().controlSize(.mini).help("Add to canvas")
                 }
                 if let description = table.description, !description.isEmpty { Text(description).limaFont(.caption).foregroundStyle(.secondary) }
                 let filteredColumns = table.columns.filter { item in columnSearch.isEmpty || item.name.localizedCaseInsensitiveContains(columnSearch) || item.dataType.localizedCaseInsensitiveContains(columnSearch) || (item.description?.localizedCaseInsensitiveContains(columnSearch) ?? false) }
@@ -1321,7 +1321,8 @@ private struct SQLWorkspaceView: View {
                     }
                     .padding(.horizontal, 7)
                     .frame(height: 27)
-                    .background(Color.white.opacity(0.045), in: PrismaticPanelShape(cut: 5))
+                    .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 3) {
                             ForEach(visibleColumns) { column in
@@ -1365,7 +1366,8 @@ private struct SQLWorkspaceView: View {
             Divider()
             Text("Compatible joins").limaFont(.caption.weight(.semibold)).foregroundStyle(settings.accentTheme.tertiary)
             if model.joinSuggestions.isEmpty { Text("Add a table to see foreign-key joins.").limaFont(.caption2).foregroundStyle(.secondary) }
-            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { HStack(spacing: 7) { Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundStyle(.teal); VStack(alignment: .leading, spacing: 2) { Text(join.toTable).limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).limaFont(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) }; Spacer(minLength: 0); Image(systemName: "plus").limaFont(.system(size: 8)).foregroundStyle(.secondary) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(Color.white.opacity(0.05), in: PrismaticPanelShape(cut: 5)) }.buttonStyle(.plain).onDrag { NSItemProvider(object: join.toTable as NSString) }.help("Click to add this join, or drag the related table onto the canvas") } } } }
+            else { ScrollView { VStack(alignment: .leading, spacing: 5) { ForEach(model.joinSuggestions) { join in Button { model.addJoin(join) } label: { HStack(spacing: 7) { Image(systemName: "arrow.up.left.and.arrow.down.right").foregroundStyle(.teal); VStack(alignment: .leading, spacing: 2) { Text(join.toTable).limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced)); Text(join.label).limaFont(.system(size: 8.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(2) }; Spacer(minLength: 0); Image(systemName: "plus").limaFont(.system(size: 8)).foregroundStyle(.secondary) } .frame(maxWidth: .infinity, alignment: .leading).padding(7).background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                    .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)) }.buttonStyle(.plain).onDrag { NSItemProvider(object: join.toTable as NSString) }.help("Click to add this join, or drag the related table onto the canvas") } } } }
         }
         .padding(9).liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.012)
     }
@@ -1396,9 +1398,10 @@ private struct SQLWorkspaceView: View {
                     .controlSize(.mini)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: model.isBusy ? 34 : 27)
-        .background(Color.black.opacity(0.16), in: PrismaticPanelShape(cut: 6))
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: model.isBusy ? 34 : LimaDesign.statusHeight)
+        .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 6))
+        .overlay(PrismaticPanelShape(cut: 6).stroke(LimaDesign.separator, lineWidth: 0.5))
     }
 
     private func emptyState(_ symbol: String, _ title: String, _ description: String) -> some View {
@@ -1490,7 +1493,7 @@ private struct SQLConnectionEditor: View {
             }
             Text("The workspace saves connection metadata locally with restricted permissions. Passwords are stored separately in this Mac’s Keychain and are excluded from query history, schema files, and usage logs.")
                 .limaFont(.caption).foregroundStyle(.secondary)
-            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { model.saveConnection(); dismiss() }.buttonStyle(.bordered); Button("Save & Test") { model.saveConnection(test: true); dismiss() }.buttonStyle(.borderedProminent) }
+            HStack { Spacer(); Button("Cancel") { dismiss() }; Button("Save") { model.saveConnection(); dismiss() }.limaButton(); Button("Save & Test") { model.saveConnection(test: true); dismiss() }.limaButton(prominent: true) }
         }
         .padding(20).frame(width: 560)
         .background(LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow))
@@ -1504,7 +1507,7 @@ private struct SQLConnectionEditor: View {
     }
 
     private func row<Content: View>(_ name: String, @ViewBuilder content: () -> Content) -> some View {
-        GridRow { Text(name).limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 83, alignment: .trailing); content().textFieldStyle(.roundedBorder) }
+        GridRow { Text(name).limaFont(.caption.weight(.semibold)).foregroundStyle(.secondary).frame(width: 83, alignment: .trailing); content().limaInputSurface() }
     }
 
     private func commaValues(_ value: String) -> [String]? {

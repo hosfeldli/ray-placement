@@ -185,7 +185,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         super.init(frame: NSRect(x: 0, y: 0, width: 560, height: 150))
         translatesAutoresizingMaskIntoConstraints = true
         wantsLayer = true
-        layer?.cornerRadius = 12
+        layer?.cornerRadius = LimaDesign.standardCorner
         layer?.cornerCurve = .continuous
         layer?.borderWidth = 1
         layer?.masksToBounds = true
@@ -214,6 +214,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             for case let button as NSButton in self.toolbar.arrangedSubviews {
                 button.font = .systemFont(ofSize: 11 * scale, weight: .medium)
             }
+            self.titleField?.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+            self.fields.forEach { $0.layer?.borderColor = LimaAppKitDesign.focus.cgColor }
         }
     }
 
@@ -261,7 +263,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         title.delegate = self
         title.isBordered = false
         title.drawsBackground = false
-        title.focusRingType = .none
+        title.focusRingType = .default
+        title.wantsLayer = true
+        title.layer?.cornerRadius = 4
+        title.layer?.borderWidth = LimaDesign.borderWidth
+        title.layer?.borderColor = LimaAppKitDesign.separator.cgColor
         title.placeholderString = "Untitled table"
         title.font = .systemFont(ofSize: AppTypography.size(12), weight: .semibold)
         title.textColor = .labelColor
@@ -301,6 +307,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .recessed
         button.controlSize = .small
+        button.contentTintColor = SettingsStore.shared.accentTheme.nsPrimary
         button.font = .systemFont(ofSize: AppTypography.size(11), weight: .medium)
         return button
     }
@@ -359,8 +366,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let container = NSView()
         container.wantsLayer = true
         container.layer?.backgroundColor = header
-            ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
-            : NSColor.textBackgroundColor.withAlphaComponent(alternate ? 0.56 : 0.76).cgColor
+            ? LimaAppKitDesign.accentSoft.cgColor
+            : (alternate ? LimaAppKitDesign.editorBackground : LimaAppKitDesign.recessedBackground).cgColor
 
         let field = MarkdownTableField(string: value)
         field.coordinate = coordinate
@@ -369,6 +376,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
+        field.wantsLayer = true
+        field.layer?.cornerRadius = 4
+        field.layer?.borderWidth = 0
+        field.layer?.borderColor = LimaAppKitDesign.focus.cgColor
         field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
@@ -422,9 +433,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
         let accent = SettingsStore.shared.accentTheme.nsPrimary
-        let background = NSColor(calibratedWhite: 0.105, alpha: 0.98)
-        let border = NSColor.white.withAlphaComponent(0.22)
-        let separator = NSColor.white.withAlphaComponent(0.16)
+        let background = LimaAppKitDesign.windowBackground
+        let border = LimaAppKitDesign.strongSeparator
+        let separator = LimaAppKitDesign.separator
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
         gridView?.layer?.backgroundColor = separator.cgColor
@@ -435,9 +446,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             if item.header {
                 color = background.blended(withFraction: 0.30, of: accent) ?? background
             } else if item.alternate {
-                color = NSColor(calibratedWhite: 0.17, alpha: 0.98)
+                color = LimaAppKitDesign.editorBackground
             } else {
-                color = NSColor(calibratedWhite: 0.135, alpha: 0.98)
+                color = LimaAppKitDesign.recessedBackground
             }
             item.view.layer?.backgroundColor = color.cgColor
         }
@@ -624,6 +635,25 @@ private enum CellCoordinate: Equatable {
 private final class MarkdownTableField: NSTextField {
     var coordinate: CellCoordinate = .header(0)
     var onPasteTable: ((TabularData) -> Bool)?
+
+    override func becomeFirstResponder() -> Bool {
+        let accepted = super.becomeFirstResponder()
+        if accepted {
+            layer?.borderWidth = LimaDesign.focusWidth
+            layer?.borderColor = LimaAppKitDesign.focus.cgColor
+            layer?.backgroundColor = LimaAppKitDesign.selection.withAlphaComponent(0.16).cgColor
+        }
+        return accepted
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        if resigned {
+            layer?.borderWidth = 0
+            layer?.backgroundColor = nil
+        }
+        return resigned
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)

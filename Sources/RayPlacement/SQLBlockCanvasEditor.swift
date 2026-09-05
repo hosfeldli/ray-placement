@@ -31,10 +31,13 @@ struct SQLBlockCanvasEditor: View {
                     ForEach(["Select", "Join", "Filter", "Group", "Aggregate", "Having", "Sort"], id: \.self) { kind in
                         Button { add(kind) } label: {
                             HStack(spacing: 4) { Image(systemName: paletteIcon(kind)).foregroundStyle(color(kind)); Text(paletteTitle(kind)); Spacer(minLength: 0); Image(systemName: "plus").limaFont(.system(size: 8)) }
-                                .limaFont(.system(size: 10, weight: .medium)).padding(.horizontal, 7).frame(height: 27)
+                                .limaFont(.system(size: 10, weight: .medium))
+                                .padding(.horizontal, 7)
+                                .frame(height: LimaDesign.compactControlHeight)
+                                .background(color(kind).opacity(0.075), in: SQLSocketShape())
+                                .overlay(SQLSocketShape().stroke(color(kind).opacity(0.22), lineWidth: LimaDesign.borderWidth))
                         }
                             .buttonStyle(.plain)
-                            .background(Color.white.opacity(0.045), in: SQLSocketShape())
                             .onDrag { NSItemProvider(object: "lima-block:\(kind)" as NSString) }
                             .help("Add a \(kind.lowercased()) block. You can also drag it into the flow.")
                     }
@@ -71,11 +74,11 @@ struct SQLBlockCanvasEditor: View {
             .frame(minHeight: 185, maxHeight: .infinity)
         }
         .padding(4)
-        .background(dropTargeted ? Color.teal.opacity(0.10) : .clear, in: SQLSocketShape())
-        .overlay(SQLSocketShape().stroke(dropTargeted ? Color.teal.opacity(0.8) : .clear, style: StrokeStyle(lineWidth: 1.2, dash: [5, 4])).allowsHitTesting(false))
+        .background(dropTargeted ? SettingsStore.shared.accentTheme.primary.opacity(0.10) : LimaDesign.recessedFill, in: SQLSocketShape())
+        .overlay(SQLSocketShape().stroke(dropTargeted ? SettingsStore.shared.accentTheme.primary.opacity(0.8) : LimaDesign.separator, style: StrokeStyle(lineWidth: dropTargeted ? 1.2 : LimaDesign.borderWidth, dash: dropTargeted ? [5, 4] : [])).allowsHitTesting(false))
         .onDrop(of: [.plainText], isTargeted: $dropTargeted, perform: acceptDrop)
         .limaFont(.system(size: 11))
-        .textFieldStyle(.roundedBorder)
+        .limaInputSurface()
         .controlSize(.small)
         .onAppear(perform: refreshSchemaSuggestions)
         .onChange(of: schemaRevision) { _ in refreshSchemaSuggestions() }
@@ -282,9 +285,9 @@ private struct SQLQueryStepCard<Content: View>: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(white: 0.095), in: SQLSocketShape())
-        .overlay(alignment: .leading) { Rectangle().fill(color.opacity(0.8)).frame(width: 2).padding(.vertical, 10).allowsHitTesting(false) }
-        .overlay(SQLSocketShape().stroke(color.opacity(0.22), lineWidth: 0.7).allowsHitTesting(false))
+        .background(LimaDesign.recessedFill, in: SQLSocketShape())
+        .overlay(alignment: .leading) { Rectangle().fill(color.opacity(0.82)).frame(width: 2).padding(.vertical, 10).allowsHitTesting(false) }
+        .overlay(SQLSocketShape().stroke(color.opacity(0.24), lineWidth: LimaDesign.borderWidth).allowsHitTesting(false))
     }
 }
 
@@ -307,13 +310,22 @@ private struct SQLExpressionField: View {
     var suggestions: [String]
     var body: some View {
         HStack(spacing: 3) {
-            TextField(placeholder, text: $text).limaFont(.system(size: 10.5, design: .monospaced))
+            TextField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .limaFont(.system(size: 10.5, design: .monospaced))
             if !suggestions.isEmpty {
                 Menu {
                     ForEach(suggestions.filter { text.isEmpty || $0.localizedCaseInsensitiveContains(text) }, id: \.self) { item in Button(item) { text = item } }
-                } label: { Image(systemName: "list.bullet") }.menuStyle(.borderlessButton).frame(width: 19).help("Choose from schema")
+                } label: { Image(systemName: "list.bullet") }
+                    .menuStyle(.borderlessButton)
+                    .frame(width: 19)
+                    .help("Choose from schema")
             }
         }
+        .padding(.horizontal, 6)
+        .frame(minHeight: LimaDesign.compactControlHeight - 2)
+        .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+        .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
     }
 }
 
@@ -357,7 +369,9 @@ private struct SQLFilterListEditor: View {
                         } label: { Image(systemName: "arrow.up") }.help("Move condition up")
                     }.buttonStyle(.borderless)
                 }
-                .padding(7).background(Color.white.opacity(0.035), in: SQLSocketShape())
+                .padding(7)
+                .background(LimaDesign.controlFill, in: SQLSocketShape())
+                .overlay(SQLSocketShape().stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
                 .modifier(SQLReorderBlocks(items: $filters, id: filter.id, category: "filter"))
             }
         }

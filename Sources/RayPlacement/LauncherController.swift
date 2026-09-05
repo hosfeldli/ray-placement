@@ -294,6 +294,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             // arrows, Control-C, and Vim/Nano commands. Only intercept the
             // terminal's documented workspace shortcuts here.
             if viewModel.mode == .terminal {
+                if event.keyCode == 53 {
+                    viewModel.enter(.root)
+                    return nil
+                }
                 if event.keyCode == 122 { // F1
                     terminalModel.toggleHelp()
                     return nil

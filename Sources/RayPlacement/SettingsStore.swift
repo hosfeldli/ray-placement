@@ -273,6 +273,7 @@ final class SettingsStore: ObservableObject {
         static let sqlHotkeyEnabled = "sqlHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
+        static let contrastMode = "contrastMode"
         static let interfaceDensity = "interfaceDensity"
         static let notesVisualTheme = "notesVisualTheme"
         static let notesFontStyle = "notesFontStyle"
@@ -424,6 +425,13 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var contrastMode: AppContrastMode {
+        didSet {
+            defaults.set(contrastMode.rawValue, forKey: Key.contrastMode)
+            NotificationCenter.default.post(name: .rayPlacementAccentChanged, object: nil)
+        }
+    }
+
     @Published var interfaceDensity: AppInterfaceDensity {
         didSet { defaults.set(interfaceDensity.rawValue, forKey: Key.interfaceDensity) }
     }
@@ -537,6 +545,7 @@ final class SettingsStore: ObservableObject {
         sqlHotkeyEnabled = defaults.object(forKey: Key.sqlHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
+        contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
         notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system

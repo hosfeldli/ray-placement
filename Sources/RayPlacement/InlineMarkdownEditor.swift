@@ -223,7 +223,8 @@ enum MarkdownEditorActions {
     static func table() { withEditor { $0.insertTable() } }
     static func image() { withEditor { $0.chooseImage() } }
     static func chart() { withEditor { $0.insertChart() } }
-    static func checklist() { withEditor { $0.insertRichMarkdownBlock("- [ ] First task\n- [ ] Next task") } }
+    static func checklist() { withEditor { $0.applyListPrefix("- [ ] ") } }
+    static func bullets() { withEditor { $0.applyListPrefix("- ") } }
     static func insert(_ markdown: String) { withEditor { $0.insertMarkdownBlock(markdown) } }
 }
 
@@ -404,6 +405,31 @@ final class MarkdownTextView: NSTextView {
             selectionOffset: boundedLevel + 1,
             selectionLength: (replacement as NSString).length - boundedLevel - 1
         )
+    }
+
+    func applyListPrefix(_ prefix: String) {
+        let source = string as NSString
+        let selection = selectedRange()
+        let start = source.lineRange(for: NSRange(location: selection.location, length: 0)).location
+        let endLocation = min(source.length, selection.location + selection.length)
+        let endRange = source.lineRange(for: NSRange(location: max(start, endLocation - (endLocation > start ? 1 : 0)), length: 0))
+        let end = NSMaxRange(endRange)
+        var replacements: [(NSRange, String)] = []
+        var cursor = start
+        while cursor < end {
+            let lineRange = source.lineRange(for: NSRange(location: cursor, length: 0))
+            let raw = source.substring(with: lineRange).trimmingCharacters(in: .newlines)
+            let body = raw.replacingOccurrences(of: #"^\s*(?:[-*+] |[-*+] \[ ?\] |\u{FFFC} )"#, with: "", options: .regularExpression)
+            replacements.append((NSRange(location: lineRange.location, length: raw.utf16.count), prefix + body))
+            cursor = NSMaxRange(lineRange)
+        }
+        guard !replacements.isEmpty else { return }
+        for (range, replacement) in replacements.reversed() {
+            guard shouldChangeText(in: range, replacementString: replacement) else { return }
+            textStorage?.replaceCharacters(in: range, with: replacement)
+        }
+        didChangeText()
+        setSelectedRange(NSRange(location: start, length: max(0, (textStorage?.length ?? start) - start)))
     }
 
     func insertMarkdownBlock(_ markdown: String) {

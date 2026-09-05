@@ -11,13 +11,12 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Extension Development"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
-        window.minSize = NSSize(width: 760, height: 520)
-        window.setAccessibilityLabel("Lima extension development manuals")
+        LimaWindowChrome.configure(
+            window,
+            title: "Extension Development",
+            accessibilityLabel: "Lima extension development manuals",
+            minSize: NSSize(width: 760, height: 520)
+        )
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionDevelopmentView().preferredColorScheme(.dark)))
     }
@@ -60,28 +59,25 @@ private struct ExtensionDevelopmentView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            VStack(spacing: 8) {
+            VStack(spacing: LimaDesign.panelGap) {
                 header
-                HStack(spacing: 8) {
+                HStack(spacing: LimaDesign.panelGap) {
                     navigation
                     document
                 }
             }
-            .padding(10)
+            .padding(LimaDesign.windowPadding)
         }
         .tint(SettingsStore.shared.accentTheme.primary)
     }
 
     private var header: some View {
-        HStack(spacing: 9) {
-            ZStack {
-                PrismaticPanelShape(cut: 7).fill(SettingsStore.shared.accentTheme.gradient)
-                Image(systemName: "puzzlepiece.extension.fill")
-                    .limaFont(.system(size: 13, weight: .bold))
-            }
-            .frame(width: 28, height: 28)
-            Text("Extension Lab")
-                .limaFont(.system(size: 15, weight: .semibold, design: .rounded))
+        HStack(spacing: LimaDesign.controlGap) {
+            LimaToolbarTitle(
+                symbol: "puzzlepiece.extension.fill",
+                title: "Extension Lab",
+                subtitle: "API 2 · local manuals"
+            )
             Text("API 2")
                 .limaFont(.system(size: 9, weight: .bold, design: .rounded))
                 .tracking(0.7)
@@ -93,22 +89,22 @@ private struct ExtensionDevelopmentView: View {
             } label: {
                 Label("Extensions", systemImage: "folder")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(LimaToolbarTextButtonStyle())
             .help("Open the installed extensions folder")
             Button(copiedLabel == "Starter" ? "Copied" : "Copy starter") {
                 copy(ExtensionGuide.starter, label: "Starter")
             }
-            .buttonStyle(.borderedProminent)
+            .limaButton(prominent: true)
             .controlSize(.small)
         }
-        .padding(.horizontal, 13)
-        .frame(height: 46)
-        .liquidGlass(cornerRadius: 12, depth: .raised, accentOpacity: 0.04)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: LimaDesign.toolbarHeight)
+        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.022)
     }
 
     private var navigation: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 5) {
+            HStack(spacing: LimaDesign.controlGap) {
                 ForEach(manuals) { item in
                     Button {
                         selectedManualID = item.id
@@ -121,10 +117,11 @@ private struct ExtensionDevelopmentView: View {
                             .padding(.vertical, 6)
                             .background(
                                 item.id == selectedManualID
-                                    ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
-                                    : AnyShapeStyle(Color.white.opacity(0.035)),
+                                    ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.14))
+                                    : AnyShapeStyle(LimaDesign.controlFill),
                                 in: PrismaticPanelShape(cut: 5)
                             )
+                            .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
                     }
                     .buttonStyle(.plain)
                 }
@@ -138,10 +135,10 @@ private struct ExtensionDevelopmentView: View {
                         .buttonStyle(.plain)
                 }
             }
-            .padding(.horizontal, 9)
-            .frame(height: 31)
-            .background(Color.black.opacity(0.18), in: PrismaticPanelShape(cut: 5))
-            .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.11), lineWidth: 0.6))
+            .padding(.horizontal, LimaDesign.toolbarPadding - 3)
+            .frame(height: LimaDesign.controlHeight)
+            .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 5))
+            .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.separator, lineWidth: 0.6))
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -149,7 +146,7 @@ private struct ExtensionDevelopmentView: View {
                         Button {
                             selectedSectionID = section.id
                         } label: {
-                            HStack(spacing: 7) {
+                            HStack(spacing: LimaDesign.controlGap) {
                                 Rectangle()
                                     .fill(section.id == selectedSection.id ? SettingsStore.shared.accentTheme.tertiary : Color.clear)
                                     .frame(width: 1.5, height: 17)
@@ -161,7 +158,7 @@ private struct ExtensionDevelopmentView: View {
                             }
                             .padding(.horizontal, 8)
                             .frame(minHeight: 31)
-                            .background(section.id == selectedSection.id ? Color.white.opacity(0.055) : .clear, in: PrismaticPanelShape(cut: 4))
+                            .background(section.id == selectedSection.id ? SettingsStore.shared.accentTheme.primary.opacity(0.09) : .clear, in: PrismaticPanelShape(cut: 4))
                         }
                         .buttonStyle(.plain)
                     }
@@ -188,16 +185,16 @@ private struct ExtensionDevelopmentView: View {
                 Button(copiedLabel == selectedSection.id ? "Copied" : "Copy section") {
                     copy(selectedSection.markdown, label: selectedSection.id)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(LimaToolbarTextButtonStyle())
                 .help("Copy this section as Markdown")
                 Button(copiedLabel == manual.id ? "Copied" : "Copy manual") {
                     copy(manual.markdown, label: manual.id)
                 }
-                .buttonStyle(.bordered)
+                .limaButton()
                 .controlSize(.small)
             }
-            .padding(.horizontal, 16)
-            .frame(height: 51)
+            .padding(.horizontal, LimaDesign.toolbarPadding + 4)
+            .frame(height: LimaDesign.toolbarHeight + 7)
 
             GlassHairline()
 

@@ -110,8 +110,8 @@ private struct TopShelfView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: dictation.phase)
-        .animation(.interactiveSpring(response: 0.24, dampingFraction: 0.84), value: music.nowPlaying)
+        .limaAnimation(LimaDesign.spring(0.24), value: dictation.phase)
+        .limaAnimation(LimaDesign.spring(0.24), value: music.nowPlaying)
     }
 
     private var dictationPill: some View {
@@ -142,7 +142,7 @@ private struct TopShelfView: View {
             .help("Stop recording and finish transcription")
             .accessibilityLabel("Stop dictation")
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
         .frame(height: 56)
         .prismaticShelf(accent: .red)
         .overlay(alignment: .bottom) {
@@ -170,7 +170,7 @@ private struct TopShelfView: View {
                                 .allowsHitTesting(false)
                         }
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         HStack(spacing: 5) {
                             Image(systemName: track.source.symbol)
                                 .limaFont(.system(size: 8, weight: .bold))
@@ -193,13 +193,26 @@ private struct TopShelfView: View {
                             .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
+                        HStack(spacing: 5) {
+                            Text(timeLabel(track.position))
+                                .limaFont(.system(size: 8, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.86))
+                            ProgressView(value: track.duration > 0 ? min(track.position, track.duration) : 0, total: max(track.duration, 1))
+                                .tint(accent)
+                                .frame(maxWidth: .infinity)
+                            Text(timeLabel(track.duration))
+                                .limaFont(.system(size: 8, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.white.opacity(0.86))
+                        }
                         Text(statusMessage ?? mediaSubtitle(track))
-                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .limaFont(.system(size: 9, weight: .medium, design: .rounded))
                             .foregroundStyle(statusMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .padding(.vertical, 3)
+                .background(Color.black.opacity(0.30), in: PrismaticPanelShape(cut: 7))
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -207,6 +220,7 @@ private struct TopShelfView: View {
             .accessibilityLabel("Open \(track.source.title): \(track.title)")
 
             HStack(spacing: 3) {
+                mediaButton("magnifyingglass", label: "Search Spotify") { music.searchSpotify() }
                 mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
                 Button {
                     runMediaAction(.playPause)
@@ -221,15 +235,22 @@ private struct TopShelfView: View {
                                 .stroke(Color.white.opacity(0.38), lineWidth: 0.7)
                                 .allowsHitTesting(false)
                         }
-                        .shadow(color: accent.opacity(0.30), radius: 6, y: 2)
+                        .shadow(color: accent.opacity(0.20), radius: 4, y: 2)
                 }
                 .buttonStyle(.plain)
                 .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
                 .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
                 mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
+                Image(systemName: "speaker.wave.2.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(.secondary)
+                Slider(value: Binding(get: { music.outputVolume }, set: { music.setOutputVolume($0) }), in: 0...1)
+                    .frame(width: 48)
+                    .controlSize(.mini)
+                    .help("Output volume")
             }
-            .padding(4)
-            .background(Color.black.opacity(0.20), in: Capsule())
+            .padding(3)
+            .background(Color.black.opacity(0.16), in: Capsule())
             .overlay {
                 Capsule()
                     .stroke(Color.white.opacity(0.14), lineWidth: 0.7)
@@ -238,7 +259,7 @@ private struct TopShelfView: View {
             .opacity(music.isPerformingTransport ? 0.55 : 1)
             .disabled(music.isPerformingTransport)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
         .frame(height: 56)
         .prismaticShelf(accent: accent)
         .overlay(alignment: .bottom) {
@@ -280,7 +301,7 @@ private struct TopShelfView: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(Color.white.opacity(0.055), in: PrismaticPanelShape(cut: 5))
+        .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
         .contentShape(Rectangle())
         .help(label)
         .accessibilityLabel(label)
@@ -289,6 +310,11 @@ private struct TopShelfView: View {
     private func runMediaAction(_ action: MusicNowPlayingService.TransportAction) {
         music.perform(action)
         focus.restoreSoon()
+    }
+
+    private func timeLabel(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else { return "0:00" }
+        return "\(Int(seconds) / 60):\(String(format: "%02d", Int(seconds) % 60))"
     }
 
     private func mediaSubtitle(_ track: MediaNowPlayingSnapshot) -> String {
@@ -390,9 +416,10 @@ private struct AudioAccentRail: View {
     let level: Double?
     let accent: Color
     let active: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !active)) { context in
+        TimelineView(.animation(minimumInterval: 1.0 / 20.0, paused: !active || reduceMotion)) { context in
             GeometryReader { geometry in
                 let time = context.date.timeIntervalSinceReferenceDate
                 let pulse = level ?? (0.52 + sin(time * 3.2) * 0.18)
@@ -410,7 +437,7 @@ private struct AudioAccentRail: View {
                     .offset(x: 6 + position)
                     .opacity(0.42 + amount * 0.58)
                     .shadow(color: accent.opacity(0.35 + amount * 0.55), radius: 2 + amount * 5)
-                    .animation(.linear(duration: 0.08), value: amount)
+                    .limaAnimation(.linear(duration: 0.08), value: amount)
             }
         }
         .frame(height: 3)
@@ -422,7 +449,7 @@ private struct AudioAccentRail: View {
 private extension View {
     func prismaticShelf(accent: Color) -> some View {
         background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
-            .background(Color.black.opacity(0.30), in: PrismaticPanelShape(cut: 8))
+            .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 8))
             .overlay(
                 PrismaticPanelShape(cut: 8)
                     .fill(
@@ -447,7 +474,7 @@ private extension View {
                     )
                     .allowsHitTesting(false)
             )
-            .shadow(color: accent.opacity(0.16), radius: 10, y: 5)
+            .shadow(color: accent.opacity(0.08), radius: 6, y: 3)
     }
 }
 
@@ -487,7 +514,7 @@ private struct SpeechLevelView: View {
         }
         .frame(width: 28, height: 24)
         .background(Color.red.opacity(0.10), in: PrismaticPanelShape(cut: 5))
-        .animation(.linear(duration: 0.08), value: level)
+        .limaAnimation(.linear(duration: 0.08), value: level)
         .accessibilityHidden(true)
     }
 }

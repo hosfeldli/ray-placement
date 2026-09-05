@@ -48,39 +48,37 @@ struct SettingsView: View {
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
     @State private var confirmUsageClear = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
 
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            HStack(spacing: 10) {
+            HStack(spacing: LimaDesign.panelGap) {
                 settingsSidebar
                 VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        Image(systemName: selectedSection.symbol)
-                            .limaFont(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(settings.accentTheme.primary)
-                            .frame(width: 26, height: 26)
-                            .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
-                            .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.25), lineWidth: 0.6))
-                        Text(selectedSection.title)
-                            .limaFont(.system(size: 17, weight: .semibold, design: .rounded))
+                    HStack {
+                        LimaToolbarTitle(
+                            symbol: selectedSection.symbol,
+                            title: selectedSection.title,
+                            subtitle: "Lima preferences"
+                        )
                         Spacer()
                     }
-                    .padding(.horizontal, 14)
-                    .frame(height: 48)
+                    .padding(.horizontal, LimaDesign.toolbarPadding)
+                    .frame(height: LimaDesign.sectionHeaderHeight)
                     GlassHairline()
                     selectedContent
-                        .transition(.opacity.combined(with: .scale(scale: 0.992)))
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
                 }
                 .liquidGlass(cornerRadius: 21, depth: .raised, accentOpacity: 0.018)
             }
-            .padding(11)
+            .padding(LimaDesign.windowPadding)
         }
         .frame(width: 820, height: 590)
         .tint(settings.accentTheme.primary)
         .preferredColorScheme(.dark)
-        .animation(.interactiveSpring(response: 0.30, dampingFraction: 0.88), value: selectedSection)
+        .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
             Button("Clear Log", role: .destructive) { usageMonitor.clear() }
@@ -101,7 +99,7 @@ struct SettingsView: View {
                 }
                 .frame(width: 30, height: 30)
                 .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
-                .shadow(color: settings.accentTheme.primary.opacity(0.24), radius: 8, y: 4)
+                .shadow(color: settings.accentTheme.primary.opacity(0.16), radius: 6, y: 3)
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
                 }
@@ -140,9 +138,9 @@ struct SettingsView: View {
                         }
                     }
                     .shadow(
-                        color: selectedSection == section ? settings.accentTheme.primary.opacity(0.12) : .clear,
-                        radius: 8,
-                        y: 4
+                        color: selectedSection == section ? settings.accentTheme.primary.opacity(0.07) : .clear,
+                        radius: 6,
+                        y: 3
                     )
                 }
                 .buttonStyle(.plain)
@@ -177,7 +175,7 @@ struct SettingsView: View {
                 }
                 Label(settings.dynamicPerformanceDescription, systemImage: settings.dynamicPerformance ? "waveform.path.ecg" : "slider.horizontal.3")
                     .limaFont(.caption.weight(.medium))
-                    .foregroundStyle(settings.dynamicPerformance ? Color.accentColor : .secondary)
+                    .foregroundStyle(settings.dynamicPerformance ? settings.accentTheme.primary : .secondary)
             }
 
             Section("Local writing checks") {
@@ -299,9 +297,7 @@ struct SettingsView: View {
                 TextEditor(text: $settings.writingInstructions)
                     .limaFont(.system(size: 12.5))
                     .frame(minHeight: 118)
-                    .padding(7)
-                    .background(Color(nsColor: .textBackgroundColor), in: PrismaticPanelShape(cut: 5))
-                    .overlay(PrismaticPanelShape(cut: 5).stroke(Color.secondary.opacity(0.25)))
+                    .limaEditorSurface(cornerRadius: 5)
                     .accessibilityLabel("Words preserved by grammar correction")
                 HStack {
                     Text("\(settings.writingInstructions.count.formatted()) / 4,000 characters")
@@ -396,6 +392,15 @@ struct SettingsView: View {
         Form {
             Section("Appearance") {
                 AccentThemePicker(selection: $settings.accentTheme)
+                Picker("Contrast", selection: $settings.contrastMode) {
+                    ForEach(AppContrastMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.contrastMode.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
                 InterfaceTextSizeControl()
                 Picker("Interface density", selection: $settings.interfaceDensity) {
                     ForEach(AppInterfaceDensity.allCases) { density in
@@ -666,7 +671,7 @@ struct SettingsView: View {
             Image(systemName: "sparkle.magnifyingglass")
                 .limaFont(.system(size: 56, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(settings.accentTheme.primary)
             Text("Lima").limaFont(.title.bold())
             Text("A fast, local-only macOS command launcher")
                 .foregroundStyle(.secondary)
@@ -728,28 +733,36 @@ struct SettingsView: View {
 private struct AccentThemePicker: View {
     @Binding var selection: AppAccentTheme
 
+    private let columns = [GridItem(.adaptive(minimum: 30, maximum: 40), spacing: 7)]
+
     var body: some View {
-        HStack(spacing: 7) {
-            Text(selection.title)
-                .limaFont(.callout.weight(.medium))
-            Spacer()
-            ForEach(AppAccentTheme.allCases) { theme in
-                Button { selection = theme } label: {
-                    PrismaticPanelShape(cut: 5)
-                        .fill(theme.gradient)
-                        .frame(width: 23, height: 23)
-                        .overlay(
-                            PrismaticPanelShape(cut: 5)
-                                .stroke(Color.white.opacity(selection == theme ? 0.82 : 0.18), lineWidth: selection == theme ? 1.25 : 0.65)
-                        )
-                        .padding(2)
-                        .background(PrismaticPanelShape(cut: 6).fill(selection == theme ? theme.primary.opacity(0.18) : .clear))
-                        .shadow(color: selection == theme ? theme.primary.opacity(0.34) : .clear, radius: 7, y: 3)
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Accent theme")
+                    .limaFont(.callout.weight(.medium))
+                Spacer()
+                Text(selection.title)
+                    .limaFont(.caption.weight(.semibold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+            }
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 7) {
+                ForEach(AppAccentTheme.allCases) { theme in
+                    Button { selection = theme } label: {
+                        PrismaticPanelShape(cut: 5)
+                            .fill(theme.gradient)
+                            .frame(width: 30, height: 30)
+                            .overlay(
+                                PrismaticPanelShape(cut: 5)
+                                    .stroke(Color.white.opacity(selection == theme ? 0.90 : 0.22), lineWidth: selection == theme ? 1.35 : 0.7)
+                            )
+                            .background(PrismaticPanelShape(cut: 6).fill(selection == theme ? theme.primary.opacity(0.20) : .clear))
+                            .shadow(color: selection == theme ? theme.primary.opacity(0.22) : .clear, radius: 5, y: 2)
+                    }
+                    .buttonStyle(.plain)
+                    .help(theme.title)
+                    .accessibilityLabel(theme.title)
+                    .accessibilityValue(selection == theme ? "Selected" : "")
                 }
-                .buttonStyle(.plain)
-                .help(theme.title)
-                .accessibilityLabel(theme.title)
-                .accessibilityValue(selection == theme ? "Selected" : "")
             }
         }
     }
@@ -764,7 +777,7 @@ private struct PrimaryShortcutRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
-                .foregroundStyle(enabled ? Color.accentColor : .secondary)
+                .foregroundStyle(enabled ? SettingsStore.shared.accentTheme.primary : .secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
             Text(title)
@@ -789,7 +802,7 @@ private struct ExtensionShortcutRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: loaded.command.icon ?? "puzzlepiece.extension.fill")
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(settings.accentTheme.primary)
                 .frame(width: 24)
                 .accessibilityHidden(true)
             Text(loaded.command.title)
@@ -1024,12 +1037,12 @@ final class SettingsWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Lima Settings"
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = true
+        LimaWindowChrome.configure(
+            window,
+            title: "Lima Settings",
+            accessibilityLabel: "Lima Settings",
+            movableByBackground: false
+        )
         window.isReleasedWhenClosed = false
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: view))
         window.center()

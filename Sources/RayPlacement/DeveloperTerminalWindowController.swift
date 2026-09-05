@@ -378,8 +378,8 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
         terminalView.allowMouseReporting = true
         terminalView.nativeForegroundColor = NSColor(calibratedWhite: 0.91, alpha: 1)
         terminalView.nativeBackgroundColor = NSColor(calibratedRed: 0.026, green: 0.035, blue: 0.055, alpha: 1)
-        terminalView.selectedTextBackgroundColor = NSColor.systemIndigo.withAlphaComponent(0.58)
-        terminalView.caretColor = NSColor.systemCyan
+        terminalView.selectedTextBackgroundColor = LimaAppKitDesign.selection
+        terminalView.caretColor = LimaAppKitDesign.focus
         let savedSize = UserDefaults.standard.double(forKey: "terminalFontSize")
         fontSize = savedSize > 0 ? min(28, max(9, savedSize)) : 13
         terminalView.font = NSFont.monospacedSystemFont(ofSize: AppTypography.size(fontSize), weight: .regular)
@@ -979,9 +979,9 @@ struct DeveloperTerminalView: View {
                         VStack(spacing: 6) {
                             HStack {
                                 Button("Files") { if !model.explorerVisible { model.toggleExplorer() } }
-                                    .foregroundStyle(model.explorerVisible ? Color.accentColor : .secondary)
+                                    .foregroundStyle(model.explorerVisible ? SettingsStore.shared.accentTheme.primary : .secondary)
                                 Button("Guide") { if !model.helpVisible { model.toggleHelp() } }
-                                    .foregroundStyle(model.helpVisible ? Color.accentColor : .secondary)
+                                    .foregroundStyle(model.helpVisible ? SettingsStore.shared.accentTheme.primary : .secondary)
                                 Spacer()
                             }.buttonStyle(.plain).limaFont(.caption.weight(.semibold)).padding(8)
                             if model.helpVisible { TerminalHelpPanel(model: model) }
@@ -1008,7 +1008,7 @@ struct DeveloperTerminalView: View {
                 .foregroundStyle(SettingsStore.shared.accentTheme.gradient)
                 .help("Interactive local zsh session")
             Circle().fill(model.isLive ? Color.green : Color.orange).frame(width: 6, height: 6)
-                .shadow(color: model.isLive ? .green.opacity(0.55) : .clear, radius: 5)
+                .shadow(color: model.isLive ? .green.opacity(0.34) : .clear, radius: 4)
             Text(model.terminalTitle).limaFont(.system(size: 13, weight: .semibold, design: .rounded)).lineLimit(1)
             Text(model.displayPath).limaFont(.system(size: 10.5, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 8)
@@ -1039,7 +1039,7 @@ struct DeveloperTerminalView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 13)
         .frame(minHeight: 39)
-        .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.035)
+        .liquidGlass(cornerRadius: 14, depth: .raised, accentOpacity: 0.028)
     }
 
     private var activityStrip: some View {
@@ -1058,7 +1058,7 @@ struct DeveloperTerminalView: View {
             Text(model.terminalActivity)
                 .limaFont(.system(size: 10.5, weight: .semibold, design: .monospaced))
                 .lineLimit(1)
-                .animation(.easeOut(duration: 0.16), value: model.terminalActivity)
+                .limaAnimation(.easeOut(duration: 0.16), value: model.terminalActivity)
             Spacer()
             if let editor = model.activeEditor {
                 TerminalStatusBadge(text: "\(editor.rawValue.uppercased()) ACTIVE", color: SettingsStore.shared.accentTheme.primary)
@@ -1071,9 +1071,9 @@ struct DeveloperTerminalView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(.horizontal, 11)
-        .frame(height: 27)
-        .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.018)
+        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .frame(height: LimaDesign.statusHeight)
+        .liquidGlass(cornerRadius: LimaDesign.compactCorner, depth: .recessed, accentOpacity: 0.012)
     }
 
     private var contextStrip: some View {
@@ -1161,8 +1161,8 @@ struct DeveloperTerminalView: View {
         }
         .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, minHeight: 29, alignment: .leading)
-        .background(active ? SettingsStore.shared.accentTheme.primary.opacity(0.09) : Color.white.opacity(0.035), in: PrismaticPanelShape(cut: 7))
-        .overlay(PrismaticPanelShape(cut: 7).stroke(active ? SettingsStore.shared.accentTheme.primary.opacity(0.34) : Color.white.opacity(0.08), lineWidth: 0.7))
+        .background(active ? SettingsStore.shared.accentTheme.primary.opacity(0.075) : LimaDesign.controlFill, in: PrismaticPanelShape(cut: 7))
+        .overlay(PrismaticPanelShape(cut: 7).stroke(active ? SettingsStore.shared.accentTheme.primary.opacity(0.30) : LimaDesign.controlBorder, lineWidth: 0.7))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title) editor shortcuts: \(keys.map { "\($0.0) \($0.1)" }.joined(separator: ", "))")
     }
@@ -1172,8 +1172,8 @@ struct DeveloperTerminalView: View {
             .padding(8)
             .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
             .clipShape(PrismaticPanelShape(cut: 8))
-            .overlay(PrismaticPanelShape(cut: 8).stroke(Color.white.opacity(0.09), lineWidth: 0.7))
-            .shadow(color: .black.opacity(0.28), radius: 18, y: 8)
+            .overlay(PrismaticPanelShape(cut: 8).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+            .shadow(color: .black.opacity(0.20), radius: 14, y: 6)
             .onTapGesture { model.focus() }
             .frame(minWidth: 340, maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -1181,7 +1181,7 @@ struct DeveloperTerminalView: View {
     private var commandShelf: some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack {
-                Image(systemName: "chevron.right").foregroundStyle(Color.accentColor)
+                Image(systemName: "chevron.right").foregroundStyle(SettingsStore.shared.accentTheme.primary)
                 TextField("Find or draft a command", text: $model.commandComposer)
                     .textFieldStyle(.plain).limaFont(.system(size: 12, design: .monospaced))
                     .focused($composerFocused).onSubmit { model.insertComposer() }
@@ -1210,7 +1210,7 @@ struct DeveloperTerminalView: View {
             if !model.isLive { Button("Start shell", action: model.startIfNeeded).limaFont(.caption) }
             Text(model.optionAsMeta ? "⌃ Control · ⌥ Meta" : "⌃ Control").limaFont(.caption2.monospaced()).foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 11).frame(height: 22)
+        .padding(.horizontal, LimaDesign.toolbarPadding).frame(height: 22)
     }
 }
 
