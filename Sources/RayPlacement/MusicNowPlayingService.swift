@@ -69,7 +69,6 @@ final class MusicNowPlayingService: ObservableObject {
     @Published private(set) var nowPlaying: MediaNowPlayingSnapshot?
     @Published private(set) var artwork: NSImage?
     @Published private(set) var isPerformingTransport = false
-    @Published private(set) var transportMessage: String?
     @Published private(set) var controlAvailabilityMessage: String?
     @Published private(set) var outputVolume: Double = 0
     @Published private(set) var outputAudioLevel: Double = 0
@@ -132,14 +131,12 @@ final class MusicNowPlayingService: ObservableObject {
         guard let source = nowPlaying?.source ?? firstRunningSource else { return }
         guard !isPerformingTransport else { return }
         isPerformingTransport = true
-        transportMessage = action.feedback
         if AXIsProcessTrusted(), Self.postMediaKey(action.mediaKeyCode) {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in
                 self?.isPerformingTransport = false
                 self?.refresh()
             }
             controlAvailabilityMessage = nil
-            clearTransportMessageSoon(action.feedback)
             return
         }
         let command: String
@@ -151,24 +148,13 @@ final class MusicNowPlayingService: ObservableObject {
         scriptQueue.async { [weak self] in
             let outcome = Self.executeCommand("tell application id \"\(source.applicationID)\" to \(command)")
             DispatchQueue.main.async {
-                self?.transportMessage = outcome.succeeded
-                    ? action.feedback
-                    : "Playback unavailable · allow Lima in Automation"
                 self?.controlAvailabilityMessage = outcome.succeeded
                     ? nil
-                    : "Allow Lima to control \(source.title) in System Settings → Privacy & Security → Automation."
+                    : "Playback unavailable · allow Lima to control \(source.title) in Automation"
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     self?.refresh()
                 }
-                if outcome.succeeded { self?.clearTransportMessageSoon(action.feedback) }
             }
-        }
-    }
-
-    private func clearTransportMessageSoon(_ expected: String) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { [weak self] in
-            guard self?.transportMessage == expected else { return }
-            self?.transportMessage = nil
         }
     }
 
@@ -429,14 +415,6 @@ private extension MusicNowPlayingService.TransportAction {
         case .playPause: return 16
         case .next: return 17
         case .previous: return 18
-        }
-    }
-
-    var feedback: String {
-        switch self {
-        case .playPause: return "Playback updated"
-        case .next: return "Skipping forward…"
-        case .previous: return "Skipping back…"
         }
     }
 }

@@ -18,12 +18,17 @@ struct LauncherView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
-            VStack(spacing: 5) {
-                searchHeader
-                content
+            if viewModel.mode == .terminal {
+                DeveloperTerminalView(model: terminalModel)
                     .id(viewModel.mode.visualIdentity)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
-                footer
+            } else {
+                VStack(spacing: 5) {
+                    searchHeader
+                    content
+                        .id(viewModel.mode.visualIdentity)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
+                    footer
+                }
             }
         }
         .frame(width: settings.interfaceDensity.launcherWidth, height: settings.interfaceDensity.launcherHeight)
@@ -125,37 +130,26 @@ struct LauncherView: View {
             if viewModel.mode == .timezoneConverter {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
-            } else if viewModel.mode == .terminal {
-                TextField("Search or draft a terminal command…", text: $terminalModel.commandComposer)
-                    .textFieldStyle(.plain)
-                    .limaFont(.system(size: 16, weight: .medium, design: .monospaced))
-                    .focused($searchFocused)
-                    .onSubmit { terminalModel.insertComposer() }
-                    .accessibilityLabel("Terminal command search")
-                if !terminalModel.commandComposer.isEmpty {
-                    Text("↩ insert")
-                        .limaFont(.system(size: 9.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
-                StatusCapsule(text: terminalModel.isLive ? "LIVE" : "STOPPED", color: terminalModel.isLive ? .green : .orange)
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            } else {
+            } else if viewModel.mode != .terminal {
                 TextField(viewModel.placeholder, text: $viewModel.query)
                     .textFieldStyle(.plain)
                     .limaFont(.system(size: 17, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
+            } else {
+                Spacer(minLength: 0)
             }
 
-            if viewModel.isSearching {
+            if viewModel.mode != .terminal, viewModel.isSearching {
                 ProgressView()
                     .controlSize(.small)
                     .frame(width: 20)
-            } else if !viewModel.query.isEmpty {
+            } else if viewModel.mode != .terminal, !viewModel.query.isEmpty {
                 Text("esc")
                     .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)

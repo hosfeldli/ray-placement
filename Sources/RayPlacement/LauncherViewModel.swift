@@ -711,7 +711,7 @@ final class LauncherViewModel: ObservableObject {
             // The terminal is an optional developer surface. Keeping it out of
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.
-            LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run zsh commands with output search and editor shortcut guides", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
+            LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
             LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "postman", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
             LauncherItem(id: "builtin.file-launcher", title: "Focused File Launcher", subtitle: "Choose a file in Finder and open it with a specific application", icon: .system("folder.badge.gearshape"), keywords: ["file", "finder", "open with", "application"], action: .system(.openFocusedFileLauncher)),
             LauncherItem(id: "builtin.passwords", title: "Password Generator", subtitle: "Generate and copy a strong password locally", icon: .system("key.fill"), keywords: ["password", "security", "random", "secret"], action: .system(.openPasswordGenerator)),

@@ -388,6 +388,100 @@ struct SettingsView: View {
         return "\(minutes)m \(remaining)s"
     }
 
+    @ViewBuilder
+    private func accessoryMouseBindingRow(button: Int) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Label("Mouse button \(button + 1)", systemImage: "computermouse")
+                    .limaFont(.callout.weight(.medium))
+                Spacer()
+                Picker("Mouse button \(button + 1) binding type", selection: accessoryMouseBindingKind(for: button)) {
+                    ForEach(AccessoryMouseBindingKind.allCases) { kind in
+                        Text(kind.title).tag(kind)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 190)
+            }
+
+            switch settings.accessoryMouseBinding(for: button) {
+            case .none:
+                EmptyView()
+            case .action:
+                Picker("Lima or macOS action", selection: accessoryMouseActionBinding(for: button)) {
+                    ForEach(AccessoryMouseAction.allCases) { action in
+                        Text(action.title).tag(action)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            case .shortcut:
+                HStack {
+                    Text("Shortcut")
+                        .limaFont(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    ShortcutRecorder(
+                        shortcut: accessoryMouseShortcutBinding(for: button),
+                        label: "Mouse button \(button + 1) keyboard shortcut"
+                    )
+                    .frame(width: 145, height: 28)
+                    Button("Clear") {
+                        settings.setAccessoryMouseBinding(.none, for: button)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func accessoryMouseBindingKind(for button: Int) -> Binding<AccessoryMouseBindingKind> {
+        Binding(
+            get: { settings.accessoryMouseBinding(for: button).kind },
+            set: { kind in
+                let current = settings.accessoryMouseBinding(for: button)
+                switch kind {
+                case .none:
+                    settings.setAccessoryMouseBinding(.none, for: button)
+                case .action:
+                    if case .action(let action) = current {
+                        settings.setAccessoryMouseBinding(.action(action), for: button)
+                    } else {
+                        settings.setAccessoryMouseBinding(.action(.launcher), for: button)
+                    }
+                case .shortcut:
+                    if case .shortcut(let shortcut) = current {
+                        settings.setAccessoryMouseBinding(.shortcut(shortcut), for: button)
+                    } else {
+                        settings.setAccessoryMouseBinding(.shortcut(""), for: button)
+                    }
+                }
+            }
+        )
+    }
+
+    private func accessoryMouseActionBinding(for button: Int) -> Binding<AccessoryMouseAction> {
+        Binding(
+            get: {
+                if case .action(let action) = settings.accessoryMouseBinding(for: button) {
+                    return action
+                }
+                return .none
+            },
+            set: { action in
+                settings.setAccessoryMouseBinding(action == .none ? .none : .action(action), for: button)
+            }
+        )
+    }
+
+    private func accessoryMouseShortcutBinding(for button: Int) -> Binding<String> {
+        Binding(
+            get: { settings.accessoryMouseShortcut(for: button) },
+            set: { settings.setAccessoryMouseShortcut($0, for: button) }
+        )
+    }
+
     private var generalTab: some View {
         Form {
             Section("Appearance") {
@@ -459,25 +553,11 @@ struct SettingsView: View {
             }
 
             Section("Accessory mouse buttons") {
-                Text("Bind extra mouse buttons to Lima or macOS navigation. Previous and Next Desktop use the standard Control–Left/Right actions.")
+                Text("Bind extra mouse buttons to any Lima action or record a keyboard shortcut, like Mac Mouse Fix. The shortcut is sent to the app that is focused when you press the mouse button.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 ForEach(3...8, id: \.self) { button in
-                    HStack {
-                        Label("Mouse button \(button + 1)", systemImage: "computermouse")
-                            .limaFont(.callout.weight(.medium))
-                        Spacer()
-                        Picker("Mouse button \(button + 1) action", selection: Binding(
-                            get: { settings.accessoryMouseAction(for: button) },
-                            set: { settings.setAccessoryMouseAction($0, for: button) }
-                        )) {
-                            ForEach(AccessoryMouseAction.allCases) { action in
-                                Text(action.title).tag(action)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 190)
-                    }
+                    accessoryMouseBindingRow(button: button)
                 }
             }
 

@@ -680,14 +680,28 @@ final class SettingsStore: ObservableObject {
 
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
 
-    func accessoryMouseAction(for button: Int) -> AccessoryMouseAction {
-        accessoryMouseBindings[String(button)].flatMap(AccessoryMouseAction.init(rawValue:)) ?? .none
+    func accessoryMouseBinding(for button: Int) -> AccessoryMouseBinding {
+        guard (3...8).contains(button) else { return .none }
+        return AccessoryMouseBinding(storageValue: accessoryMouseBindings[String(button)])
     }
 
-    func setAccessoryMouseAction(_ action: AccessoryMouseAction, for button: Int) {
+    func setAccessoryMouseBinding(_ binding: AccessoryMouseBinding, for button: Int) {
         guard (3...8).contains(button) else { return }
-        if action == .none { accessoryMouseBindings.removeValue(forKey: String(button)) }
-        else { accessoryMouseBindings[String(button)] = action.rawValue }
+        if let storageValue = binding.storageValue {
+            accessoryMouseBindings[String(button)] = storageValue
+        } else {
+            accessoryMouseBindings.removeValue(forKey: String(button))
+        }
+    }
+
+    func accessoryMouseShortcut(for button: Int) -> String {
+        guard case .shortcut(let shortcut) = accessoryMouseBinding(for: button) else { return "" }
+        return shortcut
+    }
+
+    func setAccessoryMouseShortcut(_ shortcut: String, for button: Int) {
+        guard (3...8).contains(button) else { return }
+        setAccessoryMouseBinding(.shortcut(shortcut), for: button)
     }
 
     func resetWritingInstructions() {

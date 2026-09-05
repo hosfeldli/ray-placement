@@ -287,37 +287,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
 
-            // The terminal owns ordinary keystrokes—including Escape, Return,
-            // arrows, Control-C, and Vim/Nano commands. Only intercept the
-            // terminal's documented workspace shortcuts here.
+            // In terminal mode the PTY receives every ordinary keystroke.
+            // Escape is the only launcher-level action, allowing the user to
+            // leave the terminal without adding a second command surface.
             if viewModel.mode == .terminal {
                 if event.keyCode == 53 {
                     viewModel.enter(.root)
                     return nil
                 }
-                if event.keyCode == 122 { // F1
-                    terminalModel.toggleHelp()
-                    return nil
-                }
-                // The command field is the terminal search/composer. Let its
-                // normal text-editing events reach SwiftUI; the embedded
-                // terminal receives every other ordinary key unchanged.
-                if event.window?.firstResponder is NSTextView,
-                   event.window?.firstResponder !== terminalModel.terminalView,
-                   !flags.contains([.command, .shift]) {
-                    return event
-                }
-                guard flags.contains([.command, .shift]) else { return event }
-                switch characters {
-                case "h": terminalModel.toggleHelp()
-                case "e": terminalModel.toggleExplorer()
-                case "l": terminalModel.requestComposerFocus()
-                case "r": terminalModel.refreshExplorer()
-                case "[": terminalModel.adjustHelpWidth(by: -36)
-                case "]": terminalModel.adjustHelpWidth(by: 36)
-                default: return event
-                }
-                return nil
+                return event
             }
 
             if flags.contains(.command) {

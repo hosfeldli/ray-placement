@@ -36,14 +36,8 @@ Developer Terminal is always available from the launcher, direct actions, and ac
 
 - Enter any sequence of commands in the same session.
 - Control combinations such as Control-C, Control-D, and Control-Z are sent to the PTY.
-- **Option as Meta** and terminal-specific font sizing live in the toolbar’s overflow menu.
-- Paste, clear, interrupt, restart, and font controls are available.
-- Vim and Nano show a compact bottom overlay with common keys while the program is active.
-- Files and the command guide share one resizable inspector beside the same shell. Toggle Files with **⌘⇧E**, Guide with **F1 / ⌘⇧H**, and adjust the inspector with **⌘⇧[ / ⌘⇧]**. The shell stays alive when the window is closed and reopened; restarting requires confirmation.
-- Project Explorer, Command Guide, and Command Composer visibility are independent terminal-surface controls; changing any of them never removes or disables Developer Terminal itself.
-- **⌘⇧L** opens the command shelf. Guide examples, project suggestions, and file paths prepare text here; **Insert** sends one line without executing it. Review the shell input, then press Return. This avoids a competing command runner or accidentally submitting a command to a foreground editor. Control characters and multiline command-shelf submissions are rejected; normal terminal paste retains native bracketed-paste behavior.
-- The explorer follows the actual local shell directory, even when a shell does not emit directory notifications. Its bounded 600-entry preview runs off the UI thread, ignores stale refresh results, and does not recursively follow symlinks. Navigate into large folders to inspect deeper contents.
-- Local manual output is drained before waiting for completion, avoiding pipe-buffer deadlocks, and cached for the terminal session.
+- The terminal surface intentionally contains only the interactive shell.
+- Use the shell’s native keyboard controls, including Control-C, Control-L, Vim, Nano, and shell completion. The terminal remains a persistent local `zsh` session while the launcher is open.
 
 ## Text size
 

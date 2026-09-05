@@ -185,7 +185,7 @@ private struct TopShelfView: View {
 
     private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
         let accent = track.source.accent
-        let statusMessage = music.transportMessage ?? music.controlAvailabilityMessage
+        let statusMessage = music.controlAvailabilityMessage
         let metadata = [track.artist, track.album]
             .filter { !$0.isEmpty }
             .joined(separator: " · ")
