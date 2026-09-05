@@ -413,15 +413,6 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Developer tools") {
-                Toggle(isOn: $settings.developerTerminalEnabled) {
-                    Label("Developer Terminal", systemImage: "terminal.fill")
-                }
-                Text("When disabled, the terminal surface is removed from the launcher, hotkeys, and accessory-button actions. Existing terminal sessions are closed.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Global hotkeys") {
                 PrimaryShortcutRow(
                     title: "Launcher",
@@ -459,14 +450,12 @@ struct SettingsView: View {
                     enabled: $settings.notesDockRightHotkeyEnabled,
                     shortcut: $settings.notesDockRightShortcut
                 )
-                if settings.developerTerminalEnabled {
-                    PrimaryShortcutRow(
-                        title: "Developer Terminal",
-                        symbol: "terminal.fill",
-                        enabled: $settings.terminalHotkeyEnabled,
-                        shortcut: $settings.terminalShortcut
-                    )
-                }
+                PrimaryShortcutRow(
+                    title: "Developer Terminal",
+                    symbol: "terminal.fill",
+                    enabled: $settings.terminalHotkeyEnabled,
+                    shortcut: $settings.terminalShortcut
+                )
             }
 
             Section("Accessory mouse buttons") {
@@ -482,9 +471,7 @@ struct SettingsView: View {
                             get: { settings.accessoryMouseAction(for: button) },
                             set: { settings.setAccessoryMouseAction($0, for: button) }
                         )) {
-                            ForEach(AccessoryMouseAction.allCases.filter {
-                                $0 != .terminal || settings.developerTerminalEnabled
-                            }) { action in
+                            ForEach(AccessoryMouseAction.allCases) { action in
                                 Text(action.title).tag(action)
                             }
                         }

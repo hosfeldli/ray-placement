@@ -7,7 +7,7 @@ public enum NotesDockEdge: String, Codable, CaseIterable, Sendable {
 }
 
 public enum NotesWindowLayout {
-    public static let minimumDockWidth: CGFloat = 340
+    public static let minimumDockWidth: CGFloat = 390
     public static let maximumDockWidth: CGFloat = 560
 
     public static func dockedFrame(
@@ -23,7 +23,7 @@ public enum NotesWindowLayout {
     }
 
     public static func clampedWorkspaceFrame(_ frame: CGRect, visibleFrame: CGRect) -> CGRect {
-        let minimumWidth = min(720, visibleFrame.width)
+        let minimumWidth = min(800, visibleFrame.width)
         let minimumHeight = min(500, visibleFrame.height)
         let width = min(max(frame.width, minimumWidth), visibleFrame.width)
         let height = min(max(frame.height, minimumHeight), visibleFrame.height)

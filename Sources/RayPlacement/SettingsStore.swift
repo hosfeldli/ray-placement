@@ -268,7 +268,6 @@ final class SettingsStore: ObservableObject {
         static let notesDockLeftHotkeyEnabled = "notesDockLeftHotkeyEnabled"
         static let notesDockRightShortcut = "notesDockRightShortcut"
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
-        static let developerTerminalEnabled = "developerTerminalEnabled"
         static let terminalShortcut = "terminalShortcut"
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
@@ -391,16 +390,6 @@ final class SettingsStore: ObservableObject {
     @Published var notesDockRightHotkeyEnabled: Bool {
         didSet {
             defaults.set(notesDockRightHotkeyEnabled, forKey: Key.notesDockRightHotkeyEnabled)
-            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
-        }
-    }
-
-    @Published var developerTerminalEnabled: Bool {
-        didSet {
-            defaults.set(developerTerminalEnabled, forKey: Key.developerTerminalEnabled)
-            if !developerTerminalEnabled {
-                accessoryMouseBindings = accessoryMouseBindings.filter { $0.value != AccessoryMouseAction.terminal.rawValue }
-            }
             NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
         }
     }
@@ -541,7 +530,6 @@ final class SettingsStore: ObservableObject {
         notesDockLeftHotkeyEnabled = defaults.object(forKey: Key.notesDockLeftHotkeyEnabled) as? Bool ?? false
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
-        developerTerminalEnabled = defaults.object(forKey: Key.developerTerminalEnabled) as? Bool ?? true
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]

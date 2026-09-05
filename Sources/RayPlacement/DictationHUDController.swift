@@ -37,7 +37,7 @@ final class DictationHUDController {
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
                 x: visibleFrame.midX - width / 2,
-                y: visibleFrame.maxY - panel.frame.height - 12
+                y: visibleFrame.minY + 18
             ))
         }
         // The shelf is informational and must never interrupt the application
@@ -342,7 +342,10 @@ private struct TopShelfView: View {
     private var activityIndicator: some View {
         switch dictation.phase {
         case .recording: SpeechLevelView(level: dictation.audioLevel)
-        case .requestingPermission, .transcribing: ProgressView().controlSize(.small)
+        case .paused: Image(systemName: "pause.fill")
+        case .requestingPermission, .stopping, .transcribing: ProgressView().controlSize(.small)
+        case .completed: Image(systemName: "checkmark.circle.fill")
+        case .failed: Image(systemName: "exclamationmark.triangle.fill")
         case .idle: Image(systemName: "mic")
         }
     }
@@ -351,8 +354,12 @@ private struct TopShelfView: View {
         switch dictation.phase {
         case .requestingPermission: return "Waiting for dictation permission"
         case .recording: return "Recording · Dictation conversation"
+        case .paused: return "Recording paused"
+        case .stopping: return "Finishing recording"
         case .transcribing: return "Transcribing conversation"
-        case .idle: return "Dictation stopped"
+        case .completed: return "Dictation completed"
+        case .failed: return "Dictation failed"
+        case .idle: return "Dictation ready"
         }
     }
 
@@ -365,8 +372,16 @@ private struct TopShelfView: View {
         case .recording:
             let live = dictation.semiLiveSegmentCount == 0 ? "live · listening" : "live · \(dictation.semiLiveSegmentCount) added"
             return "\(Self.clock(dictation.recordingElapsed)) · \(live) · \(dictation.inputSignalText)"
+        case .paused:
+            return "\(Self.clock(dictation.recordingElapsed)) · paused"
+        case .stopping:
+            return "Finishing recording…"
         case .transcribing:
-            return dictation.transcriptionProgress ?? "Processing locally…"
+            return dictation.transcriptionProgress ?? "Transcribing…"
+        case .completed:
+            return "Transcript ready to edit"
+        case .failed:
+            return "Retry the saved recording or record again"
         case .idle:
             return ""
         }

@@ -191,10 +191,6 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func refreshForSettings() {
-        if !SettingsStore.shared.developerTerminalEnabled, mode == .terminal {
-            mode = .root
-            query = ""
-        }
         refreshResults()
     }
 
@@ -731,9 +727,6 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.settings", title: "Lima Settings", subtitle: "Hotkeys, performance, privacy, and extensions", icon: .system("gearshape.fill"), keywords: ["preferences", "hotkey", "shortcut", "performance", "accessibility"], action: .system(.openSettings), shortcut: "⌘,"),
             LauncherItem(id: "builtin.quit", title: "Quit Lima", subtitle: "System", icon: .system("power"), keywords: ["exit"], action: .system(.quit), shortcut: "⌘Q")
         ]
-        if !SettingsStore.shared.developerTerminalEnabled {
-            items.removeAll { $0.id == "builtin.terminal" }
-        }
         items.insert(contentsOf: WindowLayout.allCases.map { layout in
             LauncherItem(
                 id: "window.\(layout.rawValue)",

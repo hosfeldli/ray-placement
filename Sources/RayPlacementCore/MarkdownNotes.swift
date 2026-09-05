@@ -140,6 +140,18 @@ public enum MarkdownNoteLinks {
     }
 }
 
+public enum MediaDurationNormalization {
+    public static func seconds(from raw: Double, source: String) -> Double {
+        guard raw.isFinite, raw > 0 else { return 0 }
+        var duration = raw
+        if source.lowercased() == "spotify" && duration > 10_000 {
+            duration /= 1_000
+        }
+        while duration > 86_400 { duration /= 1_000 }
+        return duration
+    }
+}
+
 public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var title: String
@@ -211,7 +223,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var displayTitle: String {
         let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
         if !cleanTitle.isEmpty { return cleanTitle }
-        let firstContentLine = content
+        let firstContentLine = Self.normalizedContent(content)
             .split(whereSeparator: { $0.isNewline })
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .map(String.init)?
@@ -220,12 +232,60 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     }
 
     public var preview: String {
-        let firstContentLine = content
+        let firstContentLine = Self.normalizedContent(content)
             .split(whereSeparator: { $0.isNewline })
             .first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             .map(String.init)?
             .trimmingCharacters(in: CharacterSet(charactersIn: "#>*_`- []"))
         return firstContentLine ?? "Empty note"
+    }
+
+    /// Removes placeholder rows that render as empty content while preserving
+    /// genuinely editable blank checklist rows.
+    public static func normalizedContent(_ content: String) -> String {
+        let normalized = content
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
+        var retained: [String] = []
+        var index = 0
+
+        while index < lines.count {
+            let original = lines[index]
+            let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
+            if isDoneHeading(trimmed) {
+                var end = index + 1
+                var meaningful = false
+                while end < lines.count {
+                    let next = lines[end].trimmingCharacters(in: .whitespacesAndNewlines)
+                    if isHeading(next) { break }
+                    if !next.isEmpty && !isPlaceholderLine(next) { meaningful = true }
+                    end += 1
+                }
+                if !meaningful {
+                    index = end
+                    continue
+                }
+            }
+            if !isPlaceholderLine(trimmed) { retained.append(original) }
+            index += 1
+        }
+        return retained.joined(separator: "\n")
+    }
+
+    private static func isHeading(_ line: String) -> Bool {
+        line.range(of: #"^#{1,6}\s+.+$"#, options: .regularExpression) != nil
+    }
+
+    private static func isDoneHeading(_ line: String) -> Bool {
+        guard let match = line.range(of: #"^#{1,6}\s+(.+?)\s*$"#, options: .regularExpression) else { return false }
+        let heading = String(line[match]).replacingOccurrences(of: #"^#{1,6}\s+"#, with: "", options: .regularExpression)
+        return heading.trimmingCharacters(in: .whitespacesAndNewlines).caseInsensitiveCompare("Done") == .orderedSame
+    }
+
+    private static func isPlaceholderLine(_ line: String) -> Bool {
+        if line == "-" || line == "*" || line == "+" { return true }
+        return line.range(of: #"^-\s+\[[ xX]\]\s+-\s*$"#, options: .regularExpression) != nil
     }
 }
 
@@ -377,12 +437,13 @@ public enum MarkdownBlockParser {
     }
 
     private static func task(from line: String) -> MarkdownBlock? {
-        guard line.count >= 6, line.hasPrefix("- [") else { return nil }
+        guard line.count >= 5, line.hasPrefix("- [") else { return nil }
         let marker = line[line.index(line.startIndex, offsetBy: 3)]
         let close = line[line.index(line.startIndex, offsetBy: 4)]
         guard close == "]", marker == " " || marker == "x" || marker == "X" else { return nil }
         let textIndex = line.index(line.startIndex, offsetBy: 5)
         let text = line[textIndex...].trimmingCharacters(in: .whitespaces)
+        guard text != "-" else { return nil }
         return .task(checked: marker != " ", text: text)
     }
 

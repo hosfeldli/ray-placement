@@ -107,14 +107,14 @@ import Testing
 
 @Test func notesDockLayoutBoundsWidthAndWorkspaceFrame() {
     let screen = CGRect(x: 0, y: 0, width: 1_200, height: 800)
-    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 100).width == 340)
+    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 100).width == 390)
     #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 900).width == 560)
 
     let clamped = NotesWindowLayout.clampedWorkspaceFrame(
         CGRect(x: -200, y: 600, width: 500, height: 900),
         visibleFrame: screen
     )
-    #expect(clamped == CGRect(x: 0, y: 0, width: 720, height: 800))
+    #expect(clamped == CGRect(x: 0, y: 0, width: 800, height: 800))
 }
 
 @Test func semanticVersionsCompareReleaseTags() {
@@ -457,4 +457,42 @@ import Testing
     #expect(decoded.tags == ["work"])
     #expect(decoded.revisionHistory.count == 1)
     #expect(decoded.revisionHistory.first?.content == "Before")
+}
+
+@Test func mediaDurationsNormalizeSpotifyMillisecondsAndAppleSeconds() {
+    #expect(MediaDurationNormalization.seconds(from: 245_000, source: "spotify") == 245)
+    #expect(MediaDurationNormalization.seconds(from: 125_000, source: "spotify") == 125)
+    #expect(MediaDurationNormalization.seconds(from: 245, source: "appleMusic") == 245)
+    #expect(MediaDurationNormalization.seconds(from: 0, source: "spotify") == 0)
+    #expect(MediaDurationNormalization.seconds(from: 2_500_000, source: "appleMusic") == 2_500)
+}
+
+@Test func markdownNoteRemovesMalformedEmptyPlaceholdersButPreservesEditableTasks() {
+    let source = """
+    # Daily Plan
+
+    - [ ] -
+    - [ ]
+    - [x] Finished work
+
+    ## Done
+    -
+
+    ## Meaningful Done
+    - Completed item
+    """
+    let normalized = MarkdownNote.normalizedContent(source)
+    #expect(!normalized.contains("- [ ] -"))
+    #expect(!normalized.contains("## Done"))
+    #expect(normalized.contains("- [ ]"))
+    #expect(normalized.contains("- [x] Finished work"))
+    #expect(normalized.contains("## Meaningful Done"))
+    #expect(normalized.contains("- Completed item"))
+}
+
+@Test func markdownBlockParserSkipsMalformedEmptyTaskRows() {
+    let blocks = MarkdownBlockParser.parse(MarkdownNote.normalizedContent("- [ ] -\n- [ ]\n- [x] Done"))
+    #expect(!blocks.contains(.task(checked: false, text: "-")))
+    #expect(blocks.contains(.task(checked: false, text: "")))
+    #expect(blocks.contains(.task(checked: true, text: "Done")))
 }

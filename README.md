@@ -1,4 +1,4 @@
-# Lima 3.11.0
+# Lima 3.12.0
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and private local dictation conversations without accounts or analytics.
 
@@ -8,7 +8,7 @@ Text generation has been removed. Writing correction uses deterministic local Py
 
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-Version 3.4.1 repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
+The 3.12.0 release repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
 
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
@@ -24,7 +24,7 @@ Run the bundled **Uninstall Lima** extension to remove the app from within Lima.
 - Pointer hover never moves the result list. Arrow-key and page navigation keep the selected command visible without fighting trackpad scrolling.
 - Configure or disable every extension shortcut independently in **Settings → Extensions**.
 - Configure launcher, Notes, dictation, dock-left, and dock-right shortcuts in **Settings → General**.
-- Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, and optional Developer Terminal.
+- Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, and Developer Terminal.
 - Lima tools join one native macOS workspace by default and can be broken into separate windows when needed.
 - Background extension work reports compact progress without blocking the launcher.
 
@@ -32,7 +32,7 @@ Version 2.0 introduces a higher-contrast prismatic visual system across every wo
 
 ## Developer Terminal
 
-Developer Terminal is optional and can be disabled in **Settings → General**. When enabled, it is backed by a true local pseudo-terminal through SwiftTerm. It starts an interactive `zsh`, maintains working directory, environment variables, history, and child-process state between commands, and supports ANSI/TUI applications.
+Developer Terminal is always available from the launcher, direct actions, and accessory-button bindings. Its global hotkey remains independently configurable in **Settings → General**. It is backed by a true local pseudo-terminal through SwiftTerm. It starts an interactive `zsh`, maintains working directory, environment variables, history, and child-process state between commands, and supports ANSI/TUI applications.
 
 - Enter any sequence of commands in the same session.
 - Control combinations such as Control-C, Control-D, and Control-Z are sent to the PTY.
@@ -40,6 +40,7 @@ Developer Terminal is optional and can be disabled in **Settings → General**. 
 - Paste, clear, interrupt, restart, and font controls are available.
 - Vim and Nano show a compact bottom overlay with common keys while the program is active.
 - Files and the command guide share one resizable inspector beside the same shell. Toggle Files with **⌘⇧E**, Guide with **F1 / ⌘⇧H**, and adjust the inspector with **⌘⇧[ / ⌘⇧]**. The shell stays alive when the window is closed and reopened; restarting requires confirmation.
+- Project Explorer, Command Guide, and Command Composer visibility are independent terminal-surface controls; changing any of them never removes or disables Developer Terminal itself.
 - **⌘⇧L** opens the command shelf. Guide examples, project suggestions, and file paths prepare text here; **Insert** sends one line without executing it. Review the shell input, then press Return. This avoids a competing command runner or accidentally submitting a command to a foreground editor. Control characters and multiline command-shelf submissions are rejected; normal terminal paste retains native bracketed-paste behavior.
 - The explorer follows the actual local shell directory, even when a shell does not emit directory notifications. Its bounded 600-entry preview runs off the UI thread, ignores stale refresh results, and does not recursively follow symlinks. Navigate into large folders to inspect deeper contents.
 - Local manual output is drained before waiting for completion, avoiding pipe-buffer deadlocks, and cached for the terminal session.
@@ -75,9 +76,11 @@ The editor presents formatted Markdown in place instead of a separate rendered p
 
 Dictation is a separate workflow with its own persistent conversations. It never appends to, modifies, or selects a Markdown Note. Each conversation is bounded to 200,000 characters and the store retains up to 100 conversations. The transcript remains available in the Dictation tab even after the Notes window closes.
 
-Dictation records short local audio segments while recording. Completed segments are transcribed as recording continues, and a final stop processes the remaining queue. Audio is kept locally only while it is needed; failed or canceled work preserves unfinished audio for **Retry Transcription**. Local Whisper uses the bundled small.en TinyDiarize runtime, with Automatic Metal/CPU fallback, Metal, or CPU compute options. Apple on-device speech recognition is also supported when available.
+Dictation records short local audio segments while recording. Completed segments are transcribed as recording continues, and a final stop processes the remaining queue.
 
-The compact activity shelf shows dictation state and audio levels without taking keyboard focus. It also provides optional now-playing metadata and controls for supported local media players. Reduce Motion and Reduce Transparency settings are honored by the shelf and workspace animations.
+The dictation lifecycle is explicit: **Idle**, **Recording**, **Paused**, **Stopping**, **Transcribing**, **Completed**, and **Failed**. Recording exposes separate Pause/Resume and Stop & Transcribe actions; completed transcripts can be edited, failed work can be retried, and destructive deletion requires confirmation. Audio is kept locally only while it is needed; failed or canceled work preserves unfinished audio for **Retry Transcription**. Local Whisper uses the bundled small.en TinyDiarize runtime, with Automatic Metal/CPU fallback, Metal, or CPU compute options. Apple on-device speech recognition is also supported when available.
+
+The compact activity shelf is repositioned along the bottom of the visible screen so it does not cover application chrome. It shows dictation state and audio levels without taking keyboard focus. It also provides optional now-playing metadata and controls for supported local media players. Reduce Motion and Reduce Transparency settings are honored by the shelf and workspace animations.
 
 ## Writing correction
 

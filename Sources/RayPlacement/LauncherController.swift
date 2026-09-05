@@ -123,7 +123,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showDeveloperTerminal() {
-        guard SettingsStore.shared.developerTerminalEnabled else { return }
         viewModel.enter(.terminal)
         presentPanel()
         DispatchQueue.main.async { [weak self] in
@@ -132,16 +131,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
     func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
-
-    func refreshDeveloperTerminalAvailability() {
-        let wasTerminal = viewModel.mode == .terminal
-        viewModel.refreshForSettings()
-        guard !SettingsStore.shared.developerTerminalEnabled else { return }
-        terminalModel.shutdown()
-        if wasTerminal {
-            hide()
-        }
-    }
 
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,

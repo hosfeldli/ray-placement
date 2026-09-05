@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import AudioToolbox
 import Foundation
+import RayPlacementCore
 import SwiftUI
 
 /// Metadata for the actively playing supported local media source. This is
@@ -341,7 +342,10 @@ final class MusicNowPlayingService: ObservableObject {
             album: pieces[2],
             isPlaying: pieces[3] == "playing",
             artworkURL: pieces.count > 4 ? URL(string: pieces[4]) : nil,
-            duration: pieces.count > 5 ? Double(pieces[5]) ?? 0 : 0,
+            duration: MediaDurationNormalization.seconds(
+                from: pieces.count > 5 ? Double(pieces[5]) ?? 0 : 0,
+                source: source.rawValue
+            ),
             position: pieces.count > 6 ? Double(pieces[6]) ?? 0 : 0
         )
     }

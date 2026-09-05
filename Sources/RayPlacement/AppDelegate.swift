@@ -190,7 +190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkey(
             identifier: "builtin.terminal",
             displayName: "Developer Terminal",
-            enabled: SettingsStore.shared.developerTerminalEnabled && SettingsStore.shared.terminalHotkeyEnabled,
+            enabled: SettingsStore.shared.terminalHotkeyEnabled,
             rawShortcut: SettingsStore.shared.terminalShortcut,
             previous: &registeredTerminalShortcut,
             restore: SettingsStore.shared.restoreTerminalShortcut
@@ -304,7 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.registerActionHotkeys()
-                self?.launcher.refreshDeveloperTerminalAvailability()
+                self?.launcher.viewModel.refreshForSettings()
                 self?.accessoryMouse.update(bindings: SettingsStore.shared.accessoryMouseBindings)
             }
         })

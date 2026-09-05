@@ -787,13 +787,18 @@ struct LimaToolbarTitle: View {
                 Text(title)
                     .limaFont(.system(size: 14.5, weight: .semibold, design: .rounded))
                     .lineLimit(1)
+                    .truncationMode(.tail)
                 if let subtitle, !subtitle.isEmpty {
                     Text(subtitle)
                         .limaFont(.caption2)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
+            .frame(maxWidth: 310, alignment: .leading)
+            .layoutPriority(1)
+            .help([title, subtitle].compactMap { $0 }.joined(separator: " — "))
         }
     }
 }

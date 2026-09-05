@@ -117,6 +117,21 @@ final class DictationConversationStore: ObservableObject {
         scheduleSave()
     }
 
+    func updateTranscript(_ transcript: String, for conversationID: UUID? = nil) {
+        let identifier = conversationID ?? selectedConversationID
+        guard let identifier,
+              let index = conversations.firstIndex(where: { $0.id == identifier }) else { return }
+
+        let bounded = String(transcript.prefix(Self.maximumCharactersPerConversation))
+        conversations[index].segments = bounded
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        conversations[index].modifiedAt = Date()
+        selectedConversationID = identifier
+        scheduleSave()
+    }
+
     func finishConversation() {
         guard let activeConversationID,
               let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else { return }

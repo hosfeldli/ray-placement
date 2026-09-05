@@ -61,7 +61,7 @@ final class NotesStore: ObservableObject {
             lastError = "Lima Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."
             return
         }
-        let note = MarkdownNote(title: template.noteTitle, content: template.content)
+        let note = MarkdownNote(title: template.noteTitle, content: MarkdownNote.normalizedContent(template.content))
         notes.insert(note, at: 0)
         selectedNoteID = note.id
         lastError = nil
@@ -146,7 +146,7 @@ final class NotesStore: ObservableObject {
             lastError = "A note can contain up to \(Self.maximumCharactersPerNote.formatted()) characters."
             return
         }
-        updateSelected { note in note.content = content }
+        updateSelected { note in note.content = MarkdownNote.normalizedContent(content) }
     }
 
     func appendMarkdown(_ markdown: String) {
@@ -270,7 +270,7 @@ final class NotesStore: ObservableObject {
             .map { note in
                 var bounded = note
                 bounded.title = String(note.title.prefix(200))
-                bounded.content = String(note.content.prefix(maximumCharactersPerNote))
+                bounded.content = MarkdownNote.normalizedContent(String(note.content.prefix(maximumCharactersPerNote)))
                 bounded.tags = MarkdownNoteLinks.normalizedTags(note.tags)
                 bounded.revisionHistory = Array(note.revisionHistory.suffix(maximumRevisionsPerNote))
                 return bounded

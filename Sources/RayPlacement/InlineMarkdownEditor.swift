@@ -604,7 +604,7 @@ private enum MarkdownInlineStyler {
         let selection = textView.selectedRanges
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CGFloat(lineSpacing)
-        paragraph.paragraphSpacing = 5 + CGFloat(lineSpacing) * 0.6
+        paragraph.paragraphSpacing = 3.5 + CGFloat(lineSpacing) * 0.45
         let fencedCodePattern = #"(?ms)^```([^\n]*)\n(.*?)^```[ \t]*$"#
         let fencedCodeMatches = matches(pattern: fencedCodePattern, in: source)
         let fencedCodeRanges = fencedCodeMatches.map(\.range)
@@ -630,7 +630,7 @@ private enum MarkdownInlineStyler {
             if task.checked, textRange.length > 0 {
                 storage.addAttributes([
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: NSColor.secondaryLabelColor
+                    .foregroundColor: NSColor(calibratedWhite: 0.70, alpha: 1)
                 ], range: textRange)
             }
         }
@@ -638,11 +638,11 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"(?m)^(#{1,6})[ \t]+(.+)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let level = min(max(match.range(at: 1).length, 1), 6)
-            let sizes: [CGFloat] = [28, 24, 21, 18, 16, 15]
+            let sizes: [CGFloat] = [24, 20, 18, 16, 15, 14]
             let contentRange = match.range(at: 2)
             let headingParagraph = paragraph.mutableCopy() as! NSMutableParagraphStyle
-            headingParagraph.paragraphSpacingBefore = level <= 2 ? 12 : 8
-            headingParagraph.paragraphSpacing = level <= 2 ? 9 : 6
+            headingParagraph.paragraphSpacingBefore = level <= 2 ? 8 : 5
+            headingParagraph.paragraphSpacing = level <= 2 ? 6 : 4
             storage.addAttributes([
                 .font: font(style: fontStyle, size: sizes[level - 1] * CGFloat(fontSize / 15.5), weight: level <= 3 ? .bold : .semibold),
                 .paragraphStyle: headingParagraph

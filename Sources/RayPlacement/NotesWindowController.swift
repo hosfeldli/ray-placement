@@ -275,7 +275,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         presentation.sidebarVisible = false
         window.level = .normal
         window.collectionBehavior = [.managed]
-        window.minSize = NSSize(width: 720, height: 500)
+        window.minSize = NSSize(width: 800, height: 500)
         window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         window.isMovable = false
         setWindowControls(hidden: true, on: window)
@@ -296,7 +296,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             window.isMovable = true
             window.level = .normal
             window.collectionBehavior = [.managed]
-            window.minSize = NSSize(width: 720, height: 500)
+            window.minSize = NSSize(width: 800, height: 500)
             window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             let target = workspaceFrame ?? initialWorkspaceFrame(for: window.screen)
             setFrame(target, on: window, animated: animated)
@@ -373,6 +373,9 @@ private struct NotesView: View {
 
     @State private var searchQuery = ""
     @State private var confirmDelete = false
+    @State private var confirmDeleteDictation = false
+    @State private var pendingDictationDeleteID: UUID?
+    @State private var deleteActiveDictation = false
     @State private var showAppearance = false
     @State private var showTags = false
     @State private var showRevisions = false
@@ -439,6 +442,25 @@ private struct NotesView: View {
         } message: {
             Text("This permanently removes the selected local note.")
         }
+        .alert("Delete this dictation?", isPresented: $confirmDeleteDictation) {
+            Button("Cancel", role: .cancel) {
+                pendingDictationDeleteID = nil
+                deleteActiveDictation = false
+            }
+            Button(deleteActiveDictation ? "Stop & Delete" : "Delete Conversation", role: .destructive) {
+                if deleteActiveDictation { dictation.cancel() }
+                if let identifier = pendingDictationDeleteID,
+                   let conversation = conversations.conversations.first(where: { $0.id == identifier }) {
+                    conversations.delete(conversation)
+                }
+                pendingDictationDeleteID = nil
+                deleteActiveDictation = false
+            }
+        } message: {
+            Text(deleteActiveDictation
+                ? "Recording or transcription will stop, and this conversation will be permanently removed."
+                : "This permanently removes the selected local dictation conversation.")
+        }
         .sheet(isPresented: $showTags) {
             TagEditorSheet(tags: store.selectedNote?.tags ?? []) { tags in
                 store.replaceTags(tags)
@@ -463,6 +485,8 @@ private struct NotesView: View {
                 title: presentation.mode.isDocked ? "Quick Note" : "Notes",
                 subtitle: presentation.section == .dictation ? "Separate conversations" : "Local Markdown workspace"
             )
+            .frame(maxWidth: presentation.mode.isDocked ? 150 : 270, alignment: .leading)
+            .layoutPriority(1)
 
             Spacer(minLength: 8)
 
@@ -730,105 +754,202 @@ private struct NotesView: View {
     private var dictationSection: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Label("Conversations", systemImage: "waveform")
-                        .limaFont(.headline.weight(.semibold))
-                    Spacer()
-                    Button { dictation.performPrimaryAction() } label: {
-                        Image(systemName: dictation.phase == .recording ? "stop.fill" : "mic.fill")
-                            .frame(width: 28, height: 26)
-                    }
-                    .limaButton(prominent: true)
-                    .controlSize(.small)
-                    .tint(dictation.phase == .recording ? .red : SettingsStore.shared.accentTheme.primary)
-                }
+                dictationSidebarHeader
+
                 Text("Dictation is saved here as its own conversation. Notes stay untouched.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                 ScrollView {
-                    LazyVStack(spacing: 4) {
+                    LazyVStack(spacing: 5) {
                         if conversations.conversations.isEmpty {
-                            Text("No conversations yet")
-                                .limaFont(.caption)
-                                .foregroundStyle(.tertiary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 10)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Image(systemName: "waveform.and.mic")
+                                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                                Text("No conversations yet")
+                                    .limaFont(.caption.weight(.semibold))
+                                Text("Start dictation to create a private conversation.")
+                                    .limaFont(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 12)
                         } else {
                             ForEach(conversations.conversations) { conversation in
                                 Button { conversations.selectedConversationID = conversation.id } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
+                                    VStack(alignment: .leading, spacing: 4) {
                                         HStack(spacing: 5) {
                                             Text(conversation.title)
                                                 .lineLimit(1)
-                                            Spacer()
-                                            if conversation.isComplete {
-                                                Image(systemName: "checkmark.circle.fill")
-                                                    .foregroundStyle(.green)
-                                            }
+                                                .truncationMode(.tail)
+                                                .layoutPriority(1)
+                                            Spacer(minLength: 2)
+                                            Image(systemName: conversation.isComplete ? "checkmark.circle.fill" : "circle.dotted")
+                                                .foregroundStyle(conversation.isComplete ? Color.green : Color.orange)
+                                                .accessibilityHidden(true)
                                         }
-                                        Text(conversation.preview.isEmpty ? "Listening…" : conversation.preview)
+                                        Text(conversation.preview.isEmpty ? "No transcript yet" : conversation.preview)
                                             .limaFont(.caption2)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(2)
+                                            .truncationMode(.tail)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(8)
+                                    .padding(.horizontal, 9)
+                                    .padding(.vertical, 8)
                                     .background(
                                         conversation.id == conversations.selectedConversationID
-                                            ? SettingsStore.shared.accentTheme.primary.opacity(0.14)
+                                            ? SettingsStore.shared.accentTheme.primary.opacity(0.22)
                                             : Color.white.opacity(0.035),
                                         in: PrismaticPanelShape(cut: 7)
                                     )
+                                    .overlay(
+                                        PrismaticPanelShape(cut: 7)
+                                            .stroke(
+                                                conversation.id == conversations.selectedConversationID
+                                                    ? SettingsStore.shared.accentTheme.primary.opacity(0.72)
+                                                    : Color.white.opacity(0.08),
+                                                lineWidth: conversation.id == conversations.selectedConversationID ? 1.0 : 0.6
+                                            )
+                                    )
                                 }
                                 .buttonStyle(.plain)
+                                .help("Open \(conversation.title)")
+                                .accessibilityLabel("\(conversation.title), \(conversation.preview.isEmpty ? "No transcript yet" : conversation.preview)")
+                                .accessibilityHint("Select this dictation conversation")
                             }
                         }
                     }
                 }
+                .frame(minHeight: 90, maxHeight: .infinity)
             }
-            .frame(width: presentation.mode.isDocked ? 118 : 220)
+            .frame(width: presentation.mode.isDocked ? 180 : 280)
             .padding(10)
 
-            GlassHairline()
-
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 if let conversation = conversations.selectedConversation {
-                    HStack(spacing: 8) {
-                        VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .top, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 3) {
                             Text(conversation.title)
                                 .limaFont(.title3.weight(.semibold))
-                            Text(conversation.isComplete ? "Conversation complete" : "Recording in progress")
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                                .help(conversation.title)
+                            Text(dictationConversationStatus(for: conversation))
                                 .limaFont(.caption)
-                                .foregroundStyle(conversation.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                                .foregroundStyle(dictationStatusColor(for: conversation))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
-                        Spacer()
-                        if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
-                            Button("Retry") { dictation.retryFailedRecording() }
-                                .limaButton(prominent: true)
-                                .controlSize(.mini)
+                        .layoutPriority(1)
+
+                        Spacer(minLength: 4)
+
+                        if dictation.phase == .recording || dictation.phase == .paused {
+                            HStack(spacing: 4) {
+                                Button { dictation.pauseOrResume() } label: {
+                                    Image(systemName: dictation.phase == .recording ? "pause.fill" : "play.fill")
+                                        .frame(width: 27, height: 27)
+                                }
+                                .buttonStyle(.borderless)
+                                .help(dictation.phase == .recording ? "Pause recording" : "Resume recording")
+                                .accessibilityLabel(dictation.phase == .recording ? "Pause recording" : "Resume recording")
+
+                                Button { dictation.performPrimaryAction() } label: {
+                                    Image(systemName: "stop.fill")
+                                        .frame(width: 27, height: 27)
+                                }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.red)
+                                .help("Stop recording and transcribe")
+                                .accessibilityLabel("Stop recording and transcribe")
+                            }
+                        } else if dictation.phase == .completed || dictation.phase == .failed || dictation.phase == .idle {
+                            if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
+                                Button("Retry") { dictation.retryFailedRecording() }
+                                    .limaButton(prominent: true)
+                                    .controlSize(.mini)
+                                    .help("Retry transcription of the saved recording")
+                            }
                         }
-                        Button(role: .destructive) { conversations.delete(conversation) } label: {
+
+                        Button(role: .destructive) {
+                            requestDeleteConversation(conversation)
+                        } label: {
                             Image(systemName: "trash")
+                                .frame(width: 27, height: 27)
                         }
                         .buttonStyle(.borderless)
-                        .disabled(dictation.phase != .idle)
-                        .help(dictation.phase == .idle ? "Delete conversation" : "Stop dictation before deleting conversations")
+                        .help(dictationIsBusy ? "Stop and delete conversation" : "Delete conversation")
+                        .accessibilityLabel(dictationIsBusy ? "Stop and delete conversation" : "Delete conversation")
                     }
-                    ScrollView {
-                        Text(conversation.transcript.isEmpty ? "Start dictation to see the conversation here." : conversation.transcript)
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                            .textSelection(.enabled)
-                            .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
+
+                    HStack(spacing: 7) {
+                        Image(systemName: dictationStateSymbol(for: conversation))
+                            .foregroundStyle(dictationStatusColor(for: conversation))
+                            .accessibilityHidden(true)
+                        Text(dictationEditorState(for: conversation))
+                            .limaFont(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        if dictation.phase == .recording || dictation.phase == .paused {
+                            Text(Self.clockLabel(dictation.recordingElapsed))
+                                .limaFont(.caption2.monospacedDigit())
+                                .foregroundStyle(.primary)
+                            Text("·")
+                            Text(dictation.inputSignalText)
+                                .limaFont(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
                     }
-                    if let status = dictation.lastError ?? (dictation.phase != .idle ? dictation.statusText : nil) {
-                        Text(status)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(dictationAccessibilityStatus(for: conversation))
+
+                    ZStack(alignment: .topLeading) {
+                        TextEditor(text: Binding(
+                            get: { conversations.selectedConversation?.transcript ?? "" },
+                            set: { conversations.updateTranscript($0, for: conversation.id) }
+                        ))
+                        .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
+                        .scrollContentBackground(.hidden)
+                        .padding(7)
+                        .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: 9))
+                        .overlay(PrismaticPanelShape(cut: 9).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                        .accessibilityLabel("Editable dictation transcript")
+                        .accessibilityHint("Correct the transcript directly. Changes are saved locally.")
+
+                        if conversation.transcript.isEmpty {
+                            Text(dictation.phase == .recording ? "Live transcript will appear here…" : "Transcript will appear here. You can edit it after recording.")
+                                .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
+                                .foregroundStyle(.tertiary)
+                                .padding(.horizontal, 15)
+                                .padding(.vertical, 14)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .frame(minHeight: 170, maxHeight: .infinity)
+
+                    HStack(alignment: .top, spacing: 7) {
+                        Image(systemName: dictationStatusSymbol(for: conversation))
+                            .foregroundStyle(dictationStatusColor(for: conversation))
+                            .accessibilityHidden(true)
+                        Text(dictationStatusMessage(for: conversation))
                             .limaFont(.caption)
-                            .foregroundStyle(dictation.lastError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                            .lineLimit(2)
+                            .foregroundStyle(dictationStatusColor(for: conversation))
+                            .lineLimit(3)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
                     }
+                    .padding(.top, 2)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(dictationStatusMessage(for: conversation))
                 } else {
-                    VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 9) {
                         Image(systemName: "waveform.and.mic")
                             .font(.system(size: 25, weight: .semibold))
                             .foregroundStyle(SettingsStore.shared.accentTheme.primary)
@@ -836,9 +957,12 @@ private struct NotesView: View {
                             .limaFont(.title3.bold())
                         Text("Your transcript will appear in this tab and will never be appended to a Markdown note.")
                             .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                         Button("Start Dictation") { dictation.performPrimaryAction() }
                             .limaButton(prominent: true)
+                            .help("Start a new dictation conversation")
                     }
+                    .frame(maxWidth: 420, alignment: .leading)
                     Spacer()
                 }
             }
@@ -846,6 +970,190 @@ private struct NotesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var dictationSidebarHeader: some View {
+        if presentation.mode.isDocked {
+            VStack(alignment: .leading, spacing: 7) {
+                Label("Conversations", systemImage: "waveform")
+                    .limaFont(.headline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help("Dictation conversations")
+                HStack(spacing: 5) {
+                    Spacer(minLength: 0)
+                    dictationPauseButton
+                    dictationPrimaryButton
+                }
+            }
+        } else {
+            HStack(spacing: 7) {
+                Label("Conversations", systemImage: "waveform")
+                    .limaFont(.headline.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                    .help("Dictation conversations")
+                Spacer(minLength: 2)
+                dictationPauseButton
+                dictationPrimaryButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dictationPauseButton: some View {
+        if dictation.phase == .recording || dictation.phase == .paused {
+            Button { dictation.pauseOrResume() } label: {
+                Image(systemName: dictation.phase == .recording ? "pause.fill" : "play.fill")
+                    .frame(width: 27, height: 26)
+            }
+            .buttonStyle(.borderless)
+            .background(Color.orange.opacity(0.16), in: PrismaticPanelShape(cut: 6))
+            .overlay(PrismaticPanelShape(cut: 6).stroke(Color.orange.opacity(0.42), lineWidth: 0.7))
+            .help(dictation.phase == .recording ? "Pause recording" : "Resume recording")
+            .accessibilityLabel(dictation.phase == .recording ? "Pause recording" : "Resume recording")
+        }
+    }
+
+    private var dictationPrimaryButton: some View {
+        Button { dictation.performPrimaryAction() } label: {
+            Image(systemName: dictationPrimarySymbol)
+                .frame(width: 27, height: 26)
+        }
+        .buttonStyle(.borderless)
+        .background(dictationPrimaryColor.opacity(0.18), in: PrismaticPanelShape(cut: 6))
+        .overlay(PrismaticPanelShape(cut: 6).stroke(dictationPrimaryColor.opacity(0.48), lineWidth: 0.7))
+        .help(dictationPrimaryLabel)
+        .accessibilityLabel(dictationPrimaryLabel)
+    }
+
+    private var dictationIsBusy: Bool {
+        switch dictation.phase {
+        case .requestingPermission, .recording, .paused, .stopping, .transcribing:
+            return true
+        case .idle, .completed, .failed:
+            return false
+        }
+    }
+
+    private var dictationPrimaryLabel: String {
+        switch dictation.phase {
+        case .idle: return "Start dictation"
+        case .requestingPermission: return "Waiting for permission"
+        case .recording, .paused: return "Stop recording and transcribe"
+        case .stopping: return "Finishing recording"
+        case .transcribing: return "Transcribing"
+        case .completed, .failed: return "Record another dictation"
+        }
+    }
+
+    private var dictationPrimarySymbol: String {
+        switch dictation.phase {
+        case .idle, .completed, .failed: return "mic.fill"
+        case .recording, .paused: return "stop.fill"
+        case .requestingPermission, .stopping, .transcribing: return "hourglass"
+        }
+    }
+
+    private var dictationPrimaryColor: Color {
+        switch dictation.phase {
+        case .recording, .paused: return .red
+        case .failed: return .orange
+        default: return SettingsStore.shared.accentTheme.primary
+        }
+    }
+
+    private func requestDeleteConversation(_ conversation: DictationConversation) {
+        pendingDictationDeleteID = conversation.id
+        deleteActiveDictation = dictationIsBusy
+        confirmDeleteDictation = true
+    }
+
+    private func dictationConversationStatus(for conversation: DictationConversation) -> String {
+        switch dictation.phase {
+        case .requestingPermission: return "Waiting for permission"
+        case .recording: return "Recording locally · \(Self.clockLabel(dictation.recordingElapsed))"
+        case .paused: return "Recording paused · \(Self.clockLabel(dictation.recordingElapsed))"
+        case .stopping: return "Finishing recording…"
+        case .transcribing: return "Transcribing…"
+        case .completed: return dictation.lastError == nil ? "Conversation complete" : "Completed with a warning"
+        case .failed: return "Transcription failed"
+        case .idle: return conversation.isComplete ? "Conversation complete" : "Ready to continue"
+        }
+    }
+
+    private func dictationEditorState(for conversation: DictationConversation) -> String {
+        switch dictation.phase {
+        case .recording: return "Live transcript"
+        case .paused: return "Live transcript paused"
+        case .requestingPermission, .stopping, .transcribing: return "Processing transcript"
+        case .failed: return "Transcript needs attention"
+        case .completed: return "Final transcript"
+        case .idle: return conversation.transcript.isEmpty ? "No transcript yet" : "Final transcript"
+        }
+    }
+
+    private func dictationStateSymbol(for conversation: DictationConversation) -> String {
+        switch dictation.phase {
+        case .recording: return "waveform"
+        case .paused: return "pause.circle.fill"
+        case .requestingPermission, .stopping, .transcribing: return "ellipsis.circle"
+        case .failed: return "exclamationmark.triangle.fill"
+        case .completed: return "checkmark.circle.fill"
+        case .idle: return conversation.isComplete ? "checkmark.circle.fill" : "circle.dotted"
+        }
+    }
+
+    private func dictationStatusSymbol(for conversation: DictationConversation) -> String {
+        switch dictation.phase {
+        case .failed: return "exclamationmark.triangle.fill"
+        case .completed: return "checkmark.circle.fill"
+        case .idle where conversation.isComplete: return "checkmark.circle.fill"
+        case .recording: return "waveform"
+        case .paused: return "pause.circle.fill"
+        default: return "info.circle"
+        }
+    }
+
+    private func dictationStatusColor(for conversation: DictationConversation) -> Color {
+        switch dictation.phase {
+        case .recording, .paused: return .orange
+        case .failed: return .orange
+        case .completed: return .green
+        case .idle where conversation.isComplete: return .green
+        default: return .secondary
+        }
+    }
+
+    private func dictationStatusMessage(for conversation: DictationConversation) -> String {
+        if let error = dictation.lastError, dictation.phase == .failed || dictation.phase == .idle {
+            return error
+        }
+        switch dictation.phase {
+        case .requestingPermission: return "Approve the requested permission to begin recording."
+        case .recording: return "Recording is active. Pause to hold input or stop to finish and transcribe."
+        case .paused: return "Recording is paused. Resume to continue or stop to transcribe the saved audio."
+        case .stopping: return "Finishing the recording…"
+        case .transcribing: return dictation.transcriptionProgress ?? "Transcribing…"
+        case .completed: return dictation.lastError ?? "Transcript ready. You can edit the text or record another conversation."
+        case .failed: return dictation.lastError ?? "Transcription failed. Retry the saved recording or record another conversation."
+        case .idle: return conversation.transcript.isEmpty ? "No transcript yet. Start dictation to capture a conversation." : "Transcript ready. You can edit the text or record another conversation."
+        }
+    }
+
+    private func dictationAccessibilityStatus(for conversation: DictationConversation) -> String {
+        var value = dictationConversationStatus(for: conversation)
+        if dictation.phase == .recording || dictation.phase == .paused {
+            value += ", \(Self.clockLabel(dictation.recordingElapsed)) elapsed, \(dictation.inputSignalText)"
+        }
+        return value
+    }
+
+    private static func clockLabel(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds))
+        return String(format: "%02d:%02d", total / 60, total % 60)
     }
 
     private func editorHeader(_ note: MarkdownNote) -> some View {
@@ -881,9 +1189,16 @@ private struct NotesView: View {
                         }
                     }
                 } else if settings.notesShowMetadata {
-                    Text("No tags · use … to organize")
-                        .limaFont(.system(size: 9, weight: .regular))
-                        .foregroundStyle(.tertiary)
+                    Button {
+                        showTags = true
+                    } label: {
+                        Label("Add tag", systemImage: "tag")
+                            .limaFont(.system(size: 10, weight: .medium))
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                    .help("Add a tag to this note")
+                    .accessibilityLabel("Add tag to note")
                 }
             }
 
@@ -1029,7 +1344,7 @@ private struct NotesView: View {
 
                 let tasks = taskProgress(note.content)
                 if tasks.total > 0 {
-                    Label("\(tasks.complete)/\(tasks.total)", systemImage: tasks.complete == tasks.total ? "checkmark.circle.fill" : "circle.dashed")
+                    Label("Tasks \(tasks.complete) of \(tasks.total)", systemImage: tasks.complete == tasks.total ? "checkmark.circle.fill" : "circle.dashed")
                         .limaFont(.caption2.weight(.semibold))
                         .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
                         .padding(.horizontal, 8)

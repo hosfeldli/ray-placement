@@ -9,7 +9,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         case idle
         case requestingPermission
         case recording
+        case paused
+        case stopping
         case transcribing
+        case completed
+        case failed
     }
 
     enum DictationError: LocalizedError {
@@ -104,7 +108,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         case .idle: return "Dictate"
         case .requestingPermission: return "Waiting for Permission…"
         case .recording: return "Stop & Transcribe"
+        case .paused: return "Resume Recording"
+        case .stopping: return "Stopping…"
         case .transcribing: return "Transcribing…"
+        case .completed: return "Record Again"
+        case .failed: return recoveryAudioURL == nil ? "Record Again" : "Retry Transcription"
         }
     }
 
@@ -116,7 +124,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             return SettingsStore.shared.dictationEngine == .localWhisper
                 ? "Waiting for microphone permission."
                 : "Waiting for microphone and speech-recognition permission."
-        case .recording:
+        case .recording, .paused:
             let seconds = activePerformance?.dictationMaximumDuration
                 ?? SettingsStore.shared.runtimeDictationPerformance.dictationMaximumDuration
             let prepared = max(0, recordingSegmentURLs.count - (recorder == nil ? 0 : 1))
@@ -125,14 +133,21 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 suffix += " · \(localSegmentIndex) transcribed"
             }
             if recorderRestartCount > 0 { suffix += " · input recovered" }
-            return "Recording locally — maximum \(Self.durationLabel(seconds))\(suffix)."
+            let state = phase == .paused ? "Recording paused" : "Recording locally"
+            return "\(state) — maximum \(Self.durationLabel(seconds))\(suffix)."
+        case .stopping:
+            return "Finishing the recording…"
         case .transcribing:
-            return transcriptionProgress ?? "Preparing the completed recording for on-device transcription."
+            return transcriptionProgress ?? "Transcribing…"
+        case .completed:
+            return "Dictation completed. You can edit the transcript or record another conversation."
+        case .failed:
+            return lastError ?? "Transcription failed. You can retry the saved recording or record again."
         }
     }
 
     var inputSignalText: String {
-        guard phase == .recording else { return "" }
+        guard phase == .recording else { return phase == .paused ? "Recording paused" : "" }
         if audioLevel < 0.10 { return "Listening for room audio" }
         if audioLevel < 0.28 { return "Quiet speech detected" }
         return "Speech detected"
@@ -142,9 +157,33 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         switch phase {
         case .idle:
             requestPermissionsAndStart()
-        case .recording:
+        case .recording, .paused:
             stopAndTranscribe()
-        case .requestingPermission, .transcribing:
+        case .completed, .failed:
+            recoveryAudioURL = nil
+            lastError = nil
+            requestPermissionsAndStart()
+        case .requestingPermission, .stopping, .transcribing:
+            break
+        }
+    }
+
+    func pauseOrResume() {
+        switch phase {
+        case .recording:
+            guard let recorder else { return }
+            recorder.pause()
+            stopMetering()
+            phase = .paused
+        case .paused:
+            guard let recorder, recorder.record() else {
+                lastError = "The microphone could not resume recording."
+                phase = .failed
+                return
+            }
+            phase = .recording
+            startMetering()
+        default:
             break
         }
     }
@@ -330,14 +369,15 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func stopAndTranscribe() {
-        guard phase == .recording, let recorder else { return }
+        guard phase == .recording || phase == .paused, let recorder else { return }
+        phase = .stopping
         stopMetering()
         finalizeCurrentRecordingSegment(recorder)
         recorder.delegate = nil
         recorder.stop()
         self.recorder = nil
         recordedDuration = max(completedRecordingDuration, 0.1)
-        if phase == .recording { beginTranscriptionIfPossible() }
+        beginTranscriptionIfPossible()
     }
 
     private var recordingSegmentLimit: TimeInterval {
@@ -402,7 +442,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func beginTranscriptionIfPossible() {
-        guard phase == .recording, !recordingSegmentURLs.isEmpty else { return }
+        guard phase == .recording || phase == .paused || phase == .stopping, !recordingSegmentURLs.isEmpty else { return }
         phase = .transcribing
 
         if activeEngine == .localWhisper {
@@ -440,7 +480,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         guard recordingSegmentDurations.indices.contains(localSegmentIndex),
               recordingSegmentDurations[localSegmentIndex] > 0 else { return }
         let url = recordingSegmentURLs[localSegmentIndex]
-        transcriptionProgress = "Local Whisper segment \(localSegmentIndex + 1) of \(recordingSegmentURLs.count)…"
+        transcriptionProgress = "Transcribing segment \(localSegmentIndex + 1) of \(recordingSegmentURLs.count)…"
         let performance = activePerformance ?? SettingsStore.shared.runtimeDictationPerformance
         localWhisperIsRunning = true
         localWhisper.transcribe(
@@ -484,10 +524,10 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 } else if self.phase == .recording {
                     self.currentChunkRetryCount = 1
                     self.liveTranscriptionPaused = true
-                    self.transcriptionProgress = "A live segment will retry after Stop: \(error.localizedDescription)"
+                    self.transcriptionProgress = "A live segment will retry after Stop."
                 } else if self.currentChunkRetryCount == 0 {
                     self.currentChunkRetryCount = 1
-                    self.transcriptionProgress = "Retrying Local Whisper segment \(self.localSegmentIndex + 1) of \(self.totalChunkCount)…"
+                    self.transcriptionProgress = "Retrying segment \(self.localSegmentIndex + 1) of \(self.totalChunkCount)…"
                     self.beginNextLocalWhisperSegment()
                 } else {
                     let start = self.recordingSegmentDurations.prefix(self.localSegmentIndex).reduce(0, +)
@@ -602,7 +642,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
         if phase == .recording {
             liveTranscriptionPaused = true
-            transcriptionProgress = "A live window will retry after Stop: \(detail)"
+            transcriptionProgress = "A live window will retry after Stop."
             return
         }
 
@@ -672,7 +712,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         finishSession(success: true)
         operationIdentifier = nil
         resetJobState()
-        phase = .idle
+        phase = .completed
         lastError = warning
         recoveryAudioURL = nil
         recoveryDuration = 0
@@ -717,7 +757,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         finishSession(success: false)
         operationIdentifier = nil
         resetJobState()
-        phase = .idle
+        phase = .failed
     }
 
     private func preserveRecordingForRecovery() -> URL? {
