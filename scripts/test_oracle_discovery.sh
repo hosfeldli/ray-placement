@@ -11,7 +11,7 @@ trap 'rm -f "$OUTPUT"' EXIT
         awk '/case .oracle:/ { oracle=1; next } oracle && /return "/ { sub(/^ *return "/, ""); sub(/"$/, ";"); print; oracle=0 }'
     printf '%s\n' 'EXIT'
 } | docker exec -i "$CONTAINER" sqlplus -s / as sysdba > "$OUTPUT" || {
-    rg -n 'ORA-|SP2-' "$OUTPUT" || true
+    grep -n -E 'ORA-|SP2-' "$OUTPUT" || true
     exit 1
 }
 echo "All six Oracle discovery queries completed successfully ($(wc -l < "$OUTPUT" | tr -d ' ') output lines)."

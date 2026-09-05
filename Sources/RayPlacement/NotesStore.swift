@@ -12,6 +12,7 @@ final class NotesStore: ObservableObject {
     @Published var lastError: String?
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
+    private let persistenceGeneration = PersistenceGeneration()
     private var pendingSave: DispatchWorkItem?
     private var pendingRevisionSnapshots: [UUID: NoteRevision] = [:]
     private var revisionWorkItems: [UUID: DispatchWorkItem] = [:]
@@ -30,7 +31,7 @@ final class NotesStore: ObservableObject {
                 - Build clean headings, **bold**, *italic*, links, lists, tables, and code blocks without source punctuation clutter.
                 - Pin active notes or favorite the ones you want to keep close.
                 - Search titles and content from the sidebar.
-                - Meeting dictation adds each completed segment while recording, then finishes the active segment when you stop.
+                - Dictation conversations are kept in their own tab and never alter Notes.
 
                 > Everything autosaves locally on this Mac.
                 """
@@ -158,44 +159,6 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    func appendDictation(_ transcript: String, to destinationNoteID: UUID?) {
-        let cleanTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !cleanTranscript.isEmpty else { return }
-        var targetID = destinationNoteID
-        if targetID == nil || !notes.contains(where: { $0.id == targetID }) {
-            createNote()
-            targetID = selectedNoteID
-        }
-        guard let targetID else { return }
-        guard let targetIndex = notes.firstIndex(where: { $0.id == targetID }) else { return }
-        let separator = notes[targetIndex].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : "\n\n"
-        let namedTranscript = applySpeakerNames(to: cleanTranscript, names: notes[targetIndex].speakerNames)
-        let candidate = notes[targetIndex].content + separator + namedTranscript
-        guard candidate.count <= Self.maximumCharactersPerNote else {
-            lastError = "The meeting transcript would exceed this note's \(Self.maximumCharactersPerNote.formatted())-character limit."
-            return
-        }
-        updateNote(targetID) { note in note.content = candidate }
-    }
-
-    func renameSpeakers(_ names: [Int: String]) {
-        guard let selectedNoteID,
-              let index = notes.firstIndex(where: { $0.id == selectedNoteID }) else { return }
-        let oldNames = notes[index].speakerNames
-        updateNote(selectedNoteID) { note in
-            var content = note.content
-            for number in 1...8 {
-                let prior = oldNames[number]?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let oldLabel = (prior?.isEmpty == false ? prior! : "Speaker \(number)")
-                let proposed = names[number]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-                let newLabel = proposed.isEmpty ? "Speaker \(number)" : proposed
-                content = content.replacingOccurrences(of: "**\(oldLabel):**", with: "**\(newLabel):**")
-            }
-            note.content = content
-            note.speakerNames = names.filter { !$0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        }
-    }
-
     func togglePin() {
         updateSelected { note in note.isPinned.toggle() }
         sortNotes()
@@ -232,6 +195,7 @@ final class NotesStore: ObservableObject {
         revisionWorkItems.values.forEach { $0.cancel() }
         revisionWorkItems.removeAll()
         revisionGenerations.removeAll()
+        _ = persistenceGeneration.next()
         let snapshot = notes
         persistenceQueue.sync { Self.persist(snapshot) }
     }
@@ -285,18 +249,15 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    private func applySpeakerNames(to transcript: String, names: [Int: String]) -> String {
-        names.reduce(transcript) { output, entry in
-            let name = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { return output }
-            return output.replacingOccurrences(of: "**Speaker \(entry.key):**", with: "**\(name):**")
-        }
-    }
-
     private func scheduleSave() {
         pendingSave?.cancel()
         let snapshot = notes
-        let work = DispatchWorkItem { Self.persist(snapshot) }
+        let generation = persistenceGeneration.next()
+        let gate = persistenceGeneration
+        let work = DispatchWorkItem {
+            guard gate.isCurrent(generation) else { return }
+            Self.persist(snapshot)
+        }
         pendingSave = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.55, execute: work)
     }

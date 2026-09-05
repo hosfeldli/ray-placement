@@ -20,10 +20,16 @@ private enum NotesWindowMode: String {
 
 }
 
+private enum NotesSection {
+    case notes
+    case dictation
+}
+
 @MainActor
 private final class NotesPresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
+    @Published var section: NotesSection = .notes
 
     init(mode: NotesWindowMode) {
         self.mode = mode
@@ -37,6 +43,7 @@ private final class NotesPresentationModel: ObservableObject {
 @MainActor
 final class NotesWindowController: NSObject, NSWindowDelegate {
     let store: NotesStore
+    let conversations: DictationConversationStore
     let dictation: NoteDictationService
 
     private static let windowModeKey = "notesWindowMode"
@@ -53,10 +60,26 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     override init() {
         let store = NotesStore()
+        let conversations = DictationConversationStore()
         self.store = store
-        self.dictation = NoteDictationService { [weak store] transcript, destinationNoteID in
-            store?.appendDictation(transcript, to: destinationNoteID)
-        }
+        self.conversations = conversations
+        self.dictation = NoteDictationService(
+            onTranscript: { [weak conversations] transcript in
+                conversations?.append(transcript)
+            },
+            onSessionStarted: { [weak conversations] in
+                conversations?.beginConversation()
+            },
+            onSessionRetryStarted: { [weak conversations] in
+                conversations?.beginRetryConversation()
+            },
+            onSessionFinished: { [weak conversations] in
+                conversations?.finishConversation()
+            },
+            onSessionFailed: { [weak conversations] in
+                conversations?.failConversationForRetry()
+            }
+        )
         let savedMode = UserDefaults.standard.string(forKey: Self.windowModeKey)
             .flatMap(NotesWindowMode.init(rawValue:))
         self.presentation = NotesPresentationModel(
@@ -107,18 +130,16 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func presentMostRecentAndToggleDictation() {
-        store.selectMostRecentNote()
+        presentation.section = .dictation
         present()
         guard dictation.phase == .idle || dictation.phase == .recording else { return }
-        dictation.performPrimaryAction(
-            destinationNoteID: store.selectedNoteID,
-            destinationNoteTitle: store.selectedNote?.displayTitle
-        )
+        dictation.performPrimaryAction()
     }
 
     func shutdown() {
         dictation.cancel()
         store.flush()
+        conversations.flush()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -200,6 +221,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.delegate = self
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: NotesView(
             store: store,
+            conversations: conversations,
             dictation: dictation,
             presentation: presentation,
             dockLeft: { [weak self] in self?.dock(.left) },
@@ -339,8 +361,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 }
 
 private struct NotesView: View {
-    private enum NotesSection { case notes, dictation }
     @ObservedObject var store: NotesStore
+    @ObservedObject var conversations: DictationConversationStore
     @ObservedObject var dictation: NoteDictationService
     @ObservedObject var presentation: NotesPresentationModel
     @ObservedObject private var settings = SettingsStore.shared
@@ -351,13 +373,9 @@ private struct NotesView: View {
 
     @State private var searchQuery = ""
     @State private var confirmDelete = false
-    @State private var showSpeakerNames = false
     @State private var showAppearance = false
     @State private var showTags = false
     @State private var showRevisions = false
-    @State private var speakerOneName = ""
-    @State private var speakerTwoName = ""
-    @State private var section: NotesSection = .notes
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var filteredNotes: [MarkdownNote] {
@@ -405,8 +423,8 @@ private struct NotesView: View {
                         .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
                 }
             }
-            .padding(.horizontal, LimaDesign.windowPadding)
-            .padding(.bottom, LimaDesign.windowPadding)
+            .padding(.horizontal, presentation.mode.isDocked ? 6 : LimaDesign.windowPadding)
+            .padding(.bottom, presentation.mode.isDocked ? 6 : LimaDesign.windowPadding)
             .padding(.top, presentation.mode == .fullScreen ? 10 : 7)
         }
         .frame(
@@ -420,30 +438,6 @@ private struct NotesView: View {
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
         } message: {
             Text("This permanently removes the selected local note.")
-        }
-        .sheet(isPresented: $showSpeakerNames) {
-            VStack(alignment: .leading, spacing: 16) {
-                Text("Name transcript speakers").limaFont(.title3.bold())
-                Text("Names apply to this note and to new dictation segments appended here.")
-                    .limaFont(.caption).foregroundStyle(.secondary)
-                Form {
-                    TextField("Speaker 1", text: $speakerOneName)
-                    TextField("Speaker 2", text: $speakerTwoName)
-                }
-                .formStyle(.grouped)
-                HStack {
-                    Spacer()
-                    Button("Cancel") { showSpeakerNames = false }
-                    Button("Apply") {
-                        store.renameSpeakers([1: speakerOneName, 2: speakerTwoName])
-                        showSpeakerNames = false
-                    }
-                    .limaButton(prominent: true)
-                }
-            }
-            .padding(22)
-            .frame(width: 430)
-            .preferredColorScheme(.dark)
         }
         .sheet(isPresented: $showTags) {
             TagEditorSheet(tags: store.selectedNote?.tags ?? []) { tags in
@@ -467,12 +461,12 @@ private struct NotesView: View {
             LimaToolbarTitle(
                 symbol: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus",
                 title: presentation.mode.isDocked ? "Quick Note" : "Notes",
-                subtitle: section == .dictation ? "Local dictation" : "Local Markdown workspace"
+                subtitle: presentation.section == .dictation ? "Separate conversations" : "Local Markdown workspace"
             )
 
             Spacer(minLength: 8)
 
-            Picker("Notes section", selection: $section) {
+            Picker("Notes section", selection: $presentation.section) {
                 Label("Notes", systemImage: "note.text").tag(NotesSection.notes)
                 Label("Dictation", systemImage: "waveform").tag(NotesSection.dictation)
             }
@@ -624,12 +618,10 @@ private struct NotesView: View {
 
     private var quickNoteWorkspace: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
+            HStack(spacing: 6) {
                 Menu {
                     ForEach(store.notes) { note in
-                        Button {
-                            store.selectedNoteID = note.id
-                        } label: {
+                        Button { store.selectedNoteID = note.id } label: {
                             if note.id == store.selectedNoteID {
                                 Label(note.displayTitle, systemImage: "checkmark")
                             } else {
@@ -638,7 +630,7 @@ private struct NotesView: View {
                         }
                     }
                 } label: {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 5) {
                         Image(systemName: "note.text")
                             .foregroundStyle(SettingsStore.shared.accentTheme.primary)
                         Text(store.selectedNote?.displayTitle ?? "Choose a note")
@@ -651,23 +643,30 @@ private struct NotesView: View {
                 }
                 .menuStyle(.borderlessButton)
 
-                HStack(spacing: 5) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Find", text: $searchQuery)
-                        .textFieldStyle(.plain)
+                NotesChromeButton(symbol: "magnifyingglass", label: "Find a note") {
+                    searchQuery = searchQuery.isEmpty ? " " : ""
                 }
-                .padding(.horizontal, 8)
-                .frame(width: 116, height: 28)
-                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
-                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
-
                 NotesChromeButton(symbol: "plus", label: "New Quick Note") { store.createNote() }
                     .keyboardShortcut("n", modifiers: .command)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 44)
+            .padding(.horizontal, 8)
+            .frame(height: 38)
 
             if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Find a note", text: $searchQuery)
+                        .textFieldStyle(.plain)
+                    Button { searchQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 8)
+                .frame(height: 28)
+                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
+                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                .padding(.horizontal, 8)
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(filteredNotes.prefix(10)) { note in
@@ -678,16 +677,15 @@ private struct NotesView: View {
                                 Text(note.displayTitle)
                                     .limaFont(.caption)
                                     .lineLimit(1)
-                                    .padding(.horizontal, 9)
-                                    .padding(.vertical, 5)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
                                     .background(SettingsStore.shared.accentTheme.primary.opacity(0.10), in: PrismaticPanelShape(cut: 4))
-                                    .overlay(PrismaticPanelShape(cut: 4).stroke(SettingsStore.shared.accentTheme.primary.opacity(0.20), lineWidth: LimaDesign.borderWidth))
                             }
                             .buttonStyle(.plain)
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 7)
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 5)
                 }
                 .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
@@ -699,7 +697,7 @@ private struct NotesView: View {
 
     @ViewBuilder
     private var editor: some View {
-        if section == .dictation {
+        if presentation.section == .dictation {
             dictationSection
         } else if let note = store.selectedNote {
             VStack(spacing: 0) {
@@ -730,48 +728,124 @@ private struct NotesView: View {
     }
 
     private var dictationSection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                Image(systemName: "waveform.and.mic")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Dictation")
-                        .limaFont(.title2.weight(.semibold))
-                    Text("Record directly into the selected note without opening the editor.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            Divider()
-            if let note = store.selectedNote {
-                Label("Destination: \(note.displayTitle)", systemImage: "note.text")
-                    .foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    dictationControl(compact: false)
-                    if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
-                        Button("Retry") { dictation.retryFailedRecording() }
-                            .limaButton()
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Label("Conversations", systemImage: "waveform")
+                        .limaFont(.headline.weight(.semibold))
+                    Spacer()
+                    Button { dictation.performPrimaryAction() } label: {
+                        Image(systemName: dictation.phase == .recording ? "stop.fill" : "mic.fill")
+                            .frame(width: 28, height: 26)
                     }
-                    Button("Name Speakers…") {
-                        speakerOneName = note.speakerNames[1] ?? ""
-                        speakerTwoName = note.speakerNames[2] ?? ""
-                        showSpeakerNames = true
-                    }
-                    .limaButton()
-                }
-                if let status = activeStatus {
-                    Text(status).foregroundStyle(.secondary)
-                }
-            } else {
-                Text("Create or select a note to choose a dictation destination.")
-                    .foregroundStyle(.secondary)
-                Button("Create Note") { store.createNote() }
                     .limaButton(prominent: true)
+                    .controlSize(.small)
+                    .tint(dictation.phase == .recording ? .red : SettingsStore.shared.accentTheme.primary)
+                }
+                Text("Dictation is saved here as its own conversation. Notes stay untouched.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        if conversations.conversations.isEmpty {
+                            Text("No conversations yet")
+                                .limaFont(.caption)
+                                .foregroundStyle(.tertiary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 10)
+                        } else {
+                            ForEach(conversations.conversations) { conversation in
+                                Button { conversations.selectedConversationID = conversation.id } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        HStack(spacing: 5) {
+                                            Text(conversation.title)
+                                                .lineLimit(1)
+                                            Spacer()
+                                            if conversation.isComplete {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .foregroundStyle(.green)
+                                            }
+                                        }
+                                        Text(conversation.preview.isEmpty ? "Listening…" : conversation.preview)
+                                            .limaFont(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(2)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(8)
+                                    .background(
+                                        conversation.id == conversations.selectedConversationID
+                                            ? SettingsStore.shared.accentTheme.primary.opacity(0.14)
+                                            : Color.white.opacity(0.035),
+                                        in: PrismaticPanelShape(cut: 7)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
             }
-            Spacer()
+            .frame(width: presentation.mode.isDocked ? 118 : 220)
+            .padding(10)
+
+            GlassHairline()
+
+            VStack(alignment: .leading, spacing: 12) {
+                if let conversation = conversations.selectedConversation {
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(conversation.title)
+                                .limaFont(.title3.weight(.semibold))
+                            Text(conversation.isComplete ? "Conversation complete" : "Recording in progress")
+                                .limaFont(.caption)
+                                .foregroundStyle(conversation.isComplete ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                        }
+                        Spacer()
+                        if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
+                            Button("Retry") { dictation.retryFailedRecording() }
+                                .limaButton(prominent: true)
+                                .controlSize(.mini)
+                        }
+                        Button(role: .destructive) { conversations.delete(conversation) } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(dictation.phase != .idle)
+                        .help(dictation.phase == .idle ? "Delete conversation" : "Stop dictation before deleting conversations")
+                    }
+                    ScrollView {
+                        Text(conversation.transcript.isEmpty ? "Start dictation to see the conversation here." : conversation.transcript)
+                            .frame(maxWidth: .infinity, alignment: .topLeading)
+                            .textSelection(.enabled)
+                            .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
+                    }
+                    if let status = dictation.lastError ?? (dictation.phase != .idle ? dictation.statusText : nil) {
+                        Text(status)
+                            .limaFont(.caption)
+                            .foregroundStyle(dictation.lastError == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                            .lineLimit(2)
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Image(systemName: "waveform.and.mic")
+                            .font(.system(size: 25, weight: .semibold))
+                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                        Text("Start a dictation conversation")
+                            .limaFont(.title3.bold())
+                        Text("Your transcript will appear in this tab and will never be appended to a Markdown note.")
+                            .foregroundStyle(.secondary)
+                        Button("Start Dictation") { dictation.performPrimaryAction() }
+                            .limaButton(prominent: true)
+                    }
+                    Spacer()
+                }
+            }
+            .padding(presentation.mode.isDocked ? 10 : 20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .padding(28)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func editorHeader(_ note: MarkdownNote) -> some View {
@@ -834,11 +908,6 @@ private struct NotesView: View {
                 Button("Duplicate Note") { store.duplicateSelectedNote() }
                 Button("Edit Tags…") { showTags = true }
                 Button("Revision History…") { showRevisions = true }
-                Button("Name Transcript Speakers…") {
-                    speakerOneName = note.speakerNames[1] ?? ""
-                    speakerTwoName = note.speakerNames[2] ?? ""
-                    showSpeakerNames = true
-                }
                 Divider()
                 Button("Delete Note…", role: .destructive) { confirmDelete = true }
                     .keyboardShortcut(.delete, modifiers: .command)
@@ -852,8 +921,8 @@ private struct NotesView: View {
             .frame(width: 30)
             .help("More Note Actions")
         }
-        .padding(.horizontal, presentation.mode.isDocked ? 12 : 18)
-        .frame(minHeight: presentation.mode.isDocked ? 52 : 62)
+        .padding(.horizontal, presentation.mode.isDocked ? 8 : 18)
+        .frame(minHeight: presentation.mode.isDocked ? 46 : 62)
         .background(Color.clear)
     }
 
@@ -896,39 +965,6 @@ private struct NotesView: View {
 
     private func noteToolbar(_ note: MarkdownNote) -> some View {
         VStack(spacing: 0) {
-            if let status = activeStatus {
-                HStack(spacing: 7) {
-                    if dictation.phase == .transcribing || dictation.phase == .requestingPermission {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Circle()
-                            .fill((store.lastError ?? dictation.lastError) == nil ? SettingsStore.shared.accentTheme.primary : Color.orange)
-                            .frame(width: 6, height: 6)
-                    }
-                    Text(status).lineLimit(1)
-                    Spacer()
-                    if dictation.recoveryAudioURL != nil, dictation.phase == .idle {
-                        Button("Retry") { dictation.retryFailedRecording() }
-                            .limaButton(prominent: true)
-                            .controlSize(.mini)
-                        if let recoveryURL = dictation.recoveryAudioURL {
-                            Button {
-                                NSWorkspace.shared.activateFileViewerSelecting([recoveryURL])
-                            } label: {
-                                Image(systemName: "folder")
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
-                            .help("Show preserved recording in Finder")
-                        }
-                    }
-                }
-                .limaFont(.caption)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 7)
-            }
-
             HStack(spacing: 9) {
                 HStack(spacing: 1) {
                     Menu {
@@ -1003,44 +1039,11 @@ private struct NotesView: View {
                         .help("Completed tasks")
                 }
 
-                dictationControl(compact: presentation.mode.isDocked)
             }
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
         .background(LimaDesign.recessedFill)
-    }
-
-    @ViewBuilder
-    private func dictationControl(compact: Bool) -> some View {
-        Button {
-            if store.selectedNoteID == nil { store.createNote() }
-            dictation.performPrimaryAction(
-                destinationNoteID: store.selectedNoteID,
-                destinationNoteTitle: store.selectedNote?.displayTitle
-            )
-        } label: {
-            if compact {
-                Image(systemName: dictation.phase == .recording ? "stop.fill" : "mic.fill")
-                    .frame(width: 30, height: 26)
-            } else {
-                Label(dictation.actionTitle, systemImage: dictation.phase == .recording ? "stop.circle.fill" : "mic.fill")
-            }
-        }
-        .limaButton(prominent: true)
-        .controlSize(.small)
-        .tint(dictation.phase == .recording ? .red : SettingsStore.shared.accentTheme.primary)
-        .disabled(
-            dictation.phase == .requestingPermission
-                || dictation.phase == .transcribing
-        )
-        .help("Record into this note; Stop finishes any remaining transcription")
-    }
-
-    private var activeStatus: String? {
-        if let error = store.lastError ?? dictation.lastError { return error }
-        if dictation.phase != .idle { return dictation.statusText }
-        return nil
     }
 
     private func noteSelectionButton(_ note: MarkdownNote) -> some View {

@@ -20,7 +20,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesDockLeftShortcut: ShortcutSpec?
     private var registeredNotesDockRightShortcut: ShortcutSpec?
     private var registeredTerminalShortcut: ShortcutSpec?
-    private var registeredSQLShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -106,7 +105,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
     @objc func showTerminal() { launcher.showDeveloperTerminal() }
-    @objc func showSQLWorkspace() { launcher.showSQLWorkspace() }
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func quit() { NSApp.terminate(nil) }
@@ -192,19 +190,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerActionHotkey(
             identifier: "builtin.terminal",
             displayName: "Developer Terminal",
-            enabled: SettingsStore.shared.terminalHotkeyEnabled,
+            enabled: SettingsStore.shared.developerTerminalEnabled && SettingsStore.shared.terminalHotkeyEnabled,
             rawShortcut: SettingsStore.shared.terminalShortcut,
             previous: &registeredTerminalShortcut,
             restore: SettingsStore.shared.restoreTerminalShortcut
         ) { [weak self] in self?.launcher.showDeveloperTerminal() }
-        registerActionHotkey(
-            identifier: "builtin.sql",
-            displayName: "SQL Workspace",
-            enabled: SettingsStore.shared.sqlHotkeyEnabled,
-            rawShortcut: SettingsStore.shared.sqlShortcut,
-            previous: &registeredSQLShortcut,
-            restore: SettingsStore.shared.restoreSQLShortcut
-        ) { [weak self] in self?.launcher.showSQLWorkspace() }
     }
 
     private func configureAccessoryMouseBindings() {
@@ -228,7 +218,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .quickNote: launcher.showQuickNote()
         case .dictation: launcher.showNotesAndToggleDictation()
         case .terminal: launcher.showDeveloperTerminal()
-        case .sqlWorkspace: launcher.showSQLWorkspace()
         }
     }
 
@@ -315,6 +304,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.registerActionHotkeys()
+                self?.launcher.refreshDeveloperTerminalAvailability()
                 self?.accessoryMouse.update(bindings: SettingsStore.shared.accessoryMouseBindings)
             }
         })
@@ -357,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self
         menu.addItem(quickNote)
-        let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
+        let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         menu.addItem(dictate)
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
@@ -390,7 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self
         appMenu.addItem(quickNote)
-        let dictate = NSMenuItem(title: "Start or Stop Note Dictation", action: #selector(toggleNoteDictation), keyEquivalent: "")
+        let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         appMenu.addItem(dictate)
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")

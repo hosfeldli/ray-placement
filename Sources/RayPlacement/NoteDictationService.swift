@@ -23,13 +23,13 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         var errorDescription: String? {
             switch self {
             case .speechPermission:
-                return "Allow RayPlacement under System Settings → Privacy & Security → Speech Recognition to dictate notes."
+                return "Allow Lima under System Settings → Privacy & Security → Speech Recognition to record dictation conversations."
             case .microphonePermission:
-                return "Allow RayPlacement under System Settings → Privacy & Security → Microphone to record dictation."
+                return "Allow Lima under System Settings → Privacy & Security → Microphone to record dictation."
             case .onDeviceUnavailable:
-                return "On-device speech recognition is unavailable for the current language. RayPlacement will not send note audio to a network service."
+                return "On-device speech recognition is unavailable for the current language. Lima will not send dictation audio to a network service."
             case .recorderUnavailable:
-                return "RayPlacement could not start the Mac's active microphone."
+                return "Lima could not start the Mac's active microphone."
             case .transcriptionFailed(let detail):
                 return detail.isEmpty ? "The recorded dictation could not be transcribed." : detail
             case .emptyTranscript:
@@ -42,15 +42,17 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     @Published private(set) var transcriptionProgress: String?
     @Published private(set) var audioLevel: Double = 0
     @Published private(set) var recordingElapsed: TimeInterval = 0
-    @Published private(set) var destinationNoteTitle = "Current Note"
     @Published private(set) var semiLiveSegmentCount = 0
     @Published private(set) var livePreviewText = ""
     @Published private(set) var recoveryAudioURL: URL?
     @Published var lastError: String?
 
-    private let onTranscript: (String, UUID?) -> Void
+    private let onTranscript: (String) -> Void
+    private let onSessionStarted: () -> Void
+    private let onSessionRetryStarted: () -> Void
+    private let onSessionFinished: () -> Void
+    private let onSessionFailed: () -> Void
     private let localWhisper = LocalWhisperTranscriber()
-    private var destinationNoteID: UUID?
     private var recorder: AVAudioRecorder?
     private var meterTimer: Timer?
     private var recordingDirectoryURL: URL?
@@ -74,16 +76,26 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var deliveredCharacterCount = 0
     private var skippedChunkCount = 0
     private var usageTaskID: UUID?
-    private var recoveryDestinationNoteID: UUID?
-    private var recoveryDestinationTitle = "Untitled Note"
     private var recoveryDuration: TimeInterval = 0
     private var localSegmentIndex = 0
     private var localWhisperIsRunning = false
     private var liveTranscriptionPaused = false
     private var recorderRestartCount = 0
+    private var operationIdentifier: UUID?
+    private var sessionStarted = false
 
-    init(onTranscript: @escaping (String, UUID?) -> Void) {
+    init(
+        onTranscript: @escaping (String) -> Void,
+        onSessionStarted: @escaping () -> Void = {},
+        onSessionRetryStarted: @escaping () -> Void = {},
+        onSessionFinished: @escaping () -> Void = {},
+        onSessionFailed: @escaping () -> Void = {}
+    ) {
         self.onTranscript = onTranscript
+        self.onSessionStarted = onSessionStarted
+        self.onSessionRetryStarted = onSessionRetryStarted
+        self.onSessionFinished = onSessionFinished
+        self.onSessionFailed = onSessionFailed
         super.init()
     }
 
@@ -126,11 +138,9 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         return "Speech detected"
     }
 
-    func performPrimaryAction(destinationNoteID: UUID?, destinationNoteTitle: String? = nil) {
+    func performPrimaryAction() {
         switch phase {
         case .idle:
-            self.destinationNoteID = destinationNoteID
-            self.destinationNoteTitle = Self.cleanDestinationTitle(destinationNoteTitle)
             requestPermissionsAndStart()
         case .recording:
             stopAndTranscribe()
@@ -140,16 +150,30 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func cancel() {
+        let hadActiveSession = sessionStarted
         stopMetering()
-        recorder?.delegate = nil
-        recorder?.stop()
-        recorder = nil
+        if let recorder {
+            recorder.delegate = nil
+            finalizeCurrentRecordingSegment(recorder)
+            recorder.stop()
+            self.recorder = nil
+        }
         recognitionIdentifier = nil
         recognitionTask?.cancel()
         recognitionTask = nil
         localWhisper.cancel()
-        cleanupAudioFiles()
+
+        // Cancellation is unsuccessful, but it should not silently destroy
+        // audio that has not yet been delivered to the conversation. Completed
+        // live segments have already removed their source files, so recovery
+        // contains only the remaining work and cannot duplicate transcript text.
+        let preservedAudio = preserveRecordingForRecovery()
         finishUsage(succeeded: false, detail: "Cancelled by user")
+        if hadActiveSession { finishSession(success: false) }
+        lastError = preservedAudio == nil
+            ? nil
+            : "Dictation was canceled. The remaining audio was preserved; choose Retry Transcription to resume it."
+        operationIdentifier = nil
         resetJobState()
         phase = .idle
     }
@@ -158,64 +182,84 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         guard phase == .idle, let recoveryAudioURL,
               FileManager.default.fileExists(atPath: recoveryAudioURL.path) else { return }
         lastError = nil
-        destinationNoteID = recoveryDestinationNoteID
-        destinationNoteTitle = recoveryDestinationTitle
-        recordingDirectoryURL = recoveryAudioURL
-        recordingSegmentURLs = Self.segmentFiles(in: recoveryAudioURL)
-        recordingSegmentDurations = recordingSegmentURLs.map(Self.audioDuration)
-        recordedDuration = max(recoveryDuration, 0.1)
+        let operation = UUID()
+        operationIdentifier = operation
+        phase = .requestingPermission
         activePerformance = SettingsStore.shared.runtimeDictationPerformance
         activeEngine = SettingsStore.shared.dictationEngine
-        usageTaskID = UsageMonitor.shared.begin(
-            category: .dictation,
-            operation: "Retry saved meeting transcription",
-            model: activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
-            performance: activePerformance ?? .eco
-        )
+
+        let beginRetry = { [weak self] in
+            guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
+            self.recordingDirectoryURL = recoveryAudioURL
+            self.recordingSegmentURLs = Self.segmentFiles(in: recoveryAudioURL)
+            guard !self.recordingSegmentURLs.isEmpty else {
+                self.fail(DictationError.recorderUnavailable)
+                return
+            }
+            self.recordingSegmentDurations = self.recordingSegmentURLs.map(Self.audioDuration)
+            self.recordedDuration = max(self.recoveryDuration, 0.1)
+            self.usageTaskID = UsageMonitor.shared.begin(
+                category: .dictation,
+                operation: "Retry saved dictation conversation",
+                model: self.activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
+                performance: self.activePerformance ?? .eco
+            )
+            self.onSessionRetryStarted()
+            self.sessionStarted = true
+            self.phase = .recording
+            self.beginTranscriptionIfPossible()
+        }
+
         if activeEngine == .appleSpeech {
             requestSpeechAuthorization { [weak self] granted in
-                guard let self else { return }
+                guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
                 guard granted else {
                     self.fail(DictationError.speechPermission)
                     return
                 }
-                self.phase = .recording
-                self.beginTranscriptionIfPossible()
+                beginRetry()
             }
         } else {
-            phase = .recording
-            beginTranscriptionIfPossible()
+            beginRetry()
         }
     }
 
     private func requestPermissionsAndStart() {
         lastError = nil
         recoveryAudioURL = nil
+        let operation = UUID()
+        operationIdentifier = operation
         phase = .requestingPermission
+
+        let startIfCurrent = { [weak self] in
+            guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
+            self.startRecording(operation: operation)
+        }
+
         if SettingsStore.shared.dictationEngine == .localWhisper {
             requestMicrophoneAuthorization { [weak self] microphoneGranted in
-                guard let self else { return }
+                guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
                 guard microphoneGranted else {
                     self.fail(DictationError.microphonePermission)
                     return
                 }
-                self.startRecording()
+                startIfCurrent()
             }
             return
         }
         requestSpeechAuthorization { [weak self] speechGranted in
-            guard let self else { return }
+            guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
             guard speechGranted else {
                 self.fail(DictationError.speechPermission)
                 return
             }
             self.requestMicrophoneAuthorization { [weak self] microphoneGranted in
-                guard let self else { return }
+                guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
                 guard microphoneGranted else {
                     self.fail(DictationError.microphonePermission)
                     return
                 }
-                self.startRecording()
+                startIfCurrent()
             }
         }
     }
@@ -250,18 +294,20 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
     }
 
-    private func startRecording() {
+    private func startRecording(operation: UUID) {
+        guard operationIdentifier == operation, phase == .requestingPermission else { return }
         do {
             try ApplicationPaths.prepare()
             cleanupAudioFiles()
-            let destinationNoteID = destinationNoteID
             resetJobState()
-            self.destinationNoteID = destinationNoteID
+            sessionStarted = true
+            onSessionStarted()
             let performance = SettingsStore.shared.runtimeDictationPerformance
             activePerformance = performance
             activeEngine = SettingsStore.shared.dictationEngine
             // Both engines use a rolling live pipeline. A fresh segment keeps
-            // recording while the completed window is appended to Notes.
+            // recording while each completed window is delivered to the active
+            // conversation.
             activeTranscribeWhileRecording = true
             let directory = ApplicationPaths.dictationScratch
                 .appendingPathComponent("note-dictation-\(UUID().uuidString)", isDirectory: true)
@@ -273,7 +319,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             try startNextRecordingSegment()
             usageTaskID = UsageMonitor.shared.begin(
                 category: .dictation,
-                operation: "Record and transcribe note",
+                operation: "Record dictation conversation",
                 model: activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
                 performance: performance
             )
@@ -394,16 +440,12 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         guard recordingSegmentDurations.indices.contains(localSegmentIndex),
               recordingSegmentDurations[localSegmentIndex] > 0 else { return }
         let url = recordingSegmentURLs[localSegmentIndex]
-        let duration = recordingSegmentDurations.indices.contains(localSegmentIndex)
-            ? recordingSegmentDurations[localSegmentIndex]
-            : Self.audioDuration(url)
         transcriptionProgress = "Local Whisper segment \(localSegmentIndex + 1) of \(recordingSegmentURLs.count)…"
         let performance = activePerformance ?? SettingsStore.shared.runtimeDictationPerformance
         localWhisperIsRunning = true
         localWhisper.transcribe(
             audioURL: url,
-            audioDuration: duration,
-            prompt: destinationNoteTitle,
+            prompt: "Dictation conversation",
             performance: performance,
             progress: { [weak self] message in
                 self?.transcriptionProgress = message
@@ -418,14 +460,14 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                     self.livePreviewText = cleanTranscript
                     self.chunkTranscripts.append(cleanTranscript)
                     if self.phase == .recording {
-                        self.onTranscript(cleanTranscript, self.destinationNoteID)
+                        self.onTranscript(cleanTranscript)
                         self.deliveredTranscriptCount = self.chunkTranscripts.count
                         self.deliveredCharacterCount += cleanTranscript.count
                         self.semiLiveSegmentCount += 1
-                        self.transcriptionProgress = "Added segment \(self.semiLiveSegmentCount) to \(self.destinationNoteTitle)"
-                        // This segment is now durable in Notes. Removing its
-                        // audio prevents a later recovery retry from inserting
-                        // the same completed segment a second time.
+                        self.transcriptionProgress = "Added segment \(self.semiLiveSegmentCount) to conversation"
+                        // This segment is now durable in the conversation store.
+                        // Removing its audio prevents a later recovery retry from
+                        // inserting the same completed segment a second time.
                         try? FileManager.default.removeItem(at: url)
                     }
                 }
@@ -565,8 +607,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
 
         skippedChunkCount += 1
-        let start = Double(currentChunkIndex) * MeetingDictationPlan.segmentDuration
-        let end = min(recordedDuration, start + MeetingDictationPlan.segmentDuration)
+        let start = recordingSegmentDurations.prefix(currentChunkIndex).reduce(0, +)
+        let duration = recordingSegmentDurations.indices.contains(currentChunkIndex)
+            ? recordingSegmentDurations[currentChunkIndex]
+            : 0
+        let end = min(recordedDuration, start + duration)
         let marker = "[Untranscribed audio \(Self.clockLabel(start))–\(Self.clockLabel(end)): \(detail)]"
         finishCurrentChunk(with: marker)
     }
@@ -579,11 +624,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         if !cleanTranscript.isEmpty {
             chunkTranscripts.append(cleanTranscript)
             if phase == .recording {
-                onTranscript(cleanTranscript, destinationNoteID)
+                onTranscript(cleanTranscript)
                 deliveredTranscriptCount = chunkTranscripts.count
                 deliveredCharacterCount += cleanTranscript.count
                 semiLiveSegmentCount += 1
-                transcriptionProgress = "Live · added window \(semiLiveSegmentCount) to \(destinationNoteTitle)"
+                transcriptionProgress = "Live · added window \(semiLiveSegmentCount) to conversation"
                 if recordingSegmentURLs.indices.contains(currentChunkIndex) {
                     try? FileManager.default.removeItem(at: recordingSegmentURLs[currentChunkIndex])
                 }
@@ -611,7 +656,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             .joined(separator: "\n\n")
 
         let warning = skippedChunkCount > 0
-            ? "Dictation completed, but \(skippedChunkCount) audio segment\(skippedChunkCount == 1 ? "" : "s") could not be recognized. Markers were added to the note."
+            ? "Dictation completed, but \(skippedChunkCount) audio segment\(skippedChunkCount == 1 ? "" : "s") could not be recognized. Markers were added to the conversation."
             : nil
         completeTranscription(
             remainingTranscript,
@@ -621,15 +666,15 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func completeTranscription(_ transcript: String, outputCharacters: Int, warning: String?) {
-        let destinationNoteID = destinationNoteID
-        if !transcript.isEmpty { onTranscript(transcript, destinationNoteID) }
+        if !transcript.isEmpty { onTranscript(transcript) }
         cleanupAudioFiles()
         finishUsage(succeeded: true, outputCharacters: outputCharacters, detail: "Recorded \(Int(recordedDuration)) seconds")
+        finishSession(success: true)
+        operationIdentifier = nil
         resetJobState()
         phase = .idle
         lastError = warning
         recoveryAudioURL = nil
-        recoveryDestinationNoteID = nil
         recoveryDuration = 0
     }
 
@@ -669,6 +714,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             ? error.localizedDescription
             : "\(error.localizedDescription) The recording was preserved; choose Retry Transcription after changing engines or performance if needed."
         finishUsage(succeeded: false, detail: error.localizedDescription)
+        finishSession(success: false)
+        operationIdentifier = nil
         resetJobState()
         phase = .idle
     }
@@ -683,15 +730,13 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             return nil
         }
         try? ApplicationPaths.prepare()
-        recoveryDestinationNoteID = destinationNoteID
-        recoveryDestinationTitle = destinationNoteTitle
         recoveryDuration = recordedDuration
         let destination: URL
         if recordingDirectoryURL.deletingLastPathComponent() == ApplicationPaths.failedDictations {
             destination = recordingDirectoryURL
         } else {
             destination = ApplicationPaths.failedDictations.appendingPathComponent(
-                "RayPlacement-Dictation-\(Self.fileTimestamp())",
+                "Lima-Dictation-\(Self.fileTimestamp())-\(UUID().uuidString.prefix(8))",
                 isDirectory: true
             )
             do {
@@ -737,11 +782,20 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         rotatingRecorder = false
         recorderRestartCount = 0
         transcriptionProgress = nil
-        destinationNoteID = nil
         audioLevel = 0
         recordingElapsed = 0
         semiLiveSegmentCount = 0
         livePreviewText = ""
+    }
+
+    private func finishSession(success: Bool) {
+        guard sessionStarted else { return }
+        sessionStarted = false
+        if success {
+            onSessionFinished()
+        } else {
+            onSessionFailed()
+        }
     }
 
     private func finishUsage(succeeded: Bool, outputCharacters: Int = 0, detail: String? = nil) {
@@ -799,11 +853,6 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private static func normalizedLevel(decibels: Double, floor: Double, ceiling: Double) -> Double {
         guard ceiling > floor else { return 0 }
         return min(1, max(0, (decibels - floor) / (ceiling - floor)))
-    }
-
-    private static func cleanDestinationTitle(_ title: String?) -> String {
-        let cleaned = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return cleaned.isEmpty ? "Untitled Note" : String(cleaned.prefix(120))
     }
 
     private static func segmentFiles(in directory: URL) -> [URL] {

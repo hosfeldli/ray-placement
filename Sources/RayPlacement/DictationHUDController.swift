@@ -91,7 +91,38 @@ private final class DictationHUDPanel: NSPanel {
         hasShadow = true
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
-        setAccessibilityLabel("RayPlacement activity shelf")
+        setAccessibilityLabel("Lima activity shelf")
+    }
+}
+
+private struct MusicSignalRibbon: View {
+    let progress: Double
+    let level: Double
+    let accent: Color
+    let isPlaying: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        GeometryReader { proxy in
+            let clampedProgress = min(1, max(0, progress))
+            let clampedLevel = min(1, max(0, level))
+            let barWidth = max(1, (proxy.size.width - 34) / 24)
+            HStack(alignment: .center, spacing: 1.4) {
+                ForEach(0..<24, id: \.self) { index in
+                    let filled = Double(index) / 24 < clampedProgress
+                    let variation = CGFloat((index * 7) % 5) / 5
+                    let liveHeight = isPlaying && !reduceMotion
+                        ? 4 + CGFloat(clampedLevel) * (7 + variation * 7)
+                        : 4 + variation * 3
+                    Capsule()
+                        .fill(filled ? accent.opacity(0.92) : Color.white.opacity(0.17))
+                        .frame(width: barWidth, height: liveHeight)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .frame(height: 15)
+        .accessibilityHidden(true)
     }
 }
 
@@ -130,7 +161,7 @@ private struct TopShelfView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             Button {
-                dictation.performPrimaryAction(destinationNoteID: nil)
+                dictation.performPrimaryAction()
                 focus.restoreSoon()
             } label: {
                 Image(systemName: "stop.fill")
@@ -155,111 +186,102 @@ private struct TopShelfView: View {
     private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
         let accent = track.source.accent
         let statusMessage = music.transportMessage ?? music.controlAvailabilityMessage
-        return HStack(spacing: 10) {
+        let metadata = [track.artist, track.album]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+        let detail = statusMessage ?? (metadata.isEmpty ? track.source.title : metadata)
+
+        return HStack(spacing: 8) {
             Button {
                 music.openSource()
                 focus.restoreSoon()
             } label: {
-                HStack(spacing: 9) {
+                ZStack(alignment: .bottomTrailing) {
                     musicArtwork(for: track, accent: accent)
-                        .frame(width: 38, height: 38)
-                        .clipShape(PrismaticPanelShape(cut: 8))
-                        .overlay {
-                            PrismaticPanelShape(cut: 8)
-                                .stroke(accent.opacity(0.50), lineWidth: 0.8)
-                                .allowsHitTesting(false)
-                        }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: 5) {
-                            Image(systemName: track.source.symbol)
-                                .limaFont(.system(size: 8, weight: .bold))
-                                .foregroundStyle(accent)
-                            Text(track.source.title.uppercased())
-                                .limaFont(.system(size: 8, weight: .bold, design: .rounded))
-                                .tracking(0.7)
-                                .foregroundStyle(.secondary)
-                            Spacer(minLength: 2)
-                            HStack(spacing: 3) {
-                                Circle()
-                                    .fill(track.isPlaying ? accent : Color.secondary.opacity(0.55))
-                                    .frame(width: 5, height: 5)
-                                Text(track.isPlaying ? "PLAYING" : "PAUSED")
-                                    .limaFont(.system(size: 7.5, weight: .bold, design: .rounded))
-                                    .foregroundStyle(track.isPlaying ? AnyShapeStyle(accent) : AnyShapeStyle(.tertiary))
-                            }
-                        }
-                        Text(track.title)
-                            .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                        HStack(spacing: 5) {
-                            Text(timeLabel(track.position))
-                                .limaFont(.system(size: 8, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.86))
-                            ProgressView(value: track.duration > 0 ? min(track.position, track.duration) : 0, total: max(track.duration, 1))
-                                .tint(accent)
-                                .frame(maxWidth: .infinity)
-                            Text(timeLabel(track.duration))
-                                .limaFont(.system(size: 8, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.white.opacity(0.86))
-                        }
-                        Text(statusMessage ?? mediaSubtitle(track))
-                            .limaFont(.system(size: 9, weight: .medium, design: .rounded))
-                            .foregroundStyle(statusMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: track.source.symbol)
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(.white)
+                        .padding(4)
+                        .background(.black.opacity(0.42), in: Circle())
+                        .padding(3)
                 }
-                .padding(.vertical, 3)
-                .background(Color.black.opacity(0.30), in: PrismaticPanelShape(cut: 7))
-                .contentShape(Rectangle())
+                .frame(width: 40, height: 40)
+                .clipShape(PrismaticPanelShape(cut: 10))
+                .overlay {
+                    PrismaticPanelShape(cut: 10)
+                        .stroke(accent.opacity(0.62), lineWidth: 0.9)
+                        .allowsHitTesting(false)
+                }
             }
             .buttonStyle(.plain)
             .help("Open \(track.source.title)")
             .accessibilityLabel("Open \(track.source.title): \(track.title)")
 
-            HStack(spacing: 3) {
-                mediaButton("magnifyingglass", label: "Search Spotify") { music.searchSpotify() }
-                mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
-                Button {
-                    runMediaAction(.playPause)
-                } label: {
-                    Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 29, height: 29)
-                        .foregroundStyle(.white)
-                        .background(accent.gradient, in: Circle())
-                        .overlay {
-                            Circle()
-                                .stroke(Color.white.opacity(0.38), lineWidth: 0.7)
-                                .allowsHitTesting(false)
-                        }
-                        .shadow(color: accent.opacity(0.20), radius: 4, y: 2)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 5) {
+                    Text(track.title)
+                        .limaFont(.system(size: 12, weight: .semibold, design: .rounded))
+                        .lineLimit(1)
+                    Spacer(minLength: 2)
+                    Image(systemName: track.isPlaying ? "waveform" : "pause.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .foregroundStyle(track.isPlaying ? accent : .secondary)
                 }
-                .buttonStyle(.plain)
-                .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
-                .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
-                mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
-                Image(systemName: "speaker.wave.2.fill")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.secondary)
-                Slider(value: Binding(get: { music.outputVolume }, set: { music.setOutputVolume($0) }), in: 0...1)
-                    .frame(width: 48)
-                    .controlSize(.mini)
-                    .help("Output volume")
+                Text(detail)
+                    .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(statusMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                HStack(spacing: 4) {
+                    Text(timeLabel(track.position))
+                        .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.78))
+                    MusicSignalRibbon(
+                        progress: track.duration > 0 ? track.position / track.duration : 0,
+                        level: track.isPlaying ? music.outputAudioLevel : 0,
+                        accent: accent,
+                        isPlaying: track.isPlaying
+                    )
+                    Text(timeLabel(track.duration))
+                        .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(.white.opacity(0.78))
+                }
             }
-            .padding(3)
-            .background(Color.black.opacity(0.16), in: Capsule())
-            .overlay {
-                Capsule()
-                    .stroke(Color.white.opacity(0.14), lineWidth: 0.7)
-                    .allowsHitTesting(false)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            VStack(spacing: 3) {
+                HStack(spacing: 1) {
+                    mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
+                    Button { runMediaAction(.playPause) } label: {
+                        Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 9, weight: .bold))
+                            .frame(width: 27, height: 25)
+                            .foregroundStyle(.white)
+                            .background(accent.gradient, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
+                    .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
+                    mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
+                }
+                HStack(spacing: 3) {
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundStyle(.secondary)
+                    Slider(value: Binding(get: { music.outputVolume }, set: { music.setOutputVolume($0) }), in: 0...1)
+                        .controlSize(.mini)
+                        .frame(width: 60)
+                        .help("Output volume")
+                }
             }
+            .frame(width: 88)
+            .padding(.vertical, 3)
+            .background(Color.black.opacity(0.15), in: Capsule())
+            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 0.7))
             .opacity(music.isPerformingTransport ? 0.55 : 1)
             .disabled(music.isPerformingTransport)
         }
-        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .padding(.horizontal, 8)
         .frame(height: 56)
         .prismaticShelf(accent: accent)
         .overlay(alignment: .bottom) {
@@ -297,11 +319,10 @@ private struct TopShelfView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 9.5, weight: .bold))
-                .frame(width: 30, height: 30)
+                .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
         .contentShape(Rectangle())
         .help(label)
         .accessibilityLabel(label)
@@ -317,11 +338,6 @@ private struct TopShelfView: View {
         return "\(Int(seconds) / 60):\(String(format: "%02d", Int(seconds) % 60))"
     }
 
-    private func mediaSubtitle(_ track: MediaNowPlayingSnapshot) -> String {
-        let details = [track.artist, track.album].filter { !$0.isEmpty }
-        return details.isEmpty ? track.source.title : details.joined(separator: " · ")
-    }
-
     @ViewBuilder
     private var activityIndicator: some View {
         switch dictation.phase {
@@ -334,8 +350,8 @@ private struct TopShelfView: View {
     private var primaryText: String {
         switch dictation.phase {
         case .requestingPermission: return "Waiting for dictation permission"
-        case .recording: return "Recording · \(dictation.destinationNoteTitle)"
-        case .transcribing: return "Transcribing to \(dictation.destinationNoteTitle)"
+        case .recording: return "Recording · Dictation conversation"
+        case .transcribing: return "Transcribing conversation"
         case .idle: return "Dictation stopped"
         }
     }
@@ -366,7 +382,7 @@ private struct TopShelfView: View {
 
     private var accessibilityText: String {
         if dictation.phase == .recording {
-            return "Recording to \(dictation.destinationNoteTitle), \(Self.clock(dictation.recordingElapsed)) elapsed"
+            return "Recording conversation · \(Self.clock(dictation.recordingElapsed)) elapsed"
         }
         return primaryText
     }

@@ -23,7 +23,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let notesWindow = NotesWindowController()
     private let terminalModel: DeveloperTerminalModel
     private lazy var endpointTesterWindow = EndpointTesterWindowController()
-    private lazy var sqlWorkspaceWindow = SQLWorkspaceWindowController()
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
     private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
     private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
@@ -90,7 +89,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.shutdown()
         terminalModel.shutdown()
         endpointTesterWindow.shutdown()
-        sqlWorkspaceWindow.shutdown()
         formatterWindow.shutdown()
     }
 
@@ -125,6 +123,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showDeveloperTerminal() {
+        guard SettingsStore.shared.developerTerminalEnabled else { return }
         viewModel.enter(.terminal)
         presentPanel()
         DispatchQueue.main.async { [weak self] in
@@ -132,8 +131,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             self?.terminalModel.focus()
         }
     }
-    func showSQLWorkspace() { hide(); sqlWorkspaceWindow.present() }
     func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
+
+    func refreshDeveloperTerminalAvailability() {
+        let wasTerminal = viewModel.mode == .terminal
+        viewModel.refreshForSettings()
+        guard !SettingsStore.shared.developerTerminalEnabled else { return }
+        terminalModel.shutdown()
+        if wasTerminal {
+            hide()
+        }
+    }
 
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
@@ -931,7 +939,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let alert = NSAlert()
         alert.alertStyle = .critical
         alert.messageText = "Force Quit All \(applications.count) Applications?"
-        alert.informativeText = "RayPlacement will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)"
+        alert.informativeText = "Lima will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)"
         alert.addButton(withTitle: "Force Quit All")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else {
@@ -1012,9 +1020,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openTerminal:
             showDeveloperTerminal()
-
-        case .openSQLWorkspace:
-            showSQLWorkspace()
 
         case .openEndpointTester:
             hide()

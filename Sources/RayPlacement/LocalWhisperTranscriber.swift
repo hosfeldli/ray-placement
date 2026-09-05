@@ -11,9 +11,9 @@ final class LocalWhisperTranscriber {
         var errorDescription: String? {
             switch self {
             case .assetsMissing:
-                return "The bundled Local Whisper runtime is missing. Reinstall Lima to restore meeting transcription."
+                return "The bundled Local Whisper runtime is missing. Reinstall Lima to restore dictation transcription."
             case .processFailed(let detail):
-                return detail.isEmpty ? "Local Whisper could not transcribe the meeting audio." : detail
+                return detail.isEmpty ? "Local Whisper could not transcribe the dictation audio." : detail
             case .emptyTranscript:
                 return "Local Whisper found no recognizable speech in the recording."
             }
@@ -46,7 +46,6 @@ final class LocalWhisperTranscriber {
 
     func transcribe(
         audioURL: URL,
-        audioDuration: TimeInterval,
         prompt: String?,
         performance: PerformanceScale,
         progress: @escaping (String) -> Void,

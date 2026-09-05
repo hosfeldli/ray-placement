@@ -190,6 +190,14 @@ final class LauncherViewModel: ObservableObject {
         if mode == .root { refreshResults() }
     }
 
+    func refreshForSettings() {
+        if !SettingsStore.shared.developerTerminalEnabled, mode == .terminal {
+            mode = .root
+            query = ""
+        }
+        refreshResults()
+    }
+
     func resetForPresentation() {
         searchWorkItem?.cancel()
         clipboardSearchWorkItem?.cancel()
@@ -380,7 +388,7 @@ final class LauncherViewModel: ObservableObject {
 
         guard !cleanQuery.isEmpty else {
             let priority = [
-                "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal", "builtin.sql",
+                "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal",
                 "builtin.endpoint-tester", "extension.local.productivity-tools.convert-timezones",
                 "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
                 "window.maximize", "builtin.command-history", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
@@ -703,9 +711,11 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
             LauncherItem(id: "builtin.notes", title: "Lima Notes", subtitle: "Open the separate Markdown notes window", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: SettingsStore.shared.notesHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
-            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Note Dictation", subtitle: "Open the most recent note and record on demand", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Dictation Conversation", subtitle: "Record a separate dictation conversation", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
+            // The terminal is an optional developer surface. Keeping it out of
+            // the catalog entirely makes the setting apply to search as well as
+            // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run zsh commands with output search and editor shortcut guides", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
-            LauncherItem(id: "builtin.sql", title: "SQL Workspace", subtitle: "Discover Oracle or MySQL schema, query, join, and export locally", icon: .system("cylinder.split.1x2.fill"), keywords: ["sql", "database", "oracle", "mysql", "schema", "query", "procedures"], action: .system(.openSQLWorkspace), shortcut: SettingsStore.shared.sqlHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.sqlShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "postman", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
             LauncherItem(id: "builtin.file-launcher", title: "Focused File Launcher", subtitle: "Choose a file in Finder and open it with a specific application", icon: .system("folder.badge.gearshape"), keywords: ["file", "finder", "open with", "application"], action: .system(.openFocusedFileLauncher)),
             LauncherItem(id: "builtin.passwords", title: "Password Generator", subtitle: "Generate and copy a strong password locally", icon: .system("key.fill"), keywords: ["password", "security", "random", "secret"], action: .system(.openPasswordGenerator)),
@@ -721,6 +731,9 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.settings", title: "Lima Settings", subtitle: "Hotkeys, performance, privacy, and extensions", icon: .system("gearshape.fill"), keywords: ["preferences", "hotkey", "shortcut", "performance", "accessibility"], action: .system(.openSettings), shortcut: "⌘,"),
             LauncherItem(id: "builtin.quit", title: "Quit Lima", subtitle: "System", icon: .system("power"), keywords: ["exit"], action: .system(.quit), shortcut: "⌘Q")
         ]
+        if !SettingsStore.shared.developerTerminalEnabled {
+            items.removeAll { $0.id == "builtin.terminal" }
+        }
         items.insert(contentsOf: WindowLayout.allCases.map { layout in
             LauncherItem(
                 id: "window.\(layout.rawValue)",

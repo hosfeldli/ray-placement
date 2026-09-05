@@ -366,7 +366,7 @@ final class UpdateService: ObservableObject {
         let attributes = try fileManager.attributesOfItem(atPath: archive.path)
         let size = (attributes[.size] as? NSNumber)?.intValue ?? 0
         guard size > 0, size <= rayPlacementUpdateAssetMaximumBytes else { throw UpdateError.oversizedAsset }
-        let actualHash = SHA256.hash(data: try Data(contentsOf: archive)).map { String(format: "%02x", $0) }.joined()
+        let actualHash = try sha256(of: archive)
         guard actualHash == expectedHash else { throw UpdateError.invalidDigest }
 
         let extraction = working.appendingPathComponent("extracted", isDirectory: true)
@@ -402,6 +402,16 @@ final class UpdateService: ObservableObject {
             throw UpdateError.invalidPackage
         }
         return sourceRoot
+    }
+
+    private nonisolated func sha256(of file: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: file)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
+            hasher.update(data: chunk)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     private nonisolated func plistValue(_ key: String, in plist: URL) throws -> String {

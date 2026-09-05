@@ -66,7 +66,7 @@ private final class FocusedFileLauncherModel: ObservableObject {
     func chooseInFinder() {
         let panel = NSOpenPanel()
         panel.title = "Choose a file or folder"
-        panel.message = "RayPlacement will open this item in the app you choose."
+        panel.message = "Lima will open this item in the app you choose."
         panel.prompt = "Choose"
         panel.canChooseFiles = true
         panel.canChooseDirectories = true

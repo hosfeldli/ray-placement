@@ -9,8 +9,8 @@ MODEL="$MODEL_DIRECTORY/ggml-small.en-tdrz.bin"
 EXPECTED_MODEL_SHA256="ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4"
 DEFAULT_MODEL_URL="https://huggingface.co/akashmjn/tinydiarize-whisper.cpp/resolve/d44ba793fc67e509623a88a409723311fa677744/ggml-small.en-tdrz.bin?download=true"
 MODEL_URL="${RAYPLACEMENT_WHISPER_MODEL_URL:-$DEFAULT_MODEL_URL}"
-PREBUILT_MODEL="$PROJECT_DIRECTORY/build/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
-INSTALLED_MODEL="${HOME:?The current user home folder is unavailable}/Applications/RayPlacement.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+PREBUILT_MODEL="$PROJECT_DIRECTORY/build/Lima.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
+INSTALLED_MODEL="${HOME:?The current user home folder is unavailable}/Applications/Lima.app/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin"
 TEMP_MODEL="$MODEL_DIRECTORY/.ggml-small.en-tdrz.bin.downloading.$$"
 
 cleanup() {

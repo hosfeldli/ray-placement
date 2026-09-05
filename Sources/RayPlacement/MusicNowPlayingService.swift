@@ -84,6 +84,7 @@ final class MusicNowPlayingService: ObservableObject {
     private var hasLiveOutputMeter = false
     private var queryInFlight = false
     private var mostRecentSource: MediaNowPlayingSnapshot.Source?
+    private var nowPlayingUpdatedAt: Date?
     private var artworkKey: String?
 
     init() {
@@ -97,7 +98,7 @@ final class MusicNowPlayingService: ObservableObject {
         }
         volumeTimer?.tolerance = 0.08
         progressTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor in self?.advancePlaybackProgress() }
         }
         progressTimer?.tolerance = 0.2
         refreshOutputVolume()
@@ -176,24 +177,6 @@ final class MusicNowPlayingService: ObservableObject {
         outputVolume = clamped
     }
 
-    func searchSpotify() {
-        let alert = NSAlert()
-        alert.messageText = "Search Spotify"
-        alert.informativeText = "Search for a song, artist, or album."
-        let field = NSTextField(string: "")
-        field.placeholderString = "Search Spotify"
-        field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
-        alert.accessoryView = field
-        alert.addButton(withTitle: "Search")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty,
-              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "spotify:search:\(encoded)") else { return }
-        NSWorkspace.shared.open(url)
-    }
-
     private func refreshOutputVolume() {
         outputVolume = Self.defaultOutputVolume() ?? outputVolume
         if !hasLiveOutputMeter { outputAudioLevel = outputVolume }
@@ -268,6 +251,7 @@ final class MusicNowPlayingService: ObservableObject {
             nowPlaying = nil
             artwork = nil
             artworkKey = nil
+            nowPlayingUpdatedAt = nil
             isPerformingTransport = false
             return
         }
@@ -283,11 +267,34 @@ final class MusicNowPlayingService: ObservableObject {
                 let snapshot = snapshots.first(where: { $0.source == self.mostRecentSource })
                     ?? snapshots.first
                 self.nowPlaying = snapshot
+                self.nowPlayingUpdatedAt = snapshot == nil ? nil : Date()
                 if let snapshot { self.mostRecentSource = snapshot.source }
                 self.loadArtworkIfNeeded(for: snapshot)
                 self.isPerformingTransport = false
             }
         }
+    }
+
+    private func advancePlaybackProgress() {
+        guard var snapshot = nowPlaying,
+              snapshot.isPlaying,
+              snapshot.duration > 0,
+              let updatedAt = nowPlayingUpdatedAt else { return }
+        let elapsed = max(0, Date().timeIntervalSince(updatedAt))
+        let position = min(snapshot.duration, max(0, snapshot.position + elapsed))
+        guard abs(position - snapshot.position) >= 0.01 else { return }
+        snapshot = MediaNowPlayingSnapshot(
+            source: snapshot.source,
+            title: snapshot.title,
+            artist: snapshot.artist,
+            album: snapshot.album,
+            isPlaying: snapshot.isPlaying,
+            artworkURL: snapshot.artworkURL,
+            duration: snapshot.duration,
+            position: position
+        )
+        nowPlaying = snapshot
+        nowPlayingUpdatedAt = Date()
     }
 
     private var firstRunningSource: MediaNowPlayingSnapshot.Source? {
@@ -398,7 +405,12 @@ final class MusicNowPlayingService: ObservableObject {
                 end tell
                 """)
             }
-            let image = data.flatMap(NSImage.init(data:))
+            let image: NSImage?
+            if let payload = data, payload.count <= 8 * 1024 * 1024 {
+                image = NSImage(data: payload)
+            } else {
+                image = nil
+            }
             DispatchQueue.main.async {
                 guard self?.artworkKey == key else { return }
                 self?.artwork = image

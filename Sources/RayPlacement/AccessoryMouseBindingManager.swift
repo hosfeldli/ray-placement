@@ -15,7 +15,6 @@ enum AccessoryMouseAction: String, CaseIterable, Identifiable {
     case quickNote
     case dictation
     case terminal
-    case sqlWorkspace
 
     var id: String { rawValue }
 
@@ -34,7 +33,6 @@ enum AccessoryMouseAction: String, CaseIterable, Identifiable {
         case .quickNote: return "Quick Note"
         case .dictation: return "Toggle Dictation"
         case .terminal: return "Developer Terminal"
-        case .sqlWorkspace: return "SQL Workspace"
         }
     }
 }

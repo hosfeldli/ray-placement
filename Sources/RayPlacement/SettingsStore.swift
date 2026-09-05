@@ -233,6 +233,7 @@ enum ApplicationPaths {
     static let clipboardHistory = applicationSupport.appendingPathComponent("clipboard-history.json")
     static let harperDictionary = applicationSupport.appendingPathComponent("harper-dictionary.txt")
     static let notes = applicationSupport.appendingPathComponent("notes.json")
+    static let dictationConversations = applicationSupport.appendingPathComponent("dictation-conversations.json")
     static let noteAssets = applicationSupport.appendingPathComponent("Note Assets", isDirectory: true)
     static let dictationScratch = applicationSupport.appendingPathComponent("Dictation", isDirectory: true)
     static let failedDictations = applicationSupport.appendingPathComponent("Failed Dictations", isDirectory: true)
@@ -267,10 +268,9 @@ final class SettingsStore: ObservableObject {
         static let notesDockLeftHotkeyEnabled = "notesDockLeftHotkeyEnabled"
         static let notesDockRightShortcut = "notesDockRightShortcut"
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
+        static let developerTerminalEnabled = "developerTerminalEnabled"
         static let terminalShortcut = "terminalShortcut"
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
-        static let sqlShortcut = "sqlShortcut"
-        static let sqlHotkeyEnabled = "sqlHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
@@ -395,20 +395,22 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var developerTerminalEnabled: Bool {
+        didSet {
+            defaults.set(developerTerminalEnabled, forKey: Key.developerTerminalEnabled)
+            if !developerTerminalEnabled {
+                accessoryMouseBindings = accessoryMouseBindings.filter { $0.value != AccessoryMouseAction.terminal.rawValue }
+            }
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
     @Published var terminalShortcut: String {
         didSet { defaults.set(terminalShortcut, forKey: Key.terminalShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
     }
 
     @Published var terminalHotkeyEnabled: Bool {
         didSet { defaults.set(terminalHotkeyEnabled, forKey: Key.terminalHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
-    }
-
-    @Published var sqlShortcut: String {
-        didSet { defaults.set(sqlShortcut, forKey: Key.sqlShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
-    }
-
-    @Published var sqlHotkeyEnabled: Bool {
-        didSet { defaults.set(sqlHotkeyEnabled, forKey: Key.sqlHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
     }
 
     @Published var accessoryMouseBindings: [String: String] {
@@ -539,10 +541,9 @@ final class SettingsStore: ObservableObject {
         notesDockLeftHotkeyEnabled = defaults.object(forKey: Key.notesDockLeftHotkeyEnabled) as? Bool ?? false
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
+        developerTerminalEnabled = defaults.object(forKey: Key.developerTerminalEnabled) as? Bool ?? true
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
-        sqlShortcut = defaults.string(forKey: Key.sqlShortcut) ?? "control+option+s"
-        sqlHotkeyEnabled = defaults.object(forKey: Key.sqlHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
@@ -690,7 +691,6 @@ final class SettingsStore: ObservableObject {
     }
 
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
-    func restoreSQLShortcut(_ shortcut: String) { isRestoringActionShortcut = true; sqlShortcut = shortcut; isRestoringActionShortcut = false }
 
     func accessoryMouseAction(for button: Int) -> AccessoryMouseAction {
         accessoryMouseBindings[String(button)].flatMap(AccessoryMouseAction.init(rawValue:)) ?? .none

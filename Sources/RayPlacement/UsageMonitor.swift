@@ -50,6 +50,7 @@ final class UsageMonitor: ObservableObject {
     @Published private(set) var events: [UsageEvent]
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.usage-persistence", qos: .utility)
+    private let persistenceGeneration = PersistenceGeneration()
     private var pendingSave: DispatchWorkItem?
 
     private init() {
@@ -120,6 +121,9 @@ final class UsageMonitor: ObservableObject {
         events = []
         pendingSave?.cancel()
         pendingSave = nil
+        // Invalidate delayed snapshots before removing the file. A canceled
+        // work item may already be running and must not recreate old events.
+        _ = persistenceGeneration.next()
         persistenceQueue.async {
             try? FileManager.default.removeItem(at: ApplicationPaths.usageLog)
         }
@@ -133,6 +137,7 @@ final class UsageMonitor: ObservableObject {
     func flush() {
         pendingSave?.cancel()
         pendingSave = nil
+        _ = persistenceGeneration.next()
         let snapshot = events
         persistenceQueue.sync { Self.persist(snapshot) }
     }
@@ -140,7 +145,12 @@ final class UsageMonitor: ObservableObject {
     private func scheduleSave() {
         pendingSave?.cancel()
         let snapshot = events
-        let work = DispatchWorkItem { Self.persist(snapshot) }
+        let generation = persistenceGeneration.next()
+        let gate = persistenceGeneration
+        let work = DispatchWorkItem {
+            guard gate.isCurrent(generation) else { return }
+            Self.persist(snapshot)
+        }
         pendingSave = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.4, execute: work)
     }

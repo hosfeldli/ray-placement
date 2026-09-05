@@ -10,6 +10,8 @@ final class SystemAudioLevelMonitor {
     private var tapID = AudioObjectID(kAudioObjectUnknown)
     private var aggregateID = AudioObjectID(kAudioObjectUnknown)
     private var ioProcID: AudioDeviceIOProcID?
+    // Accessed only by the serial Core Audio IO queue.
+    private var lastLevelDeliveryUptime: TimeInterval = 0
 
     init(onLevel: @escaping @Sendable (Double) -> Void) {
         self.onLevel = onLevel
@@ -40,13 +42,20 @@ final class SystemAudioLevelMonitor {
         let status = AudioDeviceCreateIOProcIDWithBlock(&ioProcID, aggregateID, queue) { [weak self] _, input, _, _, _ in
             guard let self else { return }
             let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: input))
+            // The meter is visual feedback, not an analysis path. Downsample
+            // the callback and input buffers so the private tap cannot flood the
+            // main thread or spend a full audio callback's budget on every
+            // sample.
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - self.lastLevelDeliveryUptime >= 0.05 else { return }
+            self.lastLevelDeliveryUptime = now
             var sum: Double = 0
             var count = 0
             for buffer in buffers {
                 guard let data = buffer.mData else { continue }
                 let sampleCount = Int(buffer.mDataByteSize) / MemoryLayout<Float32>.size
                 let samples = data.assumingMemoryBound(to: Float32.self)
-                for index in 0..<sampleCount {
+                for index in stride(from: 0, to: sampleCount, by: 4) {
                     let sample = Double(samples[index])
                     guard sample.isFinite else { continue }
                     sum += sample * sample

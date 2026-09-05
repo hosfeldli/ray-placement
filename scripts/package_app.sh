@@ -10,7 +10,7 @@ SCRATCH_DIRECTORY="${RAYPLACEMENT_SCRATCH_DIRECTORY:-$PROJECT_DIRECTORY/.build}"
 # Supply a known-good compiler cache when a cold Swift toolchain cache is slow
 # or interrupted; otherwise keep all build artifacts inside the scratch path.
 MODULE_CACHE_DIRECTORY="${RAYPLACEMENT_MODULE_CACHE_DIRECTORY:-$SCRATCH_DIRECTORY/module-cache}"
-APP_DIRECTORY="$PROJECT_DIRECTORY/build/RayPlacement.app"
+APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
@@ -42,8 +42,14 @@ if [[ -d "$APP_DIRECTORY" ]]; then
 fi
 mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
 
-cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
+cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
+
+# Keep the uninstaller inside the bundle so the packaged app is self-contained
+# and the release verifier checks the same artifact users receive.
+cp "$PROJECT_DIRECTORY/Uninstall Lima.command" \
+    "$CONTENTS_DIRECTORY/Resources/Uninstall Lima.command"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Uninstall Lima.command"
 
 if [[ ! -x "$WHISPER_RUNTIME/whisper-cli" ]]; then
     echo "The bundled Local Whisper runtime is incomplete."
@@ -120,7 +126,7 @@ if [[ ! -d "$BUNDLED_EXTENSIONS_DIRECTORY" ]]; then
     exit 1
 fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
-chmod 755 "$CONTENTS_DIRECTORY/MacOS/RayPlacement"
+chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
 if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     codesign --force --deep --sign - "$APP_DIRECTORY"
@@ -160,7 +166,7 @@ else
     echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
 fi
 if [[ "${RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION:-0}" != "1" ]]; then
-    RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_app.sh" "$APP_DIRECTORY"
+    RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_liamflow_app.sh" "$APP_DIRECTORY"
 fi
 
 echo "Packaged: $APP_DIRECTORY"

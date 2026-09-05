@@ -3,14 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
-APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/RayPlacement.app}"
-BINARY="$APP_DIRECTORY/Contents/MacOS/RayPlacement"
+APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
+BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 SOURCE_INFO="$PROJECT_DIRECTORY/Packaging/Info.plist"
 
 test -d "$APP_DIRECTORY"
 test -x "$BINARY"
 test -f "$RESOURCES/RayPlacement.icns"
+test -x "$RESOURCES/Uninstall Lima.command"
 test ! -e "$RESOURCES/Qwen"
 test ! -e "$RESOURCES/CoEdit"
 test -x "$RESOURCES/Tools/harper-cli"
@@ -39,7 +40,7 @@ EXPECTED_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionStrin
 EXPECTED_BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SOURCE_INFO")"
 MICROPHONE_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
 SPEECH_DESCRIPTION="$(/usr/libexec/PlistBuddy -c 'Print :NSSpeechRecognitionUsageDescription' "$APP_DIRECTORY/Contents/Info.plist")"
-[[ "$BUNDLE_IDENTIFIER" == "dev.liam.rayplacement" ]]
+[[ "$BUNDLE_IDENTIFIER" == "dev.liam.lima" ]]
 [[ "$MINIMUM_SYSTEM" == "13.0" ]]
 [[ "$VERSION" == "$EXPECTED_VERSION" ]]
 [[ "$BUILD_NUMBER" == "$EXPECTED_BUILD_NUMBER" ]]
@@ -73,4 +74,4 @@ HARPER_OUTPUT="$(printf '%s' "$HARPER_INPUT" | "$RESOURCES/Tools/harper-cli" --n
 [[ "${HARPER_STATUS:-0}" == "0" || "${HARPER_STATUS:-0}" == "1" ]]
 [[ "$HARPER_OUTPUT" == *"have"* ]]
 
-echo "Verified RayPlacement.app"
+echo "Verified Lima.app"

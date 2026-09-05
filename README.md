@@ -1,6 +1,6 @@
-# Lima 3.6.0
+# Lima 3.11.0
 
-Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and local meeting dictation without accounts or analytics.
+Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and private local dictation conversations without accounts or analytics.
 
 Text generation has been removed. Writing correction uses deterministic local Python and Harper rules. Dictation is the only model-powered feature and runs locally through Whisper.
 
@@ -8,13 +8,7 @@ Text generation has been removed. Writing correction uses deterministic local Py
 
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-Version 3.3 adds virtualized, filterable SQL results; full-workspace schema and compatible-join dragging; deeper local and remote SSH file trees; context-aware terminal guidance; and administrator-approved protected-folder updates with cancellation-safe rollback.
-
-Version 3.4 makes the launcher pointer-stable: hovering a result updates its highlight without recentering or scrolling the list. Exact command names rank first, every major native workspace is directly searchable, and keyboard navigation remains the only action that intentionally scrolls selection into view. Compact, Balanced, and Comfortable interface densities now resize launcher rows and workspace presentation live. The bundled themes have clearer workflow-oriented names, workspace window positions persist, active-process notifications show elapsed time, and ambient refraction pauses while local processing is active. Notes can persist custom names for detected transcript speakers and apply them to later dictation segments in that note.
-
 Version 3.4.1 repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
-
-Version 3.5 adds per-button accessory-mouse bindings for Lima tools and macOS navigation, including Previous/Next Desktop, Mission Control, application windows, and window back/forward. Emoji lookup now uses a pre-indexed ranked search and a bounded result page, while emoji selection performs a focus-aware paste transaction and restores the previous clipboard. SQL schema clutter filters hide TEMP and short-affix names by default, remain configurable per connection, and support exact always-show overrides; join suggestions now require real foreign-key columns on both visible tables. Developer Terminal adds a true indented directory tree, expanded command guidance, and compact Vim/Nano key guides.
 
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
@@ -30,7 +24,7 @@ Run the bundled **Uninstall Lima** extension to remove the app from within Lima.
 - Pointer hover never moves the result list. Arrow-key and page navigation keep the selected command visible without fighting trackpad scrolling.
 - Configure or disable every extension shortcut independently in **Settings → Extensions**.
 - Configure launcher, Notes, dictation, dock-left, and dock-right shortcuts in **Settings → General**.
-- Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, Terminal, and SQL Workspace.
+- Bind accessory mouse buttons independently in **Settings → General**, including Previous/Next Desktop (Control–Left/Right), Mission Control, Notes, and optional Developer Terminal.
 - Lima tools join one native macOS workspace by default and can be broken into separate windows when needed.
 - Background extension work reports compact progress without blocking the launcher.
 
@@ -38,7 +32,7 @@ Version 2.0 introduces a higher-contrast prismatic visual system across every wo
 
 ## Developer Terminal
 
-Developer Terminal is backed by a true local pseudo-terminal through SwiftTerm. It starts an interactive `zsh`, maintains working directory, environment variables, history, and child-process state between commands, and supports ANSI/TUI applications.
+Developer Terminal is optional and can be disabled in **Settings → General**. When enabled, it is backed by a true local pseudo-terminal through SwiftTerm. It starts an interactive `zsh`, maintains working directory, environment variables, history, and child-process state between commands, and supports ANSI/TUI applications.
 
 - Enter any sequence of commands in the same session.
 - Control combinations such as Control-C, Control-D, and Control-Z are sent to the PTY.
@@ -73,35 +67,17 @@ Endpoint Tester is a native Postman-style workspace:
 - collection runner with user-selected iteration count and delay, per-request results, and cancellation; Lima imposes no product credit or runner-count cap
 - local workspace persistence in Application Support with restrictive file permissions; request secrets are never included in usage logs
 
-## SQL Workspace
-
-SQL Workspace is a native Oracle and MySQL client that uses the installed `sqlplus` or `mysql` command-line client on your Mac. It does not bundle proprietary database drivers. Add named development, staging, and production connections, then save each password to the macOS Keychain; the local workspace file contains only connection metadata and cached schema information.
-
-- Discover all objects visible to the connected account: tables, views, columns and descriptions, primary/foreign-key constraints, indexes, and procedures/functions.
-- Oracle column discovery runs in owner-specific batches of up to 25 tables instead of one unbounded catalog scan. A timed-out batch is retried in smaller halves, down to a single table, with a 120-second deadline per query. Progress identifies the schema, current table batch, and completed work; discovered metadata appears incrementally and is saved as **Partial schema** if a later query fails. Other stages read tables/views, indexes, constraints, relationships, and procedures. SQLPlus MARKUP CSV (12.2 or newer) preserves quoted/multiline metadata, including LONG column defaults, and output is drained continuously.
-- In **Edit connection → Discovery schemas**, optionally enter exact Oracle owner names separated by commas, or choose **My schema**. Empty means every accessible schema. The filter also limits indexes, constraints, relationships, and procedures; MySQL remains limited to its selected database. Broad accounts can still take longer, but completed column batches are no longer discarded by a later timeout.
-- Drag schema tables into the visual canvas or free-SQL editor. The join panel proposes only foreign-key relationships whose source and destination tables and columns are present in discovered metadata, then inserts their exact predicates.
-- TEMP names and names with one or two characters immediately before or after an underscore are hidden from the schema browser by default. Configure these filters per connection, reveal all filtered objects from the sidebar, or mark an exact qualified table name as **Always show** when a legitimate object was caught.
-- SQL Workspace caches each connection’s password in memory for the current app session after its first Keychain read. **Manage connections → Lock credential session** clears the cache; sleep, user-session deactivation, and workspace shutdown also clear it. Passwords are never part of the saved block flows. This removes repeated Keychain prompts, not the underlying command-line client’s per-query connection setup.
-- The schema browser puts exact table-name/qualified-name matches first, then prefixes, substring matches, and column matches. Its **Owner** picker filters tables, views, and procedures independently of discovery scope.
-- **Query blocks** provides a compact connected flow: source tables, SELECT/DISTINCT, INNER/LEFT/RIGHT/FULL/CROSS joins with editable conditions, nested AND/OR/NOT filters, GROUP BY, COUNT/SUM/AVG/MIN/MAX, HAVING, sorting, and row limits. Text/number/column values, IN lists (one value per line), ranges, NULL checks, LIKE, and custom SQL conditions are supported. Drag palette blocks into the flow; reorder joins, aggregates, sorts, and sibling filters by dragging. SQL clause categories stay in valid SQL order. Free SQL remains available for arbitrary statements and advanced dialect-specific syntax.
-- The generated SQL stays visible before execution. Incomplete blocks, invalid numeric values, invalid grouping, duplicate joins, and unsupported MySQL FULL OUTER joins report actionable errors. **Save query blocks** stores a separate flow per connection; switching connections restores that connection’s flow. Removing a source asks before resetting its query blocks.
-- Query blocks have collapsible, plain-language headers, quieter surfaces, and on-demand explanations. The wrapping palette keeps every block type visible at narrow widths. Join types explain which rows they retain; incomplete flows disable Run with the exact issue shown above the canvas. Collapse transitions respect Reduce Motion.
-- Schema catalogs are indexed once per metadata revision; exact-match ranked searches run off the main UI thread with a short typing debounce and stale-result cancellation. Column suggestions are cached instead of rebuilt for every block edit. **⌘F** focuses schema search, **⌘⌥1 / ⌘⌥2** toggle the schema/details panels, and **⌘Return** runs a valid canvas query.
-- Use read-only execution for `SELECT`/`WITH` work. Other SQL remains available in Free SQL after an explicit per-run confirmation.
-- Export a selected result range into the built-in local document store. Collections are saved locally, can be extended with later exports, and are available from SQL Workspace → Storage.
-
 ## Notes and dictation
 
-Notes open in a dedicated resizable window that can join the workspace, become full screen, or dock as a narrow quick-note panel on either side. Pressing the Notes shortcut again closes the Notes window. Notes save locally while typing and can be searched, pinned, favorited, and reordered by those groups.
+Notes open in a dedicated resizable window that can join the workspace, become full screen, or dock as a narrow quick-note panel on either side. Notes save locally while typing and can be searched, pinned, favorited, and reordered by those groups.
 
-The editor presents formatted Markdown in place instead of a separate rendered preview. It supports headings, bold, italic, links, code, managed image attachments, native bar/line chart blocks, interactive task checkboxes with completion progress, and native-looking tables. Pasted images are copied into Lima's local Note Assets folder; pasted tabular content becomes an editable table with titles and column sorting. Double-click a rendered chart or image to edit its portable Markdown source.
+The editor presents formatted Markdown in place instead of a separate rendered preview. It supports headings, bold, italic, links, code, managed image attachments, native bar/line chart blocks, interactive task checkboxes with completion progress, and native-looking tables. Pasted images are copied into Lima's local Note Assets folder; pasted tabular content becomes an editable table with titles and column sorting.
 
-Dictation records durable one-minute audio segments and can continue for hour-plus meetings even if the Notes window closes. A compact speech-level indicator remains visible while recording. Completed segments are transcribed as recording continues, so a final stop has only the remaining queue to process. The local Whisper small.en TinyDiarize build applies bounded room-audio gain, detects pauses for paragraphs, and uses best-effort speaker-turn labels. Settings provide Automatic Metal with CPU fallback, Metal, or CPU compute.
+Dictation is a separate workflow with its own persistent conversations. It never appends to, modifies, or selects a Markdown Note. Each conversation is bounded to 200,000 characters and the store retains up to 100 conversations. The transcript remains available in the Dictation tab even after the Notes window closes.
 
-For speaker-aware transcripts, use the note’s **More → Name Transcript Speakers** action. The names are stored with that local note, update existing speaker labels, and are applied automatically to new dictation segments appended to it.
+Dictation records short local audio segments while recording. Completed segments are transcribed as recording continues, and a final stop processes the remaining queue. Audio is kept locally only while it is needed; failed or canceled work preserves unfinished audio for **Retry Transcription**. Local Whisper uses the bundled small.en TinyDiarize runtime, with Automatic Metal/CPU fallback, Metal, or CPU compute options. Apple on-device speech recognition is also supported when available.
 
-The most-recent-note dictation shortcut opens that note and toggles recording. Local Whisper appends each completed segment during the meeting, while the compact top-screen indicator shows audio levels and progress. The active segment is finished after Stop, and audio remains recoverable until successfully transcribed.
+The compact activity shelf shows dictation state and audio levels without taking keyboard focus. It also provides optional now-playing metadata and controls for supported local media players. Reduce Motion and Reduce Transparency settings are honored by the shelf and workspace animations.
 
 ## Writing correction
 
@@ -167,7 +143,7 @@ Important source areas:
 
 - `Sources/RayPlacement/DeveloperTerminalWindowController.swift` — PTY terminal
 - `Sources/RayPlacement/EndpointTesterWindowController.swift` and `Sources/RayPlacementCore/PostmanWorkspace.swift` — API workspace/imports
-- `Sources/RayPlacement/NotesWindowController.swift` and `Sources/RayPlacement/NoteDictationService.swift` — notes and meeting dictation
+- `Sources/RayPlacement/NotesWindowController.swift`, `Sources/RayPlacement/DictationConversationStore.swift`, and `Sources/RayPlacement/NoteDictationService.swift` — Notes and separate dictation conversations
 - `Sources/RayPlacement/RuleBasedWritingChecker.swift` — Python + Harper pipeline
 - `Sources/RayPlacement/ExtensionFormWindowController.swift` — dynamic extension forms
 - `Sources/RayPlacement/WorkspaceWindowCoordinator.swift` — independent, resizable workspaces without native tab bars
