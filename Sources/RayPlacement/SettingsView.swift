@@ -290,6 +290,19 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Stealth Mode") {
+                Toggle("Enable Stealth Mode", isOn: $settings.stealthGrammarEnabled)
+                PrimaryShortcutRow(
+                    title: "Stealth Grammar",
+                    symbol: "wand.and.stars",
+                    enabled: $settings.stealthGrammarEnabled,
+                    shortcut: $settings.stealthGrammarShortcut
+                )
+                Text("Corrects highlighted text in place without opening a review. It uses a conservative local pass and keeps URLs, proper nouns, acronyms, code-like text, and your preserved terms unchanged.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section("Preserved terms") {
                 Text("Enter product names, acronyms, and intentional spellings the checker should leave unchanged, separated by spaces, commas, or lines.")
                     .limaFont(.caption)

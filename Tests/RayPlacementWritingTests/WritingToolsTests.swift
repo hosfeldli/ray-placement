@@ -73,3 +73,55 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(review.suggestedText == "This is a bad sentence.")
     #expect(review.hasSuggestedChanges)
 }
+
+
+@Test func stealthProtectionPreservesRiskyTermsAndIgnoreListPhrases() {
+    let source = "  This are a grammer sentence about RayPlacement API at https://example.com/a?x=1, with /Users/liam/project and Lima editor.  "
+    let protected = StealthGrammarService.protect(
+        source,
+        ignoreList: "RayPlacement API\nLima editor"
+    )
+
+    #expect(protected.maskedText.contains("\u{E000}LIMA_KEEP_"))
+    #expect(!protected.maskedText.contains("https://example.com"))
+    #expect(!protected.maskedText.contains("RayPlacement"))
+    #expect(protected.restore(protected.maskedText) == source)
+}
+
+@Test func stealthProtectionRestoresEveryProtectedValueExactlyOnce() {
+    let source = "RayPlacement API https://example.com/a?x=1 /Users/liam/project v3.12.1"
+    let protected = StealthGrammarService.protect(source, ignoreList: "RayPlacement")
+
+    let restored = protected.restore(protected.maskedText)
+
+    #expect(restored == source)
+    #expect(protected.protectedValues.contains("RayPlacement"))
+    #expect(protected.protectedValues.contains("API"))
+    #expect(protected.protectedValues.contains("https://example.com/a?x=1"))
+    #expect(protected.protectedValues.contains("/Users/liam/project"))
+    #expect(protected.protectedValues.contains("v3.12.1"))
+}
+
+@Test func stealthProtectionRejectsMalformedOrDangerousReplacement() {
+    let source = "This is a sentence.\nAnother line."
+
+    #expect(StealthGrammarService.isSafeReplacement(source, "This was a sentence.\nAnother line."))
+    #expect(!StealthGrammarService.isSafeReplacement(source, ""))
+    #expect(!StealthGrammarService.isSafeReplacement(source, "```text\nThis was a sentence.\nAnother line.\n```"))
+    #expect(!StealthGrammarService.isSafeReplacement(source, "This was a sentence."))
+}
+
+@Test func stealthProtectionRestoresWhitespaceOnlyInputWithoutDuplication() {
+    let source = "  \n\t  "
+    let protected = StealthGrammarService.protect(source, ignoreList: "")
+
+    #expect(protected.restore(protected.maskedText) == source)
+}
+
+@Test func stealthProtectionUsesNonLinguisticCollisionSafeTokens() {
+    let source = "The literal \u{E000}LIMA_KEEP_0000_\u{E001} stays, while API and https://example.com remain protected."
+    let protected = StealthGrammarService.protect(source, ignoreList: "API")
+
+    #expect(protected.maskedText.contains("\u{E000}LIMA_KEEP_0001_\u{E001}"))
+    #expect(protected.restore(protected.maskedText) == source)
+}

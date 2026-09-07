@@ -9,7 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
-    private lazy var updateProgressWindow = UpdateProgressWindowController(service: updateService)
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -20,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesDockLeftShortcut: ShortcutSpec?
     private var registeredNotesDockRightShortcut: ShortcutSpec?
     private var registeredTerminalShortcut: ShortcutSpec?
+    private var registeredStealthGrammarShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -84,7 +84,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if updateService.isInstalling || updateService.completionResult != nil {
-            updateProgressWindow.present()
+            launcher.showSettings()
         } else {
             launcher.show()
         }
@@ -195,6 +195,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previous: &registeredTerminalShortcut,
             restore: SettingsStore.shared.restoreTerminalShortcut
         ) { [weak self] in self?.launcher.showDeveloperTerminal() }
+        registerActionHotkey(
+            identifier: "builtin.stealth-grammar",
+            displayName: "Stealth Grammar",
+            enabled: SettingsStore.shared.stealthGrammarEnabled,
+            rawShortcut: SettingsStore.shared.stealthGrammarShortcut,
+            previous: &registeredStealthGrammarShortcut,
+            restore: SettingsStore.shared.restoreStealthGrammarShortcut
+        ) { [weak self] in
+            self?.launcher.runStealthGrammar()
+        }
     }
 
     private func configureAccessoryMouseBindings() {
@@ -469,12 +479,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.presentUpdateConfirmation(release)
         }
         updateService.onInstallStarted = { [weak self] in
-            self?.updateProgressWindow.present()
+            self?.launcher.showSettings()
         }
         if let result = updateService.consumePreviousUpdateResult() {
             updateService.showCompletion(succeeded: result.succeeded, message: result.message)
             DispatchQueue.main.async { [weak self] in
-                self?.updateProgressWindow.present()
+                self?.launcher.showSettings()
             }
             return true
         }

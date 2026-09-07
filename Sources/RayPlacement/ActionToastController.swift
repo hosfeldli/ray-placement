@@ -47,13 +47,24 @@ final class ActionToastController {
     }
 
     func show(_ message: String, style: Style = .success, duration: TimeInterval = 1.4) {
+        show(message, style: style, duration: duration, compact: false)
+    }
+
+    func showStealth(_ message: String, style: Style = .working, duration: TimeInterval = 3_600) {
+        show(message, style: style, duration: duration, compact: true)
+    }
+
+    private func show(_ message: String, style: Style, duration: TimeInterval, compact: Bool) {
         dismissWorkItem?.cancel()
         if style == .working {
             if workingStartedAt == nil { workingStartedAt = Date() }
         } else {
             workingStartedAt = nil
         }
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ActionToastView(message: message, style: style, startedAt: workingStartedAt)))
+        let width: CGFloat = compact ? 190 : 360
+        let height: CGFloat = compact ? 34 : 44
+        panel.setContentSize(NSSize(width: width, height: height))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ActionToastView(message: message, style: style, startedAt: workingStartedAt, compact: compact)))
         let screen = NSScreen.main ?? NSScreen.screens.first
         if let visibleFrame = screen?.visibleFrame {
             panel.setFrameOrigin(NSPoint(
@@ -90,29 +101,30 @@ private struct ActionToastView: View {
     let message: String
     let style: ActionToastController.Style
     let startedAt: Date?
+    let compact: Bool
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: compact ? 7 : 9) {
             if style == .working {
-                ProgressView().controlSize(.small)
+                ProgressView().controlSize(compact ? .mini : .small)
             } else {
                 Image(systemName: style.symbol)
                     .limaFont(.system(size: 14, weight: .semibold))
                     .foregroundStyle(style.color)
             }
             Text(message)
-                .limaFont(.system(size: 12.5, weight: .semibold))
+                .limaFont(.system(size: compact ? 11.5 : 12.5, weight: .semibold))
                 .lineLimit(2)
             Spacer(minLength: 0)
-            if let startedAt, style == .working {
+            if !compact, let startedAt, style == .working {
                 Text(startedAt, style: .timer)
                     .limaFont(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
             }
         }
-        .padding(.horizontal, LimaDesign.toolbarPadding)
-        .frame(width: 360, height: LimaDesign.toolbarHeight)
+        .padding(.horizontal, compact ? 10 : LimaDesign.toolbarPadding)
+        .frame(width: compact ? 190 : 360, height: compact ? 34 : LimaDesign.toolbarHeight)
         .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
         .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
         .overlay(

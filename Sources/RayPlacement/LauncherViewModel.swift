@@ -378,6 +378,20 @@ final class LauncherViewModel: ObservableObject {
         }
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
+        // Deliberately undocumented developer gate. The configuration item is
+        // not part of the normal catalog or searchable text.
+        if cleanQuery == "🤖" {
+            return [LauncherItem(
+                id: "developer.grammar-settings",
+                title: "Developer Grammar Providers",
+                subtitle: "Hidden BYOK configuration",
+                icon: .system("lock.shield.fill"),
+                keywords: [],
+                action: .system(.openDeveloperGrammarSettings),
+                accessory: "Developer"
+            )]
+        }
+
         if !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
             items.insert(result, at: 0)
         }

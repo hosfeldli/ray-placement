@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Combine
 import Foundation
 import QuartzCore
 import RayPlacementCore
@@ -35,7 +36,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var writingTaskID: UUID?
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
+    private var modeSubscription: AnyCancellable?
     private let updateService: UpdateService
+    private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
@@ -55,6 +58,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         viewModel.delegate = self
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
+        modeSubscription = viewModel.$mode
+            .removeDuplicates()
+            .sink { [weak self] mode in
+                self?.resizePanel(for: mode, animated: true)
+            }
+        resizePanel(for: viewModel.mode, animated: false)
         rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }
@@ -95,6 +104,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func showSettings() {
         hide()
         settingsWindow.present()
+    }
+
+    func showDeveloperGrammarSettings() {
+        hide()
+        developerGrammarSettingsWindow.present()
     }
 
     func showNotes() {
@@ -212,6 +226,37 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func windowDidResignKey(_ notification: Notification) {
         if panel.isVisible { hide() }
+    }
+
+    private func resizePanel(for mode: LauncherMode, animated: Bool) {
+        let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
+        let desiredSize = LauncherPanelLayout.size(for: mode, density: SettingsStore.shared.interfaceDensity)
+        let size: NSSize
+        if let visibleFrame = targetScreen?.visibleFrame {
+            size = NSSize(
+                width: min(desiredSize.width, max(320, visibleFrame.width - 80)),
+                height: min(desiredSize.height, max(240, visibleFrame.height - 100))
+            )
+        } else {
+            size = desiredSize
+        }
+
+        var frame = panel.frame
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        frame.size = size
+        frame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+
+        guard animated, panel.isVisible else {
+            panel.setFrame(frame, display: panel.isVisible)
+            return
+        }
+
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.01 : 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 
     private func presentPanel() {
@@ -460,6 +505,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         try? process.run()
     }
 
+    func runStealthGrammar() {
+        guard SettingsStore.shared.stealthGrammarEnabled else { return }
+        guard let previousApplication, !previousApplication.isTerminated else {
+            toast.show("Select text first", style: .error, duration: 2.2)
+            return
+        }
+        guard WindowManager.trusted(prompt: true) else {
+            toast.show("Accessibility access is required", style: .error, duration: 2.8)
+            return
+        }
+        hide()
+        captureWritingSelectionWithKeyboard(from: previousApplication, stealth: true)
+    }
+
     private func performWritingCheck() {
         guard let previousApplication else {
             presentError(title: "Check Spelling & Grammar", message: "Select text in another app, then open Lima and run this command.")
@@ -476,11 +535,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         captureWritingSelectionWithKeyboard(from: previousApplication)
     }
 
-    private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication) {
+    private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication, stealth: Bool = false) {
         let retainedAccessibilityContext = selectedTextContext.flatMap { context in
             context.processIdentifier == application.processIdentifier ? context : nil
         }
-        toast.show("Reading the highlight with Copy…", style: .working, duration: 4)
+        if stealth {
+            toast.showStealth("Editing…")
+        } else {
+            toast.show("Reading the highlight with Copy…", style: .working, duration: 3_600)
+        }
         KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -493,7 +556,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     ? retainedAccessibilityContext
                     : nil
                 self.keyboardSelectionContext = capture
-                self.showWritingReview(for: capture.text)
+                if stealth {
+                    self.runStealthCorrection(for: capture.text)
+                } else {
+                    self.showWritingReview(for: capture.text)
+                }
             case .failure(let keyboardError):
                 do {
                     let target = try self.resolveSelectedTextTarget(preferred: application)
@@ -501,12 +568,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.lastExternalApplication = target.application
                     self.keyboardSelectionContext = nil
                     self.selectedTextContext = target.context
-                    self.showWritingReview(for: target.context.text)
+                    if stealth {
+                        self.runStealthCorrection(for: target.context.text)
+                    } else {
+                        self.showWritingReview(for: target.context.text)
+                    }
                 } catch {
-                    self.presentError(
-                        title: "Check Spelling & Grammar",
-                        message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
-                    )
+                    if stealth {
+                        self.selectedTextContext = nil
+                        self.keyboardSelectionContext = nil
+                        self.focusedTextContext = nil
+                        self.toast.showStealth("Couldn’t read selection", style: .error, duration: 2.4)
+                    } else {
+                        self.presentError(
+                            title: "Check Spelling & Grammar",
+                            message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                        )
+                    }
                 }
             }
         }
@@ -544,6 +622,77 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 throw preferredError
             }
             return (target.0, target.1)
+        }
+    }
+
+    private func runStealthCorrection(for text: String) {
+        let taskID = UUID()
+        writingTaskID = taskID
+        toast.showStealth("Editing…")
+        writingChecker.checkStealth(text, progress: { [weak self] message in
+            guard let self, self.writingTaskID == taskID else { return }
+            self.toast.showStealth(message)
+        }) { [weak self] result in
+            guard let self, self.writingTaskID == taskID else { return }
+            self.writingTaskID = nil
+            switch result {
+            case .success(let corrected) where corrected == text:
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.showStealth("No changes needed", style: .success, duration: 1.6)
+            case .success(let corrected):
+                self.replaceStealthText(corrected)
+            case .failure:
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.showStealth("Couldn’t edit selection", style: .error, duration: 2.4)
+            }
+        }
+    }
+
+    private func replaceStealthText(_ text: String) {
+        guard let application = previousApplication, !application.isTerminated else {
+            toast.showStealth("Couldn’t replace selection", style: .error, duration: 2.4)
+            return
+        }
+        application.unhide()
+        application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
+            guard let self else { return }
+            if self.selectedTextContext == nil,
+               self.keyboardSelectionContext?.processIdentifier == application.processIdentifier {
+                self.pasteStealthReplacement(text, into: application)
+                return
+            }
+            do {
+                let context = try self.replacementContext(in: application)
+                try SelectedTextService.replaceSelectedText(text, using: context)
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.showStealth("Text corrected", style: .success, duration: 1.6)
+            } catch SelectedTextService.SelectionError.replacementUnavailable {
+                self.pasteStealthReplacement(text, into: application)
+            } catch {
+                self.toast.showStealth("Couldn’t replace selection", style: .error, duration: 2.4)
+            }
+        }
+    }
+
+    private func pasteStealthReplacement(_ text: String, into application: NSRunningApplication) {
+        KeyboardSelectionService.paste(text, into: application, clipboardHistory: clipboard) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.showStealth("Text corrected", style: .success, duration: 1.6)
+            case .failure:
+                self.toast.showStealth("Couldn’t replace selection", style: .error, duration: 2.4)
+            }
         }
     }
 
@@ -1010,6 +1159,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openSettings:
             showSettings()
+
+        case .openDeveloperGrammarSettings:
+            showDeveloperGrammarSettings()
 
         case .quit:
             NSApp.terminate(nil)

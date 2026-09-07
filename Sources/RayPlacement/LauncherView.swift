@@ -18,20 +18,18 @@ struct LauncherView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
-            if viewModel.mode == .terminal {
-                DeveloperTerminalView(model: terminalModel)
+            VStack(spacing: 5) {
+                searchHeader
+                content
                     .id(viewModel.mode.visualIdentity)
-            } else {
-                VStack(spacing: 5) {
-                    searchHeader
-                    content
-                        .id(viewModel.mode.visualIdentity)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
-                    footer
-                }
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
+                footer
             }
         }
-        .frame(width: settings.interfaceDensity.launcherWidth, height: settings.interfaceDensity.launcherHeight)
+        .frame(
+            width: viewModel.mode == .terminal ? LauncherPanelLayout.terminalSize.width : settings.interfaceDensity.launcherWidth,
+            height: viewModel.mode == .terminal ? LauncherPanelLayout.terminalSize.height : settings.interfaceDensity.launcherHeight
+        )
         .clipShape(PrismaticPanelShape(cut: 18))
         .overlay(
             PrismaticPanelShape(cut: 18)
@@ -87,24 +85,7 @@ struct LauncherView: View {
 
     private var searchHeader: some View {
         HStack(spacing: 10) {
-            if viewModel.mode == .root {
-                HStack(spacing: 7) {
-                    ZStack {
-                        PrismaticPanelShape(cut: 7).fill(LimaLauncherPalette.heroGradient)
-                        Image(systemName: "sparkle.magnifyingglass")
-                            .limaFont(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 27, height: 27)
-                    Text("LIMA")
-                        .limaFont(.system(size: 11, weight: .black, design: .rounded))
-                        .tracking(1.6)
-                        .foregroundStyle(.primary)
-                }
-                .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.48), lineWidth: 0.7))
-                .shadow(color: LimaLauncherPalette.indigo.opacity(0.20), radius: 8, y: 3)
-                .accessibilityHidden(true)
-            } else {
+            if viewModel.mode != .root {
                 Button {
                     viewModel.enter(.root)
                 } label: {
@@ -115,7 +96,7 @@ struct LauncherView: View {
                 }
                 .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
                 .accessibilityLabel("Back")
-                .help("Back")
+                .help("Back to search")
             }
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
@@ -591,7 +572,13 @@ struct LauncherView: View {
     @ViewBuilder
     private var footer: some View {
         if viewModel.mode == .terminal {
-            EmptyView()
+            HStack {
+                Spacer()
+                KeyHint(keys: "esc", label: "Back to search")
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 27)
+            .padding(.bottom, 5)
         } else if viewModel.mode == .root {
             HStack(spacing: 12) {
                 LimaStatusLine(

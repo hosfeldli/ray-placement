@@ -92,6 +92,7 @@ enum SystemAction {
     case openFormatter
     case openExtensionGuide
     case openSettings
+    case openDeveloperGrammarSettings
     case quit
 }
 

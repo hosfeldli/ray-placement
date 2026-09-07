@@ -289,6 +289,12 @@ final class SettingsStore: ObservableObject {
         static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
         static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
+        static let stealthGrammarEnabled = "stealthGrammarEnabled"
+        static let stealthGrammarShortcut = "stealthGrammarShortcut"
+        static let developerGrammarEnabled = "developerGrammarEnabled"
+        static let developerGrammarProvider = "developerGrammarProvider"
+        static let developerGrammarModel = "developerGrammarModel"
+        static let developerGrammarBaseURL = "developerGrammarBaseURL"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
         static let dictationComputeMode = "dictationComputeMode"
@@ -490,6 +496,96 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(writingPerformance.rawValue, forKey: Key.writingPerformance) }
     }
 
+    @Published var stealthGrammarEnabled: Bool {
+        didSet {
+            defaults.set(stealthGrammarEnabled, forKey: Key.stealthGrammarEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var stealthGrammarShortcut: String {
+        didSet {
+            defaults.set(stealthGrammarShortcut, forKey: Key.stealthGrammarShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var developerGrammarEnabled: Bool {
+        didSet { defaults.set(developerGrammarEnabled, forKey: Key.developerGrammarEnabled) }
+    }
+
+    @Published var developerGrammarProvider: DeveloperGrammarProvider {
+        didSet {
+            defaults.set(developerGrammarProvider.rawValue, forKey: Key.developerGrammarProvider)
+        }
+    }
+
+    @Published var developerGrammarModel: String {
+        didSet { defaults.set(developerGrammarModel, forKey: Key.developerGrammarModel) }
+    }
+
+    @Published var developerGrammarBaseURL: String {
+        didSet { defaults.set(developerGrammarBaseURL, forKey: Key.developerGrammarBaseURL) }
+    }
+
+    func selectDeveloperGrammarProvider(_ provider: DeveloperGrammarProvider) {
+        let previousProvider = developerGrammarProvider
+        let previousModel = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousBaseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        developerGrammarProvider = provider
+
+        // Preserve custom values when the user deliberately entered them, but
+        // make provider switching immediately usable for preset selections.
+        let wasPreset = previousProvider.modelOptions.contains { $0.id == previousModel }
+        if previousModel.isEmpty || wasPreset {
+            developerGrammarModel = provider.defaultModel
+        }
+        if previousBaseURL.isEmpty || previousBaseURL == previousProvider.defaultBaseURL {
+            developerGrammarBaseURL = provider.defaultBaseURL
+        }
+    }
+
+    var developerGrammarAPIKey: String {
+        DeveloperGrammarKeychain.value(for: developerGrammarProvider)
+    }
+
+    var developerGrammarConfigurationForModelDiscovery: DeveloperGrammarConfiguration? {
+        let key = developerGrammarAPIKey
+        let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !baseURL.isEmpty else { return nil }
+        return DeveloperGrammarConfiguration(
+            provider: developerGrammarProvider,
+            apiKey: key,
+            model: developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            baseURL: baseURL
+        )
+    }
+
+    var developerGrammarConfigurationForTesting: DeveloperGrammarConfiguration? {
+        let key = developerGrammarAPIKey
+        let model = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !model.isEmpty, !baseURL.isEmpty else { return nil }
+        return DeveloperGrammarConfiguration(
+            provider: developerGrammarProvider,
+            apiKey: key,
+            model: model,
+            baseURL: baseURL
+        )
+    }
+
+    func saveDeveloperGrammarAPIKey(_ value: String) throws {
+        try DeveloperGrammarKeychain.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: developerGrammarProvider)
+        objectWillChange.send()
+    }
+
+    var developerGrammarConfiguration: DeveloperGrammarConfiguration? {
+        guard developerGrammarEnabled else { return nil }
+        return developerGrammarConfigurationForTesting
+    }
+
     @Published var dictationPerformance: PerformanceScale {
         didSet { defaults.set(dictationPerformance.rawValue, forKey: Key.dictationPerformance) }
     }
@@ -553,6 +649,13 @@ final class SettingsStore: ObservableObject {
         showInDock = defaults.object(forKey: Key.showInDock) as? Bool ?? true
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
+        stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? false
+        stealthGrammarShortcut = defaults.string(forKey: Key.stealthGrammarShortcut) ?? "control+option+g"
+        developerGrammarEnabled = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
+        let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
+        developerGrammarProvider = storedDeveloperProvider
+        developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
+        developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
@@ -679,6 +782,12 @@ final class SettingsStore: ObservableObject {
     }
 
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
+
+    func restoreStealthGrammarShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        stealthGrammarShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
 
     func accessoryMouseBinding(for button: Int) -> AccessoryMouseBinding {
         guard (3...8).contains(button) else { return .none }
