@@ -87,10 +87,14 @@ enum SystemAction {
     case toggleNoteDictation
     case openTerminal
     case openEndpointTester
+    case openSQLWorkspace
+    case openPermissionCenter
+    case exportDiagnostics
     case openFocusedFileLauncher
     case openPasswordGenerator
     case openFormatter
     case openExtensionGuide
+    case openWorkflows
     case openSettings
     case openDeveloperGrammarSettings
     case quit
@@ -109,6 +113,8 @@ enum LauncherAction {
     case forceQuitApplication(processIdentifier: Int32, name: String)
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
+    case universalSearch(LimaSearchResult)
+    case workflow(UUID)
     case window(WindowLayout)
     case system(SystemAction)
     case noOp
@@ -166,11 +172,18 @@ struct ExtensionIssue: Identifiable, Hashable {
     let message: String
 }
 
+extension LoadedExtensionCommand {
+    var capabilitySummary: String { capabilities.map(\.rawValue).sorted().joined(separator: ", ") }
+    var trustLabel: String { trust.rawValue }
+}
+
 extension Notification.Name {
     static let rayPlacementShortcutChanged = Notification.Name("RayPlacementShortcutChanged")
     static let rayPlacementActionShortcutsChanged = Notification.Name("RayPlacementActionShortcutsChanged")
     static let rayPlacementAccentChanged = Notification.Name("RayPlacementAccentChanged")
+    static let rayPlacementAppearanceChanged = Notification.Name("RayPlacementAppearanceChanged")
     static let rayPlacementClipboardSettingsChanged = Notification.Name("RayPlacementClipboardSettingsChanged")
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")
+    static let rayPlacementCommandProfilesChanged = Notification.Name("RayPlacementCommandProfilesChanged")
 }

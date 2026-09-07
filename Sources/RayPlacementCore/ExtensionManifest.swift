@@ -1,20 +1,57 @@
 import Foundation
 
 public struct ExtensionManifest: Codable, Sendable {
+    public enum Trust: String, Codable, Sendable { case bundled, builtIn, userInstalled, unsigned }
+    public enum Capability: String, Codable, CaseIterable, Sendable { case network, shell, filesystem, clipboard, selectedText, accessibility, processControl }
     public var schemaVersion: Int
     public var id: String
     public var name: String
     public var version: String?
     public var description: String?
     public var commands: [ExtensionCommand]
+    public var capabilities: Set<Capability>
+    public var trust: Trust
 
-    public init(schemaVersion: Int = 1, id: String, name: String, version: String? = nil, description: String? = nil, commands: [ExtensionCommand]) {
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, id, name, version, description, commands, capabilities, trust
+    }
+
+    public init(schemaVersion: Int = 1, id: String, name: String, version: String? = nil, description: String? = nil, commands: [ExtensionCommand], capabilities: Set<Capability> = [], trust: Trust = .unsigned) {
         self.schemaVersion = schemaVersion
         self.id = id
         self.name = name
         self.version = version
         self.description = description
         self.commands = commands
+        self.capabilities = capabilities
+        self.trust = trust
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decodeIfPresent(String.self, forKey: .version)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        commands = try container.decodeIfPresent([ExtensionCommand].self, forKey: .commands) ?? []
+        // These fields were added after the original manifest format. Missing
+        // values must remain valid so existing user and example manifests load
+        // as unsigned extensions with no declared capabilities.
+        capabilities = try container.decodeIfPresent(Set<Capability>.self, forKey: .capabilities) ?? []
+        trust = try container.decodeIfPresent(Trust.self, forKey: .trust) ?? .unsigned
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schemaVersion, forKey: .schemaVersion)
+        try container.encode(id, forKey: .id)
+        try container.encode(name, forKey: .name)
+        try container.encodeIfPresent(version, forKey: .version)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encode(commands, forKey: .commands)
+        try container.encode(capabilities, forKey: .capabilities)
+        try container.encode(trust, forKey: .trust)
     }
 }
 
@@ -179,11 +216,15 @@ public struct LoadedExtensionCommand: Sendable {
     public var extensionName: String
     public var directory: URL
     public var command: ExtensionCommand
+    public var capabilities: Set<ExtensionManifest.Capability>
+    public var trust: ExtensionManifest.Trust
 
-    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand) {
+    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand, capabilities: Set<ExtensionManifest.Capability> = [], trust: ExtensionManifest.Trust = .unsigned) {
         self.extensionID = extensionID
         self.extensionName = extensionName
         self.directory = directory
         self.command = command
+        self.capabilities = capabilities
+        self.trust = trust
     }
 }

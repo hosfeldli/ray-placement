@@ -155,7 +155,6 @@ struct DeveloperGrammarSettingsView: View {
         .formStyle(.grouped)
         .padding(8)
         .frame(width: 680, height: 650)
-        .preferredColorScheme(.dark)
         .onAppear {
             apiKey = ""
             discoveredModels = []

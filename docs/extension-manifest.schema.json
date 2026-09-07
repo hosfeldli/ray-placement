@@ -1,110 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lima.local/schemas/extension-manifest-v2.json",
-  "title": "Lima Extension Manifest",
+  "title": "Lima extension manifest",
   "type": "object",
-  "additionalProperties": false,
   "required": ["schemaVersion", "id", "name", "commands"],
   "properties": {
-    "schemaVersion": { "enum": [1, 2] },
-    "id": { "type": "string", "minLength": 1 },
+    "schemaVersion": { "type": "integer", "enum": [1, 2] },
+    "id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9._-]+$" },
     "name": { "type": "string", "minLength": 1 },
     "version": { "type": "string" },
     "description": { "type": "string" },
-    "commands": {
+    "trust": { "type": "string", "enum": ["bundled", "builtIn", "userInstalled", "unsigned"] },
+    "capabilities": {
       "type": "array",
-      "items": { "$ref": "#/$defs/command" }
-    }
-  },
-  "$defs": {
-    "command": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "title", "action"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "title": { "type": "string", "minLength": 1 },
-        "subtitle": { "type": "string" },
-        "keywords": { "type": "array", "items": { "type": "string" } },
-        "icon": { "type": "string" },
-        "hotkey": { "type": "string", "minLength": 3 },
-        "runInBackground": { "type": "boolean" },
-        "action": { "$ref": "#/$defs/action" }
-      }
+      "uniqueItems": true,
+      "items": { "enum": ["network", "shell", "filesystem", "clipboard", "selectedText", "accessibility", "processControl"] }
     },
-    "action": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type", "value"],
-      "properties": {
-        "type": {
-          "enum": ["url", "file", "application", "shell", "copy", "paste", "pastePlainText", "checkWriting", "openFocusedFileLauncher", "convertTimezones", "forceQuitApplications", "forceQuitAllApplications", "openFormatterWorkspace", "openEmojiPicker", "openPasswordGenerator", "openExtensionDevelopment", "uninstallApplication", "form"]
-        },
-        "value": { "type": "string" },
-        "arguments": { "type": "array", "items": { "type": "string" } },
-        "workingDirectory": { "type": "string" },
-        "form": { "$ref": "#/$defs/form" }
-      }
-    },
-    "form": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["fields", "execution"],
-      "properties": {
-        "title": { "type": "string" },
-        "submitLabel": { "type": "string" },
-        "fields": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/field" } },
-        "execution": { "$ref": "#/$defs/execution" }
-      }
-    },
-    "field": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["id", "label", "type"],
-      "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "label": { "type": "string", "minLength": 1 },
-        "type": { "enum": ["text", "secure", "multiline", "number", "toggle", "picker", "file", "directory", "date", "slider", "keyValue"] },
-        "placeholder": { "type": "string" },
-        "defaultValue": { "type": "string" },
-        "options": { "type": "array", "items": { "type": "string" } },
-        "required": { "type": "boolean" },
-        "section": { "type": "string" },
-        "helpText": { "type": "string" },
-        "minimum": { "type": "number" },
-        "maximum": { "type": "number" },
-        "visibleWhen": { "$ref": "#/$defs/visibility" }
-      }
-    },
-    "visibility": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["field"],
-      "properties": {
-        "field": { "type": "string", "minLength": 1 },
-        "equals": { "type": "string" },
-        "notEquals": { "type": "string" }
-      },
-      "anyOf": [
-        { "required": ["equals"] },
-        { "required": ["notEquals"] }
-      ]
-    },
-    "execution": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["type"],
-      "properties": {
-        "type": { "enum": ["httpRequest", "shell"] },
-        "method": { "type": "string" },
-        "url": { "type": "string" },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-        "body": { "type": "string" },
-        "executable": { "type": "string" },
-        "arguments": { "type": "array", "items": { "type": "string" } },
-        "workingDirectory": { "type": "string" },
-        "timeoutSeconds": { "type": "integer", "minimum": 1 }
-      }
-    }
+    "commands": { "type": "array", "items": { "type": "object" } }
   }
 }

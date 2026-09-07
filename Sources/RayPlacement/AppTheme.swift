@@ -1,6 +1,25 @@
 import AppKit
 import SwiftUI
 
+
+extension AppAppearance {
+    var nsAppearance: NSAppearance? {
+        switch self {
+        case .system: return nil
+        case .light: return NSAppearance(named: .aqua)
+        case .dark: return NSAppearance(named: .darkAqua)
+        }
+    }
+
+    var swiftUIColorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 enum AppAccentTheme: String, CaseIterable, Identifiable {
     case violet
     case blue
@@ -987,7 +1006,7 @@ enum LimaWindowChrome {
         window.titlebarAppearsTransparent = true
         window.isOpaque = false
         window.backgroundColor = .clear
-        window.appearance = NSAppearance(named: .darkAqua)
+        window.appearance = SettingsStore.shared.appearance.nsAppearance
         window.isMovableByWindowBackground = movableByBackground
         window.hasShadow = shadow
         window.setAccessibilityLabel(accessibilityLabel)

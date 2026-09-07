@@ -117,6 +117,10 @@ cp "$PROJECT_DIRECTORY/docs/starter-extension/manifest.json" "$CONTENTS_DIRECTOR
 cp "$PROJECT_DIRECTORY/docs/starter-extension/README.md" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/README.md"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Updater"
 cp "$PROJECT_DIRECTORY/scripts/approved_lima_replacement.sh" "$CONTENTS_DIRECTORY/Resources/Updater/approved_lima_replacement.sh"
+cp "$PROJECT_DIRECTORY/scripts/apply_trusted_update.sh" "$CONTENTS_DIRECTORY/Resources/Updater/apply_trusted_update.sh"
+cp "$PROJECT_DIRECTORY/scripts/verify_update_app.sh" "$CONTENTS_DIRECTORY/Resources/Updater/verify_update_app.sh"
+cp "$PROJECT_DIRECTORY/scripts/request_lima_update_approval.sh" "$CONTENTS_DIRECTORY/Resources/Updater/request_lima_update_approval.sh"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Updater"/*.sh
 cp "$PROJECT_DIRECTORY/scripts/authorize_lima_update.applescript" "$CONTENTS_DIRECTORY/Resources/Updater/authorize_lima_update.applescript"
 cp "$PROJECT_DIRECTORY/Packaging/RayPlacementLocalSigning.pem" "$CONTENTS_DIRECTORY/Resources/Updater/RayPlacementLocalSigning.pem"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"

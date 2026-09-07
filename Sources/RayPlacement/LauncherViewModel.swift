@@ -13,6 +13,9 @@ protocol LauncherViewModelDelegate: AnyObject {
 
 @MainActor
 final class LauncherViewModel: ObservableObject {
+    // Keep the grid geometry in one place so keyboard navigation matches the
+    // rendered columns at every launcher density.
+    static let emojiGridColumnCount = 12
     private static let emojiPageSize = 120
     @Published var query = "" {
         didSet {
@@ -24,6 +27,7 @@ final class LauncherViewModel: ObservableObject {
     }
     @Published private(set) var mode: LauncherMode = .root
     @Published private(set) var results: [LauncherItem] = []
+    @Published private(set) var universalResults: [LimaSearchResult] = []
     /// The emoji picker owns its own lightweight data path. Keeping the raw
     /// catalog out of `results` avoids creating thousands of command models.
     @Published private(set) var emojiMatches: [EmojiEntry] = []
@@ -56,6 +60,8 @@ final class LauncherViewModel: ObservableObject {
     private var manifestExtensionIssues: [ExtensionIssue] = []
     private var hotkeyExtensionIssues: [ExtensionIssue] = []
     private var searchWorkItem: DispatchWorkItem?
+    private var universalSearchTask: Task<Void, Never>?
+    private var universalSearchGeneration = 0
     private var clipboardSearchWorkItem: DispatchWorkItem?
     private var clipboardSearchGeneration = 0
     private var clipboardObserver: AnyCancellable?
@@ -194,8 +200,21 @@ final class LauncherViewModel: ObservableObject {
         refreshResults()
     }
 
+    var commandDescriptors: [ManagedCommandDescriptor] {
+        var descriptors = builtInItems().map { ManagedCommandDescriptor(id: $0.id, title: $0.title, subtitle: $0.subtitle) }
+        descriptors += extensionCommands.map {
+            ManagedCommandDescriptor(
+                id: "extension.\($0.extensionID).\($0.command.id)",
+                title: $0.command.title,
+                subtitle: $0.command.subtitle ?? $0.extensionName
+            )
+        }
+        return descriptors.sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
     func resetForPresentation() {
         searchWorkItem?.cancel()
+        universalSearchTask?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
         // The terminal is a persistent workspace inside the launcher. Reopen
@@ -212,6 +231,7 @@ final class LauncherViewModel: ObservableObject {
 
     func enter(_ newMode: LauncherMode) {
         searchWorkItem?.cancel()
+        universalSearchTask?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
         mode = newMode
@@ -260,14 +280,48 @@ final class LauncherViewModel: ObservableObject {
 
     func moveSelection(by delta: Int) {
         if mode == .emojiPicker {
-            guard !emojiMatches.isEmpty else { return }
-            selectedIndex = (selectedIndex + delta + emojiMatches.count) % emojiMatches.count
-            navigationGeneration += 1
+            moveEmojiSelection(by: delta)
             return
         }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
         navigationGeneration += 1
+    }
+
+    /// Moves through the emoji catalog using the same row width as the grid.
+    /// The catalog is circular, so every keyboard movement always leaves a
+    /// valid selection instead of getting stranded at a page boundary.
+    func moveEmojiSelection(by delta: Int) {
+        guard !emojiMatches.isEmpty else { return }
+        selectedIndex = wrappedEmojiIndex(selectedIndex + delta)
+        navigationGeneration += 1
+    }
+
+    func moveEmojiSelection(rowDelta: Int, columnDelta: Int) {
+        guard !emojiMatches.isEmpty else { return }
+        let columnCount = Self.emojiGridColumnCount
+        let row = selectedIndex / columnCount
+        let column = selectedIndex % columnCount
+        let target = ((row + rowDelta) * columnCount) + column + columnDelta
+        selectedIndex = wrappedEmojiIndex(target)
+        navigationGeneration += 1
+    }
+
+    func selectFirstEmoji() {
+        guard !emojiMatches.isEmpty else { return }
+        selectedIndex = 0
+        navigationGeneration += 1
+    }
+
+    func selectLastEmoji() {
+        guard !emojiMatches.isEmpty else { return }
+        selectedIndex = emojiMatches.count - 1
+        navigationGeneration += 1
+    }
+
+    private func wrappedEmojiIndex(_ index: Int) -> Int {
+        let count = emojiMatches.count
+        return ((index % count) + count) % count
     }
 
     func select(_ index: Int) {
@@ -333,8 +387,8 @@ final class LauncherViewModel: ObservableObject {
     private func refreshResults() {
         switch mode {
         case .root:
-            isSearching = false
-            results = rootResults()
+            refreshRootResults()
+
         case .files:
             refreshFileResults()
         case .timezoneConverter:
@@ -371,6 +425,75 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
+    private func refreshRootResults() {
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        universalSearchGeneration += 1
+        let generation = universalSearchGeneration
+        universalSearchTask?.cancel()
+        universalResults = []
+        results = rootResults()
+        guard !cleanQuery.isEmpty else {
+            isSearching = false
+            return
+        }
+        isSearching = true
+        universalSearchTask = Task { [weak self] in
+            let found = await UniversalSearchCoordinator.shared.search(cleanQuery)
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self,
+                      self.mode == .root,
+                      self.universalSearchGeneration == generation,
+                      self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
+                self.universalResults = found
+                self.results = self.rootResults()
+                self.isSearching = false
+            }
+        }
+    }
+
+    private func universalItem(_ result: LimaSearchResult) -> LauncherItem {
+        let icon: LauncherIcon
+        switch result.kind {
+        case .note: icon = .system("note.text")
+        case .dictation: icon = .system("waveform")
+        case .apiRequest: icon = .system("network")
+        case .terminal: icon = .system("terminal.fill")
+        case .command: icon = .system("arrow.trianglehead.2.clockwise.rotate.90")
+        default: icon = .system("magnifyingglass")
+        }
+        return LauncherItem(
+            id: result.id,
+            title: result.title,
+            subtitle: result.subtitle,
+            icon: icon,
+            keywords: result.keywords,
+            action: .universalSearch(result),
+            accessory: "Open"
+        )
+    }
+
+    private func rootSearchItems(_ items: [LauncherItem], query: String) -> [LauncherItem] {
+        let ranked = items.compactMap { item -> (LauncherItem, Double)? in
+            let titleScore = FuzzyMatcher.score(item.title, query: query)
+            let allScore = FuzzyMatcher.score(item.searchableText, query: query)
+            let score = max(titleScore ?? -.infinity, allScore ?? -.infinity)
+            guard score.isFinite else { return nil }
+            let normalizedTitle = item.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let intentBonus: Double = normalizedTitle == normalizedQuery ? 100 : (normalizedTitle.hasPrefix(normalizedQuery) ? 24 : 0)
+            let favoriteRank = CommandManager.shared.favoriteRank(item.id)
+            let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
+            return (item, score + intentBonus + usage.score(for: item.id) + favoriteBonus)
+        }.sorted { first, second in
+            if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
+            return first.1 > second.1
+        }.map(\.0)
+        let localIDs = Set(ranked.map(\.id))
+        let universal = universalResults.filter { !localIDs.contains($0.id) }.map(universalItem)
+        return Array((ranked + universal).prefix(24))
+    }
+
     private func rootResults() -> [LauncherItem] {
         var items = builtInItems() + extensionItems() + applicationItems()
         if let selection = contextualSelectionText {
@@ -399,7 +522,7 @@ final class LauncherViewModel: ObservableObject {
         guard !cleanQuery.isEmpty else {
             let priority = [
                 "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal",
-                "builtin.endpoint-tester", "extension.local.productivity-tools.convert-timezones",
+                "builtin.endpoint-tester", "builtin.sql-workspace", "extension.local.productivity-tools.convert-timezones",
                 "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
                 "window.maximize", "builtin.command-history", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
             ]
@@ -435,10 +558,13 @@ final class LauncherViewModel: ObservableObject {
         }
         .prefix(12)
         .map(\.0)
-        if ranked.isEmpty {
+        if ranked.isEmpty && universalResults.isEmpty {
             return [placeholderItem(id: "root.empty", title: "No results", subtitle: "Try another app or command name", icon: "magnifyingglass")]
         }
-        return ranked
+        let local = ranked
+        let localIDs = Set(local.map(\.id))
+        let universal = universalResults.filter { !localIDs.contains($0.id) }.map(universalItem)
+        return Array((local + universal).prefix(24))
     }
 
     private func refreshFileResults() {
@@ -649,7 +775,9 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func extensionItems() -> [LauncherItem] {
-        extensionCommands.filter(SettingsStore.shared.isCommandEnabled).map { loaded in
+        extensionCommands.filter {
+            SettingsStore.shared.isCommandEnabled($0) && CommandManager.shared.isEnabled("extension.\($0.extensionID).\($0.command.id)")
+        }.map { loaded in
             LauncherItem(
                 id: "extension.\(loaded.extensionID).\(loaded.command.id)",
                 title: loaded.command.title,
@@ -726,7 +854,11 @@ final class LauncherViewModel: ObservableObject {
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
-            LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "postman", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
+            LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
+            LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
+            LauncherItem(id: "builtin.sql-workspace", title: "SQL Workspace", subtitle: "Search database profiles, schemas, tables, and saved queries", icon: .system("cylinder.split.1x2"), keywords: ["sql", "mysql", "oracle", "database", "query", "schema", "table"], action: .system(.openSQLWorkspace)),
+            LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
+            LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),
             LauncherItem(id: "builtin.file-launcher", title: "Focused File Launcher", subtitle: "Choose a file in Finder and open it with a specific application", icon: .system("folder.badge.gearshape"), keywords: ["file", "finder", "open with", "application"], action: .system(.openFocusedFileLauncher)),
             LauncherItem(id: "builtin.passwords", title: "Password Generator", subtitle: "Generate and copy a strong password locally", icon: .system("key.fill"), keywords: ["password", "security", "random", "secret"], action: .system(.openPasswordGenerator)),
             LauncherItem(id: "builtin.formatter", title: "Data Formatter", subtitle: "Inspect and format JSON, XML, and EDI", icon: .system("curlybraces.square.fill"), keywords: ["json", "xml", "edi", "format", "validate", "minify"], action: .system(.openFormatter)),

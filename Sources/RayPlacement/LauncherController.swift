@@ -24,10 +24,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let notesWindow = NotesWindowController()
     private let terminalModel: DeveloperTerminalModel
     private lazy var endpointTesterWindow = EndpointTesterWindowController()
+    private lazy var sqlWorkspaceWindow = SQLWorkspaceWindowController()
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
     private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
     private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
     private lazy var formatterWindow = FormatterWindowController()
+    private lazy var workflowWindow = WorkflowWindowController { [weak self] workflow in
+        self?.executeWorkflow(workflow)
+    }
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -39,6 +43,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var modeSubscription: AnyCancellable?
     private let updateService: UpdateService
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
+    private lazy var permissionWindow: NSWindowController = {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 430), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        LimaWindowChrome.configure(window, title: "Lima Permission Center", accessibilityLabel: "Lima Permission Center")
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: PermissionCenterView(center: .shared)))
+        return NSWindowController(window: window)
+    }()
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
@@ -47,7 +57,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     )
 
     init(updateService: UpdateService) {
-        let clipboard = ClipboardHistoryService()
+        let clipboard = ClipboardHistoryService.shared
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
         self.terminalModel = DeveloperTerminalModel()
@@ -98,7 +108,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.shutdown()
         terminalModel.shutdown()
         endpointTesterWindow.shutdown()
+        sqlWorkspaceWindow.shutdown()
         formatterWindow.shutdown()
+        workflowWindow.shutdown()
     }
 
     func showSettings() {
@@ -204,6 +216,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .extensionCommand(let command):
             executeExtension(command)
+
+        case .universalSearch(let result):
+            routeUniversalSearchResult(result)
+
+        case .workflow(let id):
+            guard let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) else {
+                presentError(title: "Workflow", message: "That workflow no longer exists.")
+                return
+            }
+            executeWorkflow(workflow)
 
         case .window(let layout):
             applyWindowLayout(layout)
@@ -368,21 +390,44 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
             let controlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
             if self.viewModel.mode == .emojiPicker {
-                if event.keyCode == 123 {
-                    self.viewModel.moveSelection(by: -1)
+                switch event.keyCode {
+                case 123: // Left arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 0, columnDelta: -1)
                     return nil
-                }
-                if event.keyCode == 124 {
-                    self.viewModel.moveSelection(by: 1)
+                case 124: // Right arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 0, columnDelta: 1)
                     return nil
+                case 125: // Down arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 1, columnDelta: 0)
+                    return nil
+                case 126: // Up arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: -1, columnDelta: 0)
+                    return nil
+                case 116: // Page Up
+                    self.viewModel.moveEmojiPage(by: -1)
+                    return nil
+                case 121: // Page Down
+                    self.viewModel.moveEmojiPage(by: 1)
+                    return nil
+                case 115: // Home
+                    self.viewModel.selectFirstEmoji()
+                    return nil
+                case 119: // End
+                    self.viewModel.selectLastEmoji()
+                    return nil
+                case 49: // Space executes without inserting a search space
+                    self.viewModel.executeSelected()
+                    return nil
+                default:
+                    break
                 }
             }
             if event.keyCode == 125 || (controlOnly && characters == "n") {
-                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? 12 : 1)
+                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? LauncherViewModel.emojiGridColumnCount : 1)
                 return nil
             }
             if event.keyCode == 126 || (controlOnly && characters == "p") {
-                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? -12 : -1)
+                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? -LauncherViewModel.emojiGridColumnCount : -1)
                 return nil
             }
             if event.keyCode == 36 || event.keyCode == 76 {
@@ -1083,6 +1128,128 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func routeUniversalSearchResult(_ result: LimaSearchResult) {
+        switch result.kind {
+        case .note:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("note:".count))) else {
+                presentError(title: result.title, message: "The note identifier is invalid.")
+                return
+            }
+            notesWindow.selectNote(id)
+            hide()
+            notesWindow.present()
+
+        case .dictation:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("dictation:".count))) else {
+                presentError(title: result.title, message: "The dictation identifier is invalid.")
+                return
+            }
+            notesWindow.selectDictation(id)
+            hide()
+            notesWindow.present()
+
+        case .apiRequest:
+            let parts = result.id.split(separator: ":", omittingEmptySubsequences: false)
+            guard parts.count == 3,
+                  let collectionID = UUID(uuidString: String(parts[1])),
+                  let requestID = UUID(uuidString: String(parts[2])) else {
+                presentError(title: result.title, message: "The API request identifier is invalid.")
+                return
+            }
+            hide()
+            endpointTesterWindow.present(collectionID: collectionID, requestID: requestID)
+
+        case .terminal:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("terminal:".count))) else {
+                presentError(title: result.title, message: "The terminal session identifier is invalid.")
+                return
+            }
+            TerminalSessionStore.shared.select(id)
+            terminalModel.selectSession(id)
+            viewModel.enter(.terminal)
+            presentPanel()
+            terminalModel.startIfNeeded()
+            terminalModel.focus()
+
+        case .command:
+            if result.id.hasPrefix("workflow:"),
+               let id = UUID(uuidString: String(result.id.dropFirst("workflow:".count))),
+               let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) {
+                executeWorkflow(workflow)
+            } else {
+                presentError(title: result.title, message: "This command cannot be opened from universal search.")
+            }
+
+        default:
+            presentError(title: result.title, message: "This result type is not routable yet.")
+        }
+    }
+
+    private func executeWorkflow(_ workflow: WorkflowDefinition) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Run \(workflow.name)?"
+        alert.informativeText = "This workflow contains \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s"). Each step will be reported individually."
+        alert.addButton(withTitle: "Run Workflow")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        hide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let report = await WorkflowExecutor().execute(workflow, confirm: true) { [weak self] commandID in
+                try await self?.executeWorkflowCommand(commandID)
+            }
+            let failed = report.steps.filter { !$0.succeeded }
+            if failed.isEmpty {
+                self.toast.show("Workflow completed")
+            } else {
+                self.presentError(
+                    title: "Workflow completed with errors",
+                    message: failed.map { "\($0.commandID): \($0.message ?? "Failed")" }.joined(separator: "\n")
+                )
+            }
+        }
+    }
+
+    private func executeWorkflowCommand(_ commandID: String) async throws {
+        guard let command = viewModel.extensionCommands.first(where: {
+            "extension.\($0.extensionID).\($0.command.id)" == commandID || $0.command.id == commandID
+        }) else {
+            throw NSError(domain: "LimaWorkflow", code: 1, userInfo: [NSLocalizedDescriptionKey: "Command \(commandID) is unavailable."])
+        }
+        guard command.command.action.type != .form else {
+            throw NSError(domain: "LimaWorkflow", code: 2, userInfo: [NSLocalizedDescriptionKey: "Form commands require interactive input and cannot run unattended."])
+        }
+
+        let output = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
+        switch output {
+        case "__PASTE__":
+            pasteIntoPreviousApplication()
+        case "__OPEN_FOCUSED_FILE_LAUNCHER__":
+            focusedFileLauncherWindow.present()
+        case "__CONVERT_TIMEZONES__":
+            viewModel.enter(.timezoneConverter)
+        case "__FORCE_QUIT_APPLICATIONS__":
+            viewModel.enter(.forceQuitPicker)
+        case "__FORCE_QUIT_ALL_APPLICATIONS__":
+            confirmForceQuitAllApplications()
+        case "__OPEN_FORMATTER_WORKSPACE__":
+            formatterWindow.present()
+        case "__OPEN_EMOJI_PICKER__":
+            viewModel.enter(.emojiPicker)
+        case "__OPEN_PASSWORD_GENERATOR__":
+            passwordGeneratorWindow.present()
+        case "__OPEN_EXTENSION_DEVELOPMENT__":
+            extensionDevelopmentWindow.present()
+        case "__UNINSTALL_APPLICATION__":
+            presentUninstaller()
+        case "__CHECK_WRITING__":
+            throw NSError(domain: "LimaWorkflow", code: 3, userInfo: [NSLocalizedDescriptionKey: "Writing review requires selected text and cannot run unattended."])
+        default:
+            break
+        }
+    }
+
     private func applyWindowLayout(_ layout: WindowLayout) {
         let target = previousApplication
         hide()
@@ -1141,6 +1308,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             hide()
             endpointTesterWindow.present()
 
+        case .openSQLWorkspace:
+            hide()
+            sqlWorkspaceWindow.present()
+
+        case .openPermissionCenter:
+            hide()
+            PermissionCenter.shared.refresh()
+            permissionWindow.showWindow(nil)
+            permissionWindow.window?.center()
+            NSApp.activate(ignoringOtherApps: true)
+
+        case .exportDiagnostics:
+            do {
+                let url = try DiagnosticsService.shared.export()
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                presentError(title: "Diagnostics", message: error.localizedDescription)
+            }
+
         case .openFocusedFileLauncher:
             hide()
             focusedFileLauncherWindow.present()
@@ -1156,6 +1342,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openExtensionGuide:
             hide()
             extensionDevelopmentWindow.present()
+
+        case .openWorkflows:
+            hide()
+            workflowWindow.present()
 
         case .openSettings:
             showSettings()

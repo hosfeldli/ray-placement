@@ -9,12 +9,25 @@
       "id": "open-file-or-directory",
       "title": "Focused File Launcher",
       "subtitle": "Choose in Finder, then open with any installed app",
-      "keywords": ["finder", "open with", "folder", "directory", "file", "project", "workspace", "application"],
+      "keywords": [
+        "finder",
+        "open with",
+        "folder",
+        "directory",
+        "file",
+        "project",
+        "workspace",
+        "application"
+      ],
       "icon": "folder.badge.gearshape",
       "action": {
         "type": "openFocusedFileLauncher",
         "value": ""
       }
     }
+  ],
+  "trust": "bundled",
+  "capabilities": [
+    "filesystem"
   ]
 }

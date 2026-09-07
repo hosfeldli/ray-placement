@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        NSApp.appearance = SettingsStore.shared.appearance.nsAppearance
         NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
         launcher = LauncherController(updateService: updateService)
         launcher.onExtensionsChanged = { [weak self] in self?.registerExtensionHotkeys() }
@@ -55,6 +55,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureAccessoryMouseBindings()
         registerExtensionHotkeys()
         installObservers()
+        NotificationCenter.default.addObserver(
+            forName: .rayPlacementAppearanceChanged,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                NSApp.appearance = SettingsStore.shared.appearance.nsAppearance
+                NSApp.windows.forEach { $0.appearance = SettingsStore.shared.appearance.nsAppearance }
+            }
+        }
         let isShowingUpdateResult = configureUpdates()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
@@ -325,7 +335,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeys.unregisterAll(prefix: "extension.")
         var issues: [ExtensionIssue] = []
         for loaded in launcher.viewModel.extensionCommands {
-            guard SettingsStore.shared.isHotkeyEnabled(loaded) else { continue }
+            let commandID = "extension.\(loaded.extensionID).\(loaded.command.id)"
+            guard SettingsStore.shared.isHotkeyEnabled(loaded), CommandManager.shared.isEnabled(commandID) else { continue }
             guard let raw = SettingsStore.shared.effectiveShortcut(for: loaded) else { continue }
             guard let shortcut = ShortcutSpec(string: raw) else {
                 issues.append(ExtensionIssue(
@@ -334,7 +345,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ))
                 continue
             }
-            let identifier = "extension.\(loaded.extensionID).\(loaded.command.id)"
+            let identifier = commandID
             do {
                 try hotKeys.registerFromApplication(identifier: identifier, shortcut: shortcut) { [weak self] application in
                     self?.launcher.executeExtensionFromHotkey(loaded, sourceApplication: application)
@@ -374,6 +385,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.launcher.viewModel.reloadExtensions() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .rayPlacementCommandProfilesChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.launcher.viewModel.refreshForSettings()
+                self?.registerExtensionHotkeys()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .rayPlacementExtensionShortcutsChanged,

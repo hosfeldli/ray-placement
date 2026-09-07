@@ -10,6 +10,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     let terminalView = LocalProcessTerminalView(frame: .zero)
     private var shuttingDown = false
+    private var activeSessionID: UUID?
     private var typographySubscription: AnyCancellable?
 
     override init() {
@@ -31,6 +32,17 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
         }
     }
 
+    func selectSession(_ id: UUID) {
+        TerminalSessionStore.shared.select(id)
+        WorkspaceStateRegistry.shared.update { $0.terminalSessionID = id }
+        activeSessionID = id
+        if terminalView.process.running {
+            terminalView.terminate()
+        } else {
+            startIfNeeded()
+        }
+    }
+
     func startIfNeeded() {
         guard !terminalView.process.running else {
             isLive = true
@@ -39,6 +51,9 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
         }
 
         shuttingDown = false
+        let session = TerminalSessionStore.shared.selectedSession
+        activeSessionID = session?.id
+        if let id = session?.id { WorkspaceStateRegistry.shared.update { $0.terminalSessionID = id } }
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let executable = FileManager.default.isExecutableFile(atPath: shell) ? shell : "/bin/zsh"
         var environment = ProcessInfo.processInfo.environment
@@ -51,7 +66,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
             args: [],
             environment: environment.map { "\($0.key)=\($0.value)" },
             execName: "-" + URL(fileURLWithPath: executable).lastPathComponent,
-            currentDirectory: FileManager.default.homeDirectoryForCurrentUser.path
+            currentDirectory: session?.cwd ?? FileManager.default.homeDirectoryForCurrentUser.path
         )
         isLive = true
         focus()
@@ -72,7 +87,10 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
 
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
+    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {
+        guard let directory, !directory.isEmpty else { return }
+        TerminalSessionStore.shared.updateDirectory(directory, for: activeSessionID)
+    }
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isLive = false
@@ -95,9 +113,38 @@ private struct TerminalSurface: NSViewRepresentable {
 
 struct DeveloperTerminalView: View {
     @ObservedObject var model: DeveloperTerminalModel
+    @ObservedObject private var sessions = TerminalSessionStore.shared
 
     var body: some View {
-        TerminalSurface(model: model)
+        VStack(spacing: 6) {
+            HStack(spacing: 7) {
+                Label("Session", systemImage: "terminal")
+                    .limaFont(.caption.weight(.semibold))
+                Picker("Terminal session", selection: Binding(
+                    get: { sessions.selectedSessionID ?? sessions.sessions.first?.id },
+                    set: { if let id = $0 { model.selectSession(id) } }
+                )) {
+                    ForEach(sessions.sessions) { session in
+                        Text(session.name).tag(Optional(session.id))
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 210)
+                Button {
+                    model.selectSession(sessions.create().id)
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .buttonStyle(.borderless)
+                .help("Create terminal session")
+                Spacer()
+                if let error = sessions.lastError {
+                    Text(error).limaFont(.caption2).foregroundStyle(.orange).lineLimit(1)
+                }
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            TerminalSurface(model: model)
             .padding(8)
             .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
             .clipShape(PrismaticPanelShape(cut: 8))
@@ -109,5 +156,6 @@ struct DeveloperTerminalView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Developer Terminal")
             .onAppear { model.startIfNeeded() }
+        }
     }
 }

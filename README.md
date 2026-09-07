@@ -1,4 +1,4 @@
-# Lima 3.12.1
+# Lima 3.12.3
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and private local dictation conversations without accounts or analytics.
 

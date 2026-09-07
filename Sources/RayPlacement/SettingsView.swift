@@ -14,13 +14,14 @@ private struct SettingsExtensionGroup: Identifiable {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, clipboard, writing, performance, usage, extensions, about
+    case general, safety, clipboard, writing, performance, usage, extensions, about
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
+        case .safety: return "checkmark.shield.fill"
         case .clipboard: return "clipboard.fill"
         case .writing: return "wand.and.stars"
         case .performance: return "gauge.with.dots.needle.67percent"
@@ -44,10 +45,16 @@ struct SettingsView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var updateService: UpdateService
     @ObservedObject private var usageMonitor = UsageMonitor.shared
+    @ObservedObject private var commandManager = CommandManager.shared
+    @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
+    @ObservedObject private var permissionCenter = PermissionCenter.shared
+    @ObservedObject private var backups = DataBackupCoordinator.shared
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
     @State private var confirmUsageClear = false
+    @State private var commandProfileName = ""
+    @State private var workspaceProfileName = ""
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
 
@@ -75,9 +82,8 @@ struct SettingsView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .frame(width: 820, height: 590)
+        .frame(minWidth: 820, idealWidth: 820, minHeight: 590, idealHeight: 590)
         .tint(settings.accentTheme.primary)
-        .preferredColorScheme(.dark)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
@@ -158,6 +164,7 @@ struct SettingsView: View {
     private var selectedContent: some View {
         switch selectedSection {
         case .general: generalTab
+        case .safety: safetyTab
         case .clipboard: clipboardTab
         case .writing: writingTab
         case .performance: performanceTab
@@ -498,6 +505,15 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section("Appearance") {
+                Picker("Color scheme", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("System follows macOS. Light and Dark apply to Lima windows without changing tester behavior.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
                 AccentThemePicker(selection: $settings.accentTheme)
                 Picker("Contrast", selection: $settings.contrastMode) {
                     ForEach(AppContrastMode.allCases) { mode in
@@ -630,6 +646,69 @@ struct SettingsView: View {
         NSWorkspace.shared.open(url)
     }
 
+    private var safetyTab: some View {
+        Form {
+            Section("Permission Center") {
+                ForEach(PermissionCenter.PermissionID.allCases) { permission in
+                    HStack {
+                        Text(permission.title)
+                        Spacer()
+                        Text(permissionCenter.statuses[permission]?.rawValue ?? "Checking…").foregroundStyle(.secondary)
+                        Button("Review") { permissionCenter.request(permission) }
+                    }
+                }
+            }
+            Section("Backups and diagnostics") {
+                Button("Export Backup…") {
+                    let panel = NSSavePanel()
+                    panel.nameFieldStringValue = "Lima-Backup.json"
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    do { _ = try backups.exportBackup(to: url) } catch { backups.report(error) }
+                }
+                Button("Import Backup…") {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.json]
+                    guard panel.runModal() == .OK, let url = panel.url else { return }
+                    do { try backups.importBackup(from: url) } catch { backups.report(error) }
+                }
+                Button("Export Diagnostics…") {
+                    do { let url = try DiagnosticsService.shared.export(); NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    catch { SettingsStore.shared.lastError = error.localizedDescription }
+                }
+                if let error = backups.lastError { Text(error).foregroundStyle(.orange) }
+            }
+            Section("Workspace profiles") {
+                Picker("Active profile", selection: Binding(
+                    get: { workspaceProfiles.activeProfileID ?? workspaceProfiles.profiles.first?.id },
+                    set: { id in if let id, let profile = workspaceProfiles.profiles.first(where: { $0.id == id }) { workspaceProfiles.activate(profile) } }
+                )) {
+                    ForEach(workspaceProfiles.profiles) { profile in
+                        Text(profile.favorite ? "★ \(profile.name)" : profile.name).tag(Optional(profile.id))
+                    }
+                }
+                HStack {
+                    TextField("New profile name", text: $workspaceProfileName)
+                    Button("Create") {
+                        _ = workspaceProfiles.create(name: workspaceProfileName.isEmpty ? "New Workspace" : workspaceProfileName)
+                        workspaceProfileName = ""
+                    }
+                    Button("Save Current") { workspaceProfiles.captureCurrentState() }
+                    Button("Restore") { workspaceProfiles.restoreActiveState() }
+                }
+                if let error = workspaceProfiles.lastError { Text(error).foregroundStyle(.orange) }
+            }
+            Section("Persistence") {
+                if let error = settings.lastError { Text(error).foregroundStyle(.orange) }
+                Text("Notes, dictation, clipboard, settings, terminal sessions, workflows, and workspace state use private atomic storage with recovery copies.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
+        .onAppear { permissionCenter.refresh() }
+    }
+
     private var clipboardTab: some View {
         Form {
             Section("Local clipboard history") {
@@ -661,6 +740,29 @@ struct SettingsView: View {
 
     private var extensionsTab: some View {
         VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Picker("Command profile", selection: Binding(
+                    get: { commandManager.activeProfileID ?? commandManager.profiles.first?.id },
+                    set: { id in if let id, let profile = commandManager.profiles.first(where: { $0.id == id }) { commandManager.activate(profile) } }
+                )) {
+                    ForEach(commandManager.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
+                }
+                .frame(width: 180)
+                TextField("New profile", text: $commandProfileName)
+                    .frame(width: 120)
+                Button("Create") {
+                    commandManager.createProfile(name: commandProfileName.isEmpty ? "New Profile" : commandProfileName)
+                    commandProfileName = ""
+                }
+                if let profile = commandManager.activeProfile {
+                    Button("Rename") {
+                        let name = commandProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !name.isEmpty { commandManager.renameProfile(profile, name: name); commandProfileName = "" }
+                    }
+                    .disabled(commandProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Delete", role: .destructive) { commandManager.deleteProfile(profile) }
+                }
+            }
             HStack(spacing: 8) {
                 Button("Open Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
                 Button("Reload") { reloadExtensions() }
@@ -724,9 +826,21 @@ struct SettingsView: View {
                                 Divider().opacity(0.6)
 
                                 ForEach(group.commands, id: \LoadedExtensionCommand.settingsIdentifier) { loaded in
-                                    ExtensionShortcutRow(settings: settings, loaded: loaded)
-                                        .disabled(!settings.isExtensionEnabled(group.id))
-                                        .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.42)
+                                    HStack(spacing: 6) {
+                                        Toggle("", isOn: Binding(
+                                            get: { commandManager.isEnabled(loaded.settingsIdentifier) },
+                                            set: { commandManager.setEnabled($0, for: loaded.settingsIdentifier) }
+                                        )).labelsHidden().toggleStyle(.checkbox)
+                                        Button {
+                                            commandManager.toggleFavorite(loaded.settingsIdentifier)
+                                        } label: {
+                                            Image(systemName: commandManager.isFavorite(loaded.settingsIdentifier) ? "star.fill" : "star")
+                                                .foregroundStyle(commandManager.isFavorite(loaded.settingsIdentifier) ? .yellow : .secondary)
+                                        }.buttonStyle(.borderless).help("Favorite command")
+                                        ExtensionShortcutRow(settings: settings, loaded: loaded)
+                                    }
+                                    .disabled(!settings.isExtensionEnabled(group.id))
+                                    .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.42)
                                 }
                             }
                             .liquidGlass(cornerRadius: 13, depth: .recessed, accentOpacity: 0.012)
@@ -1128,6 +1242,7 @@ final class SettingsWindowController: NSWindowController {
             window,
             title: "Lima Settings",
             accessibilityLabel: "Lima Settings",
+            minSize: NSSize(width: 760, height: 540),
             movableByBackground: false
         )
         window.isReleasedWhenClosed = false

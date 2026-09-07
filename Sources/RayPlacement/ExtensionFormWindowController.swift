@@ -147,7 +147,6 @@ private struct ExtensionFormView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .preferredColorScheme(.dark)
         .tint(SettingsStore.shared.accentTheme.primary)
     }
 

@@ -25,7 +25,7 @@ final class FormatterWindowController: NSWindowController {
             FormatterWorkspaceView(model: model)
                 .clipShape(PrismaticPanelShape(cut: 9))
                 .padding(10)
-        }.preferredColorScheme(.dark)))
+        }))
     }
 
     func present() {

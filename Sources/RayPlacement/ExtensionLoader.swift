@@ -26,6 +26,7 @@ final class ExtensionLoader {
                   options: [.skipsHiddenFiles]
               ) else { return }
 
+        var installedAll = true
         for source in bundledItems {
             var isDirectory: ObjCBool = false
             guard fileManager.fileExists(atPath: source.path, isDirectory: &isDirectory),
@@ -33,9 +34,17 @@ final class ExtensionLoader {
                   fileManager.fileExists(atPath: source.appendingPathComponent("manifest.json").path) else { continue }
             let destination = ApplicationPaths.extensions.appendingPathComponent(source.lastPathComponent, isDirectory: true)
             guard !fileManager.fileExists(atPath: destination.path) else { continue }
-            try? fileManager.copyItem(at: source, to: destination)
+            do {
+                try fileManager.copyItem(at: source, to: destination)
+                let manifest = destination.appendingPathComponent("manifest.json")
+                _ = try JSONDecoder().decode(ExtensionManifest.self, from: Data(contentsOf: manifest))
+            } catch {
+                installedAll = false
+            }
         }
-        try? "Bundled extensions were installed with Lima.\n".write(to: marker, atomically: true, encoding: .utf8)
+        if installedAll {
+            try? "Bundled extensions were installed with Lima.\n".write(to: marker, atomically: true, encoding: .utf8)
+        }
     }
 
     func load() -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
@@ -74,7 +83,7 @@ final class ExtensionLoader {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Unsupported schema version \(manifest.schemaVersion)."))
                     continue
                 }
-                guard !manifest.id.isEmpty, !manifest.name.isEmpty else {
+                guard !manifest.id.isEmpty, !manifest.name.isEmpty, manifest.id.range(of: "^[A-Za-z0-9._-]+$", options: .regularExpression) != nil else {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "The extension id and name are required."))
                     continue
                 }
@@ -90,6 +99,12 @@ final class ExtensionLoader {
                     let compositeID = "\(manifest.id).\(command.id)"
                     guard seenCommandIDs.insert(compositeID).inserted else {
                         issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Duplicate command id: \(command.id)"))
+                        continue
+                    }
+                    let required = requiredCapabilities(for: command.action)
+                    guard required.isSubset(of: manifest.capabilities) else {
+                        let missing = required.subtracting(manifest.capabilities).map(\.rawValue).sorted().joined(separator: ", ")
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) requires undeclared capabilities: \(missing)."))
                         continue
                     }
                     if command.action.type == .form {
@@ -108,7 +123,9 @@ final class ExtensionLoader {
                         extensionID: manifest.id,
                         extensionName: manifest.name,
                         directory: directory,
-                        command: command
+                        command: command,
+                        capabilities: manifest.capabilities,
+                        trust: manifest.trust
                     ))
                 }
             } catch {
@@ -117,6 +134,24 @@ final class ExtensionLoader {
         }
 
         return (loaded, issues)
+    }
+
+    private func requiredCapabilities(for action: ExtensionAction) -> Set<ExtensionManifest.Capability> {
+        switch action.type {
+        case .url: return [.network]
+        case .file, .application: return [.filesystem]
+        case .shell: return [.shell, .filesystem]
+        case .copy: return [.clipboard]
+        case .paste, .pastePlainText: return [.clipboard, .accessibility]
+        case .checkWriting: return [.selectedText, .clipboard, .accessibility]
+        case .openFocusedFileLauncher: return [.filesystem]
+        case .forceQuitApplications, .forceQuitAllApplications, .uninstallApplication: return [.processControl]
+        case .openEmojiPicker: return [.clipboard, .accessibility]
+        case .form:
+            guard let form = action.form else { return [] }
+            return form.execution.type == .httpRequest ? [.network] : [.shell, .filesystem]
+        case .convertTimezones, .openFormatterWorkspace, .openPasswordGenerator, .openExtensionDevelopment: return []
+        }
     }
 
     static let extensionReadme = """

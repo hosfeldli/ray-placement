@@ -9,6 +9,7 @@ struct LauncherView: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredEmojiID: String?
 
     init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
         self.viewModel = viewModel
@@ -60,7 +61,6 @@ struct LauncherView: View {
         .shadow(color: LimaLauncherPalette.indigo.opacity(0.08), radius: 18, y: 7)
         .shadow(color: .black.opacity(0.22), radius: 14, y: 7)
         .tint(settings.accentTheme.primary)
-        .preferredColorScheme(.dark)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
             if viewModel.mode == .terminal {
@@ -193,22 +193,39 @@ struct LauncherView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 40, maximum: 46), spacing: 5)],
+                        columns: Array(
+                            repeating: GridItem(.flexible(minimum: 42, maximum: 64), spacing: 5),
+                            count: LauncherViewModel.emojiGridColumnCount
+                        ),
                         spacing: 5
                     ) {
                         ForEach(viewModel.emojiVisibleRange, id: \.self) { index in
                             let entry = viewModel.emojiMatches[index]
+                            let isSelected = index == viewModel.selectedIndex
+                            let isHovered = entry.id == hoveredEmojiID
                             Button {
                                 viewModel.executeEmoji(at: index)
                             } label: {
                                 EmojiGridTile(
                                     emoji: entry.emoji,
-                                    selected: index == viewModel.selectedIndex
+                                    selected: isSelected,
+                                    hovered: isHovered
                                 )
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    hoveredEmojiID = entry.id
+                                    viewModel.select(index)
+                                } else if hoveredEmojiID == entry.id {
+                                    hoveredEmojiID = nil
+                                }
+                            }
                             .accessibilityLabel(entry.name)
-                            .accessibilityValue(index == viewModel.selectedIndex ? "Selected" : "")
+                            .accessibilityValue(isSelected ? "Selected" : "")
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                             .id(entry.id)
                         }
                     }
@@ -217,9 +234,10 @@ struct LauncherView: View {
                 }
                 .onChange(of: viewModel.navigationGeneration) { _ in
                     let newIndex = viewModel.selectedIndex
-                    guard viewModel.emojiVisibleRange.contains(newIndex),
-                          viewModel.emojiMatches.indices.contains(newIndex) else { return }
-                    proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
+                    guard viewModel.emojiMatches.indices.contains(newIndex) else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                        proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
+                    }
                 }
                 .scrollIndicators(.hidden)
             }
@@ -231,6 +249,9 @@ struct LauncherView: View {
                         .limaFont(.system(size: 22, weight: .medium))
                     Text("No matching emoji")
                         .limaFont(.system(size: 13, weight: .semibold))
+                    Text("Try another name or clear the search")
+                        .limaFont(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(.secondary)
             }
@@ -885,27 +906,40 @@ private struct LauncherIconView: View {
 private struct EmojiGridTile: View {
     let emoji: String
     let selected: Bool
+    let hovered: Bool
 
     var body: some View {
         Text(emoji)
-            .limaFont(.system(size: 27))
+            .limaFont(.system(size: 30))
             .minimumScaleFactor(0.72)
             .frame(maxWidth: .infinity)
-            .frame(height: 40)
-            .contentShape(PrismaticPanelShape(cut: 5))
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
             .background {
-                PrismaticPanelShape(cut: 5)
-                    .fill(selected ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.18)) : AnyShapeStyle(Color.white.opacity(0.035)))
-            }
-            .overlay {
-                PrismaticPanelShape(cut: 5)
-                    .strokeBorder(
-                        selected ? SettingsStore.shared.accentTheme.tertiary.opacity(0.78) : Color.white.opacity(0.10),
-                        lineWidth: selected ? 1.1 : 0.6
+                PrismaticPanelShape(cut: 7)
+                    .fill(
+                        selected
+                            ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
+                            : AnyShapeStyle(Color.white.opacity(hovered ? 0.10 : 0.045))
                     )
             }
-            .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.12) : .clear, radius: 4, y: 2)
-            .scaleEffect(selected ? 1.02 : 1)
+            .overlay {
+                PrismaticPanelShape(cut: 7)
+                    .strokeBorder(
+                        selected
+                            ? SettingsStore.shared.accentTheme.tertiary.opacity(0.90)
+                            : Color.white.opacity(hovered ? 0.28 : 0.12),
+                        lineWidth: selected ? 1.35 : (hovered ? 1.0 : 0.65)
+                    )
+            }
+            .shadow(
+                color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.18) : .clear,
+                radius: selected ? 6 : 0,
+                y: 2
+            )
+            .scaleEffect(selected ? 1.025 : (hovered ? 1.012 : 1))
+            .animation(.easeOut(duration: 0.12), value: selected)
+            .animation(.easeOut(duration: 0.12), value: hovered)
     }
 }
 

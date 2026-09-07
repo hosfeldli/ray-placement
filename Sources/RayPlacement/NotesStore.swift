@@ -3,6 +3,7 @@ import RayPlacementCore
 
 @MainActor
 final class NotesStore: ObservableObject {
+    static let shared = NotesStore()
     static let maximumNotes = 250
     static let maximumCharactersPerNote = 200_000
     static let maximumRevisionsPerNote = 30
@@ -10,6 +11,7 @@ final class NotesStore: ObservableObject {
     @Published private(set) var notes: [MarkdownNote]
     @Published var selectedNoteID: UUID?
     @Published var lastError: String?
+    @Published private(set) var recoveryURL: URL?
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
     private let persistenceGeneration = PersistenceGeneration()
@@ -19,8 +21,11 @@ final class NotesStore: ObservableObject {
     private var revisionGenerations: [UUID: UUID] = [:]
 
     init() {
-        notes = Self.loadNotes()
-        if notes.isEmpty {
+        let loaded = Self.loadNotes()
+        notes = loaded.notes
+        lastError = loaded.error
+        recoveryURL = loaded.recoveryURL
+        if notes.isEmpty && loaded.wasMissing {
             let welcome = MarkdownNote(
                 title: "Welcome to Lima Notes",
                 content: """
@@ -41,6 +46,40 @@ final class NotesStore: ObservableObject {
         sortNotes()
         selectedNoteID = notes.first?.id
         scheduleSave()
+    }
+
+    func replace(with replacement: [MarkdownNote]) throws {
+        guard replacement.count <= Self.maximumNotes,
+              replacement.allSatisfy({ $0.title.count <= 200 && $0.content.count <= Self.maximumCharactersPerNote }) else {
+            throw NSError(domain: "LimaNotes", code: 1, userInfo: [NSLocalizedDescriptionKey: "The imported notes exceed Lima's limits."])
+        }
+        notes = replacement
+        sortNotes()
+        selectedNoteID = notes.first?.id
+        try Self.persist(notes)
+        lastError = nil
+    }
+
+    func exportMarkdown(to directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        for note in notes {
+            let filename = note.displayTitle.replacingOccurrences(of: "/", with: "-").trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeName = filename.isEmpty ? note.id.uuidString : filename
+            let url = directory.appendingPathComponent("\(safeName).md")
+            try note.content.write(to: url, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        }
+    }
+
+    func importMarkdown(_ urls: [URL]) throws {
+        var imported = notes
+        for url in urls where url.pathExtension.lowercased() == "md" {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            guard content.count <= Self.maximumCharactersPerNote else { continue }
+            let title = content.split(whereSeparator: { $0 == "\n" }).first.map(String.init)?.trimmingCharacters(in: CharacterSet(charactersIn: "# ")) ?? url.deletingPathExtension().lastPathComponent
+            imported.insert(MarkdownNote(title: title, content: content), at: 0)
+        }
+        try replace(with: Array(imported.prefix(Self.maximumNotes)))
     }
 
     var selectedNote: MarkdownNote? {
@@ -197,7 +236,7 @@ final class NotesStore: ObservableObject {
         revisionGenerations.removeAll()
         _ = persistenceGeneration.next()
         let snapshot = notes
-        persistenceQueue.sync { Self.persist(snapshot) }
+        do { try persistenceQueue.sync { try Self.persist(snapshot) } } catch { lastError = error.localizedDescription }
     }
 
     private func updateSelected(_ change: (inout MarkdownNote) -> Void) {
@@ -256,33 +295,40 @@ final class NotesStore: ObservableObject {
         let gate = persistenceGeneration
         let work = DispatchWorkItem {
             guard gate.isCurrent(generation) else { return }
-            Self.persist(snapshot)
+            do {
+                try Self.persist(snapshot)
+                DispatchQueue.main.async { [weak self] in self?.lastError = nil }
+            } catch {
+                DispatchQueue.main.async { [weak self] in self?.lastError = error.localizedDescription }
+            }
         }
         pendingSave = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.55, execute: work)
     }
 
-    private static func loadNotes() -> [MarkdownNote] {
-        guard let data = try? Data(contentsOf: ApplicationPaths.notes),
-              let decoded = try? JSONDecoder().decode([MarkdownNote].self, from: data) else { return [] }
-        return decoded
-            .prefix(maximumNotes)
-            .map { note in
-                var bounded = note
-                bounded.title = String(note.title.prefix(200))
-                bounded.content = MarkdownNote.normalizedContent(String(note.content.prefix(maximumCharactersPerNote)))
-                bounded.tags = MarkdownNoteLinks.normalizedTags(note.tags)
-                bounded.revisionHistory = Array(note.revisionHistory.suffix(maximumRevisionsPerNote))
-                return bounded
+    private static func loadNotes() -> (notes: [MarkdownNote], error: String?, recoveryURL: URL?, wasMissing: Bool) {
+        let loaded = PrivateFileStore().loadJSON([MarkdownNote].self, from: ApplicationPaths.notes)
+        guard let decoded = loaded.value else {
+            switch loaded.result.state {
+            case .missing: return ([], nil, nil, true)
+            case .corrupt, .unreadable:
+                return ([], "Notes could not be loaded safely. The original file was preserved and a recovery copy was created.", loaded.result.recoveryURL, false)
+            case .loaded: return ([], "Notes could not be decoded.", loaded.result.recoveryURL, false)
             }
+        }
+        let bounded = decoded.prefix(maximumNotes).map { note in
+            var bounded = note
+            bounded.title = String(note.title.prefix(200))
+            bounded.content = MarkdownNote.normalizedContent(String(note.content.prefix(maximumCharactersPerNote)))
+            bounded.tags = MarkdownNoteLinks.normalizedTags(note.tags)
+            bounded.revisionHistory = Array(note.revisionHistory.suffix(maximumRevisionsPerNote))
+            return bounded
+        }
+        return (Array(bounded), nil, nil, false)
     }
 
-    private nonisolated static func persist(_ notes: [MarkdownNote]) {
-        guard let data = try? JSONEncoder().encode(notes) else { return }
-        try? FileManager.default.createDirectory(
-            at: ApplicationPaths.applicationSupport,
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: ApplicationPaths.notes, options: .atomic)
+    private nonisolated static func persist(_ notes: [MarkdownNote]) throws {
+        let data = try JSONEncoder().encode(notes)
+        try PrivateFileStore().write(data: data, to: ApplicationPaths.notes)
     }
 }

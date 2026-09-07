@@ -9,7 +9,13 @@
       "id": "search-and-paste",
       "title": "Search Emojis",
       "subtitle": "Find an emoji and paste it into the app you came from",
-      "keywords": ["emoji", "emoticon", "symbol", "reaction", "smile"],
+      "keywords": [
+        "emoji",
+        "emoticon",
+        "symbol",
+        "reaction",
+        "smile"
+      ],
       "icon": "face.smiling.inverse",
       "hotkey": "command+command",
       "action": {
@@ -17,5 +23,10 @@
         "value": ""
       }
     }
+  ],
+  "trust": "bundled",
+  "capabilities": [
+    "accessibility",
+    "clipboard"
   ]
 }

@@ -9,12 +9,23 @@
       "id": "uninstall-lima",
       "title": "Uninstall Lima",
       "subtitle": "Move Lima to Trash while preserving your notes and settings",
-      "keywords": ["uninstall", "remove", "trash", "delete", "application"],
+      "keywords": [
+        "uninstall",
+        "remove",
+        "trash",
+        "delete",
+        "application"
+      ],
       "icon": "trash",
       "action": {
         "type": "uninstallApplication",
         "value": ""
       }
     }
+  ],
+  "trust": "bundled",
+  "capabilities": [
+    "filesystem",
+    "processControl"
   ]
 }

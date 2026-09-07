@@ -2,7 +2,7 @@
 # Runs only as the logged-in user. Approval is delegated to macOS, never sudo,
 # a saved password, a persistent helper, or a change to folder permissions.
 set -euo pipefail
-(( $# == 8 && EUID != 0 )) || { print -ru2 -- 'Approval must start as the signed-in user with a complete request.'; exit 2; }
+(( ($# == 8 || $# == 9) && EUID != 0 )) || { print -ru2 -- 'Approval must start as the signed-in user with a complete request.'; exit 2; }
 CURRENT_PID="$1"
 READY_APP="$2"
 INSTALLED_APP="$3"
@@ -11,7 +11,8 @@ BUILD="$5"
 TRANSACTION="$6"
 PROGRESS_FILE="$7"
 AUTH_LOG="$8"
-APPROVAL_RESOURCES="$READY_APP/Contents/Resources/Updater"
+TRUSTED_APP="${9:-$READY_APP}"
+APPROVAL_RESOURCES="$TRUSTED_APP/Contents/Resources/Updater"
 fail() { print -ru2 -- "$1"; exit 1; }
 write_progress() {
     local temporary="$PROGRESS_FILE.tmp.$$"

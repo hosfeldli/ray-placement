@@ -9,12 +9,27 @@
       "id": "open-workspace",
       "title": "EDI / JSON / XML Formatter",
       "subtitle": "Open a focused formatter workspace",
-      "keywords": ["edi", "204", "210", "214", "990", "997", "json", "xml", "pretty", "minify", "validate", "inspect"],
+      "keywords": [
+        "edi",
+        "204",
+        "210",
+        "214",
+        "990",
+        "997",
+        "json",
+        "xml",
+        "pretty",
+        "minify",
+        "validate",
+        "inspect"
+      ],
       "icon": "curlybraces.square.fill",
       "action": {
         "type": "openFormatterWorkspace",
         "value": ""
       }
     }
-  ]
+  ],
+  "trust": "bundled",
+  "capabilities": []
 }

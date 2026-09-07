@@ -2,6 +2,12 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
 enum AppInterfaceDensity: String, CaseIterable, Identifiable {
     case compact
     case balanced
@@ -240,8 +246,11 @@ enum ApplicationPaths {
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
     static let usageLog = usage.appendingPathComponent("usage-log.json")
+    static let workspaceProfiles = applicationSupport.appendingPathComponent("workspace-profiles.json")
 
     static func prepare() throws {
+        try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: applicationSupport.path)
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: failedDictations, withIntermediateDirectories: true)
@@ -273,6 +282,7 @@ final class SettingsStore: ObservableObject {
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
+        static let appearance = "appearance"
         static let interfaceDensity = "interfaceDensity"
         static let notesVisualTheme = "notesVisualTheme"
         static let notesFontStyle = "notesFontStyle"
@@ -427,6 +437,10 @@ final class SettingsStore: ObservableObject {
             defaults.set(contrastMode.rawValue, forKey: Key.contrastMode)
             NotificationCenter.default.post(name: .rayPlacementAccentChanged, object: nil)
         }
+    }
+
+    @Published var appearance: AppAppearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil) }
     }
 
     @Published var interfaceDensity: AppInterfaceDensity {
@@ -631,6 +645,7 @@ final class SettingsStore: ObservableObject {
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
+        appearance = AppAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
         notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system
@@ -876,4 +891,105 @@ final class SettingsStore: ObservableObject {
     private func notifyExtensionConfigurationChanged() {
         NotificationCenter.default.post(name: .rayPlacementExtensionShortcutsChanged, object: nil)
     }
+
+    func importBackupValues(_ values: [String: LimaBackupValue]) throws {
+        let secretTerms = ["secret", "password", "token", "apikey", "api_key", "credential"]
+        for (key, value) in values {
+            let normalized = key.lowercased()
+            guard !secretTerms.contains(where: { normalized.contains($0) }) else { continue }
+            applyImportedValue(value, forKey: key)
+        }
+        NotificationCenter.default.post(name: .rayPlacementShortcutChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementClipboardSettingsChanged, object: nil)
+    }
+
+    private func applyImportedValue(_ value: LimaBackupValue, forKey key: String) {
+        func string() -> String? { if case .string(let value) = value { return value }; return nil }
+        func bool() -> Bool? { if case .bool(let value) = value { return value }; return nil }
+        func int() -> Int? {
+            switch value {
+            case .integer(let value): return value
+            case .double(let value): return Int(value)
+            default: return nil
+            }
+        }
+        func double() -> Double? {
+            switch value {
+            case .double(let value): return value
+            case .integer(let value): return Double(value)
+            default: return nil
+            }
+        }
+
+        switch key {
+        case Key.activationShortcut: if let value = string() { activationShortcut = value }
+        case Key.activationHotkeyEnabled: if let value = bool() { activationHotkeyEnabled = value }
+        case Key.notesShortcut: if let value = string() { notesShortcut = value }
+        case Key.notesHotkeyEnabled: if let value = bool() { notesHotkeyEnabled = value }
+        case Key.quickNoteShortcut: if let value = string() { quickNoteShortcut = value }
+        case Key.quickNoteHotkeyEnabled: if let value = bool() { quickNoteHotkeyEnabled = value }
+        case Key.dictationShortcut: if let value = string() { dictationShortcut = value }
+        case Key.dictationHotkeyEnabled: if let value = bool() { dictationHotkeyEnabled = value }
+        case Key.notesDockLeftShortcut: if let value = string() { notesDockLeftShortcut = value }
+        case Key.notesDockLeftHotkeyEnabled: if let value = bool() { notesDockLeftHotkeyEnabled = value }
+        case Key.notesDockRightShortcut: if let value = string() { notesDockRightShortcut = value }
+        case Key.notesDockRightHotkeyEnabled: if let value = bool() { notesDockRightHotkeyEnabled = value }
+        case Key.terminalShortcut: if let value = string() { terminalShortcut = value }
+        case Key.terminalHotkeyEnabled: if let value = bool() { terminalHotkeyEnabled = value }
+        case Key.accentTheme:
+            if let value = string(), let parsed = AppAccentTheme(rawValue: value) { accentTheme = parsed }
+        case Key.contrastMode:
+            if let value = string(), let parsed = AppContrastMode(rawValue: value) { contrastMode = parsed }
+        case Key.appearance:
+            if let value = string(), let parsed = AppAppearance(rawValue: value) { appearance = parsed }
+        case Key.interfaceDensity:
+            if let value = string(), let parsed = AppInterfaceDensity(rawValue: value) { interfaceDensity = parsed }
+        case Key.notesVisualTheme:
+            if let value = string(), let parsed = NotesVisualTheme(rawValue: value) { notesVisualTheme = parsed }
+        case Key.notesFontStyle:
+            if let value = string(), let parsed = NotesFontStyle(rawValue: value) { notesFontStyle = parsed }
+        case Key.notesFontSize: if let value = double() { notesFontSize = value }
+        case Key.notesLineSpacing: if let value = double() { notesLineSpacing = value }
+        case Key.notesContentWidth:
+            if let value = string(), let parsed = NotesContentWidth(rawValue: value) { notesContentWidth = parsed }
+        case Key.notesShowMetadata: if let value = bool() { notesShowMetadata = value }
+        case Key.clipboardEnabled: if let value = bool() { clipboardEnabled = value }
+        case Key.clipboardLimit: if let value = int() { clipboardLimit = value }
+        case Key.showInDock: if let value = bool() { showInDock = value }
+        case Key.writingInstructions: if let value = string() { writingInstructions = value }
+        case Key.writingPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { writingPerformance = parsed }
+        case Key.stealthGrammarEnabled: if let value = bool() { stealthGrammarEnabled = value }
+        case Key.stealthGrammarShortcut: if let value = string() { stealthGrammarShortcut = value }
+        case Key.developerGrammarEnabled: if let value = bool() { developerGrammarEnabled = value }
+        case Key.developerGrammarProvider:
+            if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
+        case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
+        case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
+        case Key.dictationPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }
+        case Key.dictationEngine:
+            if let value = string(), let parsed = DictationEngine(rawValue: value) { dictationEngine = parsed }
+        case Key.dictationComputeMode:
+            if let value = string(), let parsed = DictationComputeMode(rawValue: value) { dictationComputeMode = parsed }
+        case Key.extensionPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { extensionPerformance = parsed }
+        case Key.dynamicPerformance: if let value = bool() { dynamicPerformance = value }
+        default: break
+        }
+    }
+
+    func exportBackup(to destination: URL? = nil) throws -> URL {
+        let target = destination ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Settings-\(Int(Date().timeIntervalSince1970)).json")
+        let snapshot = defaults.dictionaryRepresentation().filter { key, value in
+            !key.lowercased().contains("key") && !key.lowercased().contains("secret") && !(value is Data)
+        }
+        let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: target, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        return target
+    }
+
 }

@@ -122,7 +122,6 @@ private struct FocusedFileLauncherView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .tint(settings.accentTheme.primary)
-        .preferredColorScheme(.dark)
     }
 
     private var header: some View {

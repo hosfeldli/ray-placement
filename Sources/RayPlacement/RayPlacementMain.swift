@@ -53,7 +53,7 @@ private struct TypographyPreview: View {
         VStack {
             InterfaceTextSizeControl().padding()
             InlineMarkdownEditor(text: $text, compact: true)
-        }.preferredColorScheme(.dark)
+        }
     }
 }
 #endif

@@ -835,7 +835,8 @@ private final class SQLWorkspaceModel: ObservableObject {
     private func load() {
         guard let data = try? Data(contentsOf: workspaceURL), let saved = try? JSONDecoder().decode(SavedWorkspace.self, from: data) else { return }
         connections = saved.connections
-        selectedConnectionID = saved.selectedConnectionID ?? connections.first?.id
+        let workspaceState = WorkspaceStateRegistry.shared.state
+        selectedConnectionID = workspaceState.sqlConnectionID ?? saved.selectedConnectionID ?? connections.first?.id
         cachedSchemas = saved.snapshots
         schema = selectedConnectionID.flatMap { saved.snapshots[$0] }
         savedQueries = saved.savedQueries
@@ -843,6 +844,10 @@ private final class SQLWorkspaceModel: ObservableObject {
         blockDrafts = saved.blockDrafts ?? [:]
         visualQuery = selectedConnectionID.flatMap { blockDrafts[$0] } ?? SQLVisualQuery()
         selectedCollectionID = collections.first?.id
+        if let tableSelection = workspaceState.sqlSelection,
+           schema?.tables.contains(where: { $0.id == tableSelection }) == true {
+            selectedTableID = tableSelection
+        }
     }
 
     @discardableResult private func save() -> Bool {
@@ -860,10 +865,12 @@ private final class SQLWorkspaceModel: ObservableObject {
         guard !isBusy else { return }
         if let current = selectedConnectionID { blockDrafts[current] = visualQuery }
         selectedConnectionID = id
+        WorkspaceStateRegistry.shared.update { $0.sqlConnectionID = id }
         visualQuery = blockDrafts[id] ?? SQLVisualQuery()
         schemaOwner = ""
         schema = cachedSchemas[id]
         selectedTableID = schema?.tables.first?.id
+        WorkspaceStateRegistry.shared.update { $0.sqlSelection = selectedTableID }
         save()
         status = schema == nil ? "Selected \(selectedConnection?.name ?? "connection"). Refresh discovery to load its schema." : "Loaded cached schema for \(selectedConnection?.name ?? "connection")."
     }
@@ -893,7 +900,6 @@ private struct SQLWorkspaceView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .tint(settings.accentTheme.primary)
-        .preferredColorScheme(.dark)
         .sheet(isPresented: $model.showsConnectionEditor, onDismiss: { model.secretDraft = "" }) { SQLConnectionEditor(model: model) }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)) { _ in model.lockSession() }
         .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.sessionDidResignActiveNotification)) { _ in model.lockSession() }
@@ -953,16 +959,19 @@ private struct SQLWorkspaceView: View {
             .controlSize(.small)
             Spacer()
             Button { showsSchemaBrowser.toggle() } label: { Image(systemName: "sidebar.left") }
+                .accessibilityLabel("Toggle schema browser")
                 .buttonStyle(LimaToolbarIconButtonStyle(tint: settings.accentTheme.primary))
                 .help("Toggle schema browser · ⌘⌥1").keyboardShortcut("1", modifiers: [.command, .option])
             Button { showsInspector.toggle() } label: { Image(systemName: "sidebar.right") }
+                .accessibilityLabel("Toggle table details")
                 .buttonStyle(LimaToolbarIconButtonStyle(tint: settings.accentTheme.primary))
                 .help("Toggle table details · ⌘⌥2").keyboardShortcut("2", modifiers: [.command, .option])
             Picker("Mode", selection: $model.mode) {
                 ForEach(SQLWorkspaceModel.Mode.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
-            .frame(width: 268)
+            .frame(minWidth: 180, idealWidth: 268, maxWidth: 268)
+            .layoutPriority(0)
             Menu {
                 Button("New Connection…", action: model.newConnection)
                 Button("Lock credential session", action: model.lockSession).disabled(model.isBusy)
@@ -1497,7 +1506,6 @@ private struct SQLConnectionEditor: View {
         }
         .padding(20).frame(width: 560)
         .background(LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow))
-        .preferredColorScheme(.dark)
         .onAppear {
             portText = String(model.connectionDraft.port)
             discoverySchemasText = (model.connectionDraft.discoverySchemas ?? []).joined(separator: ", ")

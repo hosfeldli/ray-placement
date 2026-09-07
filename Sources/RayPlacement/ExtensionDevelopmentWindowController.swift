@@ -18,7 +18,7 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
             minSize: NSSize(width: 760, height: 520)
         )
         self.init(window: window)
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionDevelopmentView().preferredColorScheme(.dark)))
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionDevelopmentView()))
     }
 
     func present() {

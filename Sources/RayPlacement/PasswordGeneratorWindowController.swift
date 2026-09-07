@@ -181,7 +181,6 @@ private struct PasswordGeneratorView: View {
             }
             .padding(10)
         }
-        .preferredColorScheme(.dark)
         .tint(SettingsStore.shared.accentTheme.primary)
     }
 

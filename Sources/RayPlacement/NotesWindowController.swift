@@ -1,6 +1,7 @@
 import AppKit
 import RayPlacementCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 private enum NotesWindowMode: String {
     case workspace
@@ -59,8 +60,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private var isApplyingFrame = false
 
     override init() {
-        let store = NotesStore()
-        let conversations = DictationConversationStore()
+        let store = NotesStore.shared
+        let conversations = DictationConversationStore.shared
         self.store = store
         self.conversations = conversations
         self.dictation = NoteDictationService(
@@ -90,10 +91,23 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func present() {
+        restoreWorkspaceSelection()
         let window = ensureWindow()
         applyPresentationMode(presentation.mode, to: window, animated: false)
         WorkspaceWindowCoordinator.shared.present(window, joinWorkspace: !presentation.mode.isDocked)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func restoreWorkspaceSelection() {
+        let state = WorkspaceStateRegistry.shared.state
+        if let id = state.selectedNoteID, store.notes.contains(where: { $0.id == id }) {
+            store.selectedNoteID = id
+        }
+        if let id = state.selectedDictationID, conversations.conversations.contains(where: { $0.id == id }) {
+            conversations.selectedConversationID = id
+        }
+        if state.notesSection == "dictation" { presentation.section = .dictation }
+        else if state.notesSection == "notes" { presentation.section = .notes }
     }
 
     func toggleVisibility() {
@@ -127,6 +141,26 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if let window { WorkspaceWindowCoordinator.shared.popOut(window) }
         dock(edge)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func selectNote(_ id: UUID) {
+        guard store.notes.contains(where: { $0.id == id }) else { return }
+        store.selectedNoteID = id
+        presentation.section = .notes
+        WorkspaceStateRegistry.shared.update {
+            $0.selectedNoteID = id
+            $0.notesSection = "notes"
+        }
+    }
+
+    func selectDictation(_ id: UUID) {
+        guard conversations.conversations.contains(where: { $0.id == id }) else { return }
+        conversations.selectedConversationID = id
+        presentation.section = .dictation
+        WorkspaceStateRegistry.shared.update {
+            $0.selectedDictationID = id
+            $0.notesSection = "dictation"
+        }
     }
 
     func presentMostRecentAndToggleDictation() {
@@ -379,6 +413,7 @@ private struct NotesView: View {
     @State private var showAppearance = false
     @State private var showTags = false
     @State private var showRevisions = false
+    @State private var exportError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var filteredNotes: [MarkdownNote] {
@@ -435,12 +470,16 @@ private struct NotesView: View {
             minHeight: 500
         )
         .tint(SettingsStore.shared.accentTheme.primary)
-        .preferredColorScheme(.dark)
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
         } message: {
             Text("This permanently removes the selected local note.")
+        }
+        .alert("Notes operation failed", isPresented: Binding(get: { exportError != nil }, set: { if !$0 { exportError = nil } })) {
+            Button("OK") { exportError = nil }
+        } message: {
+            Text(exportError ?? "Unknown error")
         }
         .alert("Delete this dictation?", isPresented: $confirmDeleteDictation) {
             Button("Cancel", role: .cancel) {
@@ -981,6 +1020,12 @@ private struct NotesView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .help("Dictation conversations")
+                Button { exportSelectedTranscript() } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .disabled(conversations.selectedConversation == nil)
+                .help("Export transcript")
                 HStack(spacing: 5) {
                     Spacer(minLength: 0)
                     dictationPauseButton
@@ -996,6 +1041,12 @@ private struct NotesView: View {
                     .layoutPriority(1)
                     .help("Dictation conversations")
                 Spacer(minLength: 2)
+                Button { exportSelectedTranscript() } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .buttonStyle(.borderless)
+                .disabled(conversations.selectedConversation == nil)
+                .help("Export transcript")
                 dictationPauseButton
                 dictationPrimaryButton
             }
@@ -1281,6 +1332,15 @@ private struct NotesView: View {
     private func noteToolbar(_ note: MarkdownNote) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 9) {
+                Menu {
+                    Button("Import Markdown…", action: importMarkdown)
+                    Button("Export All Markdown…", action: exportMarkdown)
+                } label: {
+                    Image(systemName: "folder")
+                        .frame(width: 25, height: 24)
+                }
+                .menuStyle(.borderlessButton)
+                .help("Import or export Markdown notes")
                 HStack(spacing: 1) {
                     Menu {
                         Button("Heading 1") { MarkdownEditorActions.heading(1) }
@@ -1359,6 +1419,35 @@ private struct NotesView: View {
             .padding(.vertical, 8)
         }
         .background(LimaDesign.recessedFill)
+    }
+
+    private func importMarkdown() {
+        let panel = NSOpenPanel()
+        panel.allowsMultipleSelection = true
+        panel.canChooseDirectories = false
+        panel.allowedContentTypes = [.text, UTType(filenameExtension: "md")].compactMap { $0 }
+        guard panel.runModal() == .OK else { return }
+        do { try store.importMarkdown(panel.urls) }
+        catch { exportError = error.localizedDescription }
+    }
+
+    private func exportMarkdown() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "Lima Notes"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try store.exportMarkdown(to: url) }
+        catch { exportError = error.localizedDescription }
+    }
+
+    private func exportSelectedTranscript() {
+        guard let conversation = conversations.selectedConversation else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "\(conversation.title).txt"
+        panel.allowedContentTypes = [.plainText]
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do { try conversations.exportTranscript(conversation, to: url) }
+        catch { exportError = error.localizedDescription }
     }
 
     private func noteSelectionButton(_ note: MarkdownNote) -> some View {
@@ -1479,7 +1568,6 @@ private struct NotesAppearancePanel: View {
         .padding(16)
         .frame(width: 330)
         .background(.ultraThinMaterial)
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -1546,7 +1634,6 @@ private struct TagEditorSheet: View {
         }
         .padding(22)
         .frame(width: 420)
-        .preferredColorScheme(.dark)
     }
 }
 
@@ -1599,7 +1686,6 @@ private struct RevisionHistorySheet: View {
         }
         .padding(18)
         .frame(width: 560, height: 410)
-        .preferredColorScheme(.dark)
         .alert("Restore this revision?", isPresented: Binding(
             get: { pendingRestore != nil },
             set: { if !$0 { pendingRestore = nil } }

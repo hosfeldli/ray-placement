@@ -368,6 +368,10 @@ final class UpdateService: ObservableObject {
         guard size > 0, size <= rayPlacementUpdateAssetMaximumBytes else { throw UpdateError.oversizedAsset }
         let actualHash = try sha256(of: archive)
         guard actualHash == expectedHash else { throw UpdateError.invalidDigest }
+        // Apply the pure policy before any archive extraction. The process-level
+        // checks below remain necessary because zipinfo is the source of type
+        // information for macOS archives.
+        try validateArchive(archive)
 
         let extraction = working.appendingPathComponent("extracted", isDirectory: true)
         try fileManager.createDirectory(at: extraction, withIntermediateDirectories: true)
@@ -382,6 +386,7 @@ final class UpdateService: ObservableObject {
         guard process.terminationStatus == 0 else {
             throw UpdateError.extractionFailed(String(decoding: errorData.prefix(8_000), as: UTF8.self))
         }
+        try validateExtractedTree(extraction)
 
         let sourceRoot = extraction.appendingPathComponent("LimaUpdate", isDirectory: true)
         let required = [
@@ -390,18 +395,85 @@ final class UpdateService: ObservableObject {
             "scripts/replace_lima_bundle.sh", "scripts/request_lima_update_approval.sh",
             "Prebuilt/Lima.app/Contents/MacOS/Lima"
         ]
-        guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
-              let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")),
-              SemanticVersion(packagedVersion) == SemanticVersion(expectedVersion) else {
+        let extractedFiles = Set(required.filter { fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) })
+        do { try UpdateVerificationPolicy.validateRequiredFiles(extractedFiles, required: required) }
+        catch { throw UpdateError.invalidPackage }
+        guard let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
             throw UpdateError.invalidPackage
         }
+        do { try UpdateVerificationPolicy.validatePackage(packagedVersion: packagedVersion, expectedVersion: expectedVersion) }
+        catch { throw UpdateError.invalidPackage }
         let prebuiltInfo = sourceRoot.appendingPathComponent("Prebuilt/Lima.app/Contents/Info.plist")
         guard try plistValue("CFBundleIdentifier", in: prebuiltInfo) == "dev.liam.lima",
               try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion,
               try plistValue("CFBundleVersion", in: prebuiltInfo) == plistValue("CFBundleVersion", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
             throw UpdateError.invalidPackage
         }
+        try runTrustedVerification(sourceRoot.appendingPathComponent("Prebuilt/Lima.app"), expectedVersion: expectedVersion, expectedBuild: try plistValue("CFBundleVersion", in: prebuiltInfo))
         return sourceRoot
+    }
+
+    private nonisolated func validateArchive(_ archive: URL) throws {
+        let list = try runProcess("/usr/bin/zipinfo", arguments: ["-1", archive.path])
+        let entries = list.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        do { try UpdateVerificationPolicy.validateArchiveEntries(entries) }
+        catch { throw UpdateError.invalidPackage }
+
+        let longListing = try runProcess("/usr/bin/zipinfo", arguments: ["-l", archive.path])
+        var types: [(path: String, type: UpdateArchiveEntryType)] = []
+        for line in longListing.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard let permissions = fields.first, permissions.count >= 1,
+                  let path = fields.last.map(String.init), path != "name" else { continue }
+            let type: UpdateArchiveEntryType
+            switch permissions.first {
+            case "d": type = .directory
+            case "-": type = .regularFile
+            case "l": type = .symbolicLink
+            case "h": type = .hardLink
+            case "p": type = .fifo
+            default: type = .socket
+            }
+            types.append((path, type))
+        }
+        do { try UpdateVerificationPolicy.validateArchiveTypes(types) }
+        catch { throw UpdateError.invalidPackage }
+
+        let details = try runProcess("/usr/bin/zipinfo", arguments: ["-Z", "-v", archive.path]).lowercased()
+        guard !details.contains("symbolic link"), !details.contains("hard link"), !details.contains("fifo"), !details.contains("character device"), !details.contains("block device") else { throw UpdateError.invalidPackage }
+    }
+
+    private nonisolated func validateExtractedTree(_ root: URL) throws {
+        let fm = FileManager.default
+        var count = 0
+        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey], options: []) else { throw UpdateError.invalidPackage }
+        for case let url as URL in enumerator {
+            count += 1
+            guard count <= 100_000 else { throw UpdateError.invalidPackage }
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true || values.isRegularFile == true else { throw UpdateError.invalidPackage }
+        }
+    }
+
+    private nonisolated func runTrustedVerification(_ app: URL, expectedVersion: String, expectedBuild: String) throws {
+        let verifier = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
+        guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
+        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild])
+    }
+
+    private nonisolated func runProcess(_ executable: String, arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(decoding: data.prefix(32_000), as: UTF8.self)
+        guard process.terminationStatus == 0 else { throw UpdateError.extractionFailed(text) }
+        return text
     }
 
     private nonisolated func sha256(of file: URL) throws -> String {
@@ -425,7 +497,7 @@ final class UpdateService: ObservableObject {
 
     private func launchInstaller(sourceRoot: URL, version: String) {
         statusText = "Preparing the verified Lima update…"
-        let helper = sourceRoot.appendingPathComponent("scripts/apply_downloaded_update.sh")
+        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Updater/apply_trusted_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
         try? FileManager.default.removeItem(at: progressFile)
         FileManager.default.createFile(atPath: log.path, contents: Data())
@@ -440,7 +512,8 @@ final class UpdateService: ObservableObject {
                 sourceRoot.path,
                 version,
                 resultFile.path,
-                progressFile.path
+                progressFile.path,
+                Bundle.main.bundleURL.path
             ]
             process.standardOutput = handle
             process.standardError = handle

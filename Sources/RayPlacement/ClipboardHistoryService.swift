@@ -1,13 +1,18 @@
 import AppKit
 import Foundation
+import RayPlacementCore
 
 @MainActor
 final class ClipboardHistoryService: ObservableObject {
+    static let shared = ClipboardHistoryService()
     @Published private(set) var entries: [ClipboardEntry] = []
+    @Published var lastError: String?
+    @Published private(set) var recoveryURL: URL?
 
     private var timer: Timer?
     private var lastChangeCount = NSPasteboard.general.changeCount
     private var settingsObserver: NSObjectProtocol?
+    private let fileStore = PrivateFileStore()
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.clipboard-persistence", qos: .utility)
     private let maxEntryCharacters = 20_000
     private let maxTotalCharacters = 1_000_000
@@ -34,6 +39,16 @@ final class ClipboardHistoryService: ObservableObject {
     deinit {
         timer?.invalidate()
         if let settingsObserver { NotificationCenter.default.removeObserver(settingsObserver) }
+    }
+
+    func replace(with replacement: [ClipboardEntry]) throws {
+        guard replacement.count <= 500 else {
+            throw NSError(domain: "LimaClipboard", code: 1, userInfo: [NSLocalizedDescriptionKey: "The imported clipboard history is too large."])
+        }
+        entries = replacement.map { ClipboardEntry(id: $0.id, text: String($0.text.prefix(maxEntryCharacters)), capturedAt: $0.capturedAt, pinned: $0.pinned) }
+        _ = enforceLimits()
+        save()
+        lastError = nil
     }
 
     func applySettings() {
@@ -88,17 +103,17 @@ final class ClipboardHistoryService: ObservableObject {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: ApplicationPaths.clipboardHistory),
-              let decoded = try? JSONDecoder().decode([ClipboardEntry].self, from: data) else { return }
+        let loaded = fileStore.loadJSON([ClipboardEntry].self, from: ApplicationPaths.clipboardHistory)
+        guard let decoded = loaded.value else {
+            guard loaded.result.state != .missing else { return }
+            lastError = "Clipboard history could not be loaded safely. The original file was preserved."
+            recoveryURL = loaded.result.recoveryURL
+            return
+        }
         let limit = SettingsStore.shared.clipboardLimit
         let needsRewrite = decoded.count > limit || decoded.contains { $0.text.count > maxEntryCharacters }
         entries = decoded.prefix(limit).map { entry in
-            ClipboardEntry(
-                id: entry.id,
-                text: String(entry.text.prefix(maxEntryCharacters)),
-                capturedAt: entry.capturedAt,
-                pinned: entry.pinned
-            )
+            ClipboardEntry(id: entry.id, text: String(entry.text.prefix(maxEntryCharacters)), capturedAt: entry.capturedAt, pinned: entry.pinned)
         }
         if needsRewrite || enforceLimits() { save() }
     }
@@ -106,9 +121,13 @@ final class ClipboardHistoryService: ObservableObject {
     private func save() {
         let snapshot = entries
         persistenceQueue.async {
-            try? ApplicationPaths.prepare()
-            guard let data = try? JSONEncoder().encode(snapshot) else { return }
-            try? data.write(to: ApplicationPaths.clipboardHistory, options: .atomic)
+            do {
+                let data = try JSONEncoder().encode(snapshot)
+                try self.fileStore.write(data: data, to: ApplicationPaths.clipboardHistory)
+                DispatchQueue.main.async { [weak self] in self?.lastError = nil }
+            } catch {
+                DispatchQueue.main.async { [weak self] in self?.lastError = error.localizedDescription }
+            }
         }
     }
 

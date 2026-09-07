@@ -28,11 +28,38 @@ public struct PostmanAuthorization: Codable, Hashable, Sendable {
     }
 
     public var kind: Kind
+    /// Non-secret request metadata. A reference resolves to Keychain data only
+    /// immediately before a request is executed.
+    public var secretReferenceID: UUID?
     public var values: [String: String]
 
-    public init(kind: Kind, values: [String: String] = [:]) {
+    public init(kind: Kind, values: [String: String] = [:], secretReferenceID: UUID? = nil) {
         self.kind = kind
+        self.secretReferenceID = secretReferenceID
         self.values = values
+    }
+
+    private enum CodingKeys: String, CodingKey { case kind, secretReferenceID, values }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(kind, forKey: .kind)
+        try container.encodeIfPresent(secretReferenceID, forKey: .secretReferenceID)
+        // Once a reference exists, values are metadata only. Never write
+        // bearer tokens, passwords, API-key values, or OAuth tokens into the
+        // workspace, backup, diagnostics, or search index.
+        let secretKeys = Set(["token", "accessToken", "password", "value", "secret", "clientSecret", "refreshToken"])
+        let persistedValues = secretReferenceID == nil
+            ? values
+            : values.filter { !secretKeys.contains($0.key) }
+        try container.encode(persistedValues, forKey: .values)
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try container.decodeIfPresent(Kind.self, forKey: .kind) ?? .none
+        secretReferenceID = try container.decodeIfPresent(UUID.self, forKey: .secretReferenceID)
+        values = try container.decodeIfPresent([String: String].self, forKey: .values) ?? [:]
     }
 }
 

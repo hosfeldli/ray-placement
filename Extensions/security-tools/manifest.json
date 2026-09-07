@@ -9,12 +9,20 @@
       "id": "password-generator",
       "title": "Generate Password",
       "subtitle": "Create and copy a cryptographically secure password",
-      "keywords": ["password", "generate", "security", "random", "credential"],
+      "keywords": [
+        "password",
+        "generate",
+        "security",
+        "random",
+        "credential"
+      ],
       "icon": "key.fill",
       "action": {
         "type": "openPasswordGenerator",
         "value": ""
       }
     }
-  ]
+  ],
+  "trust": "bundled",
+  "capabilities": []
 }

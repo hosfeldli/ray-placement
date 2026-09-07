@@ -27,13 +27,20 @@ final class EndpointTesterWindowController: NSWindowController {
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: EndpointTesterView(model: model)))
     }
 
-    func present() {
+    func present(collectionID: UUID? = nil, requestID: UUID? = nil) {
+        if let collectionID, let requestID {
+            model.selectRequest(collectionID: collectionID, requestID: requestID)
+        }
         if !hasPresented {
             window?.center()
             hasPresented = true
         }
         if let window { WorkspaceWindowCoordinator.shared.present(window) }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func present() {
+        present(collectionID: nil, requestID: nil)
     }
 
     func shutdown() {
@@ -128,6 +135,9 @@ private final class EndpointTesterModel: ObservableObject {
         case apiKey = "API Key"
         case oauth2 = "OAuth 2.0 / SSO"
         var id: String { rawValue }
+        var secretReferenceKind: APISecretReference.Kind {
+            switch self { case .apiKey: return .apiKey; case .basic: return .basic; default: return .bearer }
+        }
     }
 
     enum APIKeyLocation: String, CaseIterable, Identifiable {
@@ -165,6 +175,7 @@ private final class EndpointTesterModel: ObservableObject {
     @Published var parameters = [EndpointKeyValueRow()]
     @Published var headers = [EndpointKeyValueRow()]
     @Published var authKind: AuthKind = .none
+    @Published var secretReferenceID: UUID?
     @Published var bearerToken = ""
     @Published var username = ""
     @Published var password = ""
@@ -310,9 +321,56 @@ private final class EndpointTesterModel: ObservableObject {
         error = nil
     }
 
+    func selectRequest(collectionID: UUID, requestID: UUID) {
+        guard let collection = collections.first(where: { $0.id == collectionID }),
+              let request = collection.requests.first(where: { $0.id == requestID }) else {
+            error = "The selected API request is no longer available."
+            return
+        }
+        load(request, collectionID: collection.id)
+        WorkspaceStateRegistry.shared.update {
+            $0.apiCollectionID = collection.id
+            $0.apiRequestID = request.id
+            $0.apiSelection = request.name
+        }
+    }
+
     func selectEnvironment(_ id: UUID?) {
         selectedEnvironmentID = id
+        WorkspaceStateRegistry.shared.update { $0.apiEnvironmentID = id }
         saveWorkspace()
+    }
+
+    func saveCurrentSecretReference(name: String) {
+        guard authKind != .none, authKind != .oauth2 else { return }
+        let material = APISecretMaterial(
+            bearerToken: authKind == .bearer ? bearerToken : nil,
+            apiKey: authKind == .apiKey ? apiKeyValue : nil,
+            username: authKind == .basic ? username : nil,
+            password: authKind == .basic ? password : nil
+        )
+        do {
+            let reference = try APISecretReferenceStore.shared.save(
+                material,
+                reference: secretReferenceID.map { APISecretReference(id: $0, name: name, kind: authKind.secretReferenceKind) },
+                name: name,
+                kind: authKind.secretReferenceKind
+            )
+            secretReferenceID = reference.id
+            if let id = selectedRequestID, let collectionID = selectedCollectionID,
+               let collectionIndex = collections.firstIndex(where: { $0.id == collectionID }),
+               let requestIndex = collections[collectionIndex].requests.firstIndex(where: { $0.id == id }) {
+                collections[collectionIndex].requests[requestIndex].authorization.secretReferenceID = reference.id
+                saveWorkspace()
+            }
+            error = nil
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func deleteCurrentSecretReference() {
+        guard let id = secretReferenceID else { return }
+        APISecretReferenceStore.shared.delete(APISecretReference(id: id, name: "Request secret", kind: authKind.secretReferenceKind))
+        secretReferenceID = nil
     }
 
     func presentEnvironmentEditor(createNew: Bool = false) {
@@ -655,6 +713,7 @@ private final class EndpointTesterModel: ObservableObject {
         bodyKind = entry.bodyKind
         body = entry.body
         authKind = .none
+        secretReferenceID = nil
         bearerToken = ""
         username = ""
         password = ""
@@ -688,8 +747,20 @@ private final class EndpointTesterModel: ObservableObject {
         }
     }
 
+    private func resolvedSecretMaterial() -> APISecretMaterial {
+        guard let secretReferenceID else {
+            return APISecretMaterial(bearerToken: bearerToken, apiKey: apiKeyValue, username: username, password: password)
+        }
+        let reference = APISecretReference(id: secretReferenceID, name: "Request secret", kind: authKind.secretReferenceKind)
+        guard let material = APISecretReferenceStore.shared.resolve(reference) else {
+            return APISecretMaterial(bearerToken: bearerToken, apiKey: apiKeyValue, username: username, password: password)
+        }
+        return material
+    }
+
     private func buildRequest() throws -> URLRequest {
         let variables = resolvedVariables
+        let secret = resolvedSecretMaterial()
         let rawURL = resolve(urlText, with: variables).trimmingCharacters(in: .whitespacesAndNewlines)
         guard var components = URLComponents(string: rawURL),
               let scheme = components.scheme?.lowercased(),
@@ -703,7 +774,7 @@ private final class EndpointTesterModel: ObservableObject {
             queryItems.append(URLQueryItem(name: resolve(item.key, with: variables), value: resolve(item.value, with: variables)))
         }
         if authKind == .apiKey, apiKeyLocation == .query, !apiKeyName.isEmpty {
-            queryItems.append(URLQueryItem(name: resolve(apiKeyName, with: variables), value: resolve(apiKeyValue, with: variables)))
+            queryItems.append(URLQueryItem(name: resolve(apiKeyName, with: variables), value: resolve(secret.apiKey ?? apiKeyValue, with: variables)))
         }
         components.queryItems = queryItems.isEmpty ? nil : queryItems
         guard let url = components.url else { throw EndpointTesterError.invalidURL }
@@ -721,9 +792,10 @@ private final class EndpointTesterModel: ObservableObject {
         case .none:
             break
         case .bearer:
-            if !bearerToken.isEmpty { request.setValue("Bearer \(resolve(bearerToken, with: variables))", forHTTPHeaderField: "Authorization") }
+            let token = secret.bearerToken ?? bearerToken
+            if !token.isEmpty { request.setValue("Bearer \(resolve(token, with: variables))", forHTTPHeaderField: "Authorization") }
         case .basic:
-            let credential = Data("\(resolve(username, with: variables)):\(resolve(password, with: variables))".utf8).base64EncodedString()
+            let credential = Data("\(resolve(secret.username ?? username, with: variables)):\(resolve(secret.password ?? password, with: variables))".utf8).base64EncodedString()
             request.setValue("Basic \(credential)", forHTTPHeaderField: "Authorization")
         case .apiKey:
             if apiKeyLocation == .header, !apiKeyName.isEmpty {
@@ -790,7 +862,8 @@ private final class EndpointTesterModel: ObservableObject {
         if imported.authorization.kind == .apiKey,
            imported.authorization.values["in"]?.lowercased() == "query" {
             let key = resolve(imported.authorization.values["key"] ?? "", with: variables)
-            let value = resolve(imported.authorization.values["value"] ?? "", with: variables)
+            let material = importedAuthorizationMaterial(imported.authorization)
+            let value = resolve(material.apiKey ?? imported.authorization.values["value"] ?? "", with: variables)
             if !key.isEmpty {
                 query.append(URLQueryItem(name: key, value: value))
             }
@@ -847,21 +920,37 @@ private final class EndpointTesterModel: ObservableObject {
         }
     }
 
+    private func importedAuthorizationMaterial(_ authorization: PostmanAuthorization) -> APISecretMaterial {
+        guard let id = authorization.secretReferenceID else { return APISecretMaterial() }
+        let reference = APISecretReference(id: id, name: "Imported request secret", kind: {
+            switch authorization.kind {
+            case .bearer: return .bearer
+            case .basic: return .basic
+            case .apiKey: return .apiKey
+            case .oauth2: return .bearer
+            case .none: return .bearer
+            }
+        }())
+        return APISecretReferenceStore.shared.resolve(reference) ?? APISecretMaterial()
+    }
+
     private func apply(_ authorization: PostmanAuthorization) {
+        secretReferenceID = authorization.secretReferenceID
+        let material = importedAuthorizationMaterial(authorization)
         switch authorization.kind {
         case .none:
             authKind = .none
         case .bearer:
             authKind = .bearer
-            bearerToken = authorization.values["token"] ?? ""
+            bearerToken = material.bearerToken ?? authorization.values["token"] ?? ""
         case .basic:
             authKind = .basic
-            username = authorization.values["username"] ?? ""
-            password = authorization.values["password"] ?? ""
+            username = material.username ?? authorization.values["username"] ?? ""
+            password = material.password ?? authorization.values["password"] ?? ""
         case .apiKey:
             authKind = .apiKey
             apiKeyName = authorization.values["key"] ?? ""
-            apiKeyValue = authorization.values["value"] ?? ""
+            apiKeyValue = material.apiKey ?? authorization.values["value"] ?? ""
             apiKeyLocation = authorization.values["in"]?.lowercased() == "query" ? .query : .header
         case .oauth2:
             authKind = .oauth2
@@ -877,23 +966,26 @@ private final class EndpointTesterModel: ObservableObject {
     }
 
     private func apply(_ authorization: PostmanAuthorization, to request: inout URLRequest, variables: [String: String]) {
+        let material = importedAuthorizationMaterial(authorization)
         switch authorization.kind {
         case .none: break
         case .bearer:
-            let token = resolve(authorization.values["token"] ?? "", with: variables)
+            let token = resolve(material.bearerToken ?? authorization.values["token"] ?? "", with: variables)
             if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         case .basic:
-            let user = resolve(authorization.values["username"] ?? "", with: variables)
-            let password = resolve(authorization.values["password"] ?? "", with: variables)
+            let user = resolve(material.username ?? authorization.values["username"] ?? "", with: variables)
+            let password = resolve(material.password ?? authorization.values["password"] ?? "", with: variables)
             request.setValue("Basic \(Data("\(user):\(password)".utf8).base64EncodedString())", forHTTPHeaderField: "Authorization")
         case .apiKey:
             let key = resolve(authorization.values["key"] ?? "", with: variables)
-            let value = resolve(authorization.values["value"] ?? "", with: variables)
+            let value = resolve(material.apiKey ?? authorization.values["value"] ?? "", with: variables)
             if authorization.values["in"]?.lowercased() != "query", !key.isEmpty {
                 request.setValue(value, forHTTPHeaderField: key)
             }
         case .oauth2:
-            let token = oauthAccessToken.isEmpty ? authorization.values["accessToken"] ?? authorization.values["token"] ?? "" : oauthAccessToken
+            let token = oauthAccessToken.isEmpty
+                ? material.bearerToken ?? authorization.values["accessToken"] ?? authorization.values["token"] ?? ""
+                : oauthAccessToken
             if !token.isEmpty { request.setValue("Bearer \(resolve(token, with: variables))", forHTTPHeaderField: "Authorization") }
         }
     }
@@ -923,7 +1015,13 @@ private final class EndpointTesterModel: ObservableObject {
             oauthConfiguration = configuration
             oauthClientSecret = OAuthTokenVault.loadClientSecret(for: configuration)
         }
-        selectedCollectionID = collections.first?.id
+        let workspaceState = WorkspaceStateRegistry.shared.state
+        selectedCollectionID = collections.contains(where: { $0.id == workspaceState.apiCollectionID }) ? workspaceState.apiCollectionID : collections.first?.id
+        if let requestID = workspaceState.apiRequestID,
+           let collection = collections.first(where: { $0.id == selectedCollectionID }),
+           let request = collection.requests.first(where: { $0.id == requestID }) {
+            load(request, collectionID: collection.id)
+        }
     }
 
     private func saveWorkspace() {
@@ -1007,7 +1105,7 @@ private struct EndpointTesterView: View {
                     VStack(spacing: 9) {
                         requestBar
                         requestEditor
-                            .frame(minHeight: 170, idealHeight: 220, maxHeight: 290)
+                            .frame(minHeight: 190, idealHeight: 220, maxHeight: 290)
                         responseViewer
                     }
                     .frame(minWidth: 610)
@@ -1015,7 +1113,6 @@ private struct EndpointTesterView: View {
             }
             .padding(10)
         }
-        .preferredColorScheme(.dark)
         .tint(SettingsStore.shared.accentTheme.primary)
         .onAppear { urlFocused = true }
         .sheet(isPresented: $model.isRunnerPresented) {
@@ -1062,10 +1159,13 @@ private struct EndpointTesterView: View {
             .menuStyle(.borderlessButton)
             .fixedSize()
             Button { model.presentEnvironmentEditor() } label: { Image(systemName: "slider.horizontal.3") }
+                .accessibilityLabel("Edit environment variables")
                 .help("Edit environment variables")
             Button(action: model.importPostmanDocuments) { Image(systemName: "square.and.arrow.down") }
+                .accessibilityLabel("Import Postman collection or environment")
                 .help("Import Postman collection or environment")
             Button(action: model.presentRunner) { Image(systemName: "play.rectangle.on.rectangle") }
+                .accessibilityLabel("Run selected collection")
                 .help("Run selected collection")
             Button("cURL", action: model.copyAsCURL)
                 .limaButton()
@@ -1258,7 +1358,6 @@ private struct EndpointTesterView: View {
             .padding(11)
         }
         .frame(width: 720, height: 510)
-        .preferredColorScheme(.dark)
     }
 
     private var environmentEditor: some View {
@@ -1321,7 +1420,6 @@ private struct EndpointTesterView: View {
             .padding(11)
         }
         .frame(width: 640, height: 430)
-        .preferredColorScheme(.dark)
         .confirmationDialog(
             "Delete this environment?",
             isPresented: $model.isEnvironmentDeleteConfirmationPresented,
@@ -1431,10 +1529,29 @@ private struct EndpointTesterView: View {
             }
             .frame(width: 220)
             authorizationFields
-            .textFieldStyle(.plain)
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
+            if model.authKind != .none && model.authKind != .oauth2 {
+                HStack(spacing: 7) {
+                    Menu("Keychain reference") {
+                        Button("Save current values…") { model.saveCurrentSecretReference(name: "Request secret") }
+                        if !APISecretReferenceStore.shared.references.isEmpty { Divider() }
+                        ForEach(APISecretReferenceStore.shared.references.filter { $0.kind == model.authKind.secretReferenceKind }) { reference in
+                            Button(reference.name) {
+                                model.secretReferenceID = reference.id
+                                model.error = nil
+                            }
+                        }
+                        if model.secretReferenceID != nil {
+                            Divider()
+                            Button("Remove reference", role: .destructive) { model.deleteCurrentSecretReference() }
+                        }
+                    }
+                    if let id = model.secretReferenceID {
+                        Text("Reference: \(id.uuidString.prefix(8))…").limaFont(.caption2).foregroundStyle(.secondary)
+                    } else {
+                        Text("Values remain transient until saved to Keychain").limaFont(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+            }
             Spacer(minLength: 0)
         }
         .padding(11)
@@ -1519,7 +1636,6 @@ private struct EndpointTesterView: View {
             .padding(18)
         }
         .frame(width: 560, height: 360)
-        .preferredColorScheme(.dark)
     }
 
     private var bodyEditor: some View {

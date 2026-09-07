@@ -28,9 +28,28 @@ final class ExtensionExecutor {
         }
     }
 
+    /// Async bridge used by workflows. The callback API remains the launcher
+    /// surface, while this bridge does not advance until the underlying action
+    /// has actually completed.
+    func executeAsync(
+        _ loaded: LoadedExtensionCommand,
+        clipboard: ClipboardHistoryService
+    ) async throws -> String? {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                execute(loaded, clipboard: clipboard, reportCancellation: true) { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in self?.cancelAll() }
+        })
+    }
+
     func execute(
         _ loaded: LoadedExtensionCommand,
         clipboard: ClipboardHistoryService,
+        reportCancellation: Bool = false,
         completion: @escaping (Result<String?, Error>) -> Void
     ) {
         let action = loaded.command.action
@@ -105,7 +124,7 @@ final class ExtensionExecutor {
             completion(.success("__OPEN_EXTENSION_FORM__"))
 
         case .shell:
-            run(action, relativeTo: loaded.directory, completion: completion)
+            run(action, relativeTo: loaded.directory, reportCancellation: reportCancellation, completion: completion)
         }
     }
 
@@ -138,7 +157,7 @@ final class ExtensionExecutor {
                 arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
                 workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
             )
-            run(action, relativeTo: loaded.directory) { result in
+            run(action, relativeTo: loaded.directory, reportCancellation: false) { result in
                 switch result {
                 case .success(let output):
                     completion(.success(FormResult(
@@ -228,6 +247,7 @@ final class ExtensionExecutor {
     private func run(
         _ action: ExtensionAction,
         relativeTo directory: URL,
+        reportCancellation: Bool = false,
         completion: @escaping (Result<String?, Error>) -> Void
     ) {
         let executable = resolve(action.value, relativeTo: directory)
@@ -322,6 +342,7 @@ final class ExtensionExecutor {
                     self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
                     if self.cancelledProcesses.remove(identifier) != nil {
                         self.timedOutProcesses.remove(identifier)
+                        if reportCancellation { completion(.failure(ExecutionError.cancelled)) }
                         return
                     }
                     if self.timedOutProcesses.remove(identifier) != nil {
@@ -373,6 +394,7 @@ final class ExtensionExecutor {
         case processFailed(Int32, String)
         case timedOut(Int)
         case invalidForm(String)
+        case cancelled
 
         var errorDescription: String? {
             switch self {
@@ -383,6 +405,7 @@ final class ExtensionExecutor {
             case .processFailed(let code, let message): return message.isEmpty ? "The command exited with status \(code)." : message
             case .timedOut(let seconds): return "The extension exceeded its \(seconds)-second performance limit and was stopped."
             case .invalidForm(let message): return message
+            case .cancelled: return "The workflow command was cancelled."
             }
         }
     }
