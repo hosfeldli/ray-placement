@@ -124,31 +124,39 @@ final class ExtensionExecutor {
                 return
             }
         }
-        switch definition.execution.type {
-        case .httpRequest:
-            executeHTTPRequest(definition.execution, values: values, completion: completion)
-        case .shell:
-            guard let executable = definition.execution.executable, !executable.isEmpty else {
-                completion(.failure(ExecutionError.invalidForm("The executable is missing.")))
-                return
-            }
-            let action = ExtensionAction(
-                type: .shell,
-                value: ExtensionTemplate.render(executable, values: values),
-                arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
-                workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
-            )
-            run(action, relativeTo: loaded.directory) { result in
-                switch result {
-                case .success(let output):
-                    completion(.success(FormResult(
-                        headline: "Command completed",
-                        detail: "Exit status 0",
-                        output: output ?? "No output",
-                        succeeded: true
-                    )))
-                case .failure(let error): completion(.failure(error))
-                }
+        // Process arguments and a process environment are observable to other
+        // local processes. Do not turn the visual masking of a secure field
+        // into a false promise by substituting it into shell execution.
+        let secureTemplate = definition.fields
+            .filter { $0.type == .secure }
+            .map { "{{\($0.id)}}" }
+        let executionValues = [definition.execution.executable ?? ""]
+            + (definition.execution.arguments ?? [])
+            + [definition.execution.workingDirectory ?? ""]
+        guard !executionValues.contains(where: { value in secureTemplate.contains(where: value.contains) }) else {
+            completion(.failure(ExecutionError.invalidForm("Secure fields cannot be passed to a shell extension. Use a local Keychain-backed native tool instead.")))
+            return
+        }
+        guard let executable = definition.execution.executable, !executable.isEmpty else {
+            completion(.failure(ExecutionError.invalidForm("The executable is missing.")))
+            return
+        }
+        let action = ExtensionAction(
+            type: .shell,
+            value: ExtensionTemplate.render(executable, values: values),
+            arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
+            workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
+        )
+        run(action, relativeTo: loaded.directory) { result in
+            switch result {
+            case .success(let output):
+                completion(.success(FormResult(
+                    headline: "Command completed",
+                    detail: "Exit status 0",
+                    output: output ?? "No output",
+                    succeeded: true
+                )))
+            case .failure(let error): completion(.failure(error))
             }
         }
     }
@@ -159,70 +167,6 @@ final class ExtensionExecutor {
         if let equals = condition.equals, value != equals { return false }
         if let notEquals = condition.notEquals, value == notEquals { return false }
         return true
-    }
-
-    private func executeHTTPRequest(
-        _ execution: ExtensionFormExecution,
-        values: [String: String],
-        completion: @escaping (Result<FormResult, Error>) -> Void
-    ) {
-        let renderedURL = ExtensionTemplate.render(execution.url ?? "", values: values)
-        guard let url = URL(string: renderedURL), ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            completion(.failure(ExecutionError.invalidURL(renderedURL)))
-            return
-        }
-        var request = URLRequest(url: url)
-        request.httpMethod = ExtensionTemplate.render(execution.method ?? "GET", values: values).uppercased()
-        for (name, value) in execution.headers ?? [:] {
-            let rendered = ExtensionTemplate.render(value, values: values)
-            if !rendered.isEmpty { request.setValue(rendered, forHTTPHeaderField: name) }
-        }
-        if let body = execution.body, !body.isEmpty {
-            request.httpBody = Data(ExtensionTemplate.render(body, values: values).utf8)
-        }
-        let configuredTimeout = TimeInterval(execution.timeoutSeconds ?? 30)
-        let performanceTimeout = SettingsStore.shared.runtimeExtensionPerformance.extensionTimeout
-        request.timeoutInterval = performanceTimeout > 0
-            ? min(max(configuredTimeout, 1), performanceTimeout)
-            : max(configuredTimeout, 1)
-
-        let started = Date()
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            DispatchQueue.main.async {
-                if let error {
-                    completion(.failure(error))
-                    return
-                }
-                guard let response = response as? HTTPURLResponse else {
-                    completion(.failure(ExecutionError.invalidForm("The endpoint did not return an HTTP response.")))
-                    return
-                }
-                let limited = (data ?? Data()).prefix(1_000_000)
-                let output = Self.formattedResponse(Data(limited), response: response)
-                let elapsed = Date().timeIntervalSince(started)
-                completion(.success(FormResult(
-                    headline: "HTTP \(response.statusCode)",
-                    detail: String(format: "%.0f ms · %@", elapsed * 1_000, ByteCountFormatter.string(fromByteCount: Int64(data?.count ?? 0), countStyle: .file)),
-                    output: output,
-                    succeeded: (200..<400).contains(response.statusCode)
-                )))
-            }
-        }
-        task.resume()
-    }
-
-    private static func formattedResponse(_ data: Data, response: HTTPURLResponse) -> String {
-        var sections = response.allHeaderFields
-            .map { "\($0.key): \($0.value)" }
-            .sorted()
-            .joined(separator: "\n")
-        if let object = try? JSONSerialization.jsonObject(with: data),
-           let pretty = try? JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys]) {
-            sections += "\n\n" + String(decoding: pretty, as: UTF8.self)
-        } else if !data.isEmpty {
-            sections += "\n\n" + String(decoding: data, as: UTF8.self)
-        }
-        return sections
     }
 
     private func run(

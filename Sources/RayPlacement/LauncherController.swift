@@ -22,10 +22,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     // available from launch rather than only after Notes has been opened once.
     private let notesWindow = NotesWindowController()
     private let terminalModel: DeveloperTerminalModel
-    private lazy var endpointTesterWindow = EndpointTesterWindowController()
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
     private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
     private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
+    private lazy var extensionStoreWindow = ExtensionStoreWindowController { [weak self] in
+        self?.viewModel.reloadExtensions()
+    }
     private lazy var formatterWindow = FormatterWindowController()
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
@@ -88,7 +90,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         clipboard.flush()
         notesWindow.shutdown()
         terminalModel.shutdown()
-        endpointTesterWindow.shutdown()
         formatterWindow.shutdown()
     }
 
@@ -400,10 +401,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func executeExtension(_ command: LoadedExtensionCommand) {
         if command.command.action.type == .form {
             hide()
-            if command.extensionID == "local.endpoint-tester" {
-                endpointTesterWindow.present()
-                return
-            }
             extensionFormWindow.present(command: command) { [weak self] values, completion in
                 self?.extensionExecutor.executeForm(command, values: values, completion: completion)
             }
@@ -1003,6 +1000,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             hide()
             NSWorkspace.shared.open(ApplicationPaths.extensions)
 
+        case .openExtensionStore:
+            hide()
+            extensionStoreWindow.present()
+
         case .reloadExtensions:
             viewModel.reloadExtensions()
 
@@ -1020,10 +1021,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openTerminal:
             showDeveloperTerminal()
-
-        case .openEndpointTester:
-            hide()
-            endpointTesterWindow.present()
 
         case .openFocusedFileLauncher:
             hide()

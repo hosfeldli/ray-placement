@@ -86,11 +86,11 @@ enum SystemAction {
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
-    case openEndpointTester
     case openFocusedFileLauncher
     case openPasswordGenerator
     case openFormatter
     case openExtensionGuide
+    case openExtensionStore
     case openSettings
     case quit
 }

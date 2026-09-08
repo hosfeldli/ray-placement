@@ -1,26 +1,26 @@
 {
   "schemaVersion": 2,
-  "id": "local.example.service-check",
-  "name": "Service Check",
+  "id": "local.example.line-tools",
+  "name": "Line Tools",
   "version": "1.0.0",
   "description": "A safe starting point for a Lima form extension",
   "commands": [
     {
-      "id": "request",
-      "title": "Check Service",
-      "subtitle": "Send a bounded request and inspect the response",
-      "keywords": ["http", "endpoint", "health"],
-      "icon": "network",
+      "id": "count-words",
+      "title": "Count Words",
+      "subtitle": "Count words in a file you choose",
+      "keywords": ["word", "count", "file"],
+      "icon": "text.word.spacing",
       "action": {
         "type": "form",
         "value": "",
         "form": {
-          "title": "Service Check",
-          "submitLabel": "Send Request",
+          "title": "Count Words",
+          "submitLabel": "Count",
           "fields": [
-            {"id": "endpoint", "label": "Endpoint", "type": "text", "placeholder": "https://api.example.com/health", "required": true, "section": "Request"}
+            {"id": "file", "label": "File", "type": "file", "required": true, "section": "Input"}
           ],
-          "execution": {"type": "httpRequest", "method": "GET", "url": "{{endpoint}}", "headers": {"Accept": "application/json"}, "timeoutSeconds": 30}
+          "execution": {"type": "shell", "executable": "/usr/bin/wc", "arguments": ["-w", "{{file}}"], "timeoutSeconds": 30}
         }
       }
     }

@@ -139,26 +139,17 @@ public struct ExtensionFieldVisibility: Codable, Sendable {
 
 public struct ExtensionFormExecution: Codable, Sendable {
     public enum ExecutionType: String, Codable, Sendable {
-        case httpRequest
         case shell
     }
 
     public var type: ExecutionType
-    public var method: String?
-    public var url: String?
-    public var headers: [String: String]?
-    public var body: String?
     public var executable: String?
     public var arguments: [String]?
     public var workingDirectory: String?
     public var timeoutSeconds: Int?
 
-    public init(type: ExecutionType, method: String? = nil, url: String? = nil, headers: [String: String]? = nil, body: String? = nil, executable: String? = nil, arguments: [String]? = nil, workingDirectory: String? = nil, timeoutSeconds: Int? = nil) {
+    public init(type: ExecutionType, executable: String? = nil, arguments: [String]? = nil, workingDirectory: String? = nil, timeoutSeconds: Int? = nil) {
         self.type = type
-        self.method = method
-        self.url = url
-        self.headers = headers
-        self.body = body
         self.executable = executable
         self.arguments = arguments
         self.workingDirectory = workingDirectory

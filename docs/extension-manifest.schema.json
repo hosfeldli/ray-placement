@@ -95,11 +95,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "enum": ["httpRequest", "shell"] },
-        "method": { "type": "string" },
-        "url": { "type": "string" },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-        "body": { "type": "string" },
+        "type": { "enum": ["shell"] },
         "executable": { "type": "string" },
         "arguments": { "type": "array", "items": { "type": "string" } },
         "workingDirectory": { "type": "string" },

@@ -17,7 +17,6 @@ Open that folder from Lima, add or edit an extension, then run **Reload Extensio
 | Open a URL, file, folder, or app | A schema-v1 built-in action |
 | Copy or paste fixed text | `copy`, `paste`, or `pastePlainText` |
 | Ask for a few inputs and return output | A schema-v2 `form` |
-| Make an HTTP request | A form with `httpRequest` execution |
 | Run trusted local logic | A form or command with `shell` execution |
 | Build a large persistent workspace | Add a reviewed native tool to Lima itself |
 
@@ -112,51 +111,32 @@ All fields accept `id`, `label`, `section`, `helpText`, `required`, and `visible
 ```json
 {
   "schemaVersion": 2,
-  "id": "local.example.request-tools",
-  "name": "Request Tools",
+  "id": "local.example.line-tools",
+  "name": "Line Tools",
   "commands": [
     {
-      "id": "inspect-endpoint",
-      "title": "Inspect Endpoint",
-      "icon": "network",
+      "id": "count-words",
+      "title": "Count Words",
+      "icon": "text.word.spacing",
       "action": {
         "type": "form",
         "value": "",
         "form": {
-          "title": "Inspect Endpoint",
-          "submitLabel": "Send",
+          "title": "Count Words",
+          "submitLabel": "Count",
           "fields": [
             {
-              "id": "url",
-              "label": "URL",
-              "type": "text",
+              "id": "file",
+              "label": "File",
+              "type": "file",
               "required": true,
-              "section": "Request"
-            },
-            {
-              "id": "authType",
-              "label": "Authentication",
-              "type": "picker",
-              "options": ["None", "Bearer"],
-              "defaultValue": "None",
-              "section": "Authentication"
-            },
-            {
-              "id": "token",
-              "label": "Bearer token",
-              "type": "secure",
-              "required": true,
-              "section": "Authentication",
-              "visibleWhen": { "field": "authType", "equals": "Bearer" }
+              "section": "Input"
             }
           ],
           "execution": {
-            "type": "httpRequest",
-            "method": "GET",
-            "url": "{{url}}",
-            "headers": {
-              "Authorization": "Bearer {{token}}"
-            },
+            "type": "shell",
+            "executable": "/usr/bin/wc",
+            "arguments": ["-w", "{{file}}"],
             "timeoutSeconds": 30
           }
         }
@@ -172,10 +152,9 @@ All fields accept `id`, `label`, `section`, `helpText`, `required`, and `visible
 
 A form execution is either:
 
-- `httpRequest`: `method`, `url`, `headers`, `body`, and `timeoutSeconds`. Only HTTP(S) is accepted.
 - `shell`: `executable`, `arguments`, `workingDirectory`, and `timeoutSeconds`.
 
-Insert a form value with an exact placeholder such as `{{url}}`. Substitution happens independently inside each string. Lima does not concatenate or evaluate a shell command.
+Insert a form value with an exact placeholder such as `{{file}}`. Substitution happens independently inside each string. Lima does not concatenate or evaluate a shell command. Secure fields are never substituted into a shell execution because command arguments can be inspected by other local processes.
 
 For shell execution, pass every argument separately:
 

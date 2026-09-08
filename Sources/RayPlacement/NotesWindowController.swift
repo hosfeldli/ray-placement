@@ -400,7 +400,10 @@ private struct NotesView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            .opacity(0.42)
+            // The note theme should tint the workspace, not compete with the
+            // document itself. A stronger overlay made text and thin borders
+            // disappear on several displays.
+            .opacity(0.16)
             .ignoresSafeArea()
             VStack(spacing: LimaDesign.panelGap) {
                 windowChrome
@@ -948,18 +951,19 @@ private struct NotesView: View {
                     .frame(maxWidth: settings.notesContentWidth.maximum)
                     .background(
                         LinearGradient(
-                            colors: [noteCanvasColor.opacity(0.96), notesThemeColors[0].opacity(0.34), noteCanvasColor.opacity(0.88)],
+                            colors: [noteCanvasColor, notesThemeColors[0].opacity(0.14), noteCanvasColor],
                             startPoint: .topLeading,
                             endPoint: .bottomTrailing
                         )
                     )
-                    .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.008)
+                    .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.004)
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
             .background(Color.clear)
         } else {
             markdownEditor
-                .background(LimaDesign.editorFill)
+                .background(noteCanvasColor)
+                .overlay(PrismaticPanelShape(cut: 10).stroke(LimaDesign.controlBorder, lineWidth: 0.8))
         }
     }
 

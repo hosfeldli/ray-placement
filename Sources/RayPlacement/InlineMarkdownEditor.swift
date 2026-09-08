@@ -36,6 +36,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
+        textView.backgroundColor = .clear
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -596,6 +597,7 @@ private enum MarkdownInlineStyler {
 
     static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
         let palette = NotesEditorPalette(theme: theme)
+        textView.insertionPointColor = palette.accent
         let baseFont = font(style: fontStyle, size: CGFloat(fontSize), weight: .regular)
         let monoFont = NSFont.monospacedSystemFont(ofSize: AppTypography.size(CGFloat(max(12, fontSize - 1.5))), weight: .regular)
         guard let storage = textView.textStorage else { return }

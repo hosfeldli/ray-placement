@@ -48,7 +48,6 @@ Shortcut and enablement settings are keyed by `<extension id>.<command id>`. Cha
 Does the command have fixed input?
 ├─ Yes → use a schema-v1 built-in action
 └─ No
-   ├─ Can native fields + httpRequest solve it? → schema-v2 form
    ├─ Can native fields + direct executable solve it? → schema-v2 form
    └─ Does it require a large persistent workspace? → propose a native app tool
 ```
@@ -115,8 +114,6 @@ Conditional example:
 `visibleWhen` accepts `equals` or `notEquals`; required validation applies only while visible.
 
 ## Execution contract
-
-For `httpRequest`, only HTTP(S) URLs are valid. Use explicit methods, bounded timeouts, and the smallest necessary headers. Do not log authorization headers, cookies, tokens, or substituted request bodies.
 
 For `shell`:
 
@@ -258,67 +255,6 @@ or:
 Required checks apply only to a visible field. A field ID is the template name,
 so `{{endpoint}}` means the field whose ID is `endpoint`; misspelled templates
 remain literal text and are a manifest bug.
-
-### Complete HTTP form example
-
-This is a complete, valid native request inspector. It makes a single request,
-never logs its token, and leaves the response visible for review.
-
-```json
-{
-  "schemaVersion": 2,
-  "id": "local.example.http-inspector",
-  "name": "HTTP Inspector",
-  "version": "1.0.0",
-  "commands": [{
-    "id": "fetch-json",
-    "title": "Fetch JSON",
-    "subtitle": "Request a JSON endpoint",
-    "keywords": ["http", "api", "json"],
-    "icon": "network",
-    "action": {
-      "type": "form",
-      "value": "",
-      "form": {
-        "title": "Fetch JSON",
-        "submitLabel": "Send",
-        "fields": [
-          {
-            "id": "url",
-            "label": "URL",
-            "type": "text",
-            "placeholder": "https://api.example.com/status",
-            "required": true,
-            "section": "Request"
-          },
-          {
-            "id": "token",
-            "label": "Bearer token",
-            "type": "secure",
-            "section": "Authentication"
-          }
-        ],
-        "execution": {
-          "type": "httpRequest",
-          "method": "GET",
-          "url": "{{url}}",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer {{token}}"
-          },
-          "timeoutSeconds": 20
-        }
-      }
-    }
-  }]
-}
-```
-
-`httpRequest` accepts only HTTP or HTTPS. Its response view contains response
-headers and a body capped at 1 MB; JSON is formatted when possible. A 2xx or
-3xx response is marked successful. Requests are executed with the user's
-network access, so make destination and side effects clear in the title or
-subtitle.
 
 ### Complete local executable example
 
@@ -579,55 +515,6 @@ An extension cannot currently define arbitrary SwiftUI, retain a background
 service, request new app entitlements, add a database, or store a secret in the
 manifest. Build such a capability as an reviewed native Lima tool, then expose
 one explicit native action through the public manifest API.
-
-## Copy-ready schema-v2 starter
-
-The bundled `starter-extension/manifest.json` is a working extension with
-conditional authentication, secure input, environment selection, and an HTTP
-result. Copy its directory, change all IDs, then remove fields you do not need.
-
-```json
-{
-  "schemaVersion": 2,
-  "id": "local.example.service-check",
-  "name": "Service Check",
-  "version": "1.0.0",
-  "description": "Check a service endpoint without exposing its token",
-  "commands": [
-    {
-      "id": "request",
-      "title": "Check Service",
-      "subtitle": "Send a bounded request and inspect the response",
-      "keywords": ["http", "endpoint", "health"],
-      "icon": "network",
-      "action": {
-        "type": "form",
-        "value": "",
-        "form": {
-          "title": "Service Check",
-          "submitLabel": "Send Request",
-          "fields": [
-            {"id": "environment", "label": "Environment", "type": "picker", "options": ["Development", "Staging", "Production"], "defaultValue": "Development", "required": true, "section": "Request"},
-            {"id": "endpoint", "label": "Endpoint", "type": "text", "placeholder": "https://api.example.com/health", "required": true, "section": "Request"},
-            {"id": "useToken", "label": "Use bearer token", "type": "toggle", "defaultValue": "false", "section": "Authentication"},
-            {"id": "token", "label": "Bearer token", "type": "secure", "required": true, "section": "Authentication", "visibleWhen": {"field": "useToken", "equals": "true"}}
-          ],
-          "execution": {
-            "type": "httpRequest",
-            "method": "GET",
-            "url": "{{endpoint}}",
-            "headers": {"Authorization": "Bearer {{token}}", "Accept": "application/json"},
-            "timeoutSeconds": 30
-          }
-        }
-      }
-    }
-  ]
-}
-```
-
-When authentication is optional, create two commands or an executable that
-omits the header. Do not send an empty `Authorization` header to production.
 
 ## Install, reload, and debug without hidden context
 

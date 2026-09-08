@@ -2,80 +2,9 @@ import Foundation
 import Testing
 @testable import RayPlacementCore
 
-@Test func SQLNetworkPortsUsePlainDigitsAndValidateRange() {
-    #expect(SQLNetworkPort.parsePlainDigits("1521") == 1521)
-    #expect(SQLNetworkPort.parsePlainDigits("1,521") == nil)
-    #expect(SQLNetworkPort.parsePlainDigits("0") == nil)
-    #expect(SQLNetworkPort.parsePlainDigits("65536") == nil)
-}
-
-@Test func OracleConnectionIdentifiersPreserveNormalOracleNameRules() {
-    #expect(SQLOracleConnectionSyntax.identifier(for: "lima_test") == "lima_test")
-    #expect(SQLOracleConnectionSyntax.identifier(for: "  APP_USER  ") == "APP_USER")
-    #expect(SQLOracleConnectionSyntax.identifier(for: "Mixed Name") == "\"Mixed Name\"")
-}
-
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
-}
-
-@Test func visualSQLBuildsForeignKeyJoin() {
-    let join = SQLJoinSuggestion(
-        name: "fk_order_customer",
-        fromTable: "ops.orders",
-        fromColumn: "customer_id",
-        toTable: "ops.customers",
-        toColumn: "id"
-    )
-    let query = SQLVisualQuery(
-        tables: ["ops.orders", "ops.customers"],
-        projections: ["ops.orders.*", "ops.customers.name"],
-        joins: [join],
-        predicate: "ops.orders.status = 'OPEN'",
-        limit: 50
-    )
-    let sql = query.sql(for: .mysql)
-    #expect(sql.contains("JOIN ops.customers ON ops.orders.customer_id = ops.customers.id"))
-    #expect(sql.contains("WHERE ops.orders.status = 'OPEN'"))
-    #expect(sql.contains("LIMIT 50"))
-}
-
-@Test func schemaReturnsOnlyCompatibleForeignKeyJoins() {
-    let key = SQLForeignKey(
-        name: "fk_order_customer",
-        sourceTable: "ops.orders",
-        sourceColumn: "customer_id",
-        destinationTable: "ops.customers",
-        destinationColumn: "id"
-    )
-    let orders = SQLTable(schema: "ops", name: "orders", columns: [SQLColumn(name: "customer_id", dataType: "NUMBER", nullable: false, ordinal: 1)])
-    let customers = SQLTable(schema: "ops", name: "customers", columns: [SQLColumn(name: "id", dataType: "NUMBER", nullable: false, ordinal: 1)])
-    let snapshot = SQLSchemaSnapshot(profileID: UUID(), tables: [orders, customers], foreignKeys: [key])
-    let joins = snapshot.joins(for: ["ops.orders"])
-    #expect(joins.count == 1)
-    #expect(joins.first?.toTable == "ops.customers")
-    #expect(snapshot.joins(for: ["ops.orders", "ops.customers"]).isEmpty)
-
-    let incomplete = SQLSchemaSnapshot(profileID: UUID(), tables: [orders, SQLTable(schema: "ops", name: "customers")], foreignKeys: [key])
-    #expect(incomplete.joins(for: ["ops.orders"]).isEmpty)
-}
-
-@Test func schemaClutterFiltersCanBeConfiguredAndOverridden() {
-    var profile = SQLConnectionProfile(name: "Test", environment: "Dev", driver: .oracle, host: "db", database: "svc", username: "user")
-    let filter = SQLSchemaFilter(profile: profile)
-    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "TEMP_EXPORT")))
-    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "AB_ORDERS")))
-    #expect(filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS_X")))
-    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS")))
-    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "_ORDERS")))
-    #expect(!filter.isHidden(SQLTable(schema: "OPS", name: "ORDERS_")))
-
-    profile.tableIncludeOverrides = ["OPS.AB_ORDERS"]
-    profile.tableExclusionTerms = ["ARCHIVE"]
-    let customized = SQLSchemaFilter(profile: profile)
-    #expect(!customized.isHidden(SQLTable(schema: "OPS", name: "AB_ORDERS")))
-    #expect(customized.isHidden(SQLTable(schema: "OPS", name: "ORDERS_ARCHIVE")))
 }
 
 @Test func calculatorPrecedenceAndParentheses() throws {
@@ -140,21 +69,6 @@ import Testing
     #expect(manifest.id == "local.project-tools")
     #expect(manifest.commands.count == 3)
     #expect(manifest.commands.contains { $0.action.type == .shell })
-}
-
-@Test func endpointFormManifestDecodesAndRendersTemplates() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/endpoint-tester/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    let command = try #require(manifest.commands.first)
-    let form = try #require(command.action.form)
-    #expect(manifest.schemaVersion == 2)
-    #expect(command.action.type == .form)
-    #expect(form.fields.contains { $0.id == "url" && $0.required == true })
-    #expect(ExtensionTemplate.render("{{method}} {{url}}", values: ["method": "GET", "url": "https://example.com"]) == "GET https://example.com")
 }
 
 @Test func dynamicFormFieldsDecodeConditionalLayout() throws {

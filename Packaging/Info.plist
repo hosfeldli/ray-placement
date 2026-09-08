@@ -39,6 +39,8 @@
 	<false/>
 	<key>LimaUpdateMetadataURL</key>
 	<string>https://www.liamhosfeld.com/updates/latest.json</string>
+	<key>LimaExtensionStoreURL</key>
+	<string>https://www.liamhosfeld.com/store/extensions.json</string>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Lima uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
 	<key>NSAppleEventsUsageDescription</key>

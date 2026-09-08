@@ -130,19 +130,19 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
     }
 
     var surfaceOpacity: Double {
-        switch self { case .standard: return 0.29; case .high: return 0.34; case .maximum: return 0.39 }
+        switch self { case .standard: return 0.42; case .high: return 0.48; case .maximum: return 0.54 }
     }
 
     var recessedOpacity: Double {
-        switch self { case .standard: return 0.22; case .high: return 0.27; case .maximum: return 0.32 }
+        switch self { case .standard: return 0.34; case .high: return 0.40; case .maximum: return 0.46 }
     }
 
     var floatingOpacity: Double {
-        switch self { case .standard: return 0.35; case .high: return 0.41; case .maximum: return 0.47 }
+        switch self { case .standard: return 0.50; case .high: return 0.56; case .maximum: return 0.62 }
     }
 
     var borderOpacity: Double {
-        switch self { case .standard: return 0.16; case .high: return 0.23; case .maximum: return 0.30 }
+        switch self { case .standard: return 0.30; case .high: return 0.40; case .maximum: return 0.50 }
     }
 
     var selectedBorderOpacity: Double {
@@ -150,7 +150,7 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
     }
 
     var controlFillOpacity: Double {
-        switch self { case .standard: return 0.055; case .high: return 0.075; case .maximum: return 0.10 }
+        switch self { case .standard: return 0.09; case .high: return 0.12; case .maximum: return 0.16 }
     }
 
     var controlHoverFillOpacity: Double {
@@ -162,11 +162,11 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
     }
 
     var recessedFillOpacity: Double {
-        switch self { case .standard: return 0.20; case .high: return 0.25; case .maximum: return 0.30 }
+        switch self { case .standard: return 0.32; case .high: return 0.38; case .maximum: return 0.44 }
     }
 
     var editorFillOpacity: Double {
-        switch self { case .standard: return 0.28; case .high: return 0.33; case .maximum: return 0.38 }
+        switch self { case .standard: return 0.46; case .high: return 0.52; case .maximum: return 0.58 }
     }
 
     var statusFillOpacity: Double {
@@ -174,11 +174,11 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
     }
 
     var separatorOpacity: Double {
-        switch self { case .standard: return 0.10; case .high: return 0.16; case .maximum: return 0.22 }
+        switch self { case .standard: return 0.20; case .high: return 0.28; case .maximum: return 0.36 }
     }
 
     var controlBorderOpacity: Double {
-        switch self { case .standard: return 0.14; case .high: return 0.22; case .maximum: return 0.30 }
+        switch self { case .standard: return 0.28; case .high: return 0.38; case .maximum: return 0.48 }
     }
 
     var controlHoverBorderOpacity: Double {
@@ -369,7 +369,7 @@ struct LiquidGlassBackdrop: View {
                 settings.accentTheme.primary.opacity(0.035)
             } else {
                 VisualEffectView(material: material, blendingMode: blendingMode)
-                Color.black.opacity(0.53)
+                Color.black.opacity(0.66)
                 PrismaticAmbientLayer(theme: settings.accentTheme, suppressed: !usage.activeTasks.isEmpty)
                 RadialGradient(
                     colors: [settings.accentTheme.primary.opacity(0.075), .clear],
@@ -521,12 +521,12 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                         colors: [
                             Color.white.opacity(selected ? 0.42 : LimaDesign.borderOpacity),
                             settings.accentTheme.primary.opacity(selected ? LimaDesign.selectedBorderOpacity : accentOpacity * 1.8),
-                            Color.black.opacity(0.28)
+                            Color.black.opacity(0.52)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     ),
-                    lineWidth: selected ? 0.9 : 0.6
+                    lineWidth: selected ? 1.1 : 0.8
                 )
             }
             .overlay(alignment: .topLeading) {

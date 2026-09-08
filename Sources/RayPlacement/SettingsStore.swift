@@ -301,7 +301,7 @@ final class SettingsStore: ObservableObject {
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
-    static let defaultWritingInstructions = "RayPlacement\nVS Code\nPostman\nEDI"
+    static let defaultWritingInstructions = "RayPlacement\nVS Code\nEDI"
 
     @Published var activationShortcut: String {
         didSet {

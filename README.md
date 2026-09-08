@@ -1,6 +1,6 @@
 # Lima 3.11.0
 
-Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, a Postman-style API workspace, and private local dictation conversations without accounts or analytics.
+Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, extensible native forms, Markdown notes, a real developer terminal, and private local dictation conversations without accounts or analytics.
 
 Text generation has been removed. Writing correction uses deterministic local Python and Harper rules. Dictation is the only model-powered feature and runs locally through Whisper.
 
@@ -56,17 +56,6 @@ For isolated native UI testing, a debug build accepts `--terminal-preview`. This
 
 The manual **Assemble verified signed DMG** GitHub workflow can assemble `Lima.dmg.part-aa`, `part-ab`, etc. already uploaded to an existing draft. It requires the exact local SHA-256 and part count, verifies the reconstructed DMG and GitHub’s uploaded digest, then removes only those temporary part assets. It cannot publish a release and refuses published releases. Its repository `contents: write` permission is used for draft release asset upload/deletion; final publication remains a separate reviewed step.
 
-## API Workspace
-
-Endpoint Tester is a native Postman-style workspace:
-
-- HTTP methods, query parameters, headers, JSON/text/XML bodies, response body/headers/raw views, history, cancellation, and cURL export
-- no auth, Bearer, Basic, and API-key auth in either headers or query strings
-- Postman collection v2.0/v2.1 imports with nested folders and collection/folder/request auth inheritance
-- Postman environment imports, enabled variables, collection variables, and `{{variable}}` resolution
-- collection runner with user-selected iteration count and delay, per-request results, and cancellation; Lima imposes no product credit or runner-count cap
-- local workspace persistence in Application Support with restrictive file permissions; request secrets are never included in usage logs
-
 ## Notes and dictation
 
 Notes open in a dedicated resizable window that can join the workspace, become full screen, or dock as a narrow quick-note panel on either side. Notes save locally while typing and can be searched, pinned, favorited, and reordered by those groups.
@@ -103,7 +92,9 @@ Formatter is separate from Notes and never appears as a note type.
 
 ## Extensions
 
-Extensions live under `~/Library/Application Support/RayPlacement/Extensions/`. A manifest can open resources, copy/paste text, run a reviewed executable, or create a native form and input/output workflow. Schema v2 supports sections, conditional visibility, file and directory pickers, secure fields, dates, sliders, key/value editors, HTTP requests, and executable results.
+Extensions live under `~/Library/Application Support/RayPlacement/Extensions/`. A manifest can open resources, copy/paste text, run a reviewed executable, or create a native form and input/output workflow. Schema v2 supports sections, conditional visibility, file and directory pickers, secure fields, dates, sliders, key/value editors, and executable results.
+
+Use **Extension Store** from the launcher to browse published extension packages. Lima verifies the catalog host, package SHA-256, archive contents, and manifest identity before installing; packages remain ordinary local extensions after installation.
 
 See [docs/EXTENSIONS.md](docs/EXTENSIONS.md), the JSON [manifest schema](docs/extension-manifest.schema.json), and the [coding-agent authoring guide](docs/EXTENSION_AUTHORING_FOR_AI.md). `Examples/project-tools` is a small working example.
 
@@ -142,7 +133,6 @@ LIMA_TEST_STABLE_SIGNING=1 /bin/zsh scripts/test_approved_lima_update.sh
 Important source areas:
 
 - `Sources/RayPlacement/DeveloperTerminalWindowController.swift` — PTY terminal
-- `Sources/RayPlacement/EndpointTesterWindowController.swift` and `Sources/RayPlacementCore/PostmanWorkspace.swift` — API workspace/imports
 - `Sources/RayPlacement/NotesWindowController.swift`, `Sources/RayPlacement/DictationConversationStore.swift`, and `Sources/RayPlacement/NoteDictationService.swift` — Notes and separate dictation conversations
 - `Sources/RayPlacement/RuleBasedWritingChecker.swift` — Python + Harper pipeline
 - `Sources/RayPlacement/ExtensionFormWindowController.swift` — dynamic extension forms
