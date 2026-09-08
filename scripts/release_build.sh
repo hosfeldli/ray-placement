@@ -56,7 +56,7 @@ if (( REUSE && reuse_complete )); then
     exit 0
 fi
 if (( REUSE && ! reuse_complete )); then
-    print "--reuse requested, but the existing build is incomplete or mismatched; rebuilding."
+    print -- "--reuse requested, but the existing build is incomplete or mismatched; rebuilding."
 fi
 mkdir -p "$DIST"
 rm -f "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima.dmg" "$DIST/Lima.dmg.sha256" "$DIST/Lima-release.json"
