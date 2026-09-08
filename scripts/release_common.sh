@@ -133,8 +133,7 @@ release_assert_draft() {
 
 release_assert_clean_tree() {
     local tree_status
-    tree_status="$(git -C "$LIMA_PROJECT_DIRECTORY" status --porcelain)
-"
+    tree_status="$(git -C "$LIMA_PROJECT_DIRECTORY" status --porcelain)"
     [[ -z "$tree_status" ]] || {
         print -u2 "The working tree must be clean for this release phase."
         git -C "$LIMA_PROJECT_DIRECTORY" status --short >&2
