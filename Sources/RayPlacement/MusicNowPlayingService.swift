@@ -6,7 +6,7 @@ import RayPlacementCore
 import SwiftUI
 
 /// Metadata for the actively playing supported local media source. This is
-/// intentionally opt-in: RayPlacement never opens, starts, or scans a player.
+/// intentionally opt-in: Lima never opens, starts, or scans a player.
 struct MediaNowPlayingSnapshot: Equatable, Sendable {
     enum Source: String, CaseIterable, Sendable {
         case spotify

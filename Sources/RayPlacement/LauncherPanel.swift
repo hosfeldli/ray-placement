@@ -5,9 +5,33 @@ import AppKit
 enum LauncherPanelLayout {
     static let terminalSize = NSSize(width: 920, height: 620)
 
-    static func size(for mode: LauncherMode, density: AppInterfaceDensity) -> NSSize {
+    static func size(
+        for mode: LauncherMode,
+        density: AppInterfaceDensity,
+        resultCount: Int = 0,
+        query: String = ""
+    ) -> NSSize {
         if mode == .terminal { return terminalSize }
-        return NSSize(width: density.launcherWidth, height: density.launcherHeight)
+
+        let width = density.launcherWidth
+        let standardHeight = density.launcherHeight
+        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        switch mode {
+        case .root where cleanQuery.isEmpty && resultCount <= 6:
+            // Search, a handful of quick actions, and the quiet footer fit in
+            // a compact panel without leaving the screenshot-sized void that
+            // the old fixed-height launcher created. Grow only as rows are
+            // added so six idle actions do not get clipped by the compact size.
+            let idleHeight = 176 + CGFloat(resultCount) * 39
+            return NSSize(width: width, height: min(standardHeight, max(286, idleHeight)))
+        case .output, .writingReview:
+            return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))
+        case .picker(.emoji), .picker(.applications), .picker(.displays), .picker(.timezone), .files, .clipboard, .history:
+            return NSSize(width: width, height: standardHeight)
+        default:
+            return NSSize(width: width, height: standardHeight)
+        }
     }
 }
 

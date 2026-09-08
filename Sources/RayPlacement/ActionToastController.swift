@@ -43,7 +43,7 @@ final class ActionToastController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle]
-        panel.setAccessibilityLabel("RayPlacement action status")
+        panel.setAccessibilityLabel("Lima action status")
     }
 
     func show(_ message: String, style: Style = .success, duration: TimeInterval = 1.4) {
@@ -125,13 +125,11 @@ private struct ActionToastView: View {
         }
         .padding(.horizontal, compact ? 10 : LimaDesign.toolbarPadding)
         .frame(width: compact ? 190 : 360, height: compact ? 34 : LimaDesign.toolbarHeight)
-        .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
-        .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
+        .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
         .overlay(
-            PrismaticPanelShape(cut: LimaDesign.compactCorner)
-                .stroke(style.color.opacity(0.34), lineWidth: 0.7)
+            RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                .stroke(style.color.opacity(0.30), lineWidth: LimaDesign.borderWidth)
         )
-        .shadow(color: style.color.opacity(0.07), radius: 8, y: 3)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(message)
     }

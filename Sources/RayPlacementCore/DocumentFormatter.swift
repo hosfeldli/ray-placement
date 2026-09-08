@@ -125,7 +125,7 @@ public enum DocumentFormatterError: LocalizedError, Equatable {
     public var errorDescription: String? {
         switch self {
         case .emptyInput: return "Paste text or open a JSON, XML, or EDI file first."
-        case .unknownFormat: return "RayPlacement could not identify this document. Choose EDI, JSON, or XML explicitly."
+        case .unknownFormat: return "Lima could not identify this document. Choose EDI, JSON, or XML explicitly."
         case .invalidJSON(let detail): return "Invalid JSON: \(detail)"
         case .invalidXML(let detail): return "Invalid XML: \(detail)"
         case .invalidEDI(let detail): return "Invalid EDI: \(detail)"

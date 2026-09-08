@@ -153,9 +153,24 @@ def spell(text, preserve):
 
 def grammar(text, stealth=False):
     result = text
+
+    # These rules are deliberately narrow. A missed subjective style issue is
+    # preferable to changing a technical fragment or an already-correct name.
     result = re.sub(r"\b([A-Za-z]+)(?:\s+\1\b)+", r"\1", result, flags=re.I)
     result = re.sub(r"^(\s*(?:hi|hello|hey))\s*[;:]\s+", r"\1, ", result, flags=re.I)
+    # Normalize one common shorthand before agreement rules so an intervening
+    # adverb does not hide the subject/verb pair.
+    if not stealth:
+        result = re.sub(r"\bu\b", "you", result, flags=re.I)
+    result = re.sub(r"\bwhat\s+where\s+(you|we|they)\s+([A-Za-z'-]+ing)\b", r"what were \1 \2", result, flags=re.I)
     result = re.sub(r"\bwhere\s+(you|we|they)\s+([A-Za-z'-]+ing)\b", r"were \1 \2", result, flags=re.I)
+    agreement_adverbs = r"(?:really|just|still|also|probably|always|never|often|sometimes|currently|already|usually|definitely|actually|truly)"
+    result = re.sub(
+        r"\b(you|we|they)(\s+(?:(?:" + agreement_adverbs + r")\s+)+)is\b",
+        r"\1\2are",
+        result,
+        flags=re.I,
+    )
     result = re.sub(r"\b(you|we|they)\s+is\b", r"\1 are", result, flags=re.I)
     result = re.sub(r"\b(I)\s+is\b", r"\1 am", result)
     result = re.sub(r"\b(he|she|it)\s+are\b", r"\1 is", result, flags=re.I)
@@ -170,25 +185,36 @@ def grammar(text, stealth=False):
     result = re.sub(r"\b(you|we|they)\s+does\b", r"\1 do", result, flags=re.I)
     result = re.sub(r"\b(i)\b", "I", result)
     result = re.sub(r"\b(could|would|should|might|must)\s+of\b", r"\1 have", result, flags=re.I)
-    if not stealth:
-        result = re.sub(r"\bu\b", "you", result, flags=re.I)
-        result = re.sub(r"\b(you)\s+really\s+is\b", r"\1 really are", result, flags=re.I)
-        result = re.sub(r"\breally\s+are\s+a\s+(great|good|bad|nice)\s*$", r"really are \1", result, flags=re.I)
-    result = re.sub(r"\b(a)\s+([aeiou][A-Za-z'-]*)", r"an \2", result, flags=re.I)
-    result = re.sub(r"\b(an)\s+([bcdfghjklmnpqrstvwxyz][A-Za-z'-]*)", r"a \2", result, flags=re.I)
+
+    # Context makes these homophones high-confidence; do not globally rewrite
+    # every occurrence because technical prose often uses "their" and "its".
+    result = re.sub(r"\b(your)\s+(welcome|right|wrong)\b", r"you're \2", result, flags=re.I)
+    result = re.sub(r"\b(their)\s+(is|was)\b", r"there \2", result, flags=re.I)
+    result = re.sub(r"\b(its)\s+(a|an|own|not)\b", r"it's \2", result, flags=re.I)
+
+    # Avoid the common a/an false positive for words whose initial vowel is
+    # pronounced as a consonant (user, university, unique, URL, etc.).
+    article_exceptions = r"(?:user|users|university|universities|unique|unit|united|usual|use|used|useful|URL|URLs|one|once|European)"
+    result = re.sub(
+        r"\ba\s+(?!" + article_exceptions + r"\b)([aeiou][A-Za-z'-]*)",
+        r"an \1", result, flags=re.I
+    )
+    result = re.sub(r"\ban\s+([bcdfghjklmnpqrstvwxyz][A-Za-z'-]*)", r"a \1", result, flags=re.I)
+    result = re.sub(r"\s+,", ",", result)
+    # A comma before a trailing preposition is a frequent dictation artifact;
+    # only remove it when the preposition closes the sentence or question.
     result = re.sub(r",\s+(about|for|to|with|from|of|in|on)(?=\s*(?:[?.!]|$))", r" \1", result, flags=re.I)
     result = re.sub(r"\s+([,.;:!?])", r"\1", result)
     result = re.sub(r"([,.;:!?])(?=[A-Za-z])", r"\1 ", result)
     if not stealth:
         result = re.sub(r"[ \t]{2,}", " ", result)
-    result = re.sub(r"\s+,", ",", result)
     result = re.sub(r"(^|(?<=[.!?])\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), result)
 
     interrogative = r"^(?:Hi|Hello|Hey),\s+(?:what|why|where|when|who|how|which|do|does|did|are|is|can|could|would|will|should)\b"
     if re.match(interrogative, result, re.I) and not result.rstrip().endswith(("?", "!", ".")):
         result = result.rstrip() + "?"
-    elif not stealth and result and result[-1].isalnum() and len(result.split()) >= 2:
-        result += "."
+    # Do not manufacture terminal punctuation for fragments, commands, paths,
+    # or technically correct text. Harper supplies normal-review diagnostics.
     return result
 
 

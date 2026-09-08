@@ -306,6 +306,7 @@ final class SettingsStore: ObservableObject {
         static let developerGrammarProvider = "developerGrammarProvider"
         static let developerGrammarModel = "developerGrammarModel"
         static let developerGrammarBaseURL = "developerGrammarBaseURL"
+        static let grammarFallbackToLocal = "grammarFallbackToLocal"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
         static let dictationComputeMode = "dictationComputeMode"
@@ -317,7 +318,7 @@ final class SettingsStore: ObservableObject {
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
-    static let defaultWritingInstructions = "RayPlacement\nVS Code\nEDI"
+    static let defaultWritingInstructions = "Lima\nVS Code\nEDI"
 
     @Published var activationShortcut: String {
         didSet {
@@ -545,6 +546,21 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(developerGrammarBaseURL, forKey: Key.developerGrammarBaseURL) }
     }
 
+    @Published var grammarFallbackToLocal: Bool {
+        didSet { defaults.set(grammarFallbackToLocal, forKey: Key.grammarFallbackToLocal) }
+    }
+
+    // User-facing aliases. The legacy developerGrammar names remain the
+    // persistence and migration boundary for existing installations.
+    var grammarEngineEnhanced: Bool {
+        get { developerGrammarEnabled }
+        set { developerGrammarEnabled = newValue }
+    }
+
+    var enhancedGrammarAPIKeyStored: Bool {
+        !developerGrammarAPIKey.isEmpty
+    }
+
     func selectDeveloperGrammarProvider(_ provider: DeveloperGrammarProvider) {
         let previousProvider = developerGrammarProvider
         let previousModel = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -675,6 +691,7 @@ final class SettingsStore: ObservableObject {
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
         developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
+        grammarFallbackToLocal = defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
@@ -986,6 +1003,7 @@ final class SettingsStore: ObservableObject {
             if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
         case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
+        case Key.grammarFallbackToLocal: if let value = bool() { grammarFallbackToLocal = value }
         case Key.dictationPerformance:
             if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }
         case Key.dictationEngine:

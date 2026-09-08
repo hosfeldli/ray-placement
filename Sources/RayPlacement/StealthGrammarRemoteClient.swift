@@ -1,4 +1,5 @@
 import Foundation
+import RayPlacementWriting
 
 final class StealthGrammarRemoteClient {
     enum ClientError: LocalizedError {
@@ -10,10 +11,10 @@ final class StealthGrammarRemoteClient {
 
         var errorDescription: String? {
             switch self {
-            case .invalidConfiguration: return "The developer grammar provider configuration is incomplete."
-            case .requestFailed(let statusCode): return "The developer grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
-            case .invalidResponse: return "The developer grammar provider returned an unreadable correction."
-            case .responseTooLarge: return "The developer grammar provider returned too much data."
+            case .invalidConfiguration: return "The Enhanced Grammar provider configuration is incomplete."
+            case .requestFailed(let statusCode): return "The Enhanced Grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
+            case .invalidResponse: return "The Enhanced Grammar provider returned an unreadable correction."
+            case .responseTooLarge: return "The Enhanced Grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."
             }
         }
@@ -165,7 +166,7 @@ final class StealthGrammarRemoteClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = 20
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch configuration.provider {
         case .openAI, .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
@@ -285,7 +286,8 @@ final class StealthGrammarRemoteClient {
         }
         guard let value,
               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !value.contains("```") else { throw ClientError.invalidResponse }
+              !value.contains("```"),
+              !StealthGrammarService.isChattyResponse(value) else { throw ClientError.invalidResponse }
         return value
     }
 }

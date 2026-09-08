@@ -19,7 +19,7 @@ final class HotKeyManager {
         var errorDescription: String? {
             switch self {
             case .invalidKey(let key): return "Unsupported shortcut key: \(key)"
-            case .duplicate(let shortcut): return "\(shortcut.displayString) is already assigned to another RayPlacement command."
+            case .duplicate(let shortcut): return "\(shortcut.displayString) is already assigned to another Lima command."
             case .registrationFailed(let shortcut, let status): return "Could not register \(shortcut.displayString) (system status \(status))."
             }
         }

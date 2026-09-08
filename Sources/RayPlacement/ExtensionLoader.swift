@@ -319,7 +319,7 @@ final class ExtensionLoader {
     }
 
     static let extensionReadme = """
-    RAYPLACEMENT EXTENSIONS
+    LIMA EXTENSIONS
 
     Add a folder here with a manifest.json file. Commands can use Lima's approved
     local capabilities such as application, window, system, clipboard, picker,

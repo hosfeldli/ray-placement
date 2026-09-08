@@ -191,7 +191,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         registerActionHotkey(
             identifier: "builtin.terminal",
-            displayName: "Developer Terminal",
+            displayName: "Terminal",
             enabled: SettingsStore.shared.terminalHotkeyEnabled,
             rawShortcut: SettingsStore.shared.terminalShortcut,
             previous: &registeredTerminalShortcut,

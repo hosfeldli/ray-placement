@@ -550,8 +550,8 @@ final class LauncherViewModel: ObservableObject {
         if cleanQuery == "🤖" {
             return [LauncherItem(
                 id: "developer.grammar-settings",
-                title: "Developer Grammar Providers",
-                subtitle: "Hidden BYOK configuration",
+                title: "Grammar Engine",
+                subtitle: "Configure an enhanced proofreading provider",
                 icon: .system("lock.shield.fill"),
                 keywords: [],
                 action: .system(.openDeveloperGrammarSettings),
@@ -1068,7 +1068,7 @@ final class LauncherViewModel: ObservableObject {
             // The terminal is an optional developer surface. Keeping it out of
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.
-            LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
+            LauncherItem(id: "builtin.terminal", title: "Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
             LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
             LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),

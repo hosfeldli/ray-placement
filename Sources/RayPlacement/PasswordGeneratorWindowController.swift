@@ -16,7 +16,7 @@ final class PasswordGeneratorWindowController: NSWindowController {
         LimaWindowChrome.configure(
             window,
             title: "Password Generator",
-            accessibilityLabel: "RayPlacement password generator",
+            accessibilityLabel: "Lima password generator",
             minSize: NSSize(width: 520, height: 360)
         )
         self.init(window: window)

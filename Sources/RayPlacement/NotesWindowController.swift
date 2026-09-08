@@ -31,6 +31,7 @@ private final class NotesPresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
     @Published var section: NotesSection = .notes
+    @Published var focusDictationEditor = false
 
     init(mode: NotesWindowMode) {
         self.mode = mode
@@ -87,7 +88,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
         super.init()
-        self.dictationHUD = DictationHUDController(dictation: dictation)
+        self.dictationHUD = DictationHUDController(
+            dictation: dictation,
+            conversations: conversations,
+            openConversation: { [weak self] id in
+                self?.presentDictationConversation(id: id)
+            }
+        )
     }
 
     func present() {
@@ -161,6 +168,19 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             $0.selectedDictationID = id
             $0.notesSection = "dictation"
         }
+    }
+
+    /// Presents the exact conversation associated with the active dictation
+    /// session. This intentionally does not use the historically selected row.
+    func presentDictationConversation(id: UUID) {
+        guard conversations.conversations.contains(where: { $0.id == id }) else { return }
+        selectDictation(id)
+        let window = ensureWindow()
+        applyPresentationMode(presentation.mode, to: window, animated: false)
+        WorkspaceWindowCoordinator.shared.present(window, joinWorkspace: !presentation.mode.isDocked)
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        presentation.focusDictationEditor = true
     }
 
     func presentMostRecentAndToggleDictation() {
@@ -415,6 +435,7 @@ private struct NotesView: View {
     @State private var showRevisions = false
     @State private var exportError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var dictationEditorFocused: Bool
 
     private var filteredNotes: [MarkdownNote] {
         let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -433,32 +454,25 @@ private struct NotesView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            LinearGradient(
-                colors: notesThemeColors,
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .opacity(0.42)
-            .ignoresSafeArea()
             VStack(spacing: LimaDesign.panelGap) {
                 windowChrome
-                    .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.024)
+                    .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 if presentation.mode.isDocked {
                     quickNoteWorkspace
-                        .liquidGlass(cornerRadius: 18, depth: .raised, accentOpacity: 0.014)
+                        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 } else if presentation.sidebarVisible && presentation.mode != .fullScreen {
                     HStack(spacing: 10) {
                         sidebar
                             .frame(width: 246)
-                            .liquidGlass(cornerRadius: 19, depth: .floating, accentOpacity: 0.020)
+                            .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.panel, border: LimaColors.border)
                         editor
                             .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
-                            .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
+                            .limaNativeSurface(fill: LimaColors.editorBackground, radius: LimaRadius.panel, border: LimaColors.border)
                     }
                 } else {
                     editor
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .liquidGlass(cornerRadius: 19, depth: .raised, accentOpacity: 0.012)
+                        .limaNativeSurface(fill: LimaColors.editorBackground, radius: LimaRadius.panel, border: LimaColors.border)
                 }
             }
             .padding(.horizontal, presentation.mode.isDocked ? 6 : LimaDesign.windowPadding)
@@ -470,6 +484,13 @@ private struct NotesView: View {
             minHeight: 500
         )
         .tint(SettingsStore.shared.accentTheme.primary)
+        .onChange(of: presentation.focusDictationEditor) { shouldFocus in
+            guard shouldFocus else { return }
+            DispatchQueue.main.async {
+                dictationEditorFocused = true
+                presentation.focusDictationEditor = false
+            }
+        }
         .alert("Delete this note?", isPresented: $confirmDelete) {
             Button("Cancel", role: .cancel) {}
             Button("Delete Note", role: .destructive) { store.deleteSelectedNote() }
@@ -593,7 +614,7 @@ private struct NotesView: View {
                 }
                 .padding(.horizontal, 9)
                 .frame(height: 30)
-                .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
+                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
 
                 Menu {
                     Section("New Note") {
@@ -726,8 +747,8 @@ private struct NotesView: View {
                 }
                 .padding(.horizontal, 8)
                 .frame(height: 28)
-                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
-                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
                 .padding(.horizontal, 8)
 
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -742,7 +763,8 @@ private struct NotesView: View {
                                     .lineLimit(1)
                                     .padding(.horizontal, 8)
                                     .padding(.vertical, 4)
-                                    .background(SettingsStore.shared.accentTheme.primary.opacity(0.10), in: PrismaticPanelShape(cut: 4))
+                                    .background(LimaColors.accentSoft, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
                             }
                             .buttonStyle(.plain)
                         }
@@ -840,21 +862,7 @@ private struct NotesView: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, 9)
                                     .padding(.vertical, 8)
-                                    .background(
-                                        conversation.id == conversations.selectedConversationID
-                                            ? SettingsStore.shared.accentTheme.primary.opacity(0.22)
-                                            : Color.white.opacity(0.035),
-                                        in: PrismaticPanelShape(cut: 7)
-                                    )
-                                    .overlay(
-                                        PrismaticPanelShape(cut: 7)
-                                            .stroke(
-                                                conversation.id == conversations.selectedConversationID
-                                                    ? SettingsStore.shared.accentTheme.primary.opacity(0.72)
-                                                    : Color.white.opacity(0.08),
-                                                lineWidth: conversation.id == conversations.selectedConversationID ? 1.0 : 0.6
-                                            )
-                                    )
+                                    .limaSelection(conversation.id == conversations.selectedConversationID, radius: LimaRadius.control)
                                 }
                                 .buttonStyle(.plain)
                                 .help("Open \(conversation.title)")
@@ -957,8 +965,9 @@ private struct NotesView: View {
                         .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
                         .scrollContentBackground(.hidden)
                         .padding(7)
-                        .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: 9))
-                        .overlay(PrismaticPanelShape(cut: 9).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                        .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+                        .focused($dictationEditorFocused)
                         .accessibilityLabel("Editable dictation transcript")
                         .accessibilityHint("Correct the transcript directly. Changes are saved locally.")
 
@@ -1061,8 +1070,8 @@ private struct NotesView: View {
                     .frame(width: 27, height: 26)
             }
             .buttonStyle(.borderless)
-            .background(Color.orange.opacity(0.16), in: PrismaticPanelShape(cut: 6))
-            .overlay(PrismaticPanelShape(cut: 6).stroke(Color.orange.opacity(0.42), lineWidth: 0.7))
+            .background(LimaColors.warning.opacity(0.14), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.warning.opacity(0.42), lineWidth: LimaDesign.borderWidth))
             .help(dictation.phase == .recording ? "Pause recording" : "Resume recording")
             .accessibilityLabel(dictation.phase == .recording ? "Pause recording" : "Resume recording")
         }
@@ -1074,8 +1083,8 @@ private struct NotesView: View {
                 .frame(width: 27, height: 26)
         }
         .buttonStyle(.borderless)
-        .background(dictationPrimaryColor.opacity(0.18), in: PrismaticPanelShape(cut: 6))
-        .overlay(PrismaticPanelShape(cut: 6).stroke(dictationPrimaryColor.opacity(0.48), lineWidth: 0.7))
+        .background(dictationPrimaryColor.opacity(0.16), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(dictationPrimaryColor.opacity(0.48), lineWidth: LimaDesign.borderWidth))
         .help(dictationPrimaryLabel)
         .accessibilityLabel(dictationPrimaryLabel)
     }
@@ -1280,8 +1289,8 @@ private struct NotesView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
-                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 6))
-                    .overlay(PrismaticPanelShape(cut: 6).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                    .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 30)
@@ -1312,20 +1321,14 @@ private struct NotesView: View {
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
                 markdownEditor
                     .frame(maxWidth: settings.notesContentWidth.maximum)
-                    .background(
-                        LinearGradient(
-                            colors: [noteCanvasColor.opacity(0.96), notesThemeColors[0].opacity(0.34), noteCanvasColor.opacity(0.88)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.008)
+                    .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
             .background(Color.clear)
         } else {
             markdownEditor
-                .background(LimaDesign.editorFill)
+                .background(LimaColors.editorBackground)
         }
     }
 
@@ -1374,7 +1377,7 @@ private struct NotesView: View {
                     MarkdownInsertButton(symbol: "link", help: "Link (Command-K)", action: MarkdownEditorActions.link)
                 }
                 .padding(3)
-                .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0)
+                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
 
                 Spacer(minLength: 5)
 
@@ -1409,8 +1412,8 @@ private struct NotesView: View {
                         .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
                         .padding(.horizontal, 8)
                         .frame(height: 26)
-                        .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
-                        .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
                         .help("Completed tasks")
                 }
 
@@ -1418,7 +1421,7 @@ private struct NotesView: View {
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
-        .background(LimaDesign.recessedFill)
+        .background(LimaColors.recessedSurface)
     }
 
     private func importMarkdown() {
@@ -1486,26 +1489,6 @@ private struct NotesView: View {
         if elapsed < 604_800 { return "\(Int(elapsed / 86_400))d ago" }
         return date.formatted(.dateTime.month(.abbreviated).day())
     }
-
-    private var notesThemeColors: [Color] {
-        switch settings.notesVisualTheme {
-        case .prism: return [SettingsStore.shared.accentTheme.primary.opacity(0.26), Color.cyan.opacity(0.08), Color.black.opacity(0.08)]
-        case .graphite: return [Color(white: 0.18), Color(white: 0.07), Color.black.opacity(0.28)]
-        case .midnight: return [Color(red: 0.05, green: 0.09, blue: 0.20), Color(red: 0.09, green: 0.05, blue: 0.18), .black.opacity(0.32)]
-        case .aurora: return [Color.teal.opacity(0.20), Color.indigo.opacity(0.23), Color.purple.opacity(0.12)]
-        case .ink: return [Color(red: 0.17, green: 0.13, blue: 0.10), Color(red: 0.08, green: 0.07, blue: 0.07), Color.orange.opacity(0.06)]
-        }
-    }
-
-    private var noteCanvasColor: Color {
-        switch settings.notesVisualTheme {
-        case .prism: return Color(red: 0.08, green: 0.09, blue: 0.13)
-        case .graphite: return Color(white: 0.08)
-        case .midnight: return Color(red: 0.035, green: 0.05, blue: 0.10)
-        case .aurora: return Color(red: 0.035, green: 0.08, blue: 0.09)
-        case .ink: return Color(red: 0.09, green: 0.075, blue: 0.065)
-        }
-    }
 }
 
 private struct NotesAppearancePanel: View {
@@ -1539,7 +1522,7 @@ private struct NotesAppearancePanel: View {
                             Circle()
                                 .fill(theme.gradient)
                                 .frame(width: 24, height: 24)
-                                .overlay(Circle().stroke(.white.opacity(settings.notesVisualTheme == theme ? 0.9 : 0.18), lineWidth: settings.notesVisualTheme == theme ? 2 : 0.7))
+                                .overlay(Circle().stroke(.white.opacity(settings.notesVisualTheme == theme ? 0.9 : 0.18), lineWidth: settings.notesVisualTheme == theme ? LimaDesign.focusWidth : LimaDesign.borderWidth))
                         }
                         .buttonStyle(.plain)
                         .help(theme.title)
@@ -1567,7 +1550,7 @@ private struct NotesAppearancePanel: View {
         }
         .padding(16)
         .frame(width: 330)
-        .background(.ultraThinMaterial)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border, shadow: true)
     }
 }
 
@@ -1725,7 +1708,7 @@ private struct NotesChromeButton: View {
                 .limaFont(.system(size: 12, weight: .semibold))
                 .frame(width: 27, height: 27)
         }
-        .buttonStyle(LiquidGlassIconButtonStyle(size: 27))
+        .buttonStyle(LimaToolbarIconButtonStyle(size: 27))
         .help(label)
         .accessibilityLabel(label)
     }
@@ -1773,22 +1756,8 @@ private struct NoteListRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 8)
         .padding(.vertical, 7)
-        .background {
-            if selected {
-                ZStack {
-                    PrismaticPanelShape(cut: 6).fill(.ultraThinMaterial)
-                    PrismaticPanelShape(cut: 6).fill(SettingsStore.shared.accentTheme.primary.opacity(0.09))
-                }
-            }
-        }
-        .overlay {
-            if selected {
-                PrismaticPanelShape(cut: 6)
-                    .strokeBorder(Color.white.opacity(0.38), lineWidth: 0.7)
-            }
-        }
-        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.07) : .clear, radius: 6, y: 2)
-        .contentShape(PrismaticPanelShape(cut: 6))
+        .limaSelection(selected, radius: LimaRadius.control)
+        .contentShape(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
     }
 
     private func relativeTimestamp(_ date: Date) -> String {

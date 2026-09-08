@@ -34,7 +34,7 @@ enum AccessoryMouseAction: String, CaseIterable, Identifiable {
         case .notes: return "Notes"
         case .quickNote: return "Quick Note"
         case .dictation: return "Toggle Dictation"
-        case .terminal: return "Developer Terminal"
+        case .terminal: return "Terminal"
         }
     }
 }

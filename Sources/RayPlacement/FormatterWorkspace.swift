@@ -16,14 +16,14 @@ final class FormatterWindowController: NSWindowController {
         LimaWindowChrome.configure(
             window,
             title: "Document Formatter",
-            accessibilityLabel: "RayPlacement document formatter",
+            accessibilityLabel: "Lima document formatter",
             minSize: NSSize(width: 760, height: 520)
         )
         self.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             FormatterWorkspaceView(model: model)
-                .clipShape(PrismaticPanelShape(cut: 9))
+                .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
                 .padding(10)
         }))
     }
@@ -231,7 +231,7 @@ struct FormatterWorkspaceView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .padding(.vertical, 7)
-        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.018)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
@@ -277,8 +277,9 @@ struct FormatterWorkspaceView: View {
             }
         }
         .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-        .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: LimaDesign.standardCorner))
-        .clipShape(PrismaticPanelShape(cut: LimaDesign.standardCorner))
+        .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
     }
 
     private var inspector: some View {

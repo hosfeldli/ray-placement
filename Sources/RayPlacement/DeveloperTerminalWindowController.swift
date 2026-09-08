@@ -147,14 +147,13 @@ struct DeveloperTerminalView: View {
             TerminalSurface(model: model)
             .padding(8)
             .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
-            .clipShape(PrismaticPanelShape(cut: 8))
-            .overlay(PrismaticPanelShape(cut: 8).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
-            .shadow(color: .black.opacity(0.20), radius: 14, y: 6)
+            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             .onTapGesture { model.focus() }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .padding(9)
             .accessibilityElement(children: .contain)
-            .accessibilityLabel("Developer Terminal")
+            .accessibilityLabel("Terminal")
             .onAppear { model.startIfNeeded() }
         }
     }

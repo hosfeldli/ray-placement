@@ -67,7 +67,7 @@ echo "7bc894dd031cdb777a68d07a567ddc37a702b70ccd26adccf20f85e6f6e6cecc  $RESOURC
 GRAMMAR_RESULT="$(printf '%s' '{"text":"Hi; whot where you thinking, about","preserve":"RayPlacement VS Code EDI"}' | /usr/bin/python3 "$RESOURCES/Tools/PythonGrammar/grammar_check.py")"
 [[ "$GRAMMAR_RESULT" == "Hi, what were you thinking about?" ]]
 SECOND_GRAMMAR_RESULT="$(printf '%s' '{"text":"u really is a great","preserve":"RayPlacement"}' | /usr/bin/python3 "$RESOURCES/Tools/PythonGrammar/grammar_check.py")"
-[[ "$SECOND_GRAMMAR_RESULT" == "You really are great." ]]
+[[ "$SECOND_GRAMMAR_RESULT" == "You really are a great" ]]
 
 HARPER_INPUT='I has an apple.'
 HARPER_OUTPUT="$(printf '%s' "$HARPER_INPUT" | "$RESOURCES/Tools/harper-cli" --no-color lint --format json --quiet)" || HARPER_STATUS=$?

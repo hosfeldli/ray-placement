@@ -16,7 +16,7 @@ final class ExtensionFormWindowController: NSWindowController {
         LimaWindowChrome.configure(
             window,
             title: "Extension Workflow",
-            accessibilityLabel: "RayPlacement extension workflow",
+            accessibilityLabel: "Lima extension workflow",
             minSize: NSSize(width: 620, height: 460)
         )
         self.init(window: window)
@@ -168,7 +168,7 @@ private struct ExtensionFormView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .frame(height: LimaDesign.toolbarHeight)
-        .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: .raised, accentOpacity: 0.022)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
     }
 
     private var form: some View {
@@ -186,7 +186,7 @@ private struct ExtensionFormView: View {
             }
             .padding(LimaDesign.sectionGap)
         }
-        .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.018)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
         .padding(.top, 10)
         .padding(.trailing, 5)
     }
@@ -205,21 +205,23 @@ private struct ExtensionFormView: View {
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 10)
                     .frame(height: 32)
-                    .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
+                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             case .secure:
                 SecureField(field.placeholder ?? "", text: model.binding(for: field))
                     .textFieldStyle(.plain)
                     .padding(.horizontal, 10)
                     .frame(height: 32)
-                    .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
+                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             case .multiline:
                 TextEditor(text: model.binding(for: field))
                     .limaFont(.system(size: 12, design: .monospaced))
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 110)
-                    .background(LimaDesign.editorFill, in: PrismaticPanelShape(cut: LimaDesign.compactCorner))
-                    .liquidGlass(cornerRadius: LimaDesign.compactCorner, depth: .recessed, accentOpacity: 0.006)
+                    .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             case .toggle:
                 Toggle(field.label, isOn: Binding(
                     get: { model.values[field.id, default: "false"] == "true" },
@@ -242,7 +244,8 @@ private struct ExtensionFormView: View {
                 }
                 .padding(.horizontal, 10)
                 .frame(height: 34)
-                .liquidGlass(cornerRadius: 9, depth: .recessed, accentOpacity: 0.01)
+                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             case .date:
                 DatePicker(field.label, selection: model.dateBinding(for: field))
                     .labelsHidden()
@@ -262,7 +265,8 @@ private struct ExtensionFormView: View {
                     .scrollContentBackground(.hidden)
                     .padding(7)
                     .frame(minHeight: 92)
-                    .liquidGlass(cornerRadius: 10, depth: .recessed, accentOpacity: 0.01)
+                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             }
             if let help = field.helpText, !help.isEmpty {
                 Text(help).limaFont(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
@@ -306,7 +310,7 @@ private struct ExtensionFormView: View {
                     .padding(14)
             }
         }
-        .liquidGlass(cornerRadius: 17, depth: .floating, accentOpacity: 0.024)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
         .padding(.top, 10)
         .padding(.leading, 5)
     }

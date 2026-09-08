@@ -133,3 +133,65 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(service.normalizeRewrite("\"This is quoted prose.\"") == "This is quoted prose.")
     #expect(service.normalizeRewrite("He said \"hello\".") == "He said \"hello\".")
 }
+
+@Test func technicalCorpusProtectsNamesAcronymsURLsPathsAndCode() {
+    let source = "Lima sends EDI/TMS data through https://example.com/api/v3, writes to /Users/liam/project/config.json, and preserves `swift test` plus Liam's APIKey."
+    let protected = StealthGrammarService.protect(
+        source,
+        ignoreList: "Lima EDI TMS APIKey"
+    )
+
+    #expect(protected.restore(protected.maskedText) == source)
+    #expect(!protected.maskedText.contains("https://example.com/api/v3"))
+    #expect(!protected.maskedText.contains("/Users/liam/project/config.json"))
+    #expect(!protected.maskedText.contains("swift test"))
+    #expect(protected.protectedValues.contains { $0.contains("EDI") && $0.contains("TMS") })
+    #expect(protected.protectedValues.contains("APIKey"))
+}
+
+@Test func technicalCorpusDoesNotTreatCorrectProseAsUnsafeRewrite() {
+    let source = "The local checker leaves already-correct prose unchanged."
+
+    #expect(StealthGrammarService.isSafeReplacement(source, source))
+    let chatty = "Here is the corrected text: The local checker leaves already-correct prose unchanged."
+    #expect(!StealthGrammarService.isSafeReplacement(source, chatty))
+    #expect(StealthGrammarService.isChattyResponse(chatty))
+}
+
+@Test func safeReplacementRejectsExpansionAndLargeEdits() {
+    let source = "Fix the typo."
+    let generated = "Fix the typo. Here is a lengthy explanation of the changes I made and why they are helpful."
+    let unrelated = "A completely different paragraph about another subject."
+
+    #expect(!StealthGrammarService.isSafeReplacement(source, generated))
+    #expect(!StealthGrammarService.isSafeReplacement(source, unrelated))
+}
+
+@Test func safeReplacementPreservesMarkdownAndCodeStructure() {
+    let source = "# Deploy Lima\n\nRun `swift test` before release.\n\n[Docs](https://example.com/docs)"
+    let valid = "# Deploy Lima\n\nRun `swift test` before release!\n\n[Docs](https://example.com/docs)"
+    let changedCode = "# Deploy Lima\n\nRun `swift build` before release!\n\n[Docs](https://example.com/docs)"
+    let changedLink = "# Deploy Lima\n\nRun `swift test` before release!\n\n[Docs](https://example.com/other)"
+
+    #expect(StealthGrammarService.isSafeReplacement(source, valid))
+    #expect(!StealthGrammarService.isSafeReplacement(source, changedCode))
+    #expect(!StealthGrammarService.isSafeReplacement(source, changedLink))
+}
+
+@Test func protectedTextRejectsTokenMutationAndReordering() {
+    let source = "keep Lima and https://example.com exactly unchanged."
+    let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
+    let tokens = protected.maskedText
+        .split(separator: " ")
+        .filter { $0.contains("LIMA_KEEP_") }
+        .map(String.init)
+    #expect(tokens.count == 2)
+
+    let mutated = protected.maskedText.replacingOccurrences(of: "LIMA_KEEP_", with: "LIMA_CHANGED_")
+    #expect(protected.restore(mutated) == nil)
+
+    let reversed = protected.maskedText.replacingOccurrences(of: tokens[0], with: "__TEMP__")
+        .replacingOccurrences(of: tokens[1], with: tokens[0])
+        .replacingOccurrences(of: "__TEMP__", with: tokens[1])
+    #expect(protected.restore(reversed) == nil)
+}

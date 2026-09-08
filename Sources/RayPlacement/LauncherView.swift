@@ -10,6 +10,7 @@ struct LauncherView: View {
     @FocusState private var timezoneFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredEmojiID: String?
+    @State private var hoveredResultID: String?
 
     init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
         self.viewModel = viewModel
@@ -18,7 +19,7 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
+            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow, identityLayer: true)
             VStack(spacing: 5) {
                 searchHeader
                 content
@@ -28,38 +29,32 @@ struct LauncherView: View {
             }
         }
         .frame(
-            width: viewModel.mode == .terminal ? LauncherPanelLayout.terminalSize.width : settings.interfaceDensity.launcherWidth,
-            height: viewModel.mode == .terminal ? LauncherPanelLayout.terminalSize.height : settings.interfaceDensity.launcherHeight
+            width: LauncherPanelLayout.size(
+                for: viewModel.mode,
+                density: settings.interfaceDensity,
+                resultCount: viewModel.results.count,
+                query: viewModel.query
+            ).width,
+            height: LauncherPanelLayout.size(
+                for: viewModel.mode,
+                density: settings.interfaceDensity,
+                resultCount: viewModel.results.count,
+                query: viewModel.query
+            ).height
         )
-        .clipShape(PrismaticPanelShape(cut: 18))
-        .overlay(
-            PrismaticPanelShape(cut: 18)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.82), LimaLauncherPalette.cyan.opacity(0.54), LimaLauncherPalette.indigo.opacity(0.34), Color.black.opacity(0.28)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.0
-                )
+        // The shell is intentionally one continuous shape. The shadow is
+        // applied after the clip so it remains outside the perimeter and does
+        // not become a fuzzy second border.
+        .background(
+            LimaColors.windowBackground.opacity(0.90),
+            in: RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
         )
-        .overlay(
-            PrismaticPanelShape(cut: 18)
-                .strokeBorder(Color.black.opacity(0.56), lineWidth: 0.7)
-                .padding(1.35)
-        )
-        .overlay(alignment: .topTrailing) {
-            LinearGradient(
-                colors: [.clear, LimaLauncherPalette.cyan.opacity(0.44), Color.white.opacity(0.36)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 118, height: 1)
-            .padding(.trailing, 31)
-            .padding(.top, 0.7)
+        .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
+                .strokeBorder(LimaColors.border.opacity(0.92), lineWidth: LimaDesign.focusWidth)
         }
-        .shadow(color: LimaLauncherPalette.indigo.opacity(0.08), radius: 18, y: 7)
-        .shadow(color: .black.opacity(0.22), radius: 14, y: 7)
+        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
         .tint(settings.accentTheme.primary)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
@@ -136,12 +131,12 @@ struct LauncherView: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: PrismaticPanelShape(cut: 4))
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
             }
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
-        .liquidGlass(cornerRadius: 13, depth: .raised, accentOpacity: 0.024)
+        .liquidGlass(cornerRadius: LimaRadius.searchField, depth: .raised, accentOpacity: 0.024)
         .padding(.horizontal, 8)
         .padding(.top, 8)
     }
@@ -220,7 +215,6 @@ struct LauncherView: View {
                             .onHover { hovering in
                                 if hovering {
                                     hoveredEmojiID = entry.id
-                                    viewModel.select(index)
                                 } else if hoveredEmojiID == entry.id {
                                     hoveredEmojiID = nil
                                 }
@@ -265,7 +259,11 @@ struct LauncherView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if viewModel.mode == .root, viewModel.contextualSelectionText != nil {
+                    if viewModel.mode == .root,
+                       viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       viewModel.contextualSelectionText == nil {
+                        idleLauncherHeader
+                    } else if viewModel.mode == .root, viewModel.contextualSelectionText != nil {
                         contextualSelectionHeader
                     }
 
@@ -279,7 +277,8 @@ struct LauncherView: View {
                                 ResultRow(
                                     item: item,
                                     selected: index == viewModel.selectedIndex,
-                                    actionLabel: actionLabel(for: item)
+                                    actionLabel: actionLabel(for: item),
+                                    hovered: hoveredResultID == item.id
                                 )
                             }
                             .buttonStyle(.plain)
@@ -289,10 +288,10 @@ struct LauncherView: View {
                             .accessibilityAddTraits(index == viewModel.selectedIndex ? .isSelected : [])
                             .id(item.id)
                             .onHover { hovering in
-                                if hovering { viewModel.select(index) }
+                                hoveredResultID = hovering ? item.id : (hoveredResultID == item.id ? nil : hoveredResultID)
                             }
                         } else {
-                            ResultRow(item: item, selected: false, actionLabel: nil)
+                            ResultRow(item: item, selected: false, actionLabel: nil, hovered: hoveredResultID == item.id)
                                 .accessibilityElement(children: .combine)
                                 .accessibilityLabel(Text(accessibilityLabel(for: item)))
                                 .id(item.id)
@@ -313,6 +312,21 @@ struct LauncherView: View {
             .scrollIndicators(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var idleLauncherHeader: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Ready when you are")
+                .limaFont(LimaTypography.sectionTitle)
+                .foregroundStyle(LimaColors.primaryText)
+            Text("Recent and favorite actions")
+                .limaFont(LimaTypography.body)
+                .foregroundStyle(LimaColors.secondaryText)
+        }
+        .padding(.horizontal, 11)
+        .padding(.top, 8)
+        .padding(.bottom, 1)
+        .accessibilityElement(children: .combine)
     }
 
     private var contextualSelectionHeader: some View {
@@ -424,7 +438,7 @@ struct LauncherView: View {
                 Button { viewModel.swapTimezones() } label: {
                     Image(systemName: "arrow.left.arrow.right")
                         .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(LimaColors.primaryText)
                         .frame(width: 38, height: 38)
                         .background(LimaLauncherPalette.heroGradient, in: Circle())
                         .shadow(color: LimaLauncherPalette.indigo.opacity(0.28), radius: 9, y: 4)
@@ -522,6 +536,11 @@ struct LauncherView: View {
                     Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
                         .limaFont(.caption)
                         .foregroundStyle(.secondary)
+                    if let status = review.status {
+                        Text(status)
+                            .limaFont(.caption2)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 Spacer()
                 Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
@@ -589,7 +608,7 @@ struct LauncherView: View {
     }
 
     private var activeWritingModelTitle: String {
-        "Python + Harper"
+        SettingsStore.shared.grammarEngineEnhanced ? "Enhanced Grammar" : "Python + Harper"
     }
 
     @ViewBuilder
@@ -748,7 +767,8 @@ private struct EmojiPageButtonStyle: ButtonStyle {
             .limaFont(.system(size: 9, weight: .bold))
             .foregroundStyle(disabled ? Color.secondary.opacity(0.38) : Color.primary.opacity(0.85))
             .frame(width: 20, height: 20)
-            .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.055), in: PrismaticPanelShape(cut: 4))
+            .background(configuration.isPressed ? LimaColors.hoverFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             .scaleEffect(configuration.isPressed ? 0.92 : 1)
     }
 }
@@ -796,20 +816,21 @@ private struct ResultRow: View {
     let item: LauncherItem
     let selected: Bool
     let actionLabel: String?
+    let hovered: Bool
 
     var body: some View {
         HStack(spacing: 10) {
             LauncherIconView(icon: item.icon, selected: selected)
-                .frame(width: 27, height: 27)
+                .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .limaFont(.system(size: 13.5, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
+                    .foregroundStyle(LimaColors.primaryText)
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
-                        .limaFont(.system(size: 11.25, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(selected ? 0.68 : 0.56))
+                        .limaFont(.system(size: 11.25))
+                        .foregroundStyle(LimaColors.secondaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -818,59 +839,25 @@ private struct ResultRow: View {
             if let accessory = item.accessory {
                 Text(accessory)
                     .limaFont(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaColors.secondaryText)
             }
-            if let shortcut = item.shortcut {
-                Text(shortcut)
-                    .limaFont(.system(size: 10.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 4))
-                    .overlay(PrismaticPanelShape(cut: 4).stroke(Color.white.opacity(0.20), lineWidth: 0.6))
-            }
+            if let shortcut = item.shortcut { LimaShortcutBadge(text: shortcut) }
             if selected, let actionLabel {
                 HStack(spacing: 4) {
                     Text("↩")
                     Text(actionLabel)
                 }
                 .limaFont(.system(size: 10.25, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(LimaColors.primaryText)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(SettingsStore.shared.accentTheme.gradient, in: PrismaticPanelShape(cut: 5))
-                .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.35), lineWidth: 0.6))
-                .shadow(color: SettingsStore.shared.accentTheme.primary.opacity(0.24), radius: 7, y: 3)
+                .background(settings.accentTheme.primary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
             }
         }
         .padding(.horizontal, 11)
         .frame(height: settings.interfaceDensity.resultRowHeight)
-        .background {
-            if selected {
-                ZStack {
-                    PrismaticPanelShape(cut: 7).fill(.ultraThinMaterial)
-                    PrismaticPanelShape(cut: 7)
-                        .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.09))
-                }
-            }
-        }
-        .overlay {
-            if selected {
-                PrismaticPanelShape(cut: 7)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.66), SettingsStore.shared.accentTheme.primary.opacity(0.36), Color.white.opacity(0.12)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.85
-                    )
-            }
-        }
-        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.07) : .clear, radius: 8, y: 3)
-        .opacity(selected ? 1 : 0.97)
-        .scaleEffect(selected ? 1 : 0.998)
-        .limaAnimation(LimaDesign.spring(0.24), value: selected)
+        .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
+        .animation(nil, value: selected)
     }
 }
 
@@ -888,11 +875,11 @@ private struct LauncherIconView: View {
                     .symbolRenderingMode(.hierarchical)
                     .foregroundStyle(selected ? SettingsStore.shared.accentTheme.primary : Color.secondary)
                     .padding(7.5)
-                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
-                    .overlay(
-                        PrismaticPanelShape(cut: 5)
-                            .stroke(Color.white.opacity(selected ? 0.34 : 0.14), lineWidth: 0.65)
-                    )
+                    .background(selected ? LimaColors.selectedFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous)
+                            .stroke(selected ? LimaColors.focusedBorder : LimaColors.border, lineWidth: LimaDesign.borderWidth)
+                    }
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url))
                     .resizable()
@@ -917,31 +904,15 @@ private struct EmojiGridTile: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 48)
             .contentShape(Rectangle())
-            .background {
-                PrismaticPanelShape(cut: 7)
-                    .fill(
-                        selected
-                            ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
-                            : AnyShapeStyle(Color.white.opacity(hovered ? 0.10 : 0.045))
-                    )
-            }
+            .background(selected ? LimaColors.selectedFill : (hovered ? LimaColors.hoverFill : .clear), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
             .overlay {
-                PrismaticPanelShape(cut: 7)
-                    .strokeBorder(
-                        selected
-                            ? SettingsStore.shared.accentTheme.tertiary.opacity(0.90)
-                            : Color.white.opacity(hovered ? 0.28 : 0.12),
-                        lineWidth: selected ? 1.35 : (hovered ? 1.0 : 0.65)
-                    )
+                if selected {
+                    RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                        .strokeBorder(LimaColors.accent, lineWidth: LimaDesign.focusWidth)
+                }
             }
-            .shadow(
-                color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.18) : .clear,
-                radius: selected ? 6 : 0,
-                y: 2
-            )
-            .scaleEffect(selected ? 1.025 : (hovered ? 1.012 : 1))
-            .animation(.easeOut(duration: 0.12), value: selected)
-            .animation(.easeOut(duration: 0.12), value: hovered)
+            .animation(LimaMotion.quick, value: selected)
+            .animation(LimaMotion.quick, value: hovered)
     }
 }
 
@@ -968,7 +939,8 @@ private struct KeyHint: View {
                 .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.085), in: PrismaticPanelShape(cut: 4))
+                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             Text(label).limaFont(.system(size: 10.5)).foregroundStyle(.secondary)
         }
     }
@@ -986,7 +958,7 @@ private struct StatusCapsule: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color.opacity(0.11), in: PrismaticPanelShape(cut: 5))
-            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.24), lineWidth: 0.8))
+            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.24), lineWidth: LimaDesign.borderWidth))
     }
 }
 
@@ -1054,10 +1026,10 @@ private struct ActivityTimeline: View {
                         if index < activeStep {
                             Image(systemName: "checkmark")
                                 .limaFont(.system(size: 7, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(LimaColors.primaryText)
                         } else {
                             Circle()
-                                .fill(index == activeStep ? Color.white : Color.secondary.opacity(0.45))
+                                .fill(index == activeStep ? LimaColors.primaryText : Color.secondary.opacity(0.45))
                                 .frame(width: 4, height: 4)
                         }
                     }

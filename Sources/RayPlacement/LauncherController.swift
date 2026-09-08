@@ -66,10 +66,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         viewModel.delegate = self
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
-        modeSubscription = viewModel.$mode
+        modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
+            .map { mode, results, query in
+                LauncherPanelLayout.size(
+                    for: mode,
+                    density: SettingsStore.shared.interfaceDensity,
+                    resultCount: results.count,
+                    query: query
+                )
+            }
             .removeDuplicates()
-            .sink { [weak self] mode in
-                self?.resizePanel(for: mode, animated: true)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.resizePanel(for: self.viewModel.mode, animated: true)
             }
         resizePanel(for: viewModel.mode, animated: false)
         rememberExternalApplicationActivation()
@@ -251,7 +260,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func resizePanel(for mode: LauncherMode, animated: Bool) {
         let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
-        let desiredSize = LauncherPanelLayout.size(for: mode, density: SettingsStore.shared.interfaceDensity)
+        let desiredSize = LauncherPanelLayout.size(
+            for: mode,
+            density: SettingsStore.shared.interfaceDensity,
+            resultCount: viewModel.results.count,
+            query: viewModel.query
+        )
         let size: NSSize
         if let visibleFrame = targetScreen?.visibleFrame {
             size = NSSize(
@@ -1502,7 +1516,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         hide()
         if failed.isEmpty {
-            toast.show("Force quit \(closed) applications — RayPlacement stayed open")
+            toast.show("Force quit \(closed) applications — Lima stayed open")
         } else {
             presentError(
                 title: "Force Quit All",
@@ -1627,7 +1641,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .lockScreen:
             hide()
             guard WindowManager.trusted(prompt: true) else {
-                presentError(title: "Lock Screen", message: "Enable RayPlacement in System Settings → Privacy & Security → Accessibility, then try again.")
+                presentError(title: "Lock Screen", message: "Enable Lima in System Settings → Privacy & Security → Accessibility, then try again.")
                 return
             }
             postSystemShortcut(keyCode: 12, flags: [.maskCommand, .maskControl])

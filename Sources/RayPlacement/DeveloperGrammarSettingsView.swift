@@ -26,15 +26,19 @@ struct DeveloperGrammarSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Developer-only BYOK") {
-                Toggle("Use a remote grammar provider", isOn: $settings.developerGrammarEnabled)
-                Text("This window is available only through the hidden 🤖 launcher command. Stealth Mode sends protected text to the selected provider. URLs, names, acronyms, code-like text, and preserved terms are masked before sending.")
+            Section("Grammar Engine") {
+                Toggle("Use Enhanced Grammar", isOn: $settings.developerGrammarEnabled)
+                Text("Local keeps all text on this Mac. Enhanced sends the text being checked to your selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Fall back to Local", isOn: $settings.grammarFallbackToLocal)
+                Text("If Enhanced is unavailable, Lima keeps the local result and shows a quiet status instead of replacing text with an unsafe response.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
             Section("Provider and model") {
-                Picker("API provider", selection: Binding(
+                Picker("Provider", selection: Binding(
                     get: { settings.developerGrammarProvider },
                     set: { settings.selectDeveloperGrammarProvider($0) }
                 )) {
@@ -64,11 +68,18 @@ struct DeveloperGrammarSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                TextField("Base URL", text: $settings.developerGrammarBaseURL)
-                    .textFieldStyle(.roundedBorder)
-                Text("The base URL is used for custom endpoints and can be adjusted for compatible gateways or local servers.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if selectedProvider == .openAICompatible {
+                    TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    DisclosureGroup("Advanced provider settings") {
+                        TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
+                            .textFieldStyle(.roundedBorder)
+                        Text("Usually no change is needed. Use this only for a custom or OpenAI-compatible endpoint.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
                 HStack {
                     Button {
                         loadModels()
@@ -89,7 +100,7 @@ struct DeveloperGrammarSettingsView: View {
             }
 
             Section("API key") {
-                SecureField("API key (stored in Keychain)", text: $apiKey)
+                SecureField("API key · stored securely in Keychain", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
                 HStack {
                     Button("Save API Key") {
@@ -114,7 +125,7 @@ struct DeveloperGrammarSettingsView: View {
 
                     Spacer()
                     if !settings.developerGrammarAPIKey.isEmpty {
-                        Label("Key saved", systemImage: "checkmark.circle.fill")
+                        Label("Stored securely in Keychain", systemImage: "checkmark.circle.fill")
                             .foregroundStyle(.green)
                     }
                 }
@@ -123,7 +134,7 @@ struct DeveloperGrammarSettingsView: View {
                 }
             }
 
-            Section("Connection test") {
+            Section("Test Connection") {
                 HStack {
                     Button {
                         testProvider()
@@ -131,22 +142,22 @@ struct DeveloperGrammarSettingsView: View {
                         if isTesting {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Test selected model", systemImage: "bolt.horizontal.circle")
+                            Label("Test Connection", systemImage: "bolt.horizontal.circle")
                         }
                     }
                     .disabled(isTesting || settings.developerGrammarAPIKey.isEmpty)
                     if let testMessage {
                         Text(testMessage)
                             .font(.caption)
-                            .foregroundStyle(testMessage.hasPrefix("Passed") ? .green : .secondary)
+                            .foregroundStyle(testMessage.hasPrefix("Connected") ? .green : .secondary)
                     }
                 }
-                Text("The test sends a short protected sample and requires the provider to return only corrected text. It does not use the selected text from another application.")
+                Text("The test sends a short protected sample and reports whether the provider returns a safe proofreading response.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
 
-            Section("Supported providers") {
+            Section("Available providers") {
                 Text("OpenAI, Anthropic, Google Gemini, Mistral, xAI, DeepSeek, OpenRouter, and generic OpenAI-compatible endpoints are supported. Credentials are stored in macOS Keychain and are not written to UserDefaults, logs, usage records, or the source tree.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -193,11 +204,13 @@ struct DeveloperGrammarSettingsView: View {
         isTesting = true
         testMessage = nil
         let sample = "This are a grammer sentence with \u{E000}LIMA_KEEP_0000_\u{E001}."
+        let started = Date()
         StealthGrammarRemoteClient().correct(sample, configuration: configuration) { result in
+            let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTesting = false
             switch result {
             case .success(let value) where value.contains("\u{E000}LIMA_KEEP_0000_\u{E001}"):
-                testMessage = "Passed: protected token preserved."
+                testMessage = "Connected · \(selectedProvider.title) · \(settings.developerGrammarModel) · \(latency) ms"
             case .success:
                 testMessage = "Failed: the provider changed the protected token."
             case .failure(let error):
@@ -217,9 +230,14 @@ final class DeveloperGrammarSettingsWindowController: NSWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = "Developer Grammar"
+        LimaWindowChrome.configure(
+            window,
+            title: "Grammar Engine",
+            accessibilityLabel: "Lima grammar engine",
+            minSize: NSSize(width: 560, height: 520)
+        )
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: view)
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: view))
         window.center()
         super.init(window: window)
     }

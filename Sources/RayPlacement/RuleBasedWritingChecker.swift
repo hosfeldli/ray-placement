@@ -86,19 +86,101 @@ final class RuleBasedWritingChecker {
                     case .failure(let error): throw error
                     }
                     let normalizedMasked = self.reviewer.normalizeProofreadRewrite(correctedMasked)
-                    let normalized = protected.restore(normalizedMasked) ?? source
-                    let review = try self.reviewer.review(
-                        sourceText: source,
-                        rewrittenText: normalized,
-                        engineTitle: "Python + Harper"
-                    )
-                    self.finish(success: true, output: normalized.count)
-                    completion(.success(review))
+                    let localNormalized = protected.restore(normalizedMasked) ?? source
+                    guard SettingsStore.shared.developerGrammarEnabled else {
+                        self.completeLocalReview(
+                            source: source,
+                            rewrittenText: localNormalized,
+                            operationID: operationID,
+                            status: nil,
+                            completion: completion
+                        )
+                        return
+                    }
+                    guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
+                        if SettingsStore.shared.grammarFallbackToLocal {
+                            self.completeLocalReview(
+                                source: source,
+                                rewrittenText: localNormalized,
+                                operationID: operationID,
+                                status: "Enhanced check unavailable · Local result shown.",
+                                completion: completion
+                            )
+                        } else {
+                            let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+                            self.finish(success: false, detail: error.localizedDescription)
+                            completion(.failure(error))
+                        }
+                        return
+                    }
+                    progress("Applying Enhanced Grammar…")
+                    self.remoteTask = self.remoteClient.correct(normalizedMasked, configuration: configuration) { [weak self] remoteResult in
+                        guard let self, self.operationID == operationID else { return }
+                        self.remoteTask = nil
+                        switch remoteResult {
+                        case .success(let remoteText):
+                            let candidate = self.reviewer.normalizeProofreadRewrite(remoteText)
+                            if let enhanced = protected.restore(candidate),
+                               StealthGrammarService.isSafeReplacement(source, enhanced) {
+                                do {
+                                    let review = try self.reviewer.review(sourceText: source, rewrittenText: enhanced, engineTitle: "Enhanced Grammar")
+                                    self.finish(success: true, output: enhanced.count)
+                                    completion(.success(review))
+                                } catch {
+                                    self.finish(success: false, detail: error.localizedDescription)
+                                    completion(.failure(error))
+                                }
+                            } else if SettingsStore.shared.grammarFallbackToLocal {
+                                self.completeLocalReview(source: source, rewrittenText: localNormalized, operationID: operationID, status: "Enhanced check unavailable · Local result shown.", completion: completion)
+                            } else {
+                                let error = WritingCheckService.CheckError.invalidProviderResponse
+                                self.finish(success: false, detail: error.localizedDescription)
+                                completion(.failure(error))
+                            }
+                        case .failure(let error):
+                            if SettingsStore.shared.grammarFallbackToLocal {
+                                self.completeLocalReview(source: source, rewrittenText: localNormalized, operationID: operationID, status: "Enhanced check unavailable · Local result shown.", completion: completion)
+                            } else {
+                                self.finish(success: false, detail: error.localizedDescription)
+                                completion(.failure(error))
+                            }
+                        }
+                    }
                 } catch {
                     self.finish(success: false, detail: error.localizedDescription)
                     completion(.failure(error))
                 }
             }
+        }
+    }
+
+    private func completeLocalReview(
+        source: String,
+        rewrittenText: String,
+        operationID: UUID,
+        status: String?,
+        completion: @escaping (Result<WritingReview, Error>) -> Void
+    ) {
+        guard self.operationID == operationID else { return }
+        do {
+            var review = try reviewer.review(
+                sourceText: source,
+                rewrittenText: rewrittenText,
+                engineTitle: "Python + Harper"
+            )
+            if let status {
+                review = WritingReview(
+                    sourceText: review.sourceText,
+                    suggestedText: review.suggestedText,
+                    issues: review.issues,
+                    status: status
+                )
+            }
+            finish(success: true, output: rewrittenText.count)
+            completion(.success(review))
+        } catch {
+            finish(success: false, detail: error.localizedDescription)
+            completion(.failure(error))
         }
     }
 
@@ -133,12 +215,17 @@ final class RuleBasedWritingChecker {
         )
         if SettingsStore.shared.developerGrammarEnabled {
             guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
-                finish(success: false, detail: error.localizedDescription)
-                completion(.failure(error))
+                if SettingsStore.shared.grammarFallbackToLocal {
+                    progress("Enhanced check unavailable · Local result shown.")
+                    runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
+                } else {
+                    let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+                    finish(success: false, detail: error.localizedDescription)
+                    completion(.failure(error))
+                }
                 return
             }
-            progress("Editing with developer provider…")
+            progress("Checking with Enhanced Grammar…")
             remoteTask = remoteClient.correct(
                 protected.maskedText,
                 configuration: configuration
@@ -149,26 +236,42 @@ final class RuleBasedWritingChecker {
                 case .success(let correctedMasked):
                     guard let corrected = protected.restore(self.reviewer.normalizeProofreadRewrite(correctedMasked)),
                           StealthGrammarService.isSafeReplacement(source, corrected) else {
-                        self.finish(success: false, detail: "The developer provider changed protected text.")
-                        completion(.failure(WritingCheckService.CheckError.invalidProviderResponse))
+                        if SettingsStore.shared.grammarFallbackToLocal {
+                            progress("Enhanced check unavailable · Local result shown.")
+                            self.runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
+                        } else {
+                            let error = WritingCheckService.CheckError.invalidProviderResponse
+                            self.finish(success: false, detail: error.localizedDescription)
+                            completion(.failure(error))
+                        }
                         return
                     }
                     self.finish(success: true, output: corrected.count)
                     completion(.success(corrected))
                 case .failure(let error):
-                    self.finish(success: false, detail: error.localizedDescription)
-                    completion(.failure(error))
+                    if SettingsStore.shared.grammarFallbackToLocal {
+                        progress("Enhanced check unavailable · Local result shown.")
+                        self.runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
+                    } else {
+                        self.finish(success: false, detail: error.localizedDescription)
+                        completion(.failure(error))
+                    }
                 }
             }
             return
         }
 
+        runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
+    }
+
+    private func runLocalStealth(
+        source: String,
+        protected: StealthProtectedText,
+        operationID: UUID,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
         progress("Editing locally…")
-        // The stealth/global-hotkey path should feel immediate. The bundled
-        // Python pass performs the same conservative spelling, agreement, and
-        // punctuation corrections needed for replacement without launching a
-        // second heavyweight Harper process. Harper is retained for the normal
-        // review path because that path needs detailed lint metadata.
         runPython(protected.maskedText, mode: "stealth") { [weak self] pythonResult in
             guard let self, self.operationID == operationID else { return }
             do {
@@ -176,9 +279,7 @@ final class RuleBasedWritingChecker {
                 switch pythonResult {
                 case .success(let value) where protected.restore(value) != nil:
                     correctedMasked = value
-                case .success:
-                    correctedMasked = protected.maskedText
-                case .failure:
+                case .success, .failure:
                     correctedMasked = protected.maskedText
                 }
                 guard let corrected = protected.restore(correctedMasked),

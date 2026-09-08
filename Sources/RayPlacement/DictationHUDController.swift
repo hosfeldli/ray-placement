@@ -3,32 +3,96 @@ import Combine
 import SwiftUI
 
 @MainActor
+private final class DictationHUDState: ObservableObject {
+    @Published var dismissedConversationID: UUID?
+    @Published var dismissedSessionGeneration: UInt64?
+}
+
+@MainActor
 final class DictationHUDController {
     private let panel: DictationHUDPanel
+    private let shelfState = DictationHUDState()
     private let music = MusicNowPlayingService()
     private let focus = ShelfFocusCoordinator()
+    private let conversations: DictationConversationStore
     private var stateObserver: AnyCancellable?
+    private var dismissedConversationID: UUID?
+    private var dismissedSessionGeneration: UInt64?
 
-    init(dictation: NoteDictationService) {
+    init(
+        dictation: NoteDictationService,
+        conversations: DictationConversationStore,
+        openConversation: @escaping (UUID) -> Void
+    ) {
+        self.conversations = conversations
         panel = DictationHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56))
         panel.contentView = ShelfHostingView(rootView: LimaTypographyRoot(content: TopShelfView(
             dictation: dictation,
+            conversations: conversations,
             music: music,
-            focus: focus
+            focus: focus,
+            hudState: shelfState,
+            openDictation: { [weak self] in
+                guard let self, let id = self.conversations.currentConversationID else { return }
+                let generation = self.conversations.currentSessionGeneration
+                self.dismissedConversationID = id
+                self.dismissedSessionGeneration = generation
+                self.shelfState.dismissedConversationID = id
+                self.shelfState.dismissedSessionGeneration = generation
+                self.hideDictationIfNeeded(
+                    phase: dictation.phase,
+                    conversationID: id,
+                    sessionGeneration: generation,
+                    nowPlaying: self.music.nowPlaying
+                )
+                openConversation(id)
+            }
         )))
 
-        stateObserver = Publishers.CombineLatest(dictation.$phase, music.$nowPlaying)
-            .sink { [weak self] phase, nowPlaying in
+        stateObserver = Publishers.CombineLatest4(
+            dictation.$phase,
+            conversations.$currentConversationID,
+            conversations.$currentSessionGeneration,
+            music.$nowPlaying
+        )
+            .sink { [weak self] phase, conversationID, sessionGeneration, nowPlaying in
                 guard let self else { return }
-                let dictationVisible = phase != .idle
-                let musicVisible = nowPlaying != nil
-                guard dictationVisible || musicVisible else {
-                    self.hide()
-                    return
+                if sessionGeneration != self.dismissedSessionGeneration {
+                    // A new recording, including a retry of the same
+                    // conversation, gets a fresh HUD. Later phase updates in
+                    // the same generation cannot undo a deliberate dismissal.
+                    if sessionGeneration > 0 {
+                        self.dismissedConversationID = nil
+                        self.dismissedSessionGeneration = nil
+                        self.shelfState.dismissedConversationID = nil
+                        self.shelfState.dismissedSessionGeneration = nil
+                    }
                 }
-                let width: CGFloat = dictationVisible && musicVisible ? 702 : (dictationVisible ? 320 : 374)
-                self.show(width: width)
+                self.hideDictationIfNeeded(
+                    phase: phase,
+                    conversationID: conversationID,
+                    sessionGeneration: sessionGeneration,
+                    nowPlaying: nowPlaying
+                )
             }
+    }
+
+    private func hideDictationIfNeeded(
+        phase: NoteDictationService.Phase,
+        conversationID: UUID?,
+        sessionGeneration: UInt64,
+        nowPlaying: MediaNowPlayingSnapshot?
+    ) {
+        let dictationVisible = phase != .idle
+            && conversationID != nil
+            && sessionGeneration != dismissedSessionGeneration
+        let musicVisible = nowPlaying != nil
+        guard dictationVisible || musicVisible else {
+            hide()
+            return
+        }
+        let width: CGFloat = dictationVisible && musicVisible ? 702 : (dictationVisible ? 320 : 374)
+        show(width: width)
     }
 
     private func show(width: CGFloat) {
@@ -97,26 +161,18 @@ private final class DictationHUDPanel: NSPanel {
 
 private struct MusicSignalRibbon: View {
     let progress: Double
-    let level: Double
     let accent: Color
-    let isPlaying: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { proxy in
             let clampedProgress = min(1, max(0, progress))
-            let clampedLevel = min(1, max(0, level))
             let barWidth = max(1, (proxy.size.width - 34) / 24)
             HStack(alignment: .center, spacing: 1.4) {
                 ForEach(0..<24, id: \.self) { index in
                     let filled = Double(index) / 24 < clampedProgress
-                    let variation = CGFloat((index * 7) % 5) / 5
-                    let liveHeight = isPlaying && !reduceMotion
-                        ? 4 + CGFloat(clampedLevel) * (7 + variation * 7)
-                        : 4 + variation * 3
                     Capsule()
-                        .fill(filled ? accent.opacity(0.92) : Color.white.opacity(0.17))
-                        .frame(width: barWidth, height: liveHeight)
+                        .fill(filled ? accent.opacity(0.92) : LimaColors.tertiaryText.opacity(0.35))
+                        .frame(width: barWidth, height: 5)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -128,12 +184,18 @@ private struct MusicSignalRibbon: View {
 
 private struct TopShelfView: View {
     @ObservedObject var dictation: NoteDictationService
+    @ObservedObject var conversations: DictationConversationStore
     @ObservedObject var music: MusicNowPlayingService
     let focus: ShelfFocusCoordinator
+    @ObservedObject var hudState: DictationHUDState
+    let openDictation: () -> Void
 
     var body: some View {
         HStack(spacing: 8) {
-            if dictation.phase != .idle {
+            if dictation.phase != .idle,
+               let conversationID = conversations.currentConversationID,
+               conversationID != hudState.dismissedConversationID,
+               conversations.currentSessionGeneration != hudState.dismissedSessionGeneration {
                 dictationPill.frame(width: 320)
             }
             if let track = music.nowPlaying {
@@ -147,27 +209,47 @@ private struct TopShelfView: View {
 
     private var dictationPill: some View {
         HStack(spacing: 8) {
-            activityIndicator.frame(width: 30, height: 26)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(primaryText)
-                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(streamingText)
-                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.head)
-                    .contentTransition(.interpolate)
+            Button(action: openDictation) {
+                HStack(spacing: 8) {
+                    activityIndicator.frame(width: 30, height: 26)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(primaryText)
+                            .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                        Text(streamingText)
+                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.head)
+                            .contentTransition(.interpolate)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "arrow.up.right.square")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(DictationOpenButtonStyle())
+            .help("Open this dictation conversation in Lima Notes")
+            .accessibilityLabel("Open current dictation conversation in Lima Notes")
+
             Button {
+                // This is deliberately a sibling control, not a nested button,
+                // so stopping can never bubble into the Notes action.
                 dictation.performPrimaryAction()
                 focus.restoreSoon()
             } label: {
                 Image(systemName: "stop.fill")
                     .font(.system(size: 8, weight: .bold))
                     .frame(width: 24, height: 24)
-                    .background(Color.red.opacity(0.16), in: PrismaticPanelShape(cut: 5))
+                    .foregroundStyle(LimaColors.danger)
+                    .background(LimaColors.dangerSoft, in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous)
+                            .strokeBorder(LimaColors.danger.opacity(0.26), lineWidth: LimaDesign.borderWidth)
+                    }
             }
             .buttonStyle(.plain)
             .help("Stop recording and finish transcription")
@@ -175,12 +257,21 @@ private struct TopShelfView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .frame(height: 56)
-        .prismaticShelf(accent: .red)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: LimaColors.danger.opacity(0.30), shadow: true)
         .overlay(alignment: .bottom) {
             AudioAccentRail(level: dictation.audioLevel, accent: .red, active: dictation.phase == .recording)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityText)
+    }
+
+    private struct DictationOpenButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .padding(.vertical, 3)
+                .background(configuration.isPressed ? LimaColors.hoverFill : .clear, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                .opacity(configuration.isPressed ? 0.82 : 1)
+        }
     }
 
     private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
@@ -200,16 +291,16 @@ private struct TopShelfView: View {
                     musicArtwork(for: track, accent: accent)
                     Image(systemName: track.source.symbol)
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(LimaColors.primaryText)
                         .padding(4)
-                        .background(.black.opacity(0.42), in: Circle())
+                        .background(LimaColors.recessedSurface.opacity(0.92), in: Circle())
                         .padding(3)
                 }
                 .frame(width: 40, height: 40)
-                .clipShape(PrismaticPanelShape(cut: 10))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay {
-                    PrismaticPanelShape(cut: 10)
-                        .stroke(accent.opacity(0.62), lineWidth: 0.9)
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .strokeBorder(accent.opacity(0.42), lineWidth: LimaDesign.borderWidth)
                         .allowsHitTesting(false)
                 }
             }
@@ -235,16 +326,14 @@ private struct TopShelfView: View {
                 HStack(spacing: 4) {
                     Text(timeLabel(track.position))
                         .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(LimaColors.secondaryText)
                     MusicSignalRibbon(
                         progress: track.duration > 0 ? track.position / track.duration : 0,
-                        level: track.isPlaying ? music.outputAudioLevel : 0,
-                        accent: accent,
-                        isPlaying: track.isPlaying
+                        accent: accent
                     )
                     Text(timeLabel(track.duration))
                         .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.78))
+                        .foregroundStyle(LimaColors.secondaryText)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -256,8 +345,8 @@ private struct TopShelfView: View {
                         Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
                             .font(.system(size: 9, weight: .bold))
                             .frame(width: 27, height: 25)
-                            .foregroundStyle(.white)
-                            .background(accent.gradient, in: Circle())
+                            .foregroundStyle(LimaColors.primaryText)
+                            .background(accent, in: Circle())
                     }
                     .buttonStyle(.plain)
                     .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
@@ -276,14 +365,14 @@ private struct TopShelfView: View {
             }
             .frame(width: 88)
             .padding(.vertical, 3)
-            .background(Color.black.opacity(0.15), in: Capsule())
-            .overlay(Capsule().stroke(Color.white.opacity(0.10), lineWidth: 0.7))
+            .background(LimaColors.recessedSurface.opacity(0.92), in: Capsule())
+            .overlay(Capsule().stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             .opacity(music.isPerformingTransport ? 0.55 : 1)
             .disabled(music.isPerformingTransport)
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .prismaticShelf(accent: accent)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: accent.opacity(0.26), shadow: true)
         .overlay(alignment: .bottom) {
             AudioAccentRail(
                 level: track.isPlaying ? music.outputAudioLevel : 0,
@@ -463,71 +552,16 @@ private struct AudioAccentRail: View {
                     ? travel * (0.5 + sin(time * 1.25) * 0.5)
                     : travel * 0.5
                 Capsule()
-                    .fill(LinearGradient(colors: [.clear, accent.opacity(0.95), .white.opacity(0.78), accent.opacity(0.75), .clear], startPoint: .leading, endPoint: .trailing))
+                    .fill(accent.opacity(0.72 + amount * 0.28))
                     .frame(width: width, height: 2)
                     .offset(x: 6 + position)
                     .opacity(0.42 + amount * 0.58)
-                    .shadow(color: accent.opacity(0.35 + amount * 0.55), radius: 2 + amount * 5)
                     .limaAnimation(.linear(duration: 0.08), value: amount)
             }
         }
         .frame(height: 3)
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-}
-
-private extension View {
-    func prismaticShelf(accent: Color) -> some View {
-        background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
-            .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 8))
-            .overlay(
-                PrismaticPanelShape(cut: 8)
-                    .fill(
-                        LinearGradient(
-                            colors: [.clear, Color.white.opacity(0.09), accent.opacity(0.10), .clear],
-                            startPoint: .bottomLeading,
-                            endPoint: .topTrailing
-                        )
-                    )
-                    .blendMode(.screen)
-                    .allowsHitTesting(false)
-            )
-            .overlay(
-                PrismaticPanelShape(cut: 8)
-                    .stroke(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.36), accent.opacity(0.44), Color.white.opacity(0.08)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.75
-                    )
-                    .allowsHitTesting(false)
-            )
-            .shadow(color: accent.opacity(0.08), radius: 6, y: 3)
-    }
-}
-
-private struct MusicActivityIndicator: View {
-    let level: Double
-    let color: Color
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 1.5) {
-            ForEach(0..<4, id: \.self) { index in
-                Capsule()
-                    .fill(color)
-                    .frame(width: 2, height: barHeight(for: index))
-            }
-        }
-        .frame(width: 13, height: 10, alignment: .center)
-        .accessibilityHidden(true)
-    }
-
-    private func barHeight(for index: Int) -> CGFloat {
-        let multiplier: Double = index.isMultiple(of: 2) ? 1 : 1.65
-        return CGFloat(3 + 7 * max(0.25, level) * multiplier)
     }
 }
 
@@ -539,12 +573,16 @@ private struct SpeechLevelView: View {
         HStack(alignment: .center, spacing: 2.5) {
             ForEach(Array(multipliers.enumerated()), id: \.offset) { _, multiplier in
                 Capsule()
-                    .fill(Color.red)
+                    .fill(LimaColors.danger)
                     .frame(width: 3, height: 4 + 15 * max(0.08, level) * multiplier)
             }
         }
         .frame(width: 28, height: 24)
-        .background(Color.red.opacity(0.10), in: PrismaticPanelShape(cut: 5))
+        .background(LimaColors.dangerSoft, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous)
+                .strokeBorder(LimaColors.danger.opacity(0.24), lineWidth: LimaDesign.borderWidth)
+        }
         .limaAnimation(.linear(duration: 0.08), value: level)
         .accessibilityHidden(true)
     }

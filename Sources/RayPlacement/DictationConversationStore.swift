@@ -55,6 +55,10 @@ final class DictationConversationStore: ObservableObject {
     static let maximumCharactersPerConversation = 200_000
 
     @Published private(set) var conversations: [DictationConversation]
+    @Published private(set) var currentConversationID: UUID?
+    /// Increments for every genuinely new recording session, including a
+    /// retry that intentionally reuses the same conversation.
+    @Published private(set) var currentSessionGeneration: UInt64 = 0
     @Published var selectedConversationID: UUID?
     @Published var lastError: String?
     @Published private(set) var recoveryURL: URL?
@@ -64,6 +68,9 @@ final class DictationConversationStore: ObservableObject {
     private var pendingSave: DispatchWorkItem?
     private var activeConversationID: UUID?
     private var resumableConversationID: UUID?
+    // Kept after finish so a HUD click during .transcribing or .completed
+    // still routes to the conversation created by this dictation session.
+    private var lastSessionConversationID: UUID?
 
     init() {
         let loaded = Self.load()
@@ -71,6 +78,7 @@ final class DictationConversationStore: ObservableObject {
         lastError = loaded.error
         recoveryURL = loaded.recoveryURL
         selectedConversationID = conversations.first?.id
+        currentConversationID = nil
     }
 
     func replace(with replacement: [DictationConversation]) throws {
@@ -110,7 +118,10 @@ final class DictationConversationStore: ObservableObject {
         let conversation = DictationConversation()
         conversations.insert(conversation, at: 0)
         resumableConversationID = nil
+        currentSessionGeneration &+= 1
         activeConversationID = conversation.id
+        lastSessionConversationID = conversation.id
+        currentConversationID = conversation.id
         selectedConversationID = conversation.id
         trimAndSave()
     }
@@ -120,7 +131,10 @@ final class DictationConversationStore: ObservableObject {
            let index = conversations.firstIndex(where: { $0.id == resumableConversationID }) {
             conversations[index].isComplete = false
             conversations[index].modifiedAt = Date()
+            currentSessionGeneration &+= 1
             activeConversationID = resumableConversationID
+            lastSessionConversationID = resumableConversationID
+            currentConversationID = resumableConversationID
             self.resumableConversationID = nil
             selectedConversationID = resumableConversationID
             scheduleSave()
@@ -165,7 +179,12 @@ final class DictationConversationStore: ObservableObject {
         guard let activeConversationID,
               let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else { return }
         if !conversations[index].hasContent {
+            let removedID = conversations[index].id
             conversations.remove(at: index)
+            if lastSessionConversationID == removedID {
+                lastSessionConversationID = nil
+                currentConversationID = nil
+            }
             selectedConversationID = conversations.first?.id
         } else {
             conversations[index].isComplete = true
@@ -173,6 +192,7 @@ final class DictationConversationStore: ObservableObject {
         }
         self.activeConversationID = nil
         resumableConversationID = nil
+        currentConversationID = lastSessionConversationID
         scheduleSave()
     }
 
@@ -180,7 +200,12 @@ final class DictationConversationStore: ObservableObject {
         guard let activeConversationID,
               let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else { return }
         if !conversations[index].hasContent {
+            let removedID = conversations[index].id
             conversations.remove(at: index)
+            if lastSessionConversationID == removedID {
+                lastSessionConversationID = nil
+                currentConversationID = nil
+            }
             selectedConversationID = conversations.first?.id
             resumableConversationID = nil
         } else {
@@ -190,6 +215,7 @@ final class DictationConversationStore: ObservableObject {
             selectedConversationID = activeConversationID
         }
         self.activeConversationID = nil
+        currentConversationID = lastSessionConversationID
         scheduleSave()
     }
 
@@ -197,6 +223,10 @@ final class DictationConversationStore: ObservableObject {
         conversations.removeAll { $0.id == conversation.id }
         if activeConversationID == conversation.id { activeConversationID = nil }
         if resumableConversationID == conversation.id { resumableConversationID = nil }
+        if lastSessionConversationID == conversation.id {
+            lastSessionConversationID = nil
+            currentConversationID = nil
+        }
         selectedConversationID = conversations.first?.id
         scheduleSave()
     }

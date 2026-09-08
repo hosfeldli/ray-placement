@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import RayPlacementCore
+import RayPlacementWriting
 import SwiftUI
 
 private extension LoadedExtensionCommand {
@@ -16,22 +17,62 @@ private struct SettingsExtensionGroup: Identifiable {
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, safety, clipboard, writing, performance, usage, secrets, extensions, about
+    case general
+    case shortcuts
+    case writing
+    case clipboard
+    case extensions
+    case privacy
+    case advanced
+    case about
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+
+    var title: String {
+        switch self {
+        case .general: return "General"
+        case .shortcuts: return "Shortcuts & Input"
+        case .writing: return "Writing & Dictation"
+        case .clipboard: return "Clipboard"
+        case .extensions: return "Extensions"
+        case .privacy: return "Privacy & Permissions"
+        case .advanced: return "Advanced"
+        case .about: return "About"
+        }
+    }
+
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
-        case .safety: return "checkmark.shield.fill"
-        case .clipboard: return "clipboard.fill"
+        case .shortcuts: return "command"
         case .writing: return "wand.and.stars"
-        case .performance: return "gauge.with.dots.needle.67percent"
-        case .usage: return "chart.xyaxis.line"
-        case .secrets: return "key.fill"
+        case .clipboard: return "clipboard.fill"
         case .extensions: return "puzzlepiece.extension.fill"
+        case .privacy: return "checkmark.shield.fill"
+        case .advanced: return "slider.horizontal.3"
         case .about: return "info.circle.fill"
         }
+    }
+
+    var searchTerms: [String] {
+        switch self {
+        case .general: return ["general", "appearance", "accent", "density", "text size", "launch at login", "theme"]
+        case .shortcuts: return ["shortcuts", "input", "launcher", "notes", "quick note", "dictation", "terminal", "mouse", "hotkey"]
+        case .writing: return ["writing", "dictation", "grammar", "engine", "local", "enhanced", "provider", "api key", "preserved terms", "stealth", "whisper", "transcription"]
+        case .clipboard: return ["clipboard", "history", "monitoring", "clear", "limit"]
+        case .extensions: return ["extensions", "packs", "permissions", "commands", "shortcuts"]
+        case .privacy: return ["privacy", "permissions", "accessibility", "microphone", "speech recognition", "security", "backup", "diagnostics"]
+        case .advanced: return ["advanced", "performance", "whisper compute", "usage", "debugging", "secrets", "keychain", "model", "base url"]
+        case .about: return ["about", "updates", "version", "support"]
+        }
+    }
+
+    func matches(_ query: String) -> Bool {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !normalized.isEmpty else { return true }
+        let searchableText = ([title] + searchTerms).joined(separator: " ").lowercased()
+        let terms = normalized.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        return terms.allSatisfy { searchableText.contains($0) }
     }
 }
 
@@ -60,9 +101,14 @@ struct SettingsView: View {
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
+    @State private var settingsSearchQuery = ""
+    @State private var advancedSubsection = 0
     @State private var confirmUsageClear = false
     @State private var commandProfileName = ""
     @State private var workspaceProfileName = ""
+    @State private var grammarAPIKey = ""
+    @State private var grammarConnectionMessage: String?
+    @State private var isTestingGrammarConnection = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
 
@@ -86,23 +132,30 @@ struct SettingsView: View {
                     selectedContent
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
                 }
-                .liquidGlass(cornerRadius: 21, depth: .raised, accentOpacity: 0.018)
+                .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.window, border: LimaColors.border)
             }
             .padding(LimaDesign.windowPadding)
         }
         .frame(minWidth: 820, idealWidth: 820, minHeight: 590, idealHeight: 590)
         .tint(settings.accentTheme.primary)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
+        .onChange(of: settingsSearchQuery) { query in
+            if let first = filteredSections.first {
+                selectedSection = first
+            } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                selectedSection = .general
+            }
+        }
         .alert("Clear usage log?", isPresented: $confirmUsageClear) {
             Button("Cancel", role: .cancel) {}
             Button("Clear Log", role: .destructive) { usageMonitor.clear() }
         } message: {
-            Text("This permanently removes RayPlacement's local task history. It never contains your selected text or document contents.")
+            Text("This permanently removes Lima's local task history. It never contains your selected text or document contents.")
         }
     }
 
     private var settingsSidebar: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
                 ZStack {
                     PrismaticPanelShape(cut: 7)
@@ -112,78 +165,151 @@ struct SettingsView: View {
                         .foregroundStyle(.white)
                 }
                 .frame(width: 30, height: 30)
-                .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.42), lineWidth: 0.7))
-                .shadow(color: settings.accentTheme.primary.opacity(0.16), radius: 6, y: 3)
+                .overlay(PrismaticPanelShape(cut: 7).stroke(LimaColors.primaryText.opacity(0.34), lineWidth: LimaDesign.borderWidth))
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
+                    Text("Settings").limaFont(.caption2).foregroundStyle(.secondary)
                 }
             }
             .padding(.horizontal, 14)
             .padding(.top, 13)
             .padding(.bottom, 10)
 
-            ForEach(SettingsSection.allCases) { section in
-                Button { selectedSection = section } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: section.symbol)
-                            .limaFont(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(selectedSection == section ? settings.accentTheme.primary : Color.secondary)
-                            .frame(width: 21)
-                        Text(section.title)
-                            .limaFont(.system(size: 13, weight: selectedSection == section ? .semibold : .medium))
-                        Spacer()
+            HStack(spacing: 7) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11, weight: .semibold))
+                TextField("Search settings", text: $settingsSearchQuery)
+                    .textFieldStyle(.plain)
+                    .limaFont(.system(size: 12.5))
+                if !settingsSearchQuery.isEmpty {
+                    Button { settingsSearchQuery = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.tertiary)
                     }
-                    .foregroundStyle(selectedSection == section ? Color.primary : Color.primary.opacity(0.76))
-                    .padding(.horizontal, 12)
-                    .frame(height: 33)
-                    .background {
-                        if selectedSection == section {
-                            ZStack {
-                                PrismaticPanelShape(cut: 6).fill(.ultraThinMaterial)
-                                PrismaticPanelShape(cut: 6)
-                                    .fill(settings.accentTheme.gradient.opacity(0.10))
-                            }
-                        }
-                    }
-                    .overlay {
-                        if selectedSection == section {
-                            PrismaticPanelShape(cut: 6)
-                                .strokeBorder(Color.white.opacity(0.44), lineWidth: 0.7)
-                        }
-                    }
-                    .shadow(
-                        color: selectedSection == section ? settings.accentTheme.primary.opacity(0.07) : .clear,
-                        radius: 6,
-                        y: 3
-                    )
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 1)
-                .accessibilityValue(selectedSection == section ? "Selected" : "")
             }
-            Spacer()
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+            .padding(.horizontal, 9)
+            .padding(.bottom, 10)
+
+            if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                sidebarGroup("GENERAL", sections: [.general, .shortcuts])
+                sidebarGroup("FEATURES", sections: [.writing, .clipboard, .extensions])
+                sidebarGroup("SYSTEM", sections: [.privacy, .advanced, .about])
+            } else if filteredSections.isEmpty {
+                Text("No matching settings")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.top, 12)
+            } else {
+                Text("RESULTS")
+                    .limaFont(.system(size: 9, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 4)
+                ForEach(filteredSections) { settingsRow($0) }
+            }
+
+            Spacer(minLength: 10)
+            settingsStatusSummary
+                .padding(.horizontal, 11)
+                .padding(.bottom, 11)
         }
-        .frame(width: 178)
-        .liquidGlass(cornerRadius: 21, depth: .floating, accentOpacity: 0.025)
+        .frame(width: 204)
+        .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.window, border: LimaColors.border)
+    }
+
+    private var filteredSections: [SettingsSection] {
+        SettingsSection.allCases.filter { $0.matches(settingsSearchQuery) }
+    }
+
+    @ViewBuilder
+    private func sidebarGroup(_ title: String, sections: [SettingsSection]) -> some View {
+        Text(title)
+            .limaFont(.system(size: 9, weight: .bold))
+            .tracking(1.1)
+            .foregroundStyle(.tertiary)
+            .padding(.horizontal, 14)
+            .padding(.top, 7)
+            .padding(.bottom, 3)
+        ForEach(sections) { settingsRow($0) }
+    }
+
+    private func settingsRow(_ section: SettingsSection) -> some View {
+        Button { selectedSection = section } label: {
+            HStack(spacing: 9) {
+                Image(systemName: section.symbol)
+                    .limaFont(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(selectedSection == section ? settings.accentTheme.primary : Color.secondary)
+                    .frame(width: 21)
+                Text(section.title)
+                    .limaFont(.system(size: 12.5, weight: selectedSection == section ? .semibold : .medium))
+                    .lineLimit(1)
+                Spacer()
+            }
+            .foregroundStyle(selectedSection == section ? Color.primary : Color.primary.opacity(0.76))
+            .padding(.horizontal, 10)
+            .frame(height: 32)
+            .limaSelection(selectedSection == section, radius: LimaRadius.control)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 1)
+        .accessibilityValue(selectedSection == section ? "Selected" : "")
+    }
+
+    private var settingsStatusSummary: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("STATUS")
+                .limaFont(.system(size: 9, weight: .bold))
+                .tracking(1.1)
+                .foregroundStyle(.tertiary)
+            SettingsCompactStatus(title: "Accessibility", value: compactPermission(.accessibility))
+            SettingsCompactStatus(title: "Microphone", value: compactPermission(.microphone))
+            SettingsCompactStatus(title: "Whisper", value: settings.dictationEngine == .localWhisper ? "Ready" : "Apple Speech")
+            SettingsCompactStatus(
+                title: "Enhanced Grammar",
+                value: settings.grammarEngineEnhanced
+                    ? (settings.enhancedGrammarAPIKeyStored ? "\(settings.developerGrammarProvider.title) · Connected" : "Needs key")
+                    : "Local"
+            )
+            SettingsCompactStatus(title: "Extensions", value: "\(viewModel.extensionCommands.count) enabled")
+        }
+        .padding(9)
+        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+    }
+
+    private func compactPermission(_ id: PermissionCenter.PermissionID) -> String {
+        switch permissionCenter.statuses[id] {
+        case .granted: return "Allowed"
+        case .denied: return "Needs attention"
+        case .unavailable: return "Unavailable"
+        case .none: return "Checking…"
+        }
     }
 
     @ViewBuilder
     private var selectedContent: some View {
         switch selectedSection {
         case .general: generalTab
-        case .safety: safetyTab
-        case .clipboard: clipboardTab
+        case .shortcuts: shortcutsTab
         case .writing: writingTab
-        case .performance: performanceTab
-        case .usage: usageTab
-        case .secrets: secretsTab
+        case .clipboard: clipboardTab
         case .extensions: extensionsTab
+        case .privacy: privacyTab
+        case .advanced: advancedDetails
         case .about: aboutTab
         }
     }
 
-    private var performanceTab: some View {
+    private var advancedTab: some View {
         Form {
             Section("Automatic allocation") {
                 Toggle(isOn: $settings.dynamicPerformance) {
@@ -262,6 +388,25 @@ struct SettingsView: View {
         .controlSize(.small)
     }
 
+    private var advancedDetails: some View {
+        VStack(spacing: 0) {
+            Picker("Advanced area", selection: $advancedSubsection) {
+                Text("Performance").tag(0)
+                Text("Usage").tag(1)
+                Text("Secrets").tag(2)
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+            Group {
+                switch advancedSubsection {
+                case 1: usageTab
+                case 2: secretsTab
+                default: advancedTab
+                }
+            }
+        }
+    }
+
     private func performanceSlider(
         _ title: String,
         selection: Binding<PerformanceScale>,
@@ -296,8 +441,119 @@ struct SettingsView: View {
         .accessibilityLabel("\(title) performance")
     }
 
+    private var grammarEngineSection: some View {
+        Section("Grammar Engine") {
+            Picker("Grammar engine", selection: Binding(
+                get: { settings.grammarEngineEnhanced },
+                set: { settings.grammarEngineEnhanced = $0 }
+            )) {
+                Text("Local").tag(false)
+                Text("Enhanced").tag(true)
+            }
+            .pickerStyle(.segmented)
+            if settings.grammarEngineEnhanced {
+                Text("Enhanced uses Local plus your selected AI provider. Text being checked is sent to that provider after protected spans are masked.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                Picker("Provider", selection: Binding(
+                    get: { settings.developerGrammarProvider },
+                    set: { settings.selectDeveloperGrammarProvider($0) }
+                )) {
+                    ForEach(DeveloperGrammarProvider.allCases) { provider in
+                        Text(provider.title).tag(provider)
+                    }
+                }
+                Picker("Model", selection: $settings.developerGrammarModel) {
+                    ForEach(settings.developerGrammarProvider.modelOptions) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                    if !settings.developerGrammarProvider.modelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
+                        Text("Custom: \(settings.developerGrammarModel)").tag(settings.developerGrammarModel)
+                    }
+                }
+                TextField("Manual model ID", text: $settings.developerGrammarModel)
+                    .textFieldStyle(.roundedBorder)
+                SecureField("New API key", text: $grammarAPIKey)
+                    .textFieldStyle(.roundedBorder)
+                HStack {
+                    Button("Save API Key") {
+                        do {
+                            try settings.saveDeveloperGrammarAPIKey(grammarAPIKey)
+                            grammarAPIKey = ""
+                            grammarConnectionMessage = "Stored securely in Keychain."
+                        } catch {
+                            grammarConnectionMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(grammarAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if settings.enhancedGrammarAPIKeyStored {
+                        Label("Stored securely in Keychain", systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
+                            .limaFont(.caption)
+                    }
+                }
+                Toggle("Fall back to Local", isOn: $settings.grammarFallbackToLocal)
+                DisclosureGroup("Advanced provider settings") {
+                    TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Usually no change is needed. Use this for a custom or OpenAI-compatible provider.")
+                        .limaFont(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if let grammarConnectionMessage {
+                    Text(grammarConnectionMessage)
+                        .limaFont(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Button {
+                    testGrammarConnection()
+                } label: {
+                    if isTestingGrammarConnection {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Label("Test Connection", systemImage: "bolt.horizontal.circle")
+                    }
+                }
+                .disabled(isTestingGrammarConnection || !settings.enhancedGrammarAPIKeyStored)
+            } else {
+                Label("Everything stays on this Mac", systemImage: "lock.shield.fill")
+                    .foregroundStyle(.green)
+                Text("Python spelling and Harper grammar run locally. No API key is required.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func testGrammarConnection() {
+        guard let configuration = settings.developerGrammarConfigurationForTesting else {
+            grammarConnectionMessage = "Save an API key and model first."
+            return
+        }
+        isTestingGrammarConnection = true
+        grammarConnectionMessage = nil
+        let started = Date()
+        let token = "\u{E000}LIMA_KEEP_0000_\u{E001}"
+        StealthGrammarRemoteClient().correct(
+            "This are a grammer sentence with \(token).",
+            configuration: configuration
+        ) { result in
+            let latency = Int(Date().timeIntervalSince(started) * 1_000)
+            isTestingGrammarConnection = false
+            switch result {
+            case .success(let value) where value.contains(token):
+                grammarConnectionMessage = "Connected · \(configuration.provider.title) · \(configuration.model) · \(latency) ms"
+            case .success:
+                grammarConnectionMessage = "Failed · the provider changed protected text."
+            case .failure(let error):
+                grammarConnectionMessage = "Failed · \(error.localizedDescription)"
+            }
+        }
+    }
+
     private var writingTab: some View {
         Form {
+            grammarEngineSection
             Section("Local checker") {
                 Label("Python spelling + Harper grammar", systemImage: "checkmark.shield.fill")
                     .foregroundStyle(.green)
@@ -306,7 +562,7 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Stealth Mode") {
+            Section("Stealth Grammar") {
                 Toggle("Enable Stealth Mode", isOn: $settings.stealthGrammarEnabled)
                 PrimaryShortcutRow(
                     title: "Stealth Grammar",
@@ -511,40 +767,8 @@ struct SettingsView: View {
         )
     }
 
-    private var generalTab: some View {
+    private var shortcutsTab: some View {
         Form {
-            Section("Appearance") {
-                Picker("Color scheme", selection: $settings.appearance) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.title).tag(appearance)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text("System follows macOS. Light and Dark apply to Lima windows without changing tester behavior.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                AccentThemePicker(selection: $settings.accentTheme)
-                Picker("Contrast", selection: $settings.contrastMode) {
-                    ForEach(AppContrastMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(settings.contrastMode.detail)
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                InterfaceTextSizeControl()
-                Picker("Interface density", selection: $settings.interfaceDensity) {
-                    ForEach(AppInterfaceDensity.allCases) { density in
-                        Text(density.title).tag(density)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(settings.interfaceDensity.detail)
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
             Section("Global hotkeys") {
                 PrimaryShortcutRow(
                     title: "Launcher",
@@ -583,7 +807,7 @@ struct SettingsView: View {
                     shortcut: $settings.notesDockRightShortcut
                 )
                 PrimaryShortcutRow(
-                    title: "Developer Terminal",
+                    title: "Terminal",
                     symbol: "terminal.fill",
                     enabled: $settings.terminalHotkeyEnabled,
                     shortcut: $settings.terminalShortcut
@@ -597,6 +821,61 @@ struct SettingsView: View {
                 ForEach(3...8, id: \.self) { button in
                     accessoryMouseBindingRow(button: button)
                 }
+            }
+
+            Section("Dictation input") {
+                Picker("Dictation engine", selection: $settings.dictationEngine) {
+                    ForEach(DictationEngine.allCases) { engine in
+                        Text(engine.title).tag(engine)
+                    }
+                }
+                Text(settings.dictationEngine.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                if settings.dictationEngine == .localWhisper {
+                    Picker("Whisper compute", selection: $settings.dictationComputeMode) {
+                        ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
+    }
+
+    private var generalTab: some View {
+        Form {
+            Section("Appearance") {
+                Picker("Color scheme", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { appearance in
+                        Text(appearance.title).tag(appearance)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("System follows macOS. Light and Dark apply only to Lima windows.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                AccentThemePicker(selection: $settings.accentTheme)
+                Picker("Contrast", selection: $settings.contrastMode) {
+                    ForEach(AppContrastMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.contrastMode.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                InterfaceTextSizeControl()
+                Picker("Interface density", selection: $settings.interfaceDensity) {
+                    ForEach(AppInterfaceDensity.allCases) { density in
+                        Text(density.title).tag(density)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(settings.interfaceDensity.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Startup") {
@@ -655,7 +934,7 @@ struct SettingsView: View {
         NSWorkspace.shared.open(url)
     }
 
-    private var safetyTab: some View {
+    private var privacyTab: some View {
         Form {
             Section("Permission Center") {
                 ForEach(PermissionCenter.PermissionID.allCases) { permission in
@@ -723,7 +1002,7 @@ struct SettingsView: View {
             Section("Local clipboard history") {
                 Toggle("Remember copied text", isOn: $settings.clipboardEnabled)
                 Stepper("Keep up to \(settings.clipboardLimit) items", value: $settings.clipboardLimit, in: 10...500, step: 10)
-                Text("Off by default. When enabled, RayPlacement checks the macOS clipboard and stores text only in ~/Library/Application Support/RayPlacement. Nothing is sent over the network.")
+                Text("Off by default. When enabled, Lima checks the macOS clipboard and stores text only in ~/Library/Application Support/Lima. Nothing is sent over the network.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 if #available(macOS 15.4, *) {
@@ -743,7 +1022,7 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) {}
             Button("Clear History", role: .destructive) { viewModel.clipboard.clear() }
         } message: {
-            Text("This permanently removes every item RayPlacement has saved from the clipboard.")
+            Text("This permanently removes every item Lima has saved from the clipboard.")
         }
     }
 
@@ -984,7 +1263,7 @@ struct SettingsView: View {
                 Text("Verified prebuilt updates replace this app in place after confirmation. No local compilation is required.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
-                Text("~/Library/Application Support/RayPlacement/Updates/update.log")
+                Text("~/Library/Application Support/Lima/Updates/update.log")
                     .limaFont(.caption2.monospaced())
                     .foregroundStyle(.tertiary)
                 Button("Reveal running app in Finder") {
@@ -1005,6 +1284,28 @@ struct SettingsView: View {
         case 2: return "Always allow"
         case 3: return "Always deny"
         default: return "Managed by macOS"
+        }
+    }
+}
+
+
+private struct SettingsCompactStatus: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(value == "Allowed" || value == "Ready" ? LimaColors.success : LimaColors.warning)
+                .frame(width: 5, height: 5)
+            Text(title)
+                .limaFont(.system(size: 10.5, weight: .medium))
+                .lineLimit(1)
+            Spacer(minLength: 3)
+            Text(value)
+                .limaFont(.system(size: 9.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
     }
 }
@@ -1032,7 +1333,7 @@ private struct AccentThemePicker: View {
                             .frame(width: 30, height: 30)
                             .overlay(
                                 PrismaticPanelShape(cut: 5)
-                                    .stroke(Color.white.opacity(selection == theme ? 0.90 : 0.22), lineWidth: selection == theme ? 1.35 : 0.7)
+                                    .stroke(LimaColors.primaryText.opacity(selection == theme ? 0.76 : 0.22), lineWidth: selection == theme ? LimaDesign.focusWidth : LimaDesign.borderWidth)
                             )
                             .background(PrismaticPanelShape(cut: 6).fill(selection == theme ? theme.primary.opacity(0.20) : .clear))
                             .shadow(color: selection == theme ? theme.primary.opacity(0.22) : .clear, radius: 5, y: 2)

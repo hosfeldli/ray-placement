@@ -119,9 +119,9 @@ private struct ExtensionDevelopmentView: View {
                                 item.id == selectedManualID
                                     ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.14))
                                     : AnyShapeStyle(LimaDesign.controlFill),
-                                in: PrismaticPanelShape(cut: 5)
+                                in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous)
                             )
-                            .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                            .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
                     }
                     .buttonStyle(.plain)
                 }
@@ -137,8 +137,8 @@ private struct ExtensionDevelopmentView: View {
             }
             .padding(.horizontal, LimaDesign.toolbarPadding - 3)
             .frame(height: LimaDesign.controlHeight)
-            .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 5))
-            .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.separator, lineWidth: 0.6))
+            .background(LimaDesign.recessedFill, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).strokeBorder(LimaDesign.separator, lineWidth: LimaDesign.borderWidth))
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
@@ -158,7 +158,7 @@ private struct ExtensionDevelopmentView: View {
                             }
                             .padding(.horizontal, 8)
                             .frame(minHeight: 31)
-                            .background(section.id == selectedSection.id ? SettingsStore.shared.accentTheme.primary.opacity(0.09) : .clear, in: PrismaticPanelShape(cut: 4))
+                            .background(section.id == selectedSection.id ? SettingsStore.shared.accentTheme.primary.opacity(0.09) : .clear, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
                         }
                         .buttonStyle(.plain)
                     }

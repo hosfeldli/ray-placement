@@ -16,7 +16,7 @@ final class FocusedFileLauncherWindowController: NSWindowController {
         LimaWindowChrome.configure(
             window,
             title: "Focused File Launcher",
-            accessibilityLabel: "RayPlacement Focused File Launcher",
+            accessibilityLabel: "Lima Focused File Launcher",
             minSize: NSSize(width: 660, height: 440)
         )
         self.init(window: window)
@@ -165,7 +165,11 @@ private struct FocusedFileLauncherView: View {
                             .limaFont(.system(size: 20, weight: .semibold))
                             .foregroundStyle(settings.accentTheme.gradient)
                             .frame(width: 46, height: 46)
-                            .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 8))
+                            .background(LimaDesign.controlFill, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous)
+                                    .strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
+                            }
                         VStack(alignment: .leading, spacing: 4) {
                             Text(url.lastPathComponent).limaFont(.system(size: 13, weight: .semibold)).lineLimit(2)
                             Text(url.path).limaFont(.system(size: 10, design: .monospaced)).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
@@ -207,8 +211,8 @@ private struct FocusedFileLauncherView: View {
             }
             TextField("Filter installed apps", text: $model.appSearch).textFieldStyle(.plain)
                 .padding(.horizontal, 9).frame(height: 28)
-                .background(LimaDesign.controlFill, in: PrismaticPanelShape(cut: 5))
-                .overlay(PrismaticPanelShape(cut: 5).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
+                .background(LimaDesign.controlFill, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth))
             Group {
                 if model.isLoadingApplications {
                     VStack(spacing: 8) {
@@ -236,8 +240,8 @@ private struct FocusedFileLauncherView: View {
                     .scrollContentBackground(.hidden)
                 }
             }
-            .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 7))
-            .overlay(PrismaticPanelShape(cut: 7).stroke(LimaDesign.separator, lineWidth: LimaDesign.borderWidth))
+            .background(LimaDesign.recessedFill, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaDesign.separator, lineWidth: LimaDesign.borderWidth))
             HStack(spacing: 7) {
                 Button("Open selected", action: model.openWithSelectedApplication)
                     .limaButton(prominent: true)
@@ -258,7 +262,7 @@ private struct FocusedFileLauncherView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding - 2)
         .frame(height: LimaDesign.statusHeight)
-        .background(LimaDesign.recessedFill, in: PrismaticPanelShape(cut: 6))
+        .background(LimaDesign.recessedFill, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
     }
 
     private func fileSymbol(_ url: URL) -> String {

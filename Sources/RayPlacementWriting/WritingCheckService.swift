@@ -28,11 +28,13 @@ public struct WritingReview: Equatable, Sendable {
     public let sourceText: String
     public let suggestedText: String
     public let issues: [WritingIssue]
+    public let status: String?
 
-    public init(sourceText: String, suggestedText: String, issues: [WritingIssue]) {
+    public init(sourceText: String, suggestedText: String, issues: [WritingIssue], status: String? = nil) {
         self.sourceText = sourceText
         self.suggestedText = suggestedText
         self.issues = issues
+        self.status = status
     }
 
     public var hasSuggestedChanges: Bool { suggestedText != sourceText }
@@ -111,8 +113,8 @@ public final class WritingCheckService {
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CheckError.emptyText
         }
-        let rewritten = rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rewritten.isEmpty else { throw CheckError.invalidProviderResponse }
+        let rewritten = rewrittenText
+        guard !rewritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CheckError.invalidProviderResponse }
         guard sourceText != rewritten else {
             return WritingReview(sourceText: sourceText, suggestedText: sourceText, issues: [])
         }

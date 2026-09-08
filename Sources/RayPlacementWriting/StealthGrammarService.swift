@@ -18,6 +18,9 @@ public struct StealthProtectedText: Equatable, Sendable {
 
     public func restore(_ corrected: String) -> String? {
         guard !corrected.contains("```") else { return nil }
+        // A provider must preserve the exact token sequence. Checking only
+        // token counts would allow two protected values to be swapped.
+        guard tokenSequence(in: corrected) == tokenSequence(in: maskedText) else { return nil }
         var result = corrected
         for (token, original) in replacements {
             guard result.components(separatedBy: token).count == 2 else { return nil }
@@ -25,6 +28,18 @@ public struct StealthProtectedText: Equatable, Sendable {
         }
         guard !replacements.keys.contains(where: { result.contains($0) }) else { return nil }
         return leadingWhitespace + result + trailingWhitespace
+    }
+
+    private func tokenSequence(in value: String) -> [String] {
+        // Embed the private-use sentinels as literal Unicode scalars. Using
+        // a regex-level \u{...} escape is not portable across the Foundation
+        // ICU implementations used by supported macOS versions.
+        let pattern = "\u{E000}LIMA_KEEP_[0-9]+_\u{E001}"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).map {
+            (value as NSString).substring(with: $0.range)
+        }
     }
 
     public var protectedValues: [String] { Array(replacements.values) }
@@ -154,15 +169,94 @@ public enum StealthGrammarService {
     }
 
     public static func isSafeReplacement(_ source: String, _ replacement: String) -> Bool {
-        guard !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-        guard replacement.count <= max(source.count * 4, source.count + 2_000) else { return false }
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        // A proofreading response may be a little longer, but it must not
+        // become a rewrite or a generated explanation.
+        let sourceBytes = source.utf8.count
+        let replacementBytes = replacement.utf8.count
+        // Proofreading may insert a small amount of punctuation or expand a
+        // contraction, but it must not turn into a generated paragraph.
+        let allowedExpansion = max(8, min(96, sourceBytes / 5))
+        guard replacementBytes <= sourceBytes + allowedExpansion else { return false }
+        let distance = editDistance(source, replacement)
+        let allowedDistance = max(4, min(96, max(sourceBytes, replacementBytes) * 28 / 100))
+        guard distance <= allowedDistance else { return false }
         guard newlineSignature(source) == newlineSignature(replacement) else { return false }
-        guard !replacement.contains("```"), !replacement.contains("<CORRECTED>") else { return false }
+        guard markdownStructure(source) == markdownStructure(replacement) else { return false }
+        guard immutableMarkdownSegments(source) == immutableMarkdownSegments(replacement) else { return false }
+        guard !replacement.contains("<CORRECTED>"), !isChattyResponse(replacement) else { return false }
         guard !replacement.unicodeScalars.contains(where: { scalar in
             let value = scalar.value
             return (value <= 0x1F && value != 0x09 && value != 0x0A && value != 0x0D) || value == 0x7F
         }) else { return false }
         return true
+    }
+
+    public static func isChattyResponse(_ value: String) -> Bool {
+        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let prefixes = [
+            "here is the corrected", "here's the corrected", "corrected text:",
+            "the corrected text is", "i corrected", "i would change", "sure,",
+            "<corrected>", "<proofread>", "answer:", "revision:"
+        ]
+        return prefixes.contains(where: clean.hasPrefix)
+            || clean.hasSuffix("</corrected>")
+            || clean.hasSuffix("</proofread>")
+    }
+
+    private static func markdownStructure(_ value: String) -> [String] {
+        let lines = value.components(separatedBy: .newlines)
+        var structure: [String] = []
+        for line in lines {
+            let leading = String(line.prefix { $0 == " " || $0 == "\t" })
+            let body = String(line.dropFirst(leading.count))
+            if body.hasPrefix("#") {
+                structure.append("heading:\(leading.count):\(body.prefix { $0 == "#" }.count)")
+            } else if body.hasPrefix(">") {
+                structure.append("quote:\(leading.count)")
+            } else if body.hasPrefix("- ") || body.hasPrefix("* ") || body.hasPrefix("+ ") {
+                structure.append("bullet:\(leading.count):\(body.first!)")
+            } else if body.range(of: #"^\d+[.)]\s"#, options: .regularExpression) != nil {
+                structure.append("ordered:\(leading.count)")
+            } else {
+                structure.append("text")
+            }
+        }
+        return structure
+    }
+
+    private static func immutableMarkdownSegments(_ value: String) -> [String] {
+        let patterns = [
+            #"```[\s\S]*?```"#,
+            #"`[^`\n]+`"#,
+            #"!?(?:\[[^]\n]*\])\([^)]*\)"#
+        ]
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return patterns.reduce(into: [String]()) { result, pattern in
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { return }
+            result.append(contentsOf: expression.matches(in: value, range: range).map {
+                (value as NSString).substring(with: $0.range)
+            })
+        }
+    }
+
+    private static func editDistance(_ source: String, _ replacement: String) -> Int {
+        let a = Array(source.utf8)
+        let b = Array(replacement.utf8)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var previous = Array(0...b.count)
+        for (i, left) in a.enumerated() {
+            var current = [i + 1]
+            current.reserveCapacity(b.count + 1)
+            for (j, right) in b.enumerated() {
+                let cost = left == right ? 0 : 1
+                current.append(min(current[j] + 1, previous[j + 1] + 1, previous[j] + cost))
+            }
+            previous = current
+        }
+        return previous[b.count]
     }
 
     private static func newlineSignature(_ value: String) -> [UInt32] {

@@ -25,7 +25,7 @@ enum KeyboardSelectionService {
             case .activationFailed:
                 return "The source app did not become ready for the keyboard command."
             case .copyUnavailable:
-                return "RayPlacement sent Copy, but the app did not place readable text on the clipboard."
+                return "Lima sent Copy, but the app did not place readable text on the clipboard."
             case .emptySelection:
                 return "The app copied no text. Highlight text in the source app and try again."
             }
