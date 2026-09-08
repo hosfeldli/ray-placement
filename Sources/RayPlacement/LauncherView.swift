@@ -108,7 +108,7 @@ struct LauncherView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            if viewModel.mode == .timezoneConverter {
+            if viewModel.isTimezonePicker {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
             } else if isOutputMode {
@@ -149,7 +149,7 @@ struct LauncherView: View {
     @ViewBuilder
     private var content: some View {
         switch viewModel.mode {
-        case .timezoneConverter:
+        case .picker(.timezone):
             timezoneConverterView
         case .writingReview(let review):
             writingReviewView(review)
@@ -157,8 +157,10 @@ struct LauncherView: View {
             outputView(title: title, text: text, state: state)
         case .terminal:
             DeveloperTerminalView(model: terminalModel)
-        case .emojiPicker:
+        case .picker(.emoji):
             emojiGrid
+        case .picker(.applications):
+            resultList
         default:
             resultList
         }
@@ -690,7 +692,7 @@ struct LauncherView: View {
         case .replaceSelectedText: return "Replace"
         case .saveSelectionToQuickNote: return "Save"
         case .checkSelectedText: return "Review"
-        case .forceQuitApplication: return "Review"
+        case .applicationOperation: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -704,7 +706,7 @@ struct LauncherView: View {
         case .replaceSelectedText: return "Replace"
         case .saveSelectionToQuickNote: return "Save"
         case .checkSelectedText: return "Review"
-        case .forceQuitApplication: return "Review"
+        case .applicationOperation: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -717,7 +719,7 @@ struct LauncherView: View {
     private func focusSearch() {
         guard !isOutputMode, viewModel.mode != .terminal else { return }
         DispatchQueue.main.async {
-            if viewModel.mode == .timezoneConverter {
+            if viewModel.isTimezonePicker {
                 timezoneFocused = true
             } else {
                 searchFocused = true
@@ -1091,9 +1093,10 @@ private extension LauncherMode {
         switch self {
         case .root: return "root"
         case .files: return "files"
-        case .timezoneConverter: return "timezone"
-        case .forceQuitPicker: return "force-quit"
-        case .emojiPicker: return "emoji"
+        case .picker(.timezone): return "picker-timezone"
+        case .picker(.applications): return "picker-applications"
+        case .picker(.displays): return "picker-displays"
+        case .picker(.emoji): return "picker-emoji"
         case .clipboard: return "clipboard"
         case .history: return "history"
         case .terminal: return "terminal"

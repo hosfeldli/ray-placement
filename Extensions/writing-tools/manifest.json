@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "local.writing-tools",
   "name": "Writing Tools",
   "version": "1.4.0",
@@ -19,8 +19,8 @@
       "icon": "doc.plaintext",
       "hotkey": "control+option+v",
       "action": {
-        "type": "pastePlainText",
-        "value": ""
+        "type": "clipboard",
+        "operation": "pastePlainText"
       }
     },
     {
@@ -37,8 +37,8 @@
       "icon": "text.badge.checkmark",
       "hotkey": "control+option+g",
       "action": {
-        "type": "checkWriting",
-        "value": ""
+        "type": "workspace",
+        "operation": "writingReview"
       }
     }
   ],
@@ -47,5 +47,9 @@
     "accessibility",
     "clipboard",
     "selectedText"
-  ]
+  ],
+  "pack": "Writing Tools",
+  "category": "Writing",
+  "bundled": true,
+  "provenance": "bundled"
 }

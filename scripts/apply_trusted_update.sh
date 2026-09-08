@@ -11,6 +11,7 @@ RESULT_FILE="$5"
 PROGRESS_FILE="$6"
 TRUSTED_APP="$7"
 READY_APP="$SOURCE_ROOT/Prebuilt/Lima.app"
+BUILD=""
 UPDATES_DIRECTORY="${HOME:?}/Library/Application Support/Lima/Updates"
 TRANSACTION=""
 write() { local d="$1"; shift; local t="$d.tmp.$$"; mkdir -p "${d:h}"; printf '%s\n' "$@" > "$t"; chmod 600 "$t"; mv "$t" "$d"; }
@@ -22,12 +23,16 @@ trap '[[ $? -eq 0 ]] || fail "The trusted updater stopped unexpectedly. The curr
 [[ "$TRUSTED_APP" == /*.app && -d "$TRUSTED_APP" ]] || fail 'The trusted app path is invalid.'
 TRUSTED_RESOURCES="$TRUSTED_APP/Contents/Resources/Updater"
 [[ -x "$TRUSTED_RESOURCES/verify_update_app.sh" && -x "$TRUSTED_RESOURCES/approved_lima_replacement.sh" ]] || fail 'Trusted updater resources are missing.'
-write "$PROGRESS_FILE" working 0.42 "Verifying the complete signed Lima app…"
-"$TRUSTED_RESOURCES/verify_update_app.sh" "$READY_APP" "$VERSION" || fail 'The incoming app failed trusted verification.'
+TRUSTED_INFO="$TRUSTED_APP/Contents/Info.plist"
+EXPECTED_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedTeamIdentifier' "$TRUSTED_INFO")" || fail 'The installed app has no expected Team ID policy.'
+EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$TRUSTED_INFO")" || fail 'The installed app has no expected signing identity policy.'
+EXPECTED_CERTIFICATE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedCertificateSHA256' "$TRUSTED_INFO")" || fail 'The installed app has no certificate policy.'
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$READY_APP/Contents/Info.plist")"
+write "$PROGRESS_FILE" working 0.42 "Verifying the complete signed Lima app…"
+"$TRUSTED_RESOURCES/verify_update_app.sh" "$READY_APP" "$VERSION" "$BUILD" "$EXPECTED_TEAM_ID" "$EXPECTED_IDENTITY" "$EXPECTED_CERTIFICATE" "$TRUSTED_APP" || fail 'The incoming app failed trusted verification.'
 write "$PROGRESS_FILE" working 0.60 "Preparing the verified replacement…"
-TRANSACTION="$(mktemp -d "${CURRENT_APP:h}/.lima-install.XXXXXX")" || fail 'Could not create an installation transaction.'
-chmod 700 "$TRANSACTION"
+TRANSACTION="${CURRENT_APP:h}/.lima-install.$(/usr/bin/uuidgen)" || fail 'Could not create an installation transaction.'
+[[ ! -e "$TRANSACTION" && ! -L "$TRANSACTION" ]] || fail 'The installation transaction path is already in use.'
 if [[ -w "${CURRENT_APP:h}" ]]; then
     write "$PROGRESS_FILE" ready 0.90 "Lima is verified. It will close briefly, install, and reopen…"
     for _ in {1..240}; do kill -0 "$CURRENT_PID" 2>/dev/null || break; sleep 0.25; done

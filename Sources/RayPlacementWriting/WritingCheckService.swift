@@ -139,6 +139,17 @@ public final class WritingCheckService {
             result.removeFirst("Corrected text:".count)
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
+        // A few OpenAI-compatible providers wrap a plain response in a pair
+        // of quotation marks despite the system prompt. Strip only a complete
+        // outer pair; never touch quotes inside the corrected prose.
+        if result.count >= 2,
+           result.first == "\"",
+           result.last == "\"",
+           !result.dropFirst().dropLast().contains("\n") {
+            result.removeFirst()
+            result.removeLast()
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
 
         // Even capable local models occasionally preserve a semicolon after a
         // greeting. A greeting is not an independent clause, so normalize it.

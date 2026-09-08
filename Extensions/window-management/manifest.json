@@ -1,0 +1,321 @@
+{
+  "schemaVersion": 2,
+  "id": "local.window-management",
+  "name": "Window Management",
+  "version": "2.0.0",
+  "description": "Window layouts, frame history, and display movement through Lima\u2019s native window capability.",
+  "pack": "Window Management",
+  "category": "Window Management",
+  "bundled": true,
+  "provenance": "bundled",
+  "trust": "bundled",
+  "capabilities": [
+    "accessibility"
+  ],
+  "commands": [
+    {
+      "id": "left-half",
+      "title": "Left Half",
+      "subtitle": "Place the focused window on the left half",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "leftHalf"
+      }
+    },
+    {
+      "id": "right-half",
+      "title": "Right Half",
+      "subtitle": "Place the focused window on the right half",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "rightHalf"
+      }
+    },
+    {
+      "id": "top-half",
+      "title": "Top Half",
+      "subtitle": "Place the focused window on the top half",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "topHalf"
+      }
+    },
+    {
+      "id": "bottom-half",
+      "title": "Bottom Half",
+      "subtitle": "Place the focused window on the bottom half",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "bottomHalf"
+      }
+    },
+    {
+      "id": "maximize",
+      "title": "Maximize",
+      "subtitle": "Fill the available display",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "maximize"
+      }
+    },
+    {
+      "id": "center",
+      "title": "Center",
+      "subtitle": "Center the focused window",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "center"
+      }
+    },
+    {
+      "id": "left-third",
+      "title": "Left Third",
+      "subtitle": "Place the window on the left third",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "leftThird"
+      }
+    },
+    {
+      "id": "center-third",
+      "title": "Center Third",
+      "subtitle": "Place the window on the center third",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "centerThird"
+      }
+    },
+    {
+      "id": "right-third",
+      "title": "Right Third",
+      "subtitle": "Place the window on the right third",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "rightThird"
+      }
+    },
+    {
+      "id": "left-two-thirds",
+      "title": "Left Two Thirds",
+      "subtitle": "Place the window across the left two thirds",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "leftTwoThirds"
+      }
+    },
+    {
+      "id": "right-two-thirds",
+      "title": "Right Two Thirds",
+      "subtitle": "Place the window across the right two thirds",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "rightTwoThirds"
+      }
+    },
+    {
+      "id": "top-left-quarter",
+      "title": "Top Left Quarter",
+      "subtitle": "Place the window in the top-left quarter",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "topLeftQuarter"
+      }
+    },
+    {
+      "id": "top-right-quarter",
+      "title": "Top Right Quarter",
+      "subtitle": "Place the window in the top-right quarter",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "topRightQuarter"
+      }
+    },
+    {
+      "id": "bottom-left-quarter",
+      "title": "Bottom Left Quarter",
+      "subtitle": "Place the window in the bottom-left quarter",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "bottomLeftQuarter"
+      }
+    },
+    {
+      "id": "bottom-right-quarter",
+      "title": "Bottom Right Quarter",
+      "subtitle": "Place the window in the bottom-right quarter",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "bottomRightQuarter"
+      }
+    },
+    {
+      "id": "restore-previous",
+      "title": "Restore Previous Position",
+      "subtitle": "Restore the prior frame",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "restorePrevious"
+      }
+    },
+    {
+      "id": "next-display",
+      "title": "Next Display",
+      "subtitle": "Move the window to the next display",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "nextDisplay"
+      }
+    },
+    {
+      "id": "previous-display",
+      "title": "Previous Display",
+      "subtitle": "Move the window to the previous display",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "previousDisplay"
+      }
+    },
+    {
+      "id": "main-display",
+      "title": "Main Display",
+      "subtitle": "Move the window to the main display",
+      "keywords": [
+        "window",
+        "resize",
+        "move",
+        "display"
+      ],
+      "icon": "rectangle.inset.filled",
+      "action": {
+        "type": "window",
+        "operation": "mainDisplay"
+      }
+    }
+  ]
+}

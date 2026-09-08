@@ -124,7 +124,7 @@ final class DiagnosticsService {
             "dictation": ["count": DictationConversationStore.shared.conversations.count, "persistenceError": DictationConversationStore.shared.lastError ?? ""],
             "clipboard": ["count": ClipboardHistoryService.shared.entries.count, "persistenceError": ClipboardHistoryService.shared.lastError ?? ""],
             "extensions": ["issues": ExtensionLoader().load().issues.count],
-            "privacy": "Note contents, transcripts, clipboard contents, selected text, API secrets, SQL credentials, and tokens are intentionally omitted."
+            "privacy": "Note contents, transcripts, clipboard contents, selected text, and secret values are intentionally omitted."
         ]
         let data = try JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: target, options: [.atomic])

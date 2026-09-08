@@ -6,14 +6,21 @@ on:
       - "v*"
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: {}
 
 jobs:
   publish:
     runs-on: macos-15
+    permissions:
+      contents: write
+    env:
+      RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
+      RAYPLACEMENT_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
+      RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER: ${{ secrets.LIMA_TEAM_IDENTIFIER }}
+      RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
+      RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256: ${{ secrets.LIMA_CERTIFICATE_SHA256 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           # Harper is a versioned Apple-silicon binary stored in Git LFS. A
           # release bundle must contain the binary, never its small LFS pointer.
@@ -28,13 +35,15 @@ jobs:
           fi
           make test
           ./scripts/test_lima_installer.sh
+          ./scripts/test_update_verifier.sh
           /bin/zsh scripts/test_approved_lima_update.sh
       - name: Create update kit and ready-to-drag DMG
         run: |
-          RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
+          RAYPLACEMENT_MODEL_FREE_UPDATE=1 ./scripts/package_liamflow_app.sh
           ./scripts/create_update_archive.sh dist
-          RAYPLACEMENT_DISABLE_LOCAL_SIGNING=1 RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION=1 ./scripts/package_liamflow_app.sh
+          ./scripts/package_liamflow_app.sh
           ./scripts/create_liamflow_dmg.sh dist
+          ./scripts/verify_liamflow_dmg.sh dist/Lima.dmg
       - name: Stage GitHub Release assets for review
         if: github.ref_type == 'tag'
         env:

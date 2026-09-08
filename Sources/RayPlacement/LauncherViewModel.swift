@@ -84,9 +84,10 @@ final class LauncherViewModel: ObservableObject {
         switch mode {
         case .root: return "Search commands and applications…"
         case .files: return "Search files with Spotlight…"
-        case .timezoneConverter: return "Enter a time like 9:30 AM, 14:00, or now"
-        case .forceQuitPicker: return "Search running applications…"
-        case .emojiPicker: return "Search emojis…"
+        case .picker(.timezone): return "Enter a time like 9:30 AM, 14:00, or now"
+        case .picker(.applications): return "Search running applications…"
+        case .picker(.displays): return "Choose a display…"
+        case .picker(.emoji): return "Search emojis…"
         case .clipboard: return "Search clipboard history…"
         case .history: return "Search command history…"
         case .terminal: return "Interactive terminal"
@@ -95,8 +96,18 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
+    var isEmojiPicker: Bool {
+        if case .picker(.emoji) = mode { return true }
+        return false
+    }
+
+    var isTimezonePicker: Bool {
+        if case .picker(.timezone) = mode { return true }
+        return false
+    }
+
     var selectedItem: LauncherItem? {
-        if mode == .emojiPicker {
+        if isEmojiPicker {
             guard emojiMatches.indices.contains(selectedIndex) else { return nil }
             return emojiItem(for: emojiMatches[selectedIndex])
         }
@@ -105,13 +116,13 @@ final class LauncherViewModel: ObservableObject {
     }
 
     var selectedItemIsActionable: Bool {
-        if mode == .emojiPicker { return !emojiMatches.isEmpty }
+        if isEmojiPicker { return !emojiMatches.isEmpty }
         guard let selectedItem else { return false }
         return isActionable(selectedItem)
     }
 
     var hasActionableResults: Bool {
-        if mode == .emojiPicker { return !emojiMatches.isEmpty }
+        if isEmojiPicker { return !emojiMatches.isEmpty }
         return results.contains(where: isActionable)
     }
 
@@ -240,6 +251,12 @@ final class LauncherViewModel: ObservableObject {
         refreshResults()
     }
 
+    func enter(_ newMode: LauncherMode, query initialQuery: String) {
+        enter(newMode)
+        guard !initialQuery.isEmpty else { return }
+        query = initialQuery
+    }
+
     func showOutput(
         title: String,
         text: String,
@@ -264,6 +281,19 @@ final class LauncherViewModel: ObservableObject {
         executeWritingResult(review, paste: true)
     }
 
+    func approveExtension(_ issue: ExtensionIssue) {
+        guard let extensionID = issue.extensionID,
+              let manifestHash = issue.manifestHash,
+              let capabilities = issue.capabilities else { return }
+        ExtensionApprovalStore.approve(extensionID: extensionID, manifestHash: manifestHash, capabilities: capabilities)
+        reloadExtensions()
+    }
+
+    func revokeExtension(_ extensionID: String) {
+        ExtensionApprovalStore.revoke(extensionID: extensionID)
+        reloadExtensions()
+    }
+
     func reloadExtensions(notify: Bool = true) {
         let loaded = extensionLoader.load()
         extensionCommands = loaded.commands
@@ -273,13 +303,25 @@ final class LauncherViewModel: ObservableObject {
         if notify { delegate?.launcherViewModelDidReloadExtensions(self) }
     }
 
+    @discardableResult
+    func repairBundledExtensions() -> String {
+        let report = extensionLoader.repairBundledExtensions()
+        let loaded = extensionLoader.load()
+        extensionCommands = loaded.commands
+        manifestExtensionIssues = loaded.issues
+        updateExtensionIssues()
+        refreshResults()
+        delegate?.launcherViewModelDidReloadExtensions(self)
+        return report.summary
+    }
+
     func setExtensionHotkeyIssues(_ issues: [ExtensionIssue]) {
         hotkeyExtensionIssues = issues
         updateExtensionIssues()
     }
 
     func moveSelection(by delta: Int) {
-        if mode == .emojiPicker {
+        if isEmojiPicker {
             moveEmojiSelection(by: delta)
             return
         }
@@ -325,7 +367,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func select(_ index: Int) {
-        if mode == .emojiPicker {
+        if isEmojiPicker {
             guard emojiMatches.indices.contains(index) else { return }
             selectedIndex = index
             return
@@ -335,7 +377,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func executeSelected() {
-        if mode == .emojiPicker {
+        if isEmojiPicker {
             guard emojiMatches.indices.contains(selectedIndex) else { return }
             let item = emojiItem(for: emojiMatches[selectedIndex])
             usage.record(item.id)
@@ -348,7 +390,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func executeEmoji(at index: Int) {
-        guard mode == .emojiPicker, emojiMatches.indices.contains(index) else { return }
+        guard isEmojiPicker, emojiMatches.indices.contains(index) else { return }
         selectedIndex = index
         executeSelected()
     }
@@ -391,16 +433,19 @@ final class LauncherViewModel: ObservableObject {
 
         case .files:
             refreshFileResults()
-        case .timezoneConverter:
+        case .picker(let picker):
             isSearching = false
-            results = []
-        case .forceQuitPicker:
-            isSearching = false
-            results = runningApplicationItems()
-        case .emojiPicker:
-            isSearching = false
-            refreshEmojiMatches()
-            results = []
+            switch picker {
+            case .timezone:
+                results = []
+            case .applications:
+                results = runningApplicationItems()
+            case .displays:
+                results = displayItems()
+            case .emoji:
+                refreshEmojiMatches()
+                results = []
+            }
         case .clipboard:
             refreshClipboardResults()
         case .history:
@@ -416,7 +461,7 @@ final class LauncherViewModel: ObservableObject {
             isSearching = false
             results = []
         }
-        if mode == .emojiPicker {
+        if isEmojiPicker {
             selectedIndex = emojiMatches.isEmpty ? 0 : min(selectedIndex, emojiMatches.count - 1)
         } else if results.isEmpty {
             selectedIndex = 0
@@ -457,7 +502,6 @@ final class LauncherViewModel: ObservableObject {
         switch result.kind {
         case .note: icon = .system("note.text")
         case .dictation: icon = .system("waveform")
-        case .apiRequest: icon = .system("network")
         case .terminal: icon = .system("terminal.fill")
         case .command: icon = .system("arrow.trianglehead.2.clockwise.rotate.90")
         default: icon = .system("magnifyingglass")
@@ -518,13 +562,17 @@ final class LauncherViewModel: ObservableObject {
         if !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
             items.insert(result, at: 0)
         }
+        if !cleanQuery.isEmpty {
+            items.append(contentsOf: directInvocationItems(for: cleanQuery))
+        }
 
         guard !cleanQuery.isEmpty else {
             let priority = [
                 "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal",
-                "builtin.endpoint-tester", "builtin.sql-workspace", "extension.local.productivity-tools.convert-timezones",
-                "extension.local.productivity-tools.force-quit-applications", "builtin.clipboard", "window.leftHalf", "window.rightHalf",
-                "window.maximize", "builtin.command-history", "builtin.extensions-folder", "builtin.settings", "builtin.reload-extensions"
+                "extension.local.system-controls.force-quit-application", "builtin.clipboard",
+                "extension.local.window-management.left-half", "extension.local.window-management.right-half",
+                "extension.local.window-management.maximize", "builtin.command-history", "builtin.extensions-folder",
+                "builtin.settings", "builtin.reload-extensions"
             ]
             let defaults = priority.compactMap { id in items.first { $0.id == id } }
             let recent: [LauncherItem] = usage.recentIdentifiers(limit: 8).compactMap { identifier in
@@ -533,24 +581,29 @@ final class LauncherViewModel: ObservableObject {
                 recentItem.accessory = "Recent"
                 return recentItem
             }
-            let ordered = recent + defaults.filter { defaultItem in
+            let favorites = items
+                .filter { CommandManager.shared.isFavorite($0.id) }
+                .sorted { CommandManager.shared.favoriteRank($0.id) < CommandManager.shared.favoriteRank($1.id) }
+                .map { item -> LauncherItem in
+                    var favorite = item
+                    favorite.accessory = "Favorite"
+                    return favorite
+                }
+            let ordered = recent + favorites + defaults.filter { defaultItem in
                 !recent.contains(where: { $0.id == defaultItem.id })
+                    && !favorites.contains(where: { $0.id == defaultItem.id })
             }
-            return Array(ordered.prefix(11))
+            var unique = [LauncherItem]()
+            var identifiers = Set<String>()
+            for item in ordered where identifiers.insert(item.id).inserted { unique.append(item) }
+            return Array(unique.prefix(11))
         }
 
         let ranked = items.compactMap { item -> (LauncherItem, Double)? in
-            let titleScore = FuzzyMatcher.score(item.title, query: cleanQuery)
-            let allScore = FuzzyMatcher.score(item.searchableText, query: cleanQuery)
-            let score = max(titleScore ?? -.infinity, allScore ?? -.infinity)
-            guard score.isFinite else { return nil }
-            let normalizedTitle = item.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            let normalizedQuery = cleanQuery.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-            let intentBonus: Double
-            if normalizedTitle == normalizedQuery { intentBonus = 100 }
-            else if normalizedTitle.hasPrefix(normalizedQuery) { intentBonus = 24 }
-            else { intentBonus = 0 }
-            return (item, score + intentBonus + usage.score(for: item.id))
+            guard let baseScore = searchScore(for: item, query: cleanQuery) else { return nil }
+            let favoriteRank = CommandManager.shared.favoriteRank(item.id)
+            let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
+            return (item, baseScore + usage.score(for: item.id) + favoriteBonus)
         }
         .sorted { first, second in
             if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
@@ -565,6 +618,130 @@ final class LauncherViewModel: ObservableObject {
         let localIDs = Set(local.map(\.id))
         let universal = universalResults.filter { !localIDs.contains($0.id) }.map(universalItem)
         return Array((local + universal).prefix(24))
+    }
+
+    private func normalizedSearchTokens(_ value: String) -> [String] {
+        value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .split { character in
+                !(character.isLetter || character.isNumber)
+            }
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private func searchScore(for item: LauncherItem, query: String) -> Double? {
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return 0 }
+        let fields = [item.title, item.subtitle] + item.keywords
+        let wholeText = item.searchableText
+        let titleScore = FuzzyMatcher.score(item.title, query: clean)
+        let wholeScore = FuzzyMatcher.score(wholeText, query: clean)
+        let tokens = normalizedSearchTokens(clean)
+        let tokenScores = tokens.map { token in
+            fields.compactMap { FuzzyMatcher.score($0, query: token) }.max() ?? -.infinity
+        }
+        guard tokenScores.allSatisfy(\.isFinite) else {
+            return max(titleScore ?? -.infinity, wholeScore ?? -.infinity).isFinite
+                ? max(titleScore ?? -.infinity, wholeScore ?? -.infinity)
+                : nil
+        }
+        let normalizedTitle = item.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let normalizedQuery = clean.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        let titleIntent: Double
+        if normalizedTitle == normalizedQuery { titleIntent = 100_000 }
+        else if normalizedTitle.hasPrefix(normalizedQuery) { titleIntent = 24 }
+        else { titleIntent = 0 }
+        let tokenScore = 14_000 + tokenScores.reduce(0, +) + titleIntent
+        return max(titleScore ?? -.infinity, wholeScore ?? -.infinity, tokenScore)
+    }
+
+    /// Converts a typed command plus trailing words into the same public action
+    /// the manifest declares. This is deliberately bounded: only picker query
+    /// arguments and application-picker targets are accepted, never arbitrary
+    /// shell fragments or a scripting language.
+    private func directInvocationItems(for query: String) -> [LauncherItem] {
+        let queryTokens = normalizedSearchTokens(query)
+        guard queryTokens.count >= 2 else { return [] }
+        var items: [LauncherItem] = []
+        var seen = Set<String>()
+
+        for loaded in extensionCommands where SettingsStore.shared.isCommandEnabled(loaded) {
+            let commandWords = normalizedSearchTokens(
+                ([loaded.command.title, loaded.command.subtitle ?? ""] + (loaded.command.keywords ?? [])).joined(separator: " ")
+            )
+            let unmatched = queryTokens.filter { token in
+                !commandWords.contains { word in
+                    word == token || word.hasPrefix(token) || token.hasPrefix(word)
+                }
+            }
+            guard !unmatched.isEmpty, unmatched.count < queryTokens.count else { continue }
+            let argumentText = unmatched.joined(separator: " ")
+            let operation = loaded.command.action.operation ?? ""
+            let actionType = loaded.command.action.type
+            let supportsQuery: Bool
+            switch actionType {
+            case .picker:
+                supportsQuery = ["emoji", "timezone", "application", "file"].contains(operation)
+            case .application:
+                supportsQuery = loaded.command.action.target == "picker"
+            default:
+                supportsQuery = false
+            }
+            guard supportsQuery else { continue }
+
+            var action = loaded.command.action
+            var parameters = action.parameters ?? [:]
+            parameters["query"] = argumentText
+            if actionType == .application {
+                parameters["applicationQuery"] = argumentText
+            }
+            action.parameters = parameters
+            var invoked = loaded
+            invoked.command.action = action
+
+            let baseID = "extension.\(loaded.extensionID).\(loaded.command.id)"
+            let suffix = argumentText.replacingOccurrences(of: " ", with: "-")
+            let appName: String? = actionType == .application
+                ? matchingRunningApplication(named: argumentText)?.localizedName
+                : nil
+            let title: String
+            let subtitle: String
+            let icon: LauncherIcon
+            if let appName {
+                title = "\(loaded.command.title) → \(appName)"
+                subtitle = "Open the application picker with \(appName) selected"
+                icon = matchingRunningApplication(named: argumentText)?.bundleURL.map(LauncherIcon.application) ?? .system(loaded.command.icon ?? "puzzlepiece.extension.fill")
+            } else {
+                title = "\(loaded.command.title) · \(argumentText)"
+                subtitle = loaded.command.subtitle ?? loaded.extensionName
+                icon = .system(loaded.command.icon ?? "puzzlepiece.extension.fill")
+            }
+            let identifier = "\(baseID).argument.\(suffix)"
+            guard seen.insert(identifier).inserted else { continue }
+            items.append(LauncherItem(
+                id: identifier,
+                title: title,
+                subtitle: subtitle,
+                icon: icon,
+                keywords: (loaded.command.keywords ?? []) + [argumentText],
+                action: .extensionCommand(invoked),
+                shortcut: nil,
+                accessory: "Direct"
+            ))
+        }
+        return items
+    }
+
+    private func matchingRunningApplication(named query: String) -> NSRunningApplication? {
+        let tokens = normalizedSearchTokens(query)
+        guard !tokens.isEmpty else { return nil }
+        return NSWorkspace.shared.runningApplications
+            .filter { !$0.isTerminated && $0.activationPolicy == .regular && $0.localizedName != nil }
+            .sorted { ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending }
+            .first { application in
+                let searchable = normalizedSearchTokens([application.localizedName ?? "", application.bundleIdentifier ?? ""].joined(separator: " "))
+                return tokens.allSatisfy { token in searchable.contains { $0 == token || $0.hasPrefix(token) || token.hasPrefix($0) } }
+            }
     }
 
     private func refreshFileResults() {
@@ -675,6 +852,44 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
+    private var applicationPickerOperation = "forceQuit"
+
+    func enterApplicationPicker(operation: String, query initialQuery: String = "") {
+        applicationPickerOperation = operation
+        enter(.picker(.applications(operation: operation)), query: initialQuery)
+    }
+
+    private var displayPickerOperation = "moveToDisplay"
+
+    func enterDisplayPicker(operation: String = "moveToDisplay") {
+        displayPickerOperation = operation
+        enter(.picker(.displays(operation: operation)))
+    }
+
+    private func displayItems() -> [LauncherItem] {
+        let screens = NSScreen.screens.enumerated().compactMap { index, screen -> (CGDirectDisplayID, NSScreen)? in
+            guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber else { return nil }
+            return (CGDirectDisplayID(number.uint32Value), screen)
+        }
+        guard !screens.isEmpty else {
+            return [placeholderItem(id: "display.empty", title: "No displays available", subtitle: "macOS did not expose any displays", icon: "display")]
+        }
+        return screens.map { displayID, screen in
+            let name = screen.localizedName.isEmpty ? "Display \(displayID)" : screen.localizedName
+            let primary = screen == NSScreen.main ? " · Main display" : ""
+            let dimensions = "\(Int(screen.frame.width)) × \(Int(screen.frame.height))\(primary)"
+            return LauncherItem(
+                id: "display.\(displayID)",
+                title: name,
+                subtitle: dimensions,
+                icon: .system(screen == NSScreen.main ? "display" : "display.2"),
+                keywords: ["display", "monitor", String(displayID)],
+                action: .displayOperation(operation: displayPickerOperation, displayIdentifier: displayID, name: name),
+                accessory: screen == NSScreen.main ? "Main" : nil
+            )
+        }
+    }
+
     private func runningApplicationItems() -> [LauncherItem] {
         let currentBundleIdentifier = Bundle.main.bundleIdentifier
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -707,7 +922,7 @@ final class LauncherViewModel: ObservableObject {
                 subtitle: "Force quit immediately — unsaved work may be lost",
                 icon: application.bundleURL.map(LauncherIcon.application) ?? .system("app.dashed"),
                 keywords: [application.bundleIdentifier ?? "", "quit", "kill", "frozen"],
-                action: .forceQuitApplication(processIdentifier: application.processIdentifier, name: name),
+                action: .applicationOperation(operation: applicationPickerOperation, processIdentifier: application.processIdentifier, name: name),
                 accessory: "Confirm"
             )
         }
@@ -845,7 +1060,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func builtInItems() -> [LauncherItem] {
-        var items: [LauncherItem] = [
+        let items: [LauncherItem] = [
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
             LauncherItem(id: "builtin.notes", title: "Lima Notes", subtitle: "Open the separate Markdown notes window", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: SettingsStore.shared.notesHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
@@ -855,34 +1070,15 @@ final class LauncherViewModel: ObservableObject {
             // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Developer Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
             LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
-            LauncherItem(id: "builtin.endpoint-tester", title: "HTTP Studio", subtitle: "Collections, environments, authentication, runners, and response inspection", icon: .system("network"), keywords: ["http", "api", "endpoint", "request", "rest", "sso"], action: .system(.openEndpointTester)),
-            LauncherItem(id: "builtin.sql-workspace", title: "SQL Workspace", subtitle: "Search database profiles, schemas, tables, and saved queries", icon: .system("cylinder.split.1x2"), keywords: ["sql", "mysql", "oracle", "database", "query", "schema", "table"], action: .system(.openSQLWorkspace)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
             LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),
-            LauncherItem(id: "builtin.file-launcher", title: "Focused File Launcher", subtitle: "Choose a file in Finder and open it with a specific application", icon: .system("folder.badge.gearshape"), keywords: ["file", "finder", "open with", "application"], action: .system(.openFocusedFileLauncher)),
-            LauncherItem(id: "builtin.passwords", title: "Password Generator", subtitle: "Generate and copy a strong password locally", icon: .system("key.fill"), keywords: ["password", "security", "random", "secret"], action: .system(.openPasswordGenerator)),
-            LauncherItem(id: "builtin.formatter", title: "Data Formatter", subtitle: "Inspect and format JSON, XML, and EDI", icon: .system("curlybraces.square.fill"), keywords: ["json", "xml", "edi", "format", "validate", "minify"], action: .system(.openFormatter)),
-            LauncherItem(id: "builtin.extension-guide", title: "Extension Development Guide", subtitle: "Build commands, forms, outputs, and full Lima workspaces", icon: .system("hammer.fill"), keywords: ["extension", "developer", "documentation", "manifest", "api", "template"], action: .system(.openExtensionGuide)),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.command-history", title: "Command History", subtitle: "Re-run recently used commands and tools", icon: .system("clock.arrow.circlepath"), keywords: ["recent", "history", "last", "again", "commands"], action: .enterMode(.history)),
-            LauncherItem(id: "builtin.lock", title: "Lock Screen", subtitle: "Secure this Mac", icon: .system("lock.fill"), keywords: ["system", "security"], action: .system(.lockScreen)),
-            LauncherItem(id: "builtin.screensaver", title: "Start Screen Saver", subtitle: "System", icon: .system("sparkles.tv"), keywords: ["display", "system"], action: .system(.startScreenSaver)),
-            LauncherItem(id: "builtin.sleep", title: "Put Mac to Sleep", subtitle: "System", icon: .system("moon.zzz.fill"), keywords: ["system", "power"], action: .system(.sleep)),
             LauncherItem(id: "builtin.extensions-folder", title: "Open Extensions Folder", subtitle: "Add commands without rebuilding", icon: .system("folder.badge.gearshape"), keywords: ["plugin", "custom", "script", "functionality"], action: .system(.openExtensionsFolder)),
             LauncherItem(id: "builtin.reload-extensions", title: "Reload Extensions", subtitle: "Pick up manifest changes", icon: .system("arrow.clockwise"), keywords: ["plugin", "refresh"], action: .system(.reloadExtensions)),
             LauncherItem(id: "builtin.settings", title: "Lima Settings", subtitle: "Hotkeys, performance, privacy, and extensions", icon: .system("gearshape.fill"), keywords: ["preferences", "hotkey", "shortcut", "performance", "accessibility"], action: .system(.openSettings), shortcut: "⌘,"),
             LauncherItem(id: "builtin.quit", title: "Quit Lima", subtitle: "System", icon: .system("power"), keywords: ["exit"], action: .system(.quit), shortcut: "⌘Q")
         ]
-        items.insert(contentsOf: WindowLayout.allCases.map { layout in
-            LauncherItem(
-                id: "window.\(layout.rawValue)",
-                title: layout.title,
-                subtitle: "Window Management",
-                icon: .system(layout.symbol),
-                keywords: ["window", "resize", "move"],
-                action: .window(layout)
-            )
-        }, at: 2)
         return items
     }
 

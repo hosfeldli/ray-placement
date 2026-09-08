@@ -147,7 +147,7 @@ final class RuleBasedWritingChecker {
                 self.remoteTask = nil
                 switch result {
                 case .success(let correctedMasked):
-                    guard let corrected = protected.restore(self.reviewer.normalizeRewrite(correctedMasked)),
+                    guard let corrected = protected.restore(self.reviewer.normalizeProofreadRewrite(correctedMasked)),
                           StealthGrammarService.isSafeReplacement(source, corrected) else {
                         self.finish(success: false, detail: "The developer provider changed protected text.")
                         completion(.failure(WritingCheckService.CheckError.invalidProviderResponse))
@@ -164,33 +164,32 @@ final class RuleBasedWritingChecker {
         }
 
         progress("Editing locally…")
+        // The stealth/global-hotkey path should feel immediate. The bundled
+        // Python pass performs the same conservative spelling, agreement, and
+        // punctuation corrections needed for replacement without launching a
+        // second heavyweight Harper process. Harper is retained for the normal
+        // review path because that path needs detailed lint metadata.
         runPython(protected.maskedText, mode: "stealth") { [weak self] pythonResult in
             guard let self, self.operationID == operationID else { return }
-            let spelled: String
-            switch pythonResult {
-            case .success(let value): spelled = value
-            case .failure: spelled = protected.maskedText
-            }
-            self.runHarper(spelled) { [weak self] harperResult in
-                guard let self, self.operationID == operationID else { return }
-                do {
-                    let correctedMasked: String
-                    switch harperResult {
-                    case .success(let value) where protected.restore(value) != nil: correctedMasked = value
-                    case .success: correctedMasked = spelled
-                    case .failure where spelled != protected.maskedText: correctedMasked = spelled
-                    case .failure(let error): throw error
-                    }
-                    guard let corrected = protected.restore(correctedMasked),
-                          StealthGrammarService.isSafeReplacement(source, corrected) else {
-                        throw WritingCheckService.CheckError.invalidProviderResponse
-                    }
-                    self.finish(success: true, output: corrected.count)
-                    completion(.success(corrected))
-                } catch {
-                    self.finish(success: false, detail: error.localizedDescription)
-                    completion(.failure(error))
+            do {
+                let correctedMasked: String
+                switch pythonResult {
+                case .success(let value) where protected.restore(value) != nil:
+                    correctedMasked = value
+                case .success:
+                    correctedMasked = protected.maskedText
+                case .failure:
+                    correctedMasked = protected.maskedText
                 }
+                guard let corrected = protected.restore(correctedMasked),
+                      StealthGrammarService.isSafeReplacement(source, corrected) else {
+                    throw WritingCheckService.CheckError.invalidProviderResponse
+                }
+                self.finish(success: true, output: corrected.count)
+                completion(.success(corrected))
+            } catch {
+                self.finish(success: false, detail: error.localizedDescription)
+                completion(.failure(error))
             }
         }
     }

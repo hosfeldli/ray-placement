@@ -19,13 +19,17 @@
       ],
       "icon": "puzzlepiece.extension.fill",
       "action": {
-        "type": "openExtensionDevelopment",
-        "value": ""
+        "type": "workspace",
+        "operation": "extensionDevelopment"
       }
     }
   ],
   "trust": "bundled",
   "capabilities": [
     "filesystem"
-  ]
+  ],
+  "pack": "Extension Development",
+  "category": "Developer Tools",
+  "bundled": true,
+  "provenance": "bundled"
 }

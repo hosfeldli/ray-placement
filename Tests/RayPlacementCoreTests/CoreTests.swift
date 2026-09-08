@@ -2,6 +2,14 @@ import Foundation
 import Testing
 @testable import RayPlacementCore
 
+private func packageRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+}
+
+
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
@@ -51,6 +59,42 @@ import Testing
     #expect(SemanticVersion("1.6.9")! < SemanticVersion("1.7.0")!)
     #expect(SemanticVersion("1.10.0")! > SemanticVersion("1.9.9")!)
     #expect(SemanticVersion("not-a-version") == nil)
+}
+
+
+@Test func extensionSecurityRejectsTraversalAndUnapprovedExternalExecutables() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("lima-extension-security-\(UUID().uuidString)", isDirectory: true)
+    let extensionDirectory = root.appendingPathComponent("Extension", isDirectory: true)
+    try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    #expect(throws: ExtensionSecurityError.traversalOutsideExtension) {
+        try ExtensionSecurityPolicy.resolvePath("../outside.sh", relativeTo: extensionDirectory, capabilities: [.shell, .filesystem], executable: true)
+    }
+    #expect(throws: ExtensionSecurityError.externalExecutionNotApproved) {
+        try ExtensionSecurityPolicy.resolvePath("/usr/bin/true", relativeTo: extensionDirectory, capabilities: [.shell, .filesystem], executable: true)
+    }
+    let external = try ExtensionSecurityPolicy.resolvePath("/usr/bin/true", relativeTo: extensionDirectory, capabilities: [.shell, .filesystem, .externalExecution], executable: true)
+    #expect(external.path == "/usr/bin/true")
+}
+
+@Test func extensionSecurityRejectsSymlinkEscapeAndHashesManifestsDeterministically() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("lima-extension-links-\(UUID().uuidString)", isDirectory: true)
+    let extensionDirectory = root.appendingPathComponent("Extension", isDirectory: true)
+    let outsideDirectory = root.appendingPathComponent("Outside", isDirectory: true)
+    try FileManager.default.createDirectory(at: extensionDirectory, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let link = extensionDirectory.appendingPathComponent("linked")
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outsideDirectory)
+    #expect(throws: ExtensionSecurityError.traversalOutsideExtension) {
+        try ExtensionSecurityPolicy.resolvePath("linked/file", relativeTo: extensionDirectory, capabilities: [.filesystem], executable: false)
+    }
+
+    let manifest = Data(#"{"id":"test","capabilities":["filesystem"]}"#.utf8)
+    #expect(ExtensionSecurityPolicy.manifestHash(manifest) == ExtensionSecurityPolicy.manifestHash(manifest))
+    #expect(ExtensionSecurityPolicy.manifestHash(manifest).count == 64)
 }
 
 @Test func manifestDecoding() throws {
@@ -104,74 +148,89 @@ import Testing
     #expect(fields[3].maximum == 12)
 }
 
-@Test func writingToolsManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/writing-tools/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.writing-tools")
-    #expect(manifest.commands.map(\.action.type) == [.pastePlainText, .checkWriting])
+
+@Test func canonicalBundledExtensionPacksDecodeWithStableMetadata() throws {
+    let manifests = [
+        ("Extensions/lima-essentials/manifest.json", "local.lima-essentials", "Lima Essentials", "Essentials"),
+        ("Extensions/window-management/manifest.json", "local.window-management", "Window Management", "Window Management"),
+        ("Extensions/system-controls/manifest.json", "local.system-controls", "System & Applications", "System Controls"),
+        ("Extensions/writing-tools/manifest.json", "local.writing-tools", "Writing Tools", "Writing")
+    ]
+
+    for (relativePath, id, pack, category) in manifests {
+        let manifest = try JSONDecoder().decode(
+            ExtensionManifest.self,
+            from: Data(contentsOf: packageRoot().appendingPathComponent(relativePath))
+        )
+        #expect(manifest.id == id)
+        #expect(manifest.pack == pack)
+        #expect(manifest.category == category)
+        #expect(manifest.bundled)
+        #expect(manifest.provenance == .bundled)
+        #expect(manifest.trust == .bundled)
+        #expect(manifest.version != nil)
+    }
 }
 
-@Test func securityToolsManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/security-tools/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.security-tools")
-    #expect(manifest.commands.map(\.action.type) == [.openPasswordGenerator])
+@Test func bundledCommandsUseGenericCapabilityActions() throws {
+    let essentials = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/lima-essentials/manifest.json"))
+    )
+    #expect(essentials.commands.map { "\($0.action.type.rawValue):\($0.action.operation ?? "")" } == [
+        "picker:emoji",
+        "picker:file",
+        "picker:timezone",
+        "picker:password"
+    ])
+
+    let windows = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/window-management/manifest.json"))
+    )
+    #expect(windows.commands.count == 19)
+    #expect(windows.commands.allSatisfy { $0.action.type == .window })
+    #expect(windows.commands.contains { $0.action.operation == "restorePrevious" })
+    #expect(windows.commands.contains { $0.action.operation == "nextDisplay" })
+
+    let system = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/system-controls/manifest.json"))
+    )
+    #expect(system.commands.filter { $0.action.type == .application }.count == 4)
+    #expect(system.commands.filter { $0.action.type == .system }.count == 6)
+    #expect(system.commands.contains { $0.action.operation == "forceQuit" && $0.action.target == "picker" })
+    #expect(system.commands.contains { $0.action.operation == "restart" && $0.action.confirmation == true })
 }
 
-@Test func focusedFileLauncherManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/vscode-directories/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.focused-file-launcher")
-    #expect(manifest.commands.count == 1)
-    #expect(manifest.commands.first?.action.type == .openFocusedFileLauncher)
-    #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
+@Test func bundledMaintenanceAndWritingCommandsUsePublicWorkspaceActions() throws {
+    let maintenance = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/extension-maintenance/manifest.json"))
+    )
+    #expect(maintenance.pack == "Extension Maintenance")
+    #expect(maintenance.commands.first?.action.type == .workspace)
+    #expect(maintenance.commands.first?.action.operation == "repairExtensions")
+
+    let writing = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/writing-tools/manifest.json"))
+    )
+    #expect(writing.commands.map { "\($0.action.type.rawValue):\($0.action.operation ?? "")" } == [
+        "clipboard:pastePlainText",
+        "workspace:writingReview"
+    ])
 }
 
-@Test func productivityToolsManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/productivity-tools/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.productivity-tools")
-    #expect(manifest.commands.map(\.action.type) == [.convertTimezones, .forceQuitApplications, .forceQuitAllApplications])
-    #expect(manifest.commands.allSatisfy { $0.hotkey == nil })
-}
-
-@Test func appManagementManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/app-management/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.app-management")
-    #expect(manifest.commands.map(\.action.type) == [.uninstallApplication])
-}
-
-@Test func emojiPickerManifestDecodesWithDoubleCommand() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/emoji-picker/manifest.json"))
-    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
-    #expect(manifest.id == "local.emoji-picker")
-    #expect(manifest.commands.map(\.action.type) == [.openEmojiPicker])
-    #expect(ShortcutSpec(string: manifest.commands.first?.hotkey ?? "")?.displayString == "⌘ twice")
+@Test func emojiPickerManifestRetainsDoubleCommandShortcut() throws {
+    let manifest = try JSONDecoder().decode(
+        ExtensionManifest.self,
+        from: Data(contentsOf: packageRoot().appendingPathComponent("Extensions/lima-essentials/manifest.json"))
+    )
+    let emoji = try #require(manifest.commands.first { $0.id == "emoji-picker" })
+    #expect(emoji.action.type == .picker)
+    #expect(emoji.action.operation == "emoji")
+    #expect(ShortcutSpec(string: emoji.hotkey ?? "")?.displayString == "⌘ twice")
 }
 
 @Test func timezoneConversionRespectsDaylightSavingTime() throws {
@@ -346,15 +405,13 @@ import Testing
     #expect(result.diagnostics.contains { $0.message.contains("3 segments") && $0.message.contains("9") })
 }
 
+
 @Test func documentFormatterManifestDecodes() throws {
-    let packageRoot = URL(fileURLWithPath: #filePath)
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-        .deletingLastPathComponent()
-    let data = try Data(contentsOf: packageRoot.appendingPathComponent("Extensions/document-formatter/manifest.json"))
+    let data = try Data(contentsOf: packageRoot().appendingPathComponent("Extensions/document-formatter/manifest.json"))
     let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
     #expect(manifest.id == "local.document-formatter")
-    #expect(manifest.commands.map(\.action.type) == [.openFormatterWorkspace])
+    #expect(manifest.commands.first?.action.type == .workspace)
+    #expect(manifest.commands.first?.action.operation == "formatter")
 }
 
 @Test func markdownNotesSupportTagsWikiLinksAndTemplates() {
@@ -446,31 +503,57 @@ import Testing
     }
 }
 
-@Test func authorizationSecretReferenceIsBackwardCompatible() throws {
-    let id = UUID()
-    let authorization = PostmanAuthorization(kind: .bearer, values: ["token": "ignored-placeholder"], secretReferenceID: id)
-    let data = try JSONEncoder().encode(authorization)
-    let decoded = try JSONDecoder().decode(PostmanAuthorization.self, from: data)
-    #expect(decoded.secretReferenceID == id)
-    #expect(decoded.kind == .bearer)
 
-    let oldData = #"{"kind":"bearer","values":{"token":"legacy"}}"#.data(using: .utf8)!
-    let legacy = try JSONDecoder().decode(PostmanAuthorization.self, from: oldData)
-    #expect(legacy.secretReferenceID == nil)
-    #expect(legacy.values["token"] == "legacy")
+@Test func extensionApprovalLifecycleRequiresNewApprovalMetadata() {
+    let id = "test.approval.\(UUID().uuidString)"
+    defer { ExtensionApprovalStore.revoke(extensionID: id) }
+    let firstHash = String(repeating: "a", count: 64)
+    let secondHash = String(repeating: "b", count: 64)
+    ExtensionApprovalStore.approve(extensionID: id, manifestHash: firstHash, capabilities: [.shell])
+    #expect(ExtensionApprovalStore.record(for: id)?.manifestHash == firstHash)
+    #expect(ExtensionApprovalStore.record(for: id)?.capabilities == [.shell])
+    ExtensionApprovalStore.approve(extensionID: id, manifestHash: secondHash, capabilities: [.shell, .externalExecution])
+    #expect(ExtensionApprovalStore.record(for: id)?.manifestHash == secondHash)
+    #expect(ExtensionApprovalStore.record(for: id)?.capabilities == [.shell, .externalExecution])
+    ExtensionApprovalStore.revoke(extensionID: id)
+    #expect(ExtensionApprovalStore.record(for: id) == nil)
 }
 
-@Test func workspaceStateAndProfilesDecodeLegacyData() throws {
-    let oldState = #"{"schemaVersion":1,"windowFrames":{}}"#.data(using: .utf8)!
-    let state = try JSONDecoder().decode(WorkspaceState.self, from: oldState)
-    #expect(state.apiCollectionID == nil)
-    #expect(state.windowFrames.isEmpty)
 
+@Test func workspaceStateIgnoresObsoletePersistedFieldsAndRoundTripsCurrentWorkspaces() throws {
+    let legacyObject: [String: Any] = [
+        "apiCollectionID": UUID().uuidString,
+        "apiRequestID": UUID().uuidString,
+        "apiEnvironmentID": UUID().uuidString,
+        String(["sql", "Workspace"].joined()): "removed",
+        "schemaVersion": 1,
+        "windowFrames": [:]
+    ]
+    let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+    let legacy = try JSONDecoder().decode(WorkspaceState.self, from: legacyData)
+    #expect(legacy.windowFrames.isEmpty)
+    #expect(legacy.terminalSessionID == nil)
+
+    let state = WorkspaceState(
+        activeWorkspace: "terminal",
+        notesSection: "favorites",
+        selectedNoteID: UUID(),
+        selectedDictationID: UUID(),
+        terminalSessionID: UUID(),
+        windowFrames: ["launcher": "{10, 20} 680 452"],
+        dockMode: "right"
+    )
+    let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
+    #expect(decoded == state)
+}
+
+@Test func commandProfilesRemainBackwardCompatible() throws {
     let oldProfile = #"{"id":"00000000-0000-0000-0000-000000000001","name":"Default","favoriteCommandIDs":[]}"#.data(using: .utf8)!
     let profile = try JSONDecoder().decode(CommandProfile.self, from: oldProfile)
     #expect(profile.name == "Default")
     #expect(profile.favoriteCommandOrder.isEmpty)
 }
+
 
 
 @Test func updateFaultInjectionRejectsEveryUnsafePackageCondition() throws {
@@ -483,24 +566,56 @@ import Testing
     #expect(throws: UpdateValidationError.invalidSignature) {
         try UpdateVerificationPolicy.validateSignature(isValid: false)
     }
+    #expect(throws: UpdateValidationError.wrongBundleIdentifier) {
+        try UpdateVerificationPolicy.validateBundleIdentifier("com.example.OtherApp")
+    }
+    #expect(throws: UpdateValidationError.versionNotNewer) {
+        try UpdateVerificationPolicy.validateNewerVersion("3.12.4", than: "3.12.4")
+    }
+    #expect(throws: UpdateValidationError.versionNotNewer) {
+        try UpdateVerificationPolicy.validateNewerVersion("3.12.3", than: "3.12.4")
+    }
+    #expect(throws: UpdateValidationError.wrongCertificate) {
+        try UpdateVerificationPolicy.validateSigningIdentity(
+            certificateFingerprint: "bad", expectedCertificateFingerprint: "good",
+            teamIdentifier: "TEAM", expectedTeamIdentifier: "TEAM",
+            signingIdentity: "Developer ID Application: Lima", expectedSigningIdentity: "Developer ID Application: Lima"
+        )
+    }
+    #expect(throws: UpdateValidationError.wrongTeamIdentifier) {
+        try UpdateVerificationPolicy.validateSigningIdentity(
+            certificateFingerprint: "good", expectedCertificateFingerprint: "good",
+            teamIdentifier: "WRONG", expectedTeamIdentifier: "TEAM",
+            signingIdentity: "Developer ID Application: Lima", expectedSigningIdentity: "Developer ID Application: Lima"
+        )
+    }
+    #expect(throws: UpdateValidationError.wrongSigningIdentity) {
+        try UpdateVerificationPolicy.validateSigningIdentity(
+            certificateFingerprint: "good", expectedCertificateFingerprint: "good",
+            teamIdentifier: "TEAM", expectedTeamIdentifier: "TEAM",
+            signingIdentity: "Wrong Identity", expectedSigningIdentity: "Developer ID Application: Lima"
+        )
+    }
     #expect(throws: UpdateValidationError.buildMismatch) {
         try UpdateVerificationPolicy.validateManifest(version: "3.12.2", build: "3121", expectedVersion: "3.12.2", expectedBuild: "3122")
     }
 }
 
-@Test func applicationStateIntegrationRoundTripsSearchAndWorkspaceSelection() throws {
-    let collectionID = UUID()
-    let requestID = UUID()
+
+@Test func currentWorkspaceStateIntegrationRoundTripsTerminalNotesAndFrames() throws {
     let state = WorkspaceState(
-        apiCollectionID: collectionID,
-        apiRequestID: requestID,
-        apiEnvironmentID: UUID(),
+        activeWorkspace: "notes",
+        notesSection: "all",
+        selectedNoteID: UUID(),
+        selectedDictationID: UUID(),
         terminalSessionID: UUID(),
-        windowFrames: ["launcher": "{10, 20} 680 452"]
+        windowFrames: ["launcher": "{10, 20} 680 452", "notes": "{40, 50} 900 700"],
+        dockMode: "left"
     )
     let data = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: data)
     #expect(decoded == state)
-    #expect(decoded.apiCollectionID == collectionID)
-    #expect(decoded.apiRequestID == requestID)
+    #expect(decoded.activeWorkspace == "notes")
+    #expect(decoded.terminalSessionID == state.terminalSessionID)
+    #expect(decoded.windowFrames.count == 2)
 }

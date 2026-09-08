@@ -301,26 +301,39 @@ enum LimaDesign {
 
     // Shared semantic surfaces. Use these for controls and editor regions
     // instead of inventing another local opacity for each workspace.
-    static var controlFill: Color { Color.white.opacity(AppContrastMode.current.controlFillOpacity) }
-    static var controlHoverFill: Color { Color.white.opacity(AppContrastMode.current.controlHoverFillOpacity) }
-    static var selectedFill: Color { Color.white.opacity(AppContrastMode.current.selectedFillOpacity) }
-    static var recessedFill: Color { Color.black.opacity(AppContrastMode.current.recessedFillOpacity) }
-    static var editorFill: Color { Color.black.opacity(AppContrastMode.current.editorFillOpacity) }
-    static var statusFill: Color { Color.black.opacity(AppContrastMode.current.statusFillOpacity) }
-    static var separator: Color { Color.white.opacity(AppContrastMode.current.separatorOpacity) }
-    static var controlBorder: Color { Color.white.opacity(AppContrastMode.current.controlBorderOpacity) }
-    static var controlHoverBorder: Color { Color.white.opacity(AppContrastMode.current.controlHoverBorderOpacity) }
-    static var activeControlFill: Color { Color.white.opacity(AppContrastMode.current.activeControlFillOpacity) }
-    static var activeControlBorder: Color { Color.white.opacity(AppContrastMode.current.activeControlBorderOpacity) }
-    static var primaryText: Color { Color.white.opacity(AppContrastMode.current.primaryTextOpacity) }
-    static var secondaryText: Color { Color.white.opacity(AppContrastMode.current.secondaryTextOpacity) }
-    static var tertiaryText: Color { Color.white.opacity(AppContrastMode.current.tertiaryTextOpacity) }
-    static var disabledText: Color { Color.white.opacity(AppContrastMode.current.disabledTextOpacity) }
+    // The original glass palette assumed a dark window and used translucent
+    // white for both controls and text. In Light mode that produces low-contrast
+    // white-on-white controls. Resolve the semantic palette from the effective
+    // AppKit appearance so explicit Light, Dark, and System settings all work.
+    static var usesLightPalette: Bool {
+        NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua
+    }
+
+    private static var foreground: Color { usesLightPalette ? .black : .white }
+    private static var inverseForeground: Color { usesLightPalette ? .white : .black }
+
+    static var controlFill: Color { foreground.opacity(AppContrastMode.current.controlFillOpacity + (usesLightPalette ? 0.025 : 0)) }
+    static var controlHoverFill: Color { foreground.opacity(AppContrastMode.current.controlHoverFillOpacity + (usesLightPalette ? 0.03 : 0)) }
+    static var selectedFill: Color { foreground.opacity(AppContrastMode.current.selectedFillOpacity + (usesLightPalette ? 0.025 : 0)) }
+    static var recessedFill: Color { Color.black.opacity(AppContrastMode.current.recessedOpacity + (usesLightPalette ? 0.04 : 0)) }
+    static var editorFill: Color { Color.black.opacity(AppContrastMode.current.editorFillOpacity + (usesLightPalette ? 0.06 : 0)) }
+    static var statusFill: Color { Color.black.opacity(AppContrastMode.current.statusFillOpacity + (usesLightPalette ? 0.04 : 0)) }
+    static var separator: Color { foreground.opacity(AppContrastMode.current.separatorOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var controlBorder: Color { foreground.opacity(AppContrastMode.current.controlBorderOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var controlHoverBorder: Color { foreground.opacity(AppContrastMode.current.controlHoverBorderOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var activeControlFill: Color { foreground.opacity(AppContrastMode.current.activeControlFillOpacity + (usesLightPalette ? 0.035 : 0)) }
+    static var activeControlBorder: Color { foreground.opacity(AppContrastMode.current.activeControlBorderOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var primaryText: Color { foreground.opacity(AppContrastMode.current.primaryTextOpacity) }
+    static var secondaryText: Color { foreground.opacity(AppContrastMode.current.secondaryTextOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var tertiaryText: Color { foreground.opacity(AppContrastMode.current.tertiaryTextOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var disabledText: Color { foreground.opacity(AppContrastMode.current.disabledTextOpacity + (usesLightPalette ? 0.05 : 0)) }
     static let disabledOpacity: Double = 0.46
-    static var focusFill: Color { Color.white.opacity(AppContrastMode.current.focusFillOpacity) }
-    static var focusBorder: Color { Color.white.opacity(AppContrastMode.current.focusBorderOpacity) }
-    static var highContrastBorder: Color { Color.white.opacity(AppContrastMode.current.highContrastBorderOpacity) }
-    static var highContrastFocus: Color { Color.white.opacity(AppContrastMode.current.highContrastFocusOpacity) }
+    static var focusFill: Color { foreground.opacity(AppContrastMode.current.focusFillOpacity + (usesLightPalette ? 0.03 : 0)) }
+    static var focusBorder: Color { foreground.opacity(AppContrastMode.current.focusBorderOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var highContrastBorder: Color { foreground.opacity(AppContrastMode.current.highContrastBorderOpacity + (usesLightPalette ? 0.08 : 0)) }
+    static var highContrastFocus: Color { foreground.opacity(AppContrastMode.current.highContrastFocusOpacity) }
+    static var surfaceHighlight: Color { inverseForeground.opacity(usesLightPalette ? 0.16 : 0.22) }
+    static var surfaceBorder: Color { foreground.opacity(usesLightPalette ? 0.24 : 0.16) }
 
     // Semantic colors are deliberately distinct from the selected accent. They
     // communicate state consistently in every workspace and remain readable in
@@ -329,7 +342,7 @@ enum LimaDesign {
     static let warning = Color.orange
     static let danger = Color.red
     static let info = Color.cyan
-    static var neutral: Color { Color.white.opacity(AppContrastMode.current.neutralOpacity) }
+    static var neutral: Color { foreground.opacity(AppContrastMode.current.neutralOpacity + (usesLightPalette ? 0.08 : 0)) }
 
     static func spring(_ response: Double = 0.24) -> Animation {
         .interactiveSpring(response: response, dampingFraction: 0.86)
@@ -538,9 +551,9 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
                 shape.strokeBorder(
                     LinearGradient(
                         colors: [
-                            Color.white.opacity(selected ? 0.42 : LimaDesign.borderOpacity),
+                            LimaDesign.surfaceHighlight.opacity(selected ? 0.95 : 0.72),
                             settings.accentTheme.primary.opacity(selected ? LimaDesign.selectedBorderOpacity : accentOpacity * 1.8),
-                            Color.black.opacity(0.28)
+                            LimaDesign.surfaceBorder.opacity(0.95)
                         ],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
@@ -550,7 +563,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
             }
             .overlay(alignment: .topLeading) {
                 LinearGradient(
-                    colors: [Color.white.opacity(selected ? 0.22 : 0.10), .clear],
+                    colors: [LimaDesign.surfaceHighlight.opacity(selected ? 0.95 : 0.70), .clear],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -600,7 +613,7 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(width: size, height: size)
-            .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.84))
+            .foregroundStyle(prominent ? Color.white : LimaDesign.primaryText)
             .background {
                 PrismaticPanelShape(cut: max(4, size * 0.18))
                     .fill(prominent ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient) : AnyShapeStyle(Color.black.opacity(0.24)))
@@ -632,7 +645,7 @@ struct LimaToolbarIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .limaFont(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(configuration.isPressed ? tint : Color.primary.opacity(0.78))
+            .foregroundStyle(configuration.isPressed ? tint : LimaDesign.primaryText)
             .frame(width: size, height: size)
             .background(
                 configuration.isPressed ? LimaDesign.controlHoverFill : LimaDesign.controlFill,
@@ -655,7 +668,7 @@ struct LimaToolbarTextButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .limaFont(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(prominent ? Color.white : Color.primary.opacity(0.82))
+            .foregroundStyle(prominent ? Color.white : LimaDesign.primaryText)
             .padding(.horizontal, 10)
             .frame(minHeight: LimaDesign.compactControlHeight)
             .background {
@@ -688,7 +701,7 @@ struct LimaButtonStyle: ButtonStyle {
         let accent = destructive ? LimaDesign.danger : SettingsStore.shared.accentTheme.primary
         configuration.label
             .limaFont(.system(size: compact ? 10.5 : 11.5, weight: .semibold))
-            .foregroundStyle(prominent || destructive ? Color.white : Color.primary.opacity(0.86))
+            .foregroundStyle(prominent || destructive ? Color.white : LimaDesign.primaryText)
             .padding(.horizontal, compact ? 8 : 10)
             .frame(minHeight: compact ? LimaDesign.compactControlHeight : LimaDesign.controlHeight)
             .background {

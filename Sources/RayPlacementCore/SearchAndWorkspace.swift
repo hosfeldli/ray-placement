@@ -1,7 +1,7 @@
 import Foundation
 
 public enum LimaSearchKind: String, Codable, CaseIterable, Sendable {
-    case command, application, note, apiRequest, sqlResource, dictation, terminal, window, clipboard, file
+    case command, application, note, dictation, terminal, window, clipboard, file
 }
 
 public struct LimaSearchResult: Identifiable, Hashable, Sendable {
@@ -29,69 +29,44 @@ public protocol LimaSearchProvider: Sendable {
 
 
 
-public struct APISecretReference: Codable, Equatable, Identifiable, Hashable, Sendable {
-    public enum Kind: String, Codable, CaseIterable, Sendable {
-        case bearer
-        case apiKey
-        case basic
-
-        public var title: String {
-            switch self {
-            case .bearer: return "Bearer token"
-            case .apiKey: return "API key"
-            case .basic: return "Basic credential"
-            }
-        }
-    }
-
-    public var id: UUID
-    public var name: String
-    public var kind: Kind
-    public var createdAt: Date
-    public var updatedAt: Date
-
-    public init(id: UUID = UUID(), name: String, kind: Kind, createdAt: Date = Date(), updatedAt: Date = Date()) {
-        self.id = id
-        self.name = name
-        self.kind = kind
-        self.createdAt = createdAt
-        self.updatedAt = updatedAt
-    }
-}
-
 public struct WorkspaceState: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var activeWorkspace: String?
     public var notesSection: String?
     public var selectedNoteID: UUID?
     public var selectedDictationID: UUID?
-    public var apiSelection: String?
-    public var apiCollectionID: UUID?
-    public var apiRequestID: UUID?
-    public var apiEnvironmentID: UUID?
-    public var sqlSelection: String?
-    public var sqlConnectionID: UUID?
-    public var sqlTableID: UUID?
     public var terminalSessionID: UUID?
     public var windowFrames: [String: String]
     public var dockMode: String?
 
-    public init(schemaVersion: Int = 1, activeWorkspace: String? = nil, notesSection: String? = nil, selectedNoteID: UUID? = nil, selectedDictationID: UUID? = nil, apiSelection: String? = nil, apiCollectionID: UUID? = nil, apiRequestID: UUID? = nil, apiEnvironmentID: UUID? = nil, sqlSelection: String? = nil, sqlConnectionID: UUID? = nil, sqlTableID: UUID? = nil, terminalSessionID: UUID? = nil, windowFrames: [String: String] = [:], dockMode: String? = nil) {
+    public init(schemaVersion: Int = 1, activeWorkspace: String? = nil, notesSection: String? = nil, selectedNoteID: UUID? = nil, selectedDictationID: UUID? = nil, terminalSessionID: UUID? = nil, windowFrames: [String: String] = [:], dockMode: String? = nil) {
         self.schemaVersion = schemaVersion
         self.activeWorkspace = activeWorkspace
         self.notesSection = notesSection
         self.selectedNoteID = selectedNoteID
         self.selectedDictationID = selectedDictationID
-        self.apiSelection = apiSelection
-        self.apiCollectionID = apiCollectionID
-        self.apiRequestID = apiRequestID
-        self.apiEnvironmentID = apiEnvironmentID
-        self.sqlSelection = sqlSelection
-        self.sqlConnectionID = sqlConnectionID
-        self.sqlTableID = sqlTableID
         self.terminalSessionID = terminalSessionID
         self.windowFrames = windowFrames
         self.dockMode = dockMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, activeWorkspace, notesSection, selectedNoteID, selectedDictationID
+        case terminalSessionID, windowFrames, dockMode
+        // Obsolete tester/workspace keys are intentionally omitted. Codable
+        // ignores unknown keys, allowing old installations to start safely.
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        activeWorkspace = try container.decodeIfPresent(String.self, forKey: .activeWorkspace)
+        notesSection = try container.decodeIfPresent(String.self, forKey: .notesSection)
+        selectedNoteID = try container.decodeIfPresent(UUID.self, forKey: .selectedNoteID)
+        selectedDictationID = try container.decodeIfPresent(UUID.self, forKey: .selectedDictationID)
+        terminalSessionID = try container.decodeIfPresent(UUID.self, forKey: .terminalSessionID)
+        windowFrames = try container.decodeIfPresent([String: String].self, forKey: .windowFrames) ?? [:]
+        dockMode = try container.decodeIfPresent(String.self, forKey: .dockMode)
     }
 }
 

@@ -257,6 +257,7 @@ final class UpdateService: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = rayPlacementUpdateDownloadTimeout
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        let installedVersion = currentVersion
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = rayPlacementUpdateDownloadTimeout
@@ -298,7 +299,8 @@ final class UpdateService: ObservableObject {
                     let sourceRoot = try self.prepareUpdate(
                         downloadedArchive: retainedDownload,
                         expectedHash: expectedHash,
-                        expectedVersion: release.versionText
+                        expectedVersion: release.versionText,
+                        installedVersion: installedVersion
                     )
                     Task { @MainActor in
                         self.installationProgress = 0.3
@@ -354,7 +356,8 @@ final class UpdateService: ObservableObject {
     private nonisolated func prepareUpdate(
         downloadedArchive: URL,
         expectedHash: String,
-        expectedVersion: String
+        expectedVersion: String,
+        installedVersion: String
     ) throws -> URL {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: ApplicationPaths.updates, withIntermediateDirectories: true)
@@ -389,27 +392,19 @@ final class UpdateService: ObservableObject {
         try validateExtractedTree(extraction)
 
         let sourceRoot = extraction.appendingPathComponent("LimaUpdate", isDirectory: true)
-        let required = [
-            "Package.swift", "Uninstall Lima.command", "Packaging/Info.plist",
-            "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh",
-            "scripts/replace_lima_bundle.sh", "scripts/request_lima_update_approval.sh",
-            "Prebuilt/Lima.app/Contents/MacOS/Lima"
-        ]
+        let required = ["Prebuilt/Lima.app/Contents/MacOS/Lima", "Prebuilt/Lima.app/Contents/Info.plist"]
         let extractedFiles = Set(required.filter { fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) })
         do { try UpdateVerificationPolicy.validateRequiredFiles(extractedFiles, required: required) }
         catch { throw UpdateError.invalidPackage }
-        guard let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
-            throw UpdateError.invalidPackage
-        }
-        do { try UpdateVerificationPolicy.validatePackage(packagedVersion: packagedVersion, expectedVersion: expectedVersion) }
-        catch { throw UpdateError.invalidPackage }
         let prebuiltInfo = sourceRoot.appendingPathComponent("Prebuilt/Lima.app/Contents/Info.plist")
         guard try plistValue("CFBundleIdentifier", in: prebuiltInfo) == "dev.liam.lima",
-              try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion,
-              try plistValue("CFBundleVersion", in: prebuiltInfo) == plistValue("CFBundleVersion", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
+              try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion else {
             throw UpdateError.invalidPackage
         }
-        try runTrustedVerification(sourceRoot.appendingPathComponent("Prebuilt/Lima.app"), expectedVersion: expectedVersion, expectedBuild: try plistValue("CFBundleVersion", in: prebuiltInfo))
+        do { try UpdateVerificationPolicy.validateNewerVersion(expectedVersion, than: installedVersion) }
+        catch { throw UpdateError.invalidPackage }
+        let expectedBuild = try plistValue("CFBundleVersion", in: prebuiltInfo)
+        try runTrustedVerification(sourceRoot.appendingPathComponent("Prebuilt/Lima.app"), expectedVersion: expectedVersion, expectedBuild: expectedBuild)
         return sourceRoot
     }
 
@@ -458,7 +453,12 @@ final class UpdateService: ObservableObject {
     private nonisolated func runTrustedVerification(_ app: URL, expectedVersion: String, expectedBuild: String) throws {
         let verifier = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
         guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
-        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild])
+        let policy = Bundle.main.infoDictionary ?? [:]
+        guard let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
+              let identity = policy["LimaUpdateExpectedSigningIdentity"] as? String,
+              let certificate = policy["LimaUpdateExpectedCertificateSHA256"] as? String,
+              !team.isEmpty, !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }
+        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, team, identity, certificate, Bundle.main.bundleURL.path])
     }
 
     private nonisolated func runProcess(_ executable: String, arguments: [String]) throws -> String {

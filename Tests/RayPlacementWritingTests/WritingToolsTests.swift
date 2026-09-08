@@ -125,3 +125,11 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(protected.maskedText.contains("\u{E000}LIMA_KEEP_0001_\u{E001}"))
     #expect(protected.restore(protected.maskedText) == source)
 }
+
+
+@Test func providerNormalizationRemovesOnlyTransportWrappers() {
+    let service = WritingCheckService()
+    #expect(service.normalizeRewrite("<CORRECTED>Hi; there</CORRECTED>") == "Hi, there")
+    #expect(service.normalizeRewrite("\"This is quoted prose.\"") == "This is quoted prose.")
+    #expect(service.normalizeRewrite("He said \"hello\".") == "He said \"hello\".")
+}

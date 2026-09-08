@@ -6,7 +6,7 @@ ROOT="${0:A:h:h}"
 FIXTURE="$(mktemp -d /private/tmp/lima-approval-test.XXXXXX)"
 trap '/bin/rm -rf "$FIXTURE"' EXIT
 PROGRAM="$ROOT/scripts/approved_lima_replacement.sh"
-for script in "$PROGRAM" "$ROOT/scripts/request_lima_update_approval.sh" "$ROOT/scripts/apply_downloaded_update.sh"; do
+for script in "$PROGRAM" "$ROOT/scripts/request_lima_update_approval.sh" "$ROOT/scripts/verify_update_app.sh"; do
     /bin/zsh -n "$script"
 done
 /usr/bin/osacompile -o "$FIXTURE/approval.scpt" "$ROOT/scripts/authorize_lima_update.applescript"

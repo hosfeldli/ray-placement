@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "local.document-formatter",
   "name": "Document Formatter",
   "version": "1.0.0",
@@ -25,11 +25,15 @@
       ],
       "icon": "curlybraces.square.fill",
       "action": {
-        "type": "openFormatterWorkspace",
-        "value": ""
+        "type": "workspace",
+        "operation": "formatter"
       }
     }
   ],
   "trust": "bundled",
-  "capabilities": []
+  "capabilities": [],
+  "pack": "Document Formatter",
+  "category": "Developer Tools",
+  "bundled": true,
+  "provenance": "bundled"
 }

@@ -26,6 +26,9 @@ LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPla
 LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
 LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
 LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
+EXPECTED_TEAM_IDENTIFIER="${RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER:-not set}"
+EXPECTED_SIGNING_IDENTITY="${RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY:-$LOCAL_SIGNING_IDENTITY}"
+EXPECTED_CERTIFICATE_SHA256="${RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256:-7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62}"
 
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
@@ -121,8 +124,18 @@ cp "$PROJECT_DIRECTORY/scripts/apply_trusted_update.sh" "$CONTENTS_DIRECTORY/Res
 cp "$PROJECT_DIRECTORY/scripts/verify_update_app.sh" "$CONTENTS_DIRECTORY/Resources/Updater/verify_update_app.sh"
 cp "$PROJECT_DIRECTORY/scripts/request_lima_update_approval.sh" "$CONTENTS_DIRECTORY/Resources/Updater/request_lima_update_approval.sh"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Updater"/*.sh
+# The installed app carries the immutable policy used to verify future update
+# candidates. Release builds must provide all three values; an ad-hoc build is
+# never eligible for protected updates.
+if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+    [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
+    [[ -n "$EXPECTED_SIGNING_IDENTITY" && -n "$EXPECTED_CERTIFICATE_SHA256" ]] || { echo "Release signing identity and certificate fingerprint are required." >&2; exit 1; }
+    [[ "$EXPECTED_CERTIFICATE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Release certificate fingerprint must be SHA-256 hex." >&2; exit 1; }
+fi
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedTeamIdentifier string $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedTeamIdentifier $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedSigningIdentity string $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedSigningIdentity $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedCertificateSHA256 string $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedCertificateSHA256 $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist"
 cp "$PROJECT_DIRECTORY/scripts/authorize_lima_update.applescript" "$CONTENTS_DIRECTORY/Resources/Updater/authorize_lima_update.applescript"
-cp "$PROJECT_DIRECTORY/Packaging/RayPlacementLocalSigning.pem" "$CONTENTS_DIRECTORY/Resources/Updater/RayPlacementLocalSigning.pem"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"
 cp "$PROJECT_DIRECTORY/Packaging/Emoji/emoji-test.txt" "$CONTENTS_DIRECTORY/Resources/Emoji/emoji-test.txt"
 if [[ ! -d "$BUNDLED_EXTENSIONS_DIRECTORY" ]]; then
@@ -132,7 +145,13 @@ fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
-if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+if [[ -n "${RAYPLACEMENT_SIGNING_IDENTITY:-}" ]]; then
+    # CI/release builds may provision a Developer ID identity in a temporary
+    # keychain. The identity is selected explicitly and is never inferred from
+    # the downloaded update.
+    codesign --force --deep --sign "$RAYPLACEMENT_SIGNING_IDENTITY" "$APP_DIRECTORY"
+    echo "Signed with the configured release identity."
+elif [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: local signing was disabled; this build is ad-hoc signed."
 elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then

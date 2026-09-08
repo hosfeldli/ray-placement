@@ -1,29 +1,21 @@
 # Lima extension contract for coding agents
 
-Use this document when an AI or automation creates, repairs, or reviews a Lima extension. The goal is a small, predictable tool that feels native, remains keyboard-first, and does not widen its authority beyond the requested workflow.
+Use this document when an AI or automation creates, repairs, or reviews a Lima extension. The goal is a small, predictable local macOS workflow that remains keyboard-first and does not widen its authority beyond the requested task.
 
 ## Non-negotiable workflow
 
-1. Read `https://www.liamhosfeld.com/docs/extension-manifest.schema.json` completely.
-2. Read `https://www.liamhosfeld.com/docs/EXTENSIONS.md` and the starter manifest on the same site.
-3. Treat this website kit as the complete public API; never assume an unlisted field or action exists.
-4. Choose the smallest built-in action that can satisfy the request.
+1. Read `docs/extension-manifest.schema.json` completely.
+2. Read `docs/EXTENSIONS.md` and `docs/starter-extension/manifest.json`.
+3. Treat those files as the complete public manifest contract; never assume an unlisted field or action exists.
+4. Choose the smallest generic native action that satisfies the request.
 5. Use a schema-v2 form only when the command needs variable input or output.
-6. Add an executable only when the public schema cannot express the required deterministic behavior.
+6. Add an executable only when the public native actions cannot express the deterministic behavior.
 7. Preserve stable extension, command, and field IDs.
-8. Validate the JSON against the published schema, then verify loading, search, execution, and failure feedback in Lima.
+8. Validate JSON, then verify loading, search, execution, cancellation, and failure feedback in Lima.
 
-Do not invent undocumented action types or fields. If the public API must change, update the Swift models, decoder, executor, JSON schema, both manuals, a bundled example, and tests in the same change.
+Do not invent undocumented action types or private one-off launcher modes. If the public API must change, update the Swift models, decoder, executor, schema, manuals, a bundled example, and tests in the same change.
 
-## Files and identity
-
-Develop in any ordinary project folder. Install the finished extension in:
-
-```text
-~/Library/Application Support/Lima/Extensions/
-```
-
-Recommended shape:
+## Recommended shape
 
 ```text
 my-extension/
@@ -34,104 +26,45 @@ my-extension/
     └── optional-local-data
 ```
 
-Use reverse-domain-style IDs:
-
-- Extension: `local.company.workflow`
-- Commands: short stable verbs such as `inspect`, `format`, or `open-project`
-- Fields: semantic names such as `endpoint`, `authType`, or `inputFile`
-
-Shortcut and enablement settings are keyed by `<extension id>.<command id>`. Changing an ID silently disconnects a user's preferences.
+Use reverse-domain-style IDs. Shortcut and enablement settings are keyed by `<extension id>.<command id>`; pack settings use the manifest pack metadata.
 
 ## Decision tree
 
 ```text
 Does the command have fixed input?
-├─ Yes → use a schema-v1 built-in action
+├─ Yes → use a generic native action
 └─ No
-   ├─ Can native fields + httpRequest solve it? → schema-v2 form
-   ├─ Can native fields + direct executable solve it? → schema-v2 form
-   └─ Does it require a large persistent workspace? → propose a native app tool
+   ├─ Can a reusable picker or form solve it? → schema-v2 form or picker action
+   ├─ Can a direct executable solve it safely? → schema-v2 shell form
+   └─ Does it require a large persistent surface? → propose a reviewed native host capability
 ```
 
-Native tools stay in the single Lima workspace by default and may be popped out by the user. Do not recreate the removed tab system or force ordinary workflows into separate windows.
+Do not recreate the removed tab system or force an ordinary instant action into a separate workspace.
 
-## Minimal safe command
+## Generic action contract
 
-```json
-{
-  "schemaVersion": 1,
-  "id": "local.example.project-tools",
-  "name": "Project Tools",
-  "description": "Fast local project actions",
-  "commands": [
-    {
-      "id": "open-project",
-      "title": "Open Project",
-      "subtitle": "Open the project directory",
-      "keywords": ["folder", "code", "repository"],
-      "icon": "folder.fill",
-      "action": {
-        "type": "file",
-        "value": "~/Projects/MyProject"
-      }
-    }
-  ]
-}
-```
+Supported action types are:
 
-Titles name the action. Subtitles describe the outcome or risk. Keywords include likely synonyms rather than repeating the title. Use a real SF Symbols name. Add no default hotkey unless the user requested it or the command is truly time-critical.
+`application`, `clipboard`, `file`, `form`, `picker`, `shell`, `system`, `url`, `window`, and `workspace`.
 
-## Form design contract
+Important operations include:
+
+* application: `quit`, `forceQuit`, `restart`, `activate`, `hide`, `unhide`, `quitAll`, `forceQuitAll`.
+* clipboard: `copy`, `paste`, `pastePlainText`.
+* picker: `emoji`, `application`, `file`, `timezone`, `password`.
+* system: `lock`, `sleep`, `screenSaver`, `logout`, `restart`, `shutdown`.
+* window: the standard half, third, quarter, maximize, center, restore, and display operations documented in `EXTENSIONS.md`.
+* workspace: only operations explicitly implemented by Lima and documented by the corresponding maintained feature.
+
+Generic fields are `value`, `operation`, `target`, `confirmation`, `parameters`, `arguments`, `workingDirectory`, `form`, and `chain`. Use `confirmation: true` for a destructive request; the host owns the final confirmation behavior.
+
+## Forms
 
 Supported field types are `text`, `secure`, `multiline`, `number`, `toggle`, `picker`, `file`, `directory`, `date`, `slider`, and `keyValue`.
 
-Form rules:
+Use `visibleWhen` to remove irrelevant fields. Mark only truly mandatory fields as `required`. Use `secure` for secrets and never substitute secret values into visible output.
 
-- Put the primary input first and the submit action in the natural keyboard path.
-- Use `section` for grouping, not decoration.
-- Use `visibleWhen` to remove irrelevant fields.
-- Put examples in `placeholder`; put durable explanation in brief `helpText`.
-- Mark only truly mandatory fields `required`.
-- Use `secure` for secrets. Never substitute a secret into visible output.
-- Prefer fewer than eight simultaneously visible controls.
-- Use exact `{{fieldID}}` substitutions only.
-
-Conditional example:
-
-```json
-{
-  "id": "token",
-  "label": "Bearer token",
-  "type": "secure",
-  "required": true,
-  "section": "Authentication",
-  "visibleWhen": {
-    "field": "authType",
-    "equals": "Bearer"
-  }
-}
-```
-
-`visibleWhen` accepts `equals` or `notEquals`; required validation applies only while visible.
-
-## Execution contract
-
-For `httpRequest`, only HTTP(S) URLs are valid. Use explicit methods, bounded timeouts, and the smallest necessary headers. Do not log authorization headers, cookies, tokens, or substituted request bodies.
-
-For `shell`:
-
-1. Invoke an executable directly.
-2. Pass each argument as its own JSON array element.
-3. Use explicit system paths because GUI apps receive a minimal `PATH`.
-4. Treat every value as untrusted.
-5. Never use `eval`, `zsh -c`, `bash -c`, or string-built commands.
-6. Start extension scripts with an explicit shebang and fail on errors.
-7. Verify exact targets before modifying or deleting data.
-8. Write useful results to stdout and actionable errors to stderr.
-9. Exit nonzero on failure and stay below the 1 MB output cap.
-10. Do not create daemons, login items, persistent watchers, or hidden network services.
-
-Example:
+The only form execution type is direct `shell` execution:
 
 ```json
 "execution": {
@@ -142,550 +75,44 @@ Example:
 }
 ```
 
-## Complete API reference
+Rules:
 
-This is the complete public manifest surface for the current app. A manifest
-must have `schemaVersion`, `id`, `name`, and `commands`. Every command must
-have `id`, `title`, and `action`. Unknown JSON keys are rejected by the schema;
-do not add compatibility guesses or private metadata.
+1. Invoke an executable directly.
+2. Pass every argument as its own JSON array element.
+3. Use explicit system paths because GUI apps receive a minimal `PATH`.
+4. Treat every value as untrusted.
+5. Never use `eval`, `zsh -c`, `bash -c`, or string-built commands.
+6. Start extension scripts with an explicit shebang and fail on errors.
+7. Verify exact targets before modifying or deleting data.
+8. Write useful results to stdout and actionable errors to stderr.
+9. Stay below the 1 MB output cap.
+10. Do not create daemons, login items, persistent watchers, or hidden services.
 
-```text
-manifest
-  schemaVersion: 1 | 2
-  id, name: non-empty strings
-  version, description: optional strings
-  commands: one or more commands
+## Bounded chains
 
-command
-  id, title: non-empty strings
-  subtitle: optional short outcome
-  keywords: optional string array
-  icon: optional SF Symbols name
-  hotkey: optional shortcut string
-  runInBackground: optional boolean
-  action: action object
+A `chain` contains no more than eight approved native actions. It cannot contain shell, form, URL, or file actions and is not an arbitrary scripting language. Use it only when each step is independently safe and deterministic.
 
-action
-  type: supported action type below
-  value: string (use an empty string when the action has no value)
-  arguments, workingDirectory: optional for shell
-  form: required for form
-```
+## Capabilities
 
-### Native action matrix
+Request the smallest manifest capability set. Native action requirements are checked when the extension loads. User extensions requesting capabilities require explicit approval, and changed manifests require re-approval.
 
-Use these exact `type` values. No other native actions exist.
+Never use `externalExecution` unless the command truly invokes an executable outside the extension directory. Prefer a reviewed extension-relative executable when practical.
 
-| Action | Required `value` | What it does |
-| --- | --- | --- |
-| `url` | HTTP(S) URL | Opens the URL with macOS. |
-| `file` | Path | Opens an absolute, `~`-relative, or extension-relative file/folder. |
-| `application` | `.app` path | Opens that app. |
-| `copy` | Plain text | Copies fixed text. |
-| `paste` | Plain text | Copies then pastes into the prior app. |
-| `pastePlainText` | `""` | Converts the current clipboard to plain text, then pastes it. |
-| `checkWriting` | `""` | Runs the local spelling/grammar workflow on the exact selected text. |
-| `openFocusedFileLauncher` | `""` | Opens Finder selection and lets the user choose the destination app. |
-| `convertTimezones` | `""` | Opens the offline timezone converter. |
-| `forceQuitApplications` | `""` | Opens the confirmed single-app force-quit picker. |
-| `forceQuitAllApplications` | `""` | Opens the confirmed all-apps flow; Lima is excluded. |
-| `openFormatterWorkspace` | `""` | Opens the EDI/JSON/XML formatter workspace. |
-| `openEmojiPicker` | `""` | Opens the Unicode emoji picker. |
-| `openPasswordGenerator` | `""` | Opens the password generator. |
-| `openExtensionDevelopment` | `""` | Opens the maintained extension manuals. |
-| `uninstallApplication` | `""` | Opens the confirmed Lima uninstall flow while preserving user data. |
-| `shell` | Executable path | Starts one reviewed executable directly. |
-| `form` | `""` | Opens a schema-v2 native form. |
+## Search, arguments, and feedback
 
-`file`, `application`, and `shell` paths resolve first from the extension
-directory unless they are absolute or begin with `~`. The app does not expand
-environment variables in paths. Put an executable inside `bin/` and reference
-it as `bin/tool` when the extension must travel as one folder.
+Titles, subtitles, keywords, exact matches, prefixes, context, frequency, recency, and favorites contribute to launcher ranking. Make the title describe the user-facing result, and put synonyms in keywords.
 
-### Hotkey grammar and enablement
+Instant operations should complete through a toast/activity capsule. Use a full surface only for actual input, review, or output. Escape must cancel an active picker or confirmation without changing the target application or clipboard.
 
-The accepted normal form is modifiers followed by one key:
+## Review checklist
 
-```text
-command+shift+p
-control+option+g
-command+command
-```
-
-Valid modifiers are `command`, `option`, `control`, and `shift`. The final key
-may be a letter, number, navigation key, or F1–F12. `command+command` is the
-double-Command gesture. A default hotkey is only a proposal: the user can
-record another shortcut, disable that shortcut, or disable the command in
-Settings. Extension code must work without its shortcut.
-
-## Form contract, from JSON to result
-
-Forms are available only in `schemaVersion: 2`. They stay inside Lima's
-shared workspace by default, validate locally, and show a visible result. They
-do not create a browser page or a web runtime.
-
-Each field supports:
-
-```text
-id, label, type, placeholder, defaultValue, options, required,
-section, helpText, minimum, maximum, visibleWhen
-```
-
-Field behavior is exact:
-
-| Type | Value supplied to templates | Notes |
-| --- | --- | --- |
-| `text`, `secure`, `multiline` | User-entered string | `secure` is masked and must not be echoed. |
-| `number`, `slider` | Decimal string | Add minimum/maximum when there is a meaningful bound. |
-| `toggle` | `true` or `false` | Use a `defaultValue` of `true` or `false`. |
-| `picker` | Selected option string | Supply a non-empty `options` list. |
-| `file`, `directory` | Chosen full path | Native picker; do not parse shell-quoted input. |
-| `date` | Date string | Use only where a date, not free text, is intended. |
-| `keyValue` | App-provided serialized rows | Use for headers/variables; do not place secrets in visible output. |
-
-Use `visibleWhen` only with a field that appears earlier in the same form:
-
-```json
-"visibleWhen": { "field": "mode", "equals": "Advanced" }
-```
-
-or:
-
-```json
-"visibleWhen": { "field": "mode", "notEquals": "None" }
-```
-
-Required checks apply only to a visible field. A field ID is the template name,
-so `{{endpoint}}` means the field whose ID is `endpoint`; misspelled templates
-remain literal text and are a manifest bug.
-
-### Complete HTTP form example
-
-This is a complete, valid native request inspector. It makes a single request,
-never logs its token, and leaves the response visible for review.
-
-```json
-{
-  "schemaVersion": 2,
-  "id": "local.example.http-inspector",
-  "name": "HTTP Inspector",
-  "version": "1.0.0",
-  "commands": [{
-    "id": "fetch-json",
-    "title": "Fetch JSON",
-    "subtitle": "Request a JSON endpoint",
-    "keywords": ["http", "api", "json"],
-    "icon": "network",
-    "action": {
-      "type": "form",
-      "value": "",
-      "form": {
-        "title": "Fetch JSON",
-        "submitLabel": "Send",
-        "fields": [
-          {
-            "id": "url",
-            "label": "URL",
-            "type": "text",
-            "placeholder": "https://api.example.com/status",
-            "required": true,
-            "section": "Request"
-          },
-          {
-            "id": "token",
-            "label": "Bearer token",
-            "type": "secure",
-            "section": "Authentication"
-          }
-        ],
-        "execution": {
-          "type": "httpRequest",
-          "method": "GET",
-          "url": "{{url}}",
-          "headers": {
-            "Accept": "application/json",
-            "Authorization": "Bearer {{token}}"
-          },
-          "timeoutSeconds": 20
-        }
-      }
-    }
-  }]
-}
-```
-
-`httpRequest` accepts only HTTP or HTTPS. Its response view contains response
-headers and a body capped at 1 MB; JSON is formatted when possible. A 2xx or
-3xx response is marked successful. Requests are executed with the user's
-network access, so make destination and side effects clear in the title or
-subtitle.
-
-### Complete local executable example
-
-`manifest.json`:
-
-```json
-{
-  "schemaVersion": 2,
-  "id": "local.example.line-tools",
-  "name": "Line Tools",
-  "commands": [{
-    "id": "count-lines",
-    "title": "Count Lines",
-    "subtitle": "Count lines in a selected file",
-    "keywords": ["wc", "file", "lines"],
-    "icon": "text.line.first.and.arrowtriangle.forward",
-    "action": {
-      "type": "form",
-      "value": "",
-      "form": {
-        "submitLabel": "Count",
-        "fields": [{
-          "id": "inputFile",
-          "label": "File",
-          "type": "file",
-          "required": true
-        }],
-        "execution": {
-          "type": "shell",
-          "executable": "bin/count-lines",
-          "arguments": ["{{inputFile}}"],
-          "timeoutSeconds": 15
-        }
-      }
-    }
-  }]
-}
-```
-
-`bin/count-lines`:
-
-```zsh
-#!/bin/zsh
-set -euo pipefail
-[[ "$#" -eq 1 ]] || { print -u2 "Expected one file path"; exit 64; }
-[[ -f "$1" ]] || { print -u2 "File not found: $1"; exit 66; }
-/usr/bin/wc -l -- "$1"
-```
-
-Make the file executable before Reload Extensions. The extension runner starts
-the executable directly with the exact argument array: it does not invoke a
-shell, so quoting and injection tricks are neither needed nor supported.
-
-## Development lifecycle and architecture map
-
-An agent can implement a public extension using only the versioned website kit:
-
-| Need | Read/change |
-| --- | --- |
-| Public JSON contract | `https://www.liamhosfeld.com/docs/extension-manifest.schema.json` |
-| Complete AI contract | `https://www.liamhosfeld.com/docs/EXTENSION_AUTHORING_FOR_AI.md` |
-| Human builder guide | `https://www.liamhosfeld.com/docs/EXTENSIONS.md` |
-| Copy-ready starter | `https://www.liamhosfeld.com/docs/starter-extension/manifest.json` |
-| Interactive documentation | `https://www.liamhosfeld.com/extensions` |
-
-The actual edit/reload loop is:
-
-1. Create `<extension-folder>/manifest.json` and any `bin/` or `assets/` files.
-2. Validate the manifest against the JSON schema.
-3. In the app, run **Reload Extensions**.
-4. Search command title and each keyword in the launcher.
-5. Open Settings → Extensions; verify the individual enable switch and shortcut.
-6. Exercise the failure path before the success path, then verify the installed extension.
-
-Work in a separate project folder until validation is complete. Copy the final
-extension into `~/Library/Application Support/Lima/Extensions/` only when you
-are ready for an installed-user test.
-
-## Failure behavior, logs, and safe repair
-
-An extension must make failure actionable without hiding the cause:
-
-| Situation | Required behavior |
-| --- | --- |
-| Invalid JSON/schema | Fix the manifest; Reload Extensions reports the load issue. |
-| Missing executable/file | Fail before starting work and name the resolved path. |
-| Invalid URL | Reject before the network request. |
-| HTTP non-2xx/3xx | Show status and response; do not call it a success. |
-| Timeout | Keep the timeout bounded unless the user configured unbounded performance. |
-| User cancellation | Terminate the child process and report cancellation. |
-| Secret-bearing request | Keep the secret masked; never include headers/body in logs or copied output. |
-
-The runtime combines stdout and stderr, caps output at 1 MB, and uses a
-minimal GUI-safe `PATH`:
-
-```text
-/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin
-```
-
-Use absolute executable paths for dependencies. Print a concise result to
-stdout and an explanation to stderr. Never solve a failed extension by adding
-`eval`, an interactive prompt, a hidden helper process, a login item, or a
-background daemon.
-
-## Agent delivery checklist
-
-Before handing the extension to a user or another agent, provide these facts:
-
-```text
-Extension ID and command IDs:
-Files added/changed:
-Inputs and outputs:
-Network/filesystem/destructive authority:
-Secrets handling:
-Shortcut default and settings behavior:
-Performance/timeout/cancellation behavior:
-Validation performed:
-Known limitations:
-```
-
-This report makes the extension maintainable without a separate conversation.
-
-## Product and privacy boundaries
-
-- Dictation is the only bundled model-powered feature. Do not add cloud AI, model downloads, hidden AI requests, or generative text models to extensions.
-- `checkWriting` is a deterministic local pipeline using bundled Python spelling rules and Harper grammar rules. Preserve exact selected-text capture, replacement, and clipboard restoration.
-- The formatter is a dedicated temporary EDI/JSON/XML workspace, not a note type.
-- Background commands use `runInBackground` and compact feedback; they do not take over the launcher.
-- Never persist passwords, tokens, request authorization, selected writing, clipboard contents, or dictated text in usage logs.
-- Describe network access, filesystem mutation, and destructive behavior before execution.
-
-Extensions run with the user's account authority. Performance controls are cooperative, not a security boundary.
-
-## Performance contract
-
-Native forms inherit Lima’s app-wide text-size setting automatically. When adding app-native SwiftUI controls, use `.limaFont(.caption)` or `.limaFont(.system(size: 13))` rather than fixed `.font` calls. New hosting roots use `LimaTypographyRoot(content:)`. AppKit editors observe `AppTypography.shared.$scale` and update fonts without recreating the editor, resetting focus, or losing text. Test at 85%, 100%, and 140%; allow labels to wrap or make dense panels scrollable. Native macOS dialogs retain system typography. This does not add any new manifest fields.
-
-Read the provided resource environment on every execution:
-
-- `LIMA_PERFORMANCE_SCALE`
-- `LIMA_THREAD_LIMIT`
-- `LIMA_TIMEOUT_SECONDS`
-- `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS`
-- `TOKENIZERS_PARALLELISM`
-
-An unbounded timeout or thread level is explicit user configuration, not permission to leak processes or ignore cancellation. Stream or summarize large data, avoid repeated process startup, and release temporary resources after every run.
-
-## Required verification
-
-Before claiming completion:
-
-- Manifest is valid JSON and conforms to `extension-manifest.schema.json`.
-- IDs are unique and stable.
-- The command appears after **Reload Extensions** and is discoverable by its keywords.
-- Per-command enablement works.
-- Shortcut recording, disabling, restoring, and invocation work.
-- Required and conditional fields work with keyboard navigation.
-- Success, failure, timeout, and cancellation have concise visible feedback.
-- Secure values never appear in output, persistence, or logs.
-- Executables receive arguments without shell evaluation and honor cancellation/resource settings.
-- The workflow opens in the shared workspace and can be popped out where supported.
-- Schema validation, installation, Reload Extensions, and installed-app UI verification pass.
-
-Test malformed input, an empty required value, an unavailable dependency, and the largest realistic input—not only the happy path.
-
-## Prompt template for another coding agent
-
-Copy and fill this in:
-
-```text
-Create or update a Lima extension named <name>.
-
-Outcome:
-<one observable user outcome>
-
-Inputs:
-<fields, types, required state, and examples>
-
-Execution:
-<built-in action, HTTP request, or direct executable>
-
-Output:
-<what the user should see or receive>
-
-Constraints:
-- Read the schema and builder guide included in this copied website packet first.
-- Prefer the smallest manifest-only implementation.
-- Keep IDs stable and add no default hotkey unless specified.
-- Do not expose secrets or evaluate user input through a shell.
-- Do not change the public API; implement only the extension described by this packet.
-- Validate, install, reload, and verify the command in the actual app UI when Lima is available.
-```
-
-## Review report template
-
-```text
-Extension: <id>
-Schema: <version and validation result>
-Commands: <IDs>
-Permissions/data access: <explicit list>
-Secrets handling: <where values exist and confirmation they are not logged>
-Performance behavior: <timeout, threads, cancellation>
-Verification: <tests and installed UI checks>
-Known limits: <concise remaining limits>
-```
-
-The copy-ready website starter is the canonical public example. Use only action,
-field, execution, and shortcut values listed in this website kit.
-
-## Self-contained resource map
-
-This manual plus the following bundled resources is the complete public SDK. An
-agent does not need private conversation history or external documentation:
-
-| Resource | Purpose | Installed app location |
-| --- | --- | --- |
-| `EXTENSION_AUTHORING_FOR_AI.md` | Exact agent contract and implementation workflow | `Lima.app/Contents/Resources/Documentation/` |
-| `EXTENSIONS.md` | Human-oriented builder guide | same directory |
-| `extension-manifest.schema.json` | Machine-readable, closed JSON Schema | same directory |
-| `starter-extension/manifest.json` | Copy-ready schema-v2 starter | same directory |
-| `starter-extension/validate.sh` | Local JSON/schema preflight | same directory |
-
-The same resources are published at `https://www.liamhosfeld.com/extensions/`.
-The website kit is the canonical public reference. If the website describes a
-newer schema than the installed app, target the installed app's bundled schema.
-
-### Field value semantics
-
-Every form value reaches template substitution as text:
-
-| Field | Runtime value |
-| --- | --- |
-| `text`, `secure`, `multiline`, `file`, `directory`, `date` | exact user-entered or selected string |
-| `number`, `slider` | locale-independent decimal text |
-| `toggle` | `true` or `false` |
-| `picker` | the exact selected option |
-| `keyValue` | newline-separated `key=value` pairs |
-
-Substitution is literal. It does not URL-encode, JSON-escape, shell-escape, or
-interpret values. Design the receiving API or executable accordingly. For HTTP
-JSON bodies, keep the template valid JSON and reject values that cannot be
-represented safely. For executable actions, each substituted array element is
-one argument; never combine multiple logical arguments into a command string.
-
-### Output and user feedback
-
-- Built-in actions report success or a compact actionable error.
-- Form HTTP results show status, headers, and response text in the shared
-  extension workspace.
-- Form executable results show bounded combined output. Exit status zero is
-  success; any other status is failure.
-- `runInBackground` keeps the launcher available and reports completion in a
-  compact bottom notification. It does not create a daemon.
-- Copy/paste actions must preserve unrelated clipboard content whenever the
-  platform workflow permits it.
-
-An extension cannot currently define arbitrary SwiftUI, retain a background
-service, request new app entitlements, add a database, or store a secret in the
-manifest. Build such a capability as an reviewed native Lima tool, then expose
-one explicit native action through the public manifest API.
-
-## Copy-ready schema-v2 starter
-
-The bundled `starter-extension/manifest.json` is a working extension with
-conditional authentication, secure input, environment selection, and an HTTP
-result. Copy its directory, change all IDs, then remove fields you do not need.
-
-```json
-{
-  "schemaVersion": 2,
-  "id": "local.example.service-check",
-  "name": "Service Check",
-  "version": "1.0.0",
-  "description": "Check a service endpoint without exposing its token",
-  "commands": [
-    {
-      "id": "request",
-      "title": "Check Service",
-      "subtitle": "Send a bounded request and inspect the response",
-      "keywords": ["http", "endpoint", "health"],
-      "icon": "network",
-      "action": {
-        "type": "form",
-        "value": "",
-        "form": {
-          "title": "Service Check",
-          "submitLabel": "Send Request",
-          "fields": [
-            {"id": "environment", "label": "Environment", "type": "picker", "options": ["Development", "Staging", "Production"], "defaultValue": "Development", "required": true, "section": "Request"},
-            {"id": "endpoint", "label": "Endpoint", "type": "text", "placeholder": "https://api.example.com/health", "required": true, "section": "Request"},
-            {"id": "useToken", "label": "Use bearer token", "type": "toggle", "defaultValue": "false", "section": "Authentication"},
-            {"id": "token", "label": "Bearer token", "type": "secure", "required": true, "section": "Authentication", "visibleWhen": {"field": "useToken", "equals": "true"}}
-          ],
-          "execution": {
-            "type": "httpRequest",
-            "method": "GET",
-            "url": "{{endpoint}}",
-            "headers": {"Authorization": "Bearer {{token}}", "Accept": "application/json"},
-            "timeoutSeconds": 30
-          }
-        }
-      }
-    }
-  ]
-}
-```
-
-When authentication is optional, create two commands or an executable that
-omits the header. Do not send an empty `Authorization` header to production.
-
-## Install, reload, and debug without hidden context
-
-1. Put the extension directory in
-   `~/Library/Application Support/Lima/Extensions/`.
-2. In Lima, open **Extension Development** and choose **Reload Extensions**.
-3. Search using the title and every keyword. Confirm the command's icon,
-   subtitle, enablement, and shortcut state.
-4. Run success, validation-failure, dependency-failure, timeout, and cancel
-   paths. Inspect visible output rather than assuming the process ran.
-5. Open Settings → Usage & Logs for bounded operational diagnostics. Secret
-   values, request authorization, selected text, and form bodies must not be
-   present.
-
-If a command does not appear, check in this order: JSON syntax, schema version,
-unique extension ID, unique command IDs, exact action spelling, required
-`value`, and whether the command is disabled in Settings. If a form opens but
-cannot run, check visible required fields, template IDs, executable path,
-working directory, timeout, and GUI-safe `PATH`. If it runs in Terminal but not
-Lima, it is probably relying on shell initialization, an alias, an environment
-variable, an interactive prompt, or a relative executable.
-
-## Public API change protocol
-
-An AI may extend the public SDK only when the requested workflow cannot be
-expressed with the current contract. A complete API change updates all of:
-
-1. The manifest model and template behavior.
-2. Loader validation and execution behavior.
-3. The published JSON schema with `additionalProperties: false`.
-4. The website builder guide and this agent contract.
-5. The in-app Extension Development resource bundle and website resource copy.
-6. At least one minimal bundled example.
-7. Decode, invalid-input, execution, cancellation, and UI-discovery tests.
-
-Never ship a decoder-only field, a documented-but-unimplemented action, or a
-private action value that bypasses schema validation. Backward compatibility
-means existing schema-v1 and schema-v2 manifests continue to decode and behave
-the same way.
-
-## Final AI handoff packet
-
-Before finishing, an agent must be able to answer every line below from the
-files it produced. “Not applicable” is valid; omission is not.
-
-```text
-User outcome:
-Extension / command / field IDs:
-Schema version:
-Built-in action or execution type:
-Files and directories read:
-Files and directories written:
-Network hosts and methods:
-Destructive actions and confirmations:
-Secret lifetime and storage:
-Timeout, thread use, output cap, cancellation:
-Visible success and failure feedback:
-Keyboard path and shortcut behavior:
-Tests and installed-app verification:
-Known limitations:
-```
+* Manifest JSON is valid and matches the schema.
+* All IDs are stable and unique.
+* Every action type and operation is documented.
+* Capabilities are minimal and sufficient.
+* No arbitrary command interpreter is used.
+* Destructive operations have an explicit confirmation path.
+* Filesystem paths remain within the extension boundary unless explicitly approved.
+* Secure values are not logged or persisted.
+* The command works with keyboard-only navigation.
+* The command produces compact success and actionable failure feedback.

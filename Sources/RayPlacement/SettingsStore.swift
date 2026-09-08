@@ -296,6 +296,7 @@ final class SettingsStore: ObservableObject {
         static let showInDock = "showInDock"
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
         static let extensionEnabledOverrides = "extensionEnabledOverrides"
+        static let extensionPackEnabledOverrides = "extensionPackEnabledOverrides"
         static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
         static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
@@ -316,7 +317,7 @@ final class SettingsStore: ObservableObject {
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
-    static let defaultWritingInstructions = "RayPlacement\nVS Code\nPostman\nEDI"
+    static let defaultWritingInstructions = "RayPlacement\nVS Code\nEDI"
 
     @Published var activationShortcut: String {
         didSet {
@@ -621,7 +622,10 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
+    /// Legacy extension-ID overrides remain readable so upgrades do not reset
+    /// user choices. New settings write stable pack keys instead.
     @Published private(set) var extensionEnabledOverrides: [String: Bool]
+    @Published private(set) var extensionPackEnabledOverrides: [String: Bool]
     @Published private(set) var extensionHotkeyEnabledOverrides: [String: Bool]
 
     @Published private(set) var launchAtLogin: Bool
@@ -678,6 +682,7 @@ final class SettingsStore: ObservableObject {
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
+        extensionPackEnabledOverrides = defaults.dictionary(forKey: Key.extensionPackEnabledOverrides) as? [String: Bool] ?? [:]
         extensionHotkeyEnabledOverrides = defaults.dictionary(forKey: Key.extensionHotkeyEnabledOverrides) as? [String: Bool] ?? [:]
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -858,6 +863,19 @@ final class SettingsStore: ObservableObject {
         extensionEnabledOverrides[extensionID] ?? true
     }
 
+    func isPackEnabled(for loaded: LoadedExtensionCommand) -> Bool {
+        extensionPackEnabledOverrides[loaded.settingsPackKey]
+            ?? isExtensionEnabled(loaded.extensionID)
+    }
+
+    func setPackEnabled(_ enabled: Bool, for loaded: LoadedExtensionCommand) {
+        extensionPackEnabledOverrides[loaded.settingsPackKey] = enabled
+        defaults.set(extensionPackEnabledOverrides, forKey: Key.extensionPackEnabledOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
+    /// Retained for settings migrations and user extensions that predate pack
+    /// metadata. New UI writes the pack-level store through `setPackEnabled`.
     func setExtensionEnabled(_ enabled: Bool, extensionID: String) {
         extensionEnabledOverrides[extensionID] = enabled
         defaults.set(extensionEnabledOverrides, forKey: Key.extensionEnabledOverrides)
@@ -865,11 +883,11 @@ final class SettingsStore: ObservableObject {
     }
 
     func isCommandEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isExtensionEnabled(loaded.extensionID)
+        isPackEnabled(for: loaded) && isExtensionEnabled(loaded.extensionID)
     }
 
     func isHotkeyEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isExtensionEnabled(loaded.extensionID)
+        isCommandEnabled(loaded)
             && (extensionHotkeyEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
     }
 

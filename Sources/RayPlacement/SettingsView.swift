@@ -10,11 +10,13 @@ private extension LoadedExtensionCommand {
 private struct SettingsExtensionGroup: Identifiable {
     let id: String
     let name: String
+    let category: String
+    let provenance: String
     let commands: [LoadedExtensionCommand]
 }
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
-    case general, safety, clipboard, writing, performance, usage, extensions, about
+    case general, safety, clipboard, writing, performance, usage, secrets, extensions, about
 
     var id: String { rawValue }
     var title: String { rawValue.capitalized }
@@ -26,6 +28,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .writing: return "wand.and.stars"
         case .performance: return "gauge.with.dots.needle.67percent"
         case .usage: return "chart.xyaxis.line"
+        case .secrets: return "key.fill"
         case .extensions: return "puzzlepiece.extension.fill"
         case .about: return "info.circle.fill"
         }
@@ -49,6 +52,11 @@ struct SettingsView: View {
     @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
     @ObservedObject private var permissionCenter = PermissionCenter.shared
     @ObservedObject private var backups = DataBackupCoordinator.shared
+    @ObservedObject private var secrets = LimaSecretStore.shared
+    @State private var secretName = ""
+    @State private var secretValue = ""
+    @State private var secretKind: LimaSecretKind = .localSecret
+    @State private var editingSecretID: UUID?
     @State private var confirmClipboardClear = false
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
@@ -169,6 +177,7 @@ struct SettingsView: View {
         case .writing: writingTab
         case .performance: performanceTab
         case .usage: usageTab
+        case .secrets: secretsTab
         case .extensions: extensionsTab
         case .about: aboutTab
         }
@@ -738,6 +747,60 @@ struct SettingsView: View {
         }
     }
 
+    private var secretsTab: some View {
+        Form {
+            Section("Keychain secrets") {
+                Text("Values are stored in the macOS Keychain. Lima saves only names, kinds, and opaque references in workspace data; values are never shown in this list.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                if secrets.references.isEmpty {
+                    Text("No secrets saved.").foregroundStyle(.secondary)
+                } else {
+                    ForEach(secrets.references) { reference in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(reference.name).limaFont(.callout.weight(.medium))
+                                Text(reference.kind.title).limaFont(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Edit") {
+                                editingSecretID = reference.id
+                                secretName = reference.name
+                                secretKind = reference.kind
+                                secretValue = ""
+                            }
+                            Button("Delete", role: .destructive) { secrets.delete(reference) }
+                        }
+                    }
+                }
+            }
+            Section(editingSecretID == nil ? "Add secret" : "Replace secret") {
+                TextField("Name", text: $secretName)
+                Picker("Kind", selection: $secretKind) {
+                    ForEach(LimaSecretKind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
+                }
+                SecureField("Value", text: $secretValue)
+                Text("Editing requires entering the value again; existing secret values are not revealed.")
+                    .limaFont(.caption2).foregroundStyle(.secondary)
+                HStack {
+                    Button(editingSecretID == nil ? "Add to Keychain" : "Replace value") {
+                        do {
+                            _ = try secrets.save(secretValue, name: secretName, kind: secretKind, id: editingSecretID)
+                            secretName = ""; secretValue = ""; editingSecretID = nil
+                        } catch { settings.lastError = error.localizedDescription }
+                    }
+                    .disabled(secretName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || secretValue.isEmpty)
+                    if editingSecretID != nil {
+                        Button("Cancel") { secretName = ""; secretValue = ""; editingSecretID = nil }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
+    }
+
     private var extensionsTab: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
@@ -781,6 +844,11 @@ struct SettingsView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(issue.file).limaFont(.caption.weight(.semibold))
                                     Text(issue.message).limaFont(.caption).foregroundStyle(.secondary)
+                                    if issue.extensionID != nil {
+                                        Button("Approve requested capabilities") { viewModel.approveExtension(issue) }
+                                            .buttonStyle(.borderless)
+                                            .limaFont(.caption.weight(.medium))
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
@@ -807,18 +875,25 @@ struct SettingsView: View {
                                 HStack(spacing: 8) {
                                     Image(systemName: "puzzlepiece.extension.fill")
                                         .foregroundStyle(SettingsColors.violet)
-                                    Text(group.name)
-                                        .limaFont(.system(size: 13, weight: .semibold))
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(group.name)
+                                            .limaFont(.system(size: 13, weight: .semibold))
+                                        Text("\(group.category) · \(group.provenance)")
+                                            .limaFont(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
                                     Spacer()
-                                    Toggle(
-                                        "Extension",
-                                        isOn: Binding(
-                                            get: { settings.isExtensionEnabled(group.id) },
-                                            set: { settings.setExtensionEnabled($0, extensionID: group.id) }
+                                    if let representative = group.commands.first {
+                                        Toggle(
+                                            "Pack",
+                                            isOn: Binding(
+                                                get: { settings.isPackEnabled(for: representative) },
+                                                set: { settings.setPackEnabled($0, for: representative) }
+                                            )
                                         )
-                                    )
-                                    .toggleStyle(.checkbox)
-                                    .limaFont(.caption2)
+                                            .toggleStyle(.checkbox)
+                                            .limaFont(.caption2)
+                                    }
                                 }
                                 .padding(.horizontal, 11)
                                 .frame(height: 36)
@@ -839,8 +914,8 @@ struct SettingsView: View {
                                         }.buttonStyle(.borderless).help("Favorite command")
                                         ExtensionShortcutRow(settings: settings, loaded: loaded)
                                     }
-                                    .disabled(!settings.isExtensionEnabled(group.id))
-                                    .opacity(settings.isExtensionEnabled(group.id) ? 1 : 0.42)
+                                    .disabled(group.commands.first.map { !settings.isPackEnabled(for: $0) } ?? false)
+                                    .opacity(group.commands.first.map { settings.isPackEnabled(for: $0) ? 1 : 0.42 } ?? 1)
                                 }
                             }
                             .liquidGlass(cornerRadius: 13, depth: .recessed, accentOpacity: 0.012)
@@ -854,11 +929,14 @@ struct SettingsView: View {
     }
 
     private var extensionGroups: [SettingsExtensionGroup] {
-        Dictionary(grouping: viewModel.extensionCommands, by: \LoadedExtensionCommand.extensionID)
-            .map { id, commands in
-                SettingsExtensionGroup(
-                    id: id,
-                    name: commands.first?.extensionName ?? id,
+        Dictionary(grouping: viewModel.extensionCommands, by: \.settingsPackKey)
+            .map { key, commands in
+                let representative = commands.first
+                return SettingsExtensionGroup(
+                    id: key,
+                    name: representative?.pack ?? representative?.extensionName ?? key,
+                    category: representative?.category ?? "Extensions",
+                    provenance: representative?.provenanceLabel ?? "User extension",
                     commands: commands.sorted {
                         $0.command.title.localizedStandardCompare($1.command.title) == .orderedAscending
                     }

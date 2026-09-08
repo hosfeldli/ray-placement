@@ -15,38 +15,23 @@ STAGED_SOURCE="$TEMP_DIRECTORY/LimaUpdate"
 PREBUILT_APP="$PROJECT_DIRECTORY/build/Lima.app"
 mkdir -p "$STAGED_SOURCE" "$OUTPUT_DIRECTORY"
 OUTPUT_DIRECTORY="$(cd "$OUTPUT_DIRECTORY" && pwd)"
-rsync -a \
-    --exclude .git/ \
-    --exclude .github/ \
-    --exclude .build/ \
-    --exclude build/ \
-    --exclude dist/ \
-    --exclude Downloads/ \
-    --exclude 'Packaging/Vendor/Whisper/**' \
-    --exclude 'Packaging/Vendor/Whisper/model/**' \
-    --exclude 'Packaging/Vendor/CoEdit/**' \
-    --exclude 'Packaging/Vendor/Qwen/**' \
-    --exclude .DS_Store \
-    "$PROJECT_DIRECTORY/" "$STAGED_SOURCE/"
+# The update archive is deliberately data-only: it contains the candidate
+# signed app and no source tree, shell scripts, build files, or updater logic.
+mkdir -p "$STAGED_SOURCE/Prebuilt"
+test -d "$PREBUILT_APP"
+ditto "$PREBUILT_APP" "$STAGED_SOURCE/Prebuilt/Lima.app"
 
 ARCHIVE="$OUTPUT_DIRECTORY/Lima-Update.zip"
 rm -f "$ARCHIVE" "$OUTPUT_DIRECTORY/Lima-Update.sha256"
 
-# Local grammar correction must be in every update kit. Whisper's large model
-# is restored from the already-installed app by apply_downloaded_update.sh.
-test -f "$STAGED_SOURCE/Packaging/Vendor/Harper/harper-cli"
-test -f "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/grammar_check.py"
-test -d "$STAGED_SOURCE/Packaging/Vendor/PythonGrammar/site-packages/spellchecker"
-test -d "$PREBUILT_APP"
-# Update archives must never contain the 465 MB Whisper model. The updater
-# reuses the checksum-verified model already on the Mac. Refuse an unsafe local
-# packaging order instead of silently publishing an oversized update.
+# The candidate app is self-contained for the update verifier. Large optional
+# model data is intentionally excluded by the packaging step before this script.
+# Update archives must never contain the 465 MB Whisper model. The installed
+# app accesses the validated per-user model cache after replacement.
 test ! -f "$PREBUILT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin" || {
     echo "Refusing to create an oversized update. Repackage with RAYPLACEMENT_MODEL_FREE_UPDATE=1 first." >&2
     exit 1
 }
-mkdir -p "$STAGED_SOURCE/Prebuilt"
-ditto "$PREBUILT_APP" "$STAGED_SOURCE/Prebuilt/Lima.app"
 (
     cd "$TEMP_DIRECTORY"
     ditto -c -k --sequesterRsrc --keepParent LimaUpdate "$ARCHIVE"

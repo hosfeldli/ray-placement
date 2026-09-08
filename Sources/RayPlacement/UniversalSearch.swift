@@ -36,56 +36,6 @@ struct LimaDictationSearchProvider: LimaSearchProvider {
     }
 }
 
-struct LimaAPISearchProvider: LimaSearchProvider {
-    struct Workspace: Codable {
-        let collections: [PostmanCollection]
-        let environments: [PostmanEnvironment]
-        // These fields are present in newer workspace files but are not needed
-        // by search. Keeping them optional preserves compatibility with older
-        // exports and with hand-edited workspaces.
-        let selectedEnvironmentID: UUID?
-        let oauthConfiguration: PostmanOAuthConfiguration?
-
-        init(collections: [PostmanCollection], environments: [PostmanEnvironment], selectedEnvironmentID: UUID? = nil, oauthConfiguration: PostmanOAuthConfiguration? = nil) {
-            self.collections = collections
-            self.environments = environments
-            self.selectedEnvironmentID = selectedEnvironmentID
-            self.oauthConfiguration = oauthConfiguration
-        }
-
-        private enum CodingKeys: String, CodingKey {
-            case collections, environments, selectedEnvironmentID, oauthConfiguration
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            collections = try container.decodeIfPresent([PostmanCollection].self, forKey: .collections) ?? []
-            environments = try container.decodeIfPresent([PostmanEnvironment].self, forKey: .environments) ?? []
-            selectedEnvironmentID = try container.decodeIfPresent(UUID.self, forKey: .selectedEnvironmentID)
-            oauthConfiguration = try container.decodeIfPresent(PostmanOAuthConfiguration.self, forKey: .oauthConfiguration)
-        }
-    }
-    let workspaceURL: URL
-    var kind: LimaSearchKind { .apiRequest }
-
-    func search(query: String) async -> [LimaSearchResult] {
-        guard let data = try? Data(contentsOf: workspaceURL),
-              let workspace = try? JSONDecoder().decode(Workspace.self, from: data) else { return [] }
-        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return workspace.collections.flatMap { collection in
-            collection.requests.compactMap { request in
-                let haystack = "\(request.name) \(request.method) \(request.url) \(collection.name)"
-                guard let score = FuzzyMatcher.score(haystack, query: clean) else { return nil }
-                return LimaSearchResult(
-                    id: "api:\(collection.id.uuidString):\(request.id.uuidString)", kind: .apiRequest,
-                    title: request.name, subtitle: "\(request.method) · \(collection.name)",
-                    keywords: [request.url], score: score
-                )
-            }
-        }.sorted { $0.score > $1.score }.prefix(20).map { $0 }
-    }
-}
-
 struct LimaTerminalSearchProvider: LimaSearchProvider {
     let sessions: [TerminalSession]
     var kind: LimaSearchKind { .terminal }
@@ -130,17 +80,15 @@ final class UniversalSearchCoordinator {
         let (prefix, query) = Self.parse(rawQuery)
         let notes = LimaNotesSearchProvider(notes: NotesStore.shared.notes)
         let dictation = LimaDictationSearchProvider(conversations: DictationConversationStore.shared.conversations)
-        let api = LimaAPISearchProvider(workspaceURL: ApplicationPaths.applicationSupport.appendingPathComponent("api-workspace.json"))
         let terminal = LimaTerminalSearchProvider(sessions: TerminalSessionStore.shared.sessions)
         let workflows = LimaWorkflowSearchProvider(workflows: WorkflowStore.shared.workflows)
         let providers: [any LimaSearchProvider]
         switch prefix {
         case "note": providers = [notes]
         case "dictation": providers = [dictation]
-        case "api": providers = [api]
         case "terminal": providers = [terminal]
         case "workflow", "command": providers = [workflows]
-        default: providers = [notes, api, dictation, terminal, workflows]
+        default: providers = [notes, dictation, terminal, workflows]
         }
         var results: [LimaSearchResult] = []
         for provider in providers {
@@ -151,7 +99,7 @@ final class UniversalSearchCoordinator {
 
     static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
         let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let known = ["note", "api", "dictation", "terminal", "workflow", "command"]
+        let known = ["note", "dictation", "terminal", "workflow", "command"]
         for prefix in known where clean.lowercased().hasPrefix(prefix + ":") {
             return (prefix, String(clean.dropFirst(prefix.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines))
         }

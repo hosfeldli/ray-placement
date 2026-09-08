@@ -10,6 +10,11 @@ public enum UpdateValidationError: Error, Equatable, Sendable {
     case missingRequiredFile(String)
     case invalidManifest
     case invalidSignature
+    case wrongBundleIdentifier
+    case versionNotNewer
+    case wrongCertificate
+    case wrongTeamIdentifier
+    case wrongSigningIdentity
 }
 
 public enum UpdateArchiveEntryType: String, Sendable {
@@ -69,6 +74,37 @@ public enum UpdateVerificationPolicy {
 
     public static func validateSignature(isValid: Bool) throws {
         guard isValid else { throw UpdateValidationError.invalidSignature }
+    }
+
+    public static func validateBundleIdentifier(_ identifier: String, expected: String = "dev.liam.lima") throws {
+        guard identifier == expected else { throw UpdateValidationError.wrongBundleIdentifier }
+    }
+
+    public static func validateNewerVersion(_ candidate: String, than installed: String) throws {
+        guard let candidateVersion = SemanticVersion(candidate),
+              let installedVersion = SemanticVersion(installed),
+              installedVersion < candidateVersion else {
+            throw UpdateValidationError.versionNotNewer
+        }
+    }
+
+    public static func validateSigningIdentity(
+        certificateFingerprint: String,
+        expectedCertificateFingerprint: String,
+        teamIdentifier: String,
+        expectedTeamIdentifier: String,
+        signingIdentity: String,
+        expectedSigningIdentity: String
+    ) throws {
+        guard certificateFingerprint.caseInsensitiveCompare(expectedCertificateFingerprint) == .orderedSame else {
+            throw UpdateValidationError.wrongCertificate
+        }
+        guard teamIdentifier == expectedTeamIdentifier else {
+            throw UpdateValidationError.wrongTeamIdentifier
+        }
+        guard signingIdentity == expectedSigningIdentity else {
+            throw UpdateValidationError.wrongSigningIdentity
+        }
     }
 
     public static func validateManifest(version: String, build: String, expectedVersion: String, expectedBuild: String) throws {

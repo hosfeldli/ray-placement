@@ -1,0 +1,95 @@
+{
+  "schemaVersion": 2,
+  "id": "local.lima-essentials",
+  "name": "Lima Essentials",
+  "version": "2.0.0",
+  "description": "Local utility commands shipped and maintained by Lima.",
+  "pack": "Lima Essentials",
+  "category": "Essentials",
+  "bundled": true,
+  "provenance": "bundled",
+  "trust": "bundled",
+  "capabilities": [
+    "clipboard",
+    "accessibility",
+    "filesystem"
+  ],
+  "commands": [
+    {
+      "id": "emoji-picker",
+      "title": "Emoji Picker",
+      "subtitle": "Search the complete Unicode emoji catalog and paste into the previous app",
+      "keywords": [
+        "emoji",
+        "emoticon",
+        "symbol",
+        "reaction",
+        "smile"
+      ],
+      "icon": "face.smiling.inverse",
+      "hotkey": "command+command",
+      "action": {
+        "type": "picker",
+        "operation": "emoji",
+        "parameters": {
+          "query": ""
+        }
+      }
+    },
+    {
+      "id": "focused-file-launcher",
+      "title": "Focused File Launcher",
+      "subtitle": "Choose a file or folder and open it with an installed application",
+      "keywords": [
+        "finder",
+        "open with",
+        "folder",
+        "directory",
+        "file",
+        "project",
+        "workspace"
+      ],
+      "icon": "folder.badge.gearshape",
+      "action": {
+        "type": "picker",
+        "operation": "file"
+      }
+    },
+    {
+      "id": "timezone-converter",
+      "title": "Convert Timezones",
+      "subtitle": "Translate a time between cities",
+      "keywords": [
+        "time",
+        "timezone",
+        "zone",
+        "convert",
+        "utc",
+        "meeting",
+        "world clock"
+      ],
+      "icon": "globe.americas.fill",
+      "action": {
+        "type": "picker",
+        "operation": "timezone"
+      }
+    },
+    {
+      "id": "password-generator",
+      "title": "Password Generator",
+      "subtitle": "Create and copy a cryptographically secure password",
+      "keywords": [
+        "password",
+        "generate",
+        "security",
+        "random",
+        "credential"
+      ],
+      "icon": "key.fill",
+      "action": {
+        "type": "picker",
+        "operation": "password"
+      }
+    }
+  ]
+}

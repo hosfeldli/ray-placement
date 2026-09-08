@@ -1,0 +1,189 @@
+{
+  "schemaVersion": 2,
+  "id": "local.system-controls",
+  "name": "System & Applications",
+  "version": "2.0.0",
+  "description": "Native application and system controls with shared confirmation handling.",
+  "pack": "System & Applications",
+  "category": "System Controls",
+  "bundled": true,
+  "provenance": "bundled",
+  "trust": "bundled",
+  "capabilities": [
+    "processControl",
+    "systemControl"
+  ],
+  "commands": [
+    {
+      "id": "force-quit-application",
+      "title": "Force Quit Application",
+      "subtitle": "Choose a running app and force it to close",
+      "keywords": [
+        "force",
+        "quit",
+        "kill",
+        "application",
+        "unresponsive",
+        "frozen"
+      ],
+      "icon": "xmark.app.fill",
+      "action": {
+        "type": "application",
+        "operation": "forceQuit",
+        "target": "picker",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "restart-application",
+      "title": "Restart Application",
+      "subtitle": "Choose an app, quit it gracefully, and relaunch it",
+      "keywords": [
+        "restart",
+        "application",
+        "relaunch",
+        "quit"
+      ],
+      "icon": "arrow.clockwise.app",
+      "action": {
+        "type": "application",
+        "operation": "restart",
+        "target": "picker",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "force-quit-all-applications",
+      "title": "Force Quit All Applications",
+      "subtitle": "Close normal user applications while keeping Lima open",
+      "keywords": [
+        "force",
+        "quit",
+        "all",
+        "kill",
+        "applications"
+      ],
+      "icon": "xmark.bin.fill",
+      "action": {
+        "type": "application",
+        "operation": "forceQuitAll",
+        "target": "all",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "quit-all-applications",
+      "title": "Quit All Applications",
+      "subtitle": "Ask normal user applications to quit gracefully",
+      "keywords": [
+        "quit",
+        "all",
+        "applications",
+        "graceful"
+      ],
+      "icon": "rectangle.stack.badge.minus",
+      "action": {
+        "type": "application",
+        "operation": "quitAll",
+        "target": "all",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "lock-screen",
+      "title": "Lock Screen",
+      "subtitle": "Lock this Mac",
+      "keywords": [
+        "lock",
+        "security",
+        "system"
+      ],
+      "icon": "lock.fill",
+      "action": {
+        "type": "system",
+        "operation": "lock"
+      }
+    },
+    {
+      "id": "sleep",
+      "title": "Sleep",
+      "subtitle": "Put this Mac to sleep",
+      "keywords": [
+        "sleep",
+        "system",
+        "power"
+      ],
+      "icon": "moon.zzz.fill",
+      "action": {
+        "type": "system",
+        "operation": "sleep"
+      }
+    },
+    {
+      "id": "screen-saver",
+      "title": "Start Screen Saver",
+      "subtitle": "Start the screen saver",
+      "keywords": [
+        "screen saver",
+        "display",
+        "system"
+      ],
+      "icon": "sparkles.tv",
+      "action": {
+        "type": "system",
+        "operation": "screenSaver"
+      }
+    },
+    {
+      "id": "log-out",
+      "title": "Log Out",
+      "subtitle": "Log out of this Mac",
+      "keywords": [
+        "logout",
+        "log out",
+        "system",
+        "account"
+      ],
+      "icon": "rectangle.portrait.and.arrow.right",
+      "action": {
+        "type": "system",
+        "operation": "logout",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "restart-mac",
+      "title": "Restart Mac",
+      "subtitle": "Restart this Mac",
+      "keywords": [
+        "restart",
+        "reboot",
+        "system",
+        "power"
+      ],
+      "icon": "arrow.clockwise.circle",
+      "action": {
+        "type": "system",
+        "operation": "restart",
+        "confirmation": true
+      }
+    },
+    {
+      "id": "shut-down",
+      "title": "Shut Down",
+      "subtitle": "Shut down this Mac",
+      "keywords": [
+        "shutdown",
+        "shut down",
+        "system",
+        "power"
+      ],
+      "icon": "power",
+      "action": {
+        "type": "system",
+        "operation": "shutdown",
+        "confirmation": true
+      }
+    }
+  ]
+}
