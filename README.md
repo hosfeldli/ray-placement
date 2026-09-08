@@ -1,4 +1,4 @@
-# Lima 3.12.5
+# Lima 3.12.6
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, a small capability-oriented extension platform, Markdown notes, a real developer terminal, and private local dictation conversations without accounts or analytics.
 
@@ -6,7 +6,7 @@ Text generation has been removed. Writing correction uses deterministic local Py
 
 ## Distribution note
 
-The `3.12.5` package is signed with Lima’s pinned local self-signed certificate because this release is distributed without an Apple Developer account. macOS may identify it as an application from an unidentified developer; use **Control-click → Open** the first time, then confirm the dialog. Updates are accepted only when they match Lima’s pinned local certificate.
+The `3.12.6` package is signed with Lima’s pinned local self-signed certificate because this release is distributed without an Apple Developer account. macOS may identify it as an application from an unidentified developer; use **Control-click → Open** the first time, then confirm the dialog. Updates are accepted only when they match Lima’s pinned local certificate.
 
 ## Install
 
