@@ -59,6 +59,7 @@ jobs:
           gh release upload "$RELEASE_TAG" Lima.dmg --clobber
           asset_url=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "Lima.dmg") | .apiUrl')
           [[ "$(gh api "$asset_url" --jq .digest)" == "sha256:$EXPECTED_SHA" ]]
+          assert_draft
           for part in "${parts[@]}"; do
             assert_draft
             gh release delete-asset "$RELEASE_TAG" "$part" --yes

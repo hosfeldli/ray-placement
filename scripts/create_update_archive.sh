@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 OUTPUT_DIRECTORY="${1:-$PROJECT_DIRECTORY/dist}"
 TEMP_DIRECTORY="$(mktemp -d "${TMPDIR%/}/rayplacement-update.XXXXXX")"
 
@@ -37,9 +38,9 @@ test ! -f "$PREBUILT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin
     ditto -c -k --sequesterRsrc --keepParent LimaUpdate "$ARCHIVE"
 )
 ARCHIVE_BYTES="$(stat -f %z "$ARCHIVE")"
-if (( ARCHIVE_BYTES <= 0 || ARCHIVE_BYTES > 100 * 1024 * 1024 )); then
+if (( ARCHIVE_BYTES <= 0 || ARCHIVE_BYTES > LIMA_RELEASE_MAX_UPDATE_BYTES )); then
     rm -f "$ARCHIVE"
-    echo "Refusing to publish an update archive larger than Lima's 100 MB safety limit." >&2
+    echo "Refusing to publish an update archive larger than the configured $LIMA_RELEASE_MAX_UPDATE_BYTES-byte safety limit." >&2
     exit 1
 fi
 (

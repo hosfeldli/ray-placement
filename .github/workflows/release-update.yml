@@ -1,58 +1,87 @@
-name: Publish Update Kit
+name: Build and stage Lima release
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing draft tag to build and stage (for example v3.12.6)
+        required: true
+        type: string
+      signing_mode:
+        description: Explicit signing policy configured in repository secrets
+        required: true
+        default: self-signed-local
+        type: choice
+        options:
+          - self-signed-local
+          - developer-id
 
 permissions: {}
 
 jobs:
-  publish:
+  build-and-stage:
     runs-on: macos-15
     permissions:
       contents: write
+      actions: write
     env:
+      GH_TOKEN: ${{ github.token }}
       RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
+      RAYPLACEMENT_SIGNING_MODE: ${{ inputs.signing_mode }}
       RAYPLACEMENT_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
       RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER: ${{ secrets.LIMA_TEAM_IDENTIFIER }}
       RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
       RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256: ${{ secrets.LIMA_CERTIFICATE_SHA256 }}
+      RAYPLACEMENT_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
-          # Harper is a versioned Apple-silicon binary stored in Git LFS. A
-          # release bundle must contain the binary, never its small LFS pointer.
+          # Harper is a versioned Apple-silicon binary stored in Git LFS.
           lfs: true
-      - name: Verify version and tests
-        shell: zsh {0}
-        run: |
-          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' Packaging/Info.plist)
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" && "$GITHUB_REF_NAME" != "v$VERSION" ]]; then
-            echo "Tag $GITHUB_REF_NAME does not match app version $VERSION."
-            exit 1
-          fi
-          make test
-          ./scripts/test_lima_installer.sh
-          ./scripts/test_update_verifier.sh
-          /bin/zsh scripts/test_approved_lima_update.sh
-      - name: Create update kit and ready-to-drag DMG
-        run: |
-          RAYPLACEMENT_MODEL_FREE_UPDATE=1 ./scripts/package_liamflow_app.sh
-          ./scripts/create_update_archive.sh dist
-          ./scripts/package_liamflow_app.sh
-          ./scripts/create_liamflow_dmg.sh dist
-          ./scripts/verify_liamflow_dmg.sh dist/Lima.dmg
-      - name: Stage GitHub Release assets for review
-        if: github.ref_type == 'tag'
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Import CI signing keychain
+        if: ${{ inputs.signing_mode == 'self-signed-local' }}
+        shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
+          SIGNING_KEYCHAIN_B64: ${{ secrets.LIMA_SIGNING_KEYCHAIN_B64 }}
+          SIGNING_PASSWORD: ${{ secrets.LIMA_SIGNING_KEYCHAIN_PASSWORD }}
+          SIGNING_CERTIFICATE_B64: ${{ secrets.LIMA_SIGNING_CERTIFICATE_B64 }}
         run: |
-          # Never overwrite a published, reviewed bundle with CI's ad-hoc copy.
-          if [ "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft' 2>/dev/null)" = false ]; then
-            echo "This release is already published; leaving its verified assets unchanged."
-            exit 0
-          fi
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "Lima $GITHUB_REF_NAME"
-          gh release upload "$GITHUB_REF_NAME" dist/Lima-Update.zip dist/Lima-Update.sha256 dist/Lima.dmg dist/Lima.dmg.sha256 --clobber
+          set -euo pipefail
+          test -n "$SIGNING_KEYCHAIN_B64"
+          test -n "$SIGNING_PASSWORD"
+          test -n "$SIGNING_CERTIFICATE_B64"
+          mkdir -p "$RAYPLACEMENT_SIGNING_DIRECTORY"
+          printf '%s' "$SIGNING_KEYCHAIN_B64" | base64 --decode > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
+          printf '%s\n' "$SIGNING_PASSWORD" > "$RAYPLACEMENT_SIGNING_DIRECTORY/keychain-password"
+          printf '%s' "$SIGNING_CERTIFICATE_B64" | base64 --decode > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+          chmod 600 "$RAYPLACEMENT_SIGNING_DIRECTORY"/*
+
+      - name: Verify source tag and signing policy
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/check_release_consistency.sh
+          ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
+
+      - name: Build local artifacts without Git mutation
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          LIMA_RELEASE_SKIP_PREFLIGHT: "1"
+        run: |
+          set -euo pipefail
+          ./scripts/release_build.sh --tag "$RELEASE_TAG"
+
+      - name: Stage the existing draft
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/release_stage.sh --tag "$RELEASE_TAG"
+          ./scripts/release_verify.sh --tag "$RELEASE_TAG" --remote-only

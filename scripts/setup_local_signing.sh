@@ -1,14 +1,16 @@
 #!/bin/zsh
 set -euo pipefail
 
+SCRIPT_DIRECTORY="${0:A:h}"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 CURRENT_USER="$(id -un)"
 USER_HOME_DIRECTORY="$(dscl . -read "/Users/$CURRENT_USER" NFSHomeDirectory | awk '{print $2}')"
-SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
-KEYCHAIN_PATH="$SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-PASSWORD_PATH="$SIGNING_DIRECTORY/keychain-password"
-CERTIFICATE_PATH="$SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+SIGNING_DIRECTORY="$LIMA_RELEASE_LOCAL_SIGNING_DIRECTORY"
+KEYCHAIN_PATH="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
+PASSWORD_PATH="$LIMA_RELEASE_LOCAL_SIGNING_PASSWORD"
+CERTIFICATE_PATH="$LIMA_RELEASE_LOCAL_SIGNING_CERTIFICATE"
 LOGIN_KEYCHAIN_PATH="$USER_HOME_DIRECTORY/Library/Keychains/login.keychain-db"
-IDENTITY_NAME="RayPlacement Local Code Signing"
+IDENTITY_NAME="$LIMA_RELEASE_SIGNING_IDENTITY"
 
 if [[ -z "$USER_HOME_DIRECTORY" || "$USER_HOME_DIRECTORY" != /Users/* ]]; then
     echo "Could not safely locate the current user's home folder."

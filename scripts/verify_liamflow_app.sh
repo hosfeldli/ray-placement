@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
@@ -46,7 +47,7 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Verification failed: expected certificate fingerprint policy is missing' >&2; exit 1; }
     if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
         [[ "$EXPECTED_TEAM_ID" == 'not set' ]] || { echo 'Verification failed: self-signed local policy must use TeamIdentifier=not set' >&2; exit 1; }
-        [[ "$EXPECTED_IDENTITY" == 'RayPlacement Local Code Signing' ]] || { echo 'Verification failed: self-signed local identity is not pinned' >&2; exit 1; }
+        [[ "$EXPECTED_IDENTITY" == "$LIMA_RELEASE_SIGNING_IDENTITY" ]] || { echo 'Verification failed: self-signed local identity is not pinned' >&2; exit 1; }
     else
         [[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || { echo 'Verification failed: a release Team ID policy is required' >&2; exit 1; }
     fi

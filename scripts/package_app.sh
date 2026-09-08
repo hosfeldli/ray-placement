@@ -14,6 +14,7 @@ APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 WHISPER_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"
 WHISPER_RUNTIME="$PROJECT_DIRECTORY/Packaging/WhisperRuntime"
 WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
@@ -22,15 +23,15 @@ HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
 BUNDLED_EXTENSIONS_DIRECTORY="$PROJECT_DIRECTORY/Extensions"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
-LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
-LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
-LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
-EXPECTED_TEAM_IDENTIFIER="${RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER:-not set}"
-EXPECTED_SIGNING_IDENTITY="${RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY:-$LOCAL_SIGNING_IDENTITY}"
-EXPECTED_CERTIFICATE_SHA256="${RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256:-7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62}"
-SIGNING_MODE="${RAYPLACEMENT_SIGNING_MODE:-developer-id}"
-[[ "$SIGNING_MODE" == "developer-id" || "$SIGNING_MODE" == "self-signed-local" ]] || { echo "Unsupported signing mode: $SIGNING_MODE" >&2; exit 1; }
+LOCAL_SIGNING_DIRECTORY="$LIMA_RELEASE_LOCAL_SIGNING_DIRECTORY"
+LOCAL_SIGNING_KEYCHAIN="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
+LOCAL_SIGNING_PASSWORD="$LIMA_RELEASE_LOCAL_SIGNING_PASSWORD"
+LOCAL_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
+EXPECTED_TEAM_IDENTIFIER="$LIMA_RELEASE_TEAM_IDENTIFIER"
+EXPECTED_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
+EXPECTED_CERTIFICATE_SHA256="$LIMA_RELEASE_CERTIFICATE_SHA256"
+SIGNING_MODE="$LIMA_RELEASE_SIGNING_MODE"
+lima_release_validate_signing_policy
 
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
@@ -153,12 +154,13 @@ fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
-if [[ -n "${RAYPLACEMENT_SIGNING_IDENTITY:-}" ]]; then
-    # CI/release builds may provision a Developer ID identity in a temporary
-    # keychain. The identity is selected explicitly and is never inferred from
-    # the downloaded update.
-    codesign --force --deep --sign "$RAYPLACEMENT_SIGNING_IDENTITY" "$APP_DIRECTORY"
-    echo "Signed with the configured release identity."
+if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+    # Developer ID builds select the identity explicitly. Self-signed local
+    # builds intentionally continue through the pinned private keychain path
+    # below, even when CI exposes a similarly named environment variable.
+    CODESIGN_IDENTITY="${RAYPLACEMENT_SIGNING_IDENTITY:-$EXPECTED_SIGNING_IDENTITY}"
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIRECTORY"
+    echo "Signed with the configured Developer ID identity."
 elif [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: local signing was disabled; this build is ad-hoc signed."

@@ -119,17 +119,20 @@ When the app folder cannot create a staging directory, the updater requests one-
 
 Failed swaps restore the previous bundle; successful updates keep a recovery copy in a `.lima-install.*` folder beside the app. The exact path appears in `~/Library/Application Support/Lima/Updates/update.log`; protected-folder approval details are in `administrator-update.log` there. Administrator-owned recovery copies may require Finder approval to remove. MDM restrictions or a missing administrator account are not bypassed. The optional `Install Lima.command` installs a prebuilt app to `/Applications/Lima.app` (or an explicit destination); the old installer name forwards to it and no longer builds or installs RayPlacement.
 
-## Build and verify
+## Build and release
+
+For ordinary development builds and tests:
 
 ```sh
-swift test
+make test
 ./scripts/test_lima_installer.sh
+./scripts/test_update_verifier.sh
 /bin/zsh scripts/test_approved_lima_update.sh
-# Optional local tests with the existing development signing identity:
-LIMA_TEST_STABLE_SIGNING=1 /bin/zsh scripts/test_approved_lima_update.sh
 ./scripts/package_liamflow_app.sh
 ./scripts/verify_liamflow_app.sh build/Lima.app
 ```
+
+The canonical staged release procedure is documented in [`docs/RELEASING.md`](docs/RELEASING.md). It covers version preparation, the shared signing policy, read-only preflight, resumable local builds, multipart DMG staging, remote digest verification, draft recovery, and explicit publication. The legacy `scripts/deploy_lima.sh` entry point now delegates to those phases and does not silently commit, push, or publish.
 
 `scripts/assemble_whisper_model.sh` restores the verified model from an existing Lima app or downloads the exact pinned asset. `scripts/fetch_vendor_assets.sh` prepares only the dictation asset; there is no text-model asset fetch.
 
