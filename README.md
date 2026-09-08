@@ -4,6 +4,10 @@ Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines 
 
 Text generation has been removed. Writing correction uses deterministic local Python and Harper rules. Dictation is the only model-powered feature and runs locally through Whisper.
 
+## Distribution note
+
+The `3.12.4` package is signed with Lima’s pinned local self-signed certificate because this release is distributed without an Apple Developer account. macOS may identify it as an application from an unidentified developer; use **Control-click → Open** the first time, then confirm the dialog. Updates are accepted only when they match Lima’s pinned local certificate.
+
 ## Install
 
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.

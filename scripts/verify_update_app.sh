@@ -14,6 +14,7 @@ POLICY_APP="${7:-$APP}"
 PLIST="$APP/Contents/Info.plist"
 POLICY_PLIST="$POLICY_APP/Contents/Info.plist"
 value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1"; }
+SIGNING_MODE="$(value "$POLICY_PLIST" LimaUpdateSigningMode 2>/dev/null || print developer-id)"
 fail() { echo "Update verification failed: $1" >&2; exit 1; }
 
 [[ -d "$APP" && ! -L "$APP" ]] || fail 'app bundle is missing or symbolic'
@@ -23,9 +24,15 @@ fail() { echo "Update verification failed: $1" >&2; exit 1; }
 [[ "$(value "$PLIST" CFBundleIdentifier)" == dev.liam.lima ]] || fail 'bundle identifier is not Lima'
 [[ "$(value "$PLIST" CFBundleExecutable)" == Lima ]] || fail 'bundle executable is not Lima'
 [[ -x "$APP/Contents/MacOS/Lima" ]] || fail 'Lima executable is missing'
-[[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || fail 'a release Team ID is required'
+[[ "$SIGNING_MODE" == "developer-id" || "$SIGNING_MODE" == "self-signed-local" ]] || fail 'the signing mode is not recognized'
 [[ -n "$EXPECTED_IDENTITY" ]] || fail 'expected signing identity is not configured'
 [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || fail 'expected certificate fingerprint is not configured'
+if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
+    [[ "$EXPECTED_TEAM_ID" == 'not set' ]] || fail 'self-signed local policy has an unexpected Team ID'
+    [[ "$EXPECTED_IDENTITY" == 'RayPlacement Local Code Signing' ]] || fail 'self-signed local identity is not pinned'
+else
+    [[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || fail 'a release Team ID is required'
+fi
 
 /usr/bin/codesign --verify --deep --strict "$APP" || fail 'code signature is invalid'
 SIGNATURE_INFO="$(/usr/bin/codesign -dvv "$APP" 2>&1)"

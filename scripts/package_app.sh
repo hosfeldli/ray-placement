@@ -29,6 +29,8 @@ LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
 EXPECTED_TEAM_IDENTIFIER="${RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER:-not set}"
 EXPECTED_SIGNING_IDENTITY="${RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY:-$LOCAL_SIGNING_IDENTITY}"
 EXPECTED_CERTIFICATE_SHA256="${RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256:-7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62}"
+SIGNING_MODE="${RAYPLACEMENT_SIGNING_MODE:-developer-id}"
+[[ "$SIGNING_MODE" == "developer-id" || "$SIGNING_MODE" == "self-signed-local" ]] || { echo "Unsupported signing mode: $SIGNING_MODE" >&2; exit 1; }
 
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
@@ -128,10 +130,16 @@ chmod 755 "$CONTENTS_DIRECTORY/Resources/Updater"/*.sh
 # candidates. Release builds must provide all three values; an ad-hoc build is
 # never eligible for protected updates.
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
-    [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
     [[ -n "$EXPECTED_SIGNING_IDENTITY" && -n "$EXPECTED_CERTIFICATE_SHA256" ]] || { echo "Release signing identity and certificate fingerprint are required." >&2; exit 1; }
     [[ "$EXPECTED_CERTIFICATE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Release certificate fingerprint must be SHA-256 hex." >&2; exit 1; }
+    if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
+        [[ "$EXPECTED_TEAM_IDENTIFIER" == "not set" ]] || { echo "Self-signed local releases must use TeamIdentifier=not set." >&2; exit 1; }
+        [[ "$EXPECTED_SIGNING_IDENTITY" == "$LOCAL_SIGNING_IDENTITY" ]] || { echo "Self-signed local releases must use the pinned local identity." >&2; exit 1; }
+    else
+        [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
+    fi
 fi
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateSigningMode string $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateSigningMode $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedTeamIdentifier string $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedTeamIdentifier $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedSigningIdentity string $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedSigningIdentity $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedCertificateSHA256 string $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedCertificateSHA256 $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist"
