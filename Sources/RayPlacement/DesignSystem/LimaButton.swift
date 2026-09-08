@@ -10,7 +10,7 @@ struct LimaNativeButtonStyle: ButtonStyle {
         let tint = destructive ? LimaColors.danger : LimaColors.accent
         configuration.label
             .limaFont(compact ? .system(size: 11, weight: .semibold) : .system(size: 12, weight: .semibold))
-            .foregroundStyle(prominent || destructive ? Color.white : LimaColors.primaryText)
+            .foregroundStyle(prominent ? LimaColors.onAccent : (destructive ? LimaColors.onDanger : LimaColors.primaryText))
             .padding(.horizontal, compact ? 9 : 12)
             .frame(minHeight: compact ? LimaSpacing.compactControl : LimaSpacing.control)
             .background {
@@ -53,7 +53,7 @@ struct LiquidGlassIconButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .frame(width: size, height: size)
-            .foregroundStyle(prominent ? Color.white : LimaDesign.primaryText)
+            .foregroundStyle(prominent ? LimaColors.onAccent : LimaDesign.primaryText)
             .background {
                 RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
                     .fill(prominent ? AnyShapeStyle(LimaColors.accent) : AnyShapeStyle(LimaDesign.controlFill))
@@ -98,7 +98,7 @@ struct LimaToolbarTextButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .limaFont(.system(size: 11.5, weight: .semibold))
-            .foregroundStyle(prominent ? Color.white : LimaDesign.primaryText)
+            .foregroundStyle(prominent ? LimaColors.onAccent : LimaDesign.primaryText)
             .padding(.horizontal, 10)
             .frame(minHeight: LimaDesign.compactControlHeight)
             .background {
@@ -126,11 +126,11 @@ struct LimaButtonStyle: ButtonStyle {
         let accent = destructive ? LimaDesign.danger : LimaColors.accent
         configuration.label
             .limaFont(.system(size: compact ? 10.5 : 11.5, weight: .semibold))
-            .foregroundStyle(prominent || destructive ? Color.white : LimaDesign.primaryText)
+            .foregroundStyle(prominent ? LimaColors.onAccent : (destructive ? LimaColors.onDanger : LimaDesign.primaryText))
             .padding(.horizontal, compact ? 8 : 10)
             .frame(minHeight: compact ? LimaDesign.compactControlHeight : LimaDesign.controlHeight)
             .background {
-                shape.fill(prominent ? LimaColors.accent : (destructive ? accent.opacity(0.84) : LimaDesign.controlFill))
+                shape.fill(prominent ? LimaColors.accent : (destructive ? accent : LimaDesign.controlFill))
             }
             .overlay {
                 shape.strokeBorder(prominent || destructive ? accent.opacity(0.72) : LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)

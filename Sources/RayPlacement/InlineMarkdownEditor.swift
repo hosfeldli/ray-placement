@@ -21,7 +21,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
 
         let textView = MarkdownTextView()
         textView.delegate = context.coordinator
@@ -36,6 +37,10 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isAutomaticSpellingCorrectionEnabled = false
         textView.isContinuousSpellCheckingEnabled = true
         textView.isGrammarCheckingEnabled = true
+        scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
+        textView.backgroundColor = NotesEditorPalette(theme: theme).background
+        textView.insertionPointColor = NotesEditorPalette(theme: theme).accent
+        textView.selectedTextAttributes = NotesEditorPalette(theme: theme).selectionAttributes
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -79,6 +84,13 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.lineSpacing = lineSpacing
         context.coordinator.theme = theme
+        let palette = NotesEditorPalette(theme: theme)
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = palette.background
+        textView.drawsBackground = true
+        textView.backgroundColor = palette.background
+        textView.insertionPointColor = palette.accent
+        textView.selectedTextAttributes = palette.selectionAttributes
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -596,6 +608,10 @@ private enum MarkdownInlineStyler {
 
     static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
         let palette = NotesEditorPalette(theme: theme)
+        textView.drawsBackground = true
+        textView.backgroundColor = palette.background
+        textView.insertionPointColor = palette.accent
+        textView.selectedTextAttributes = palette.selectionAttributes
         let baseFont = font(style: fontStyle, size: CGFloat(fontSize), weight: .regular)
         let monoFont = NSFont.monospacedSystemFont(ofSize: AppTypography.size(CGFloat(max(12, fontSize - 1.5))), weight: .regular)
         guard let storage = textView.textStorage else { return }
@@ -617,6 +633,7 @@ private enum MarkdownInlineStyler {
         storage.setAttributes([
             .font: baseFont,
             .foregroundColor: palette.text,
+            .backgroundColor: palette.background,
             .paragraphStyle: paragraph
         ], range: fullRange)
         for attachment in attachments {
@@ -630,7 +647,7 @@ private enum MarkdownInlineStyler {
             if task.checked, textRange.length > 0 {
                 storage.addAttributes([
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: NSColor(calibratedWhite: 0.70, alpha: 1)
+                    .foregroundColor: palette.secondaryText
                 ], range: textRange)
             }
         }
@@ -723,12 +740,12 @@ private enum MarkdownInlineStyler {
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range(at: 1))
             let italic = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
-            storage.addAttributes([.font: italic, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 2))
+            storage.addAttributes([.font: italic, .foregroundColor: palette.secondaryText], range: match.range(at: 2))
         }
         apply(pattern: #"(?m)^(---|\*\*\*|___)[ \t]*$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttributes([
-                .foregroundColor: NSColor.separatorColor,
+                .foregroundColor: palette.separator,
                 .font: NSFont.monospacedSystemFont(ofSize: AppTypography.size(13), weight: .regular),
                 .kern: 2.2
             ], range: match.range)
@@ -736,7 +753,11 @@ private enum MarkdownInlineStyler {
 
         storage.endEditing()
         textView.selectedRanges = selection
-        textView.typingAttributes = [.font: baseFont, .foregroundColor: palette.text]
+        textView.typingAttributes = [
+            .font: baseFont,
+            .foregroundColor: palette.text,
+            .backgroundColor: palette.background
+        ]
     }
 
     private static func font(style: NotesFontStyle, size: CGFloat, weight: NSFont.Weight) -> NSFont {
@@ -803,33 +824,41 @@ private enum MarkdownInlineStyler {
 }
 
 private struct NotesEditorPalette {
+    let background: NSColor
     let text: NSColor
+    let secondaryText: NSColor
+    let separator: NSColor
     let accent: NSColor
     let codeBackground: NSColor
 
+    var selectionAttributes: [NSAttributedString.Key: Any] {
+        [
+            .backgroundColor: NSColor.selectedTextBackgroundColor,
+            .foregroundColor: NSColor.selectedTextColor
+        ]
+    }
+
     init(theme: NotesVisualTheme) {
+        background = NSColor.textBackgroundColor
+        text = NSColor.textColor
+        secondaryText = NSColor.secondaryLabelColor
+        separator = NSColor.separatorColor.withAlphaComponent(1)
         switch theme {
         case .prism:
-            text = NSColor(calibratedRed: 0.92, green: 0.93, blue: 0.98, alpha: 1)
-            accent = NSColor(calibratedRed: 0.67, green: 0.48, blue: 1, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.10, green: 0.08, blue: 0.18, alpha: 0.92)
+            accent = NSColor(calibratedRed: 0.48, green: 0.28, blue: 0.84, alpha: 1)
         case .graphite:
-            text = NSColor(calibratedWhite: 0.90, alpha: 1)
-            accent = NSColor(calibratedWhite: 0.72, alpha: 1)
-            codeBackground = NSColor(calibratedWhite: 0.04, alpha: 0.92)
+            accent = NSColor.secondaryLabelColor
         case .midnight:
-            text = NSColor(calibratedRed: 0.84, green: 0.90, blue: 1, alpha: 1)
-            accent = NSColor(calibratedRed: 0.30, green: 0.68, blue: 1, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.02, green: 0.05, blue: 0.13, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.08, green: 0.38, blue: 0.82, alpha: 1)
         case .aurora:
-            text = NSColor(calibratedRed: 0.84, green: 0.98, blue: 0.94, alpha: 1)
-            accent = NSColor(calibratedRed: 0.22, green: 0.91, blue: 0.74, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.02, green: 0.12, blue: 0.12, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.02, green: 0.55, blue: 0.42, alpha: 1)
         case .ink:
-            text = NSColor(calibratedRed: 0.96, green: 0.89, blue: 0.79, alpha: 1)
-            accent = NSColor(calibratedRed: 1, green: 0.59, blue: 0.28, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.13, green: 0.08, blue: 0.05, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.78, green: 0.30, blue: 0.05, alpha: 1)
         }
+        // Blend semantic surfaces instead of hard-coding a dark palette. This
+        // keeps code blocks and inline code legible when Notes is in Light mode.
+        let control = NSColor.controlBackgroundColor
+        codeBackground = background.blended(withFraction: 0.28, of: control) ?? control
     }
 }
 

@@ -134,7 +134,8 @@ if gh release view "$TAG" >/dev/null 2>&1; then
   IS_DRAFT="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
   [[ "$IS_DRAFT" == true ]] || { echo "$TAG is already published; refusing to overwrite it" >&2; exit 1; }
 else
-  gh release create "$TAG" --draft --title "Lima $TAG" --generate-notes
+  TARGET_COMMIT="$(git -C "$PROJECT_DIR" rev-parse HEAD)"
+  gh release create "$TAG" --draft --target "$TARGET_COMMIT" --title "Lima $TAG" --generate-notes
 fi
 retry gh release upload "$TAG" \
   "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima.dmg.sha256" --clobber

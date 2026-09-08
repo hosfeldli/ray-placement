@@ -215,7 +215,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
                 button.font = .systemFont(ofSize: 11 * scale, weight: .medium)
             }
             self.titleField?.layer?.borderColor = LimaAppKitDesign.separator.cgColor
-            self.fields.forEach { $0.layer?.borderColor = LimaAppKitDesign.focus.cgColor }
+            self.fields.forEach {
+                $0.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+                $0.layer?.borderWidth = LimaDesign.borderWidth
+            }
         }
     }
 
@@ -307,7 +310,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .recessed
         button.controlSize = .small
-        button.contentTintColor = SettingsStore.shared.accentTheme.nsPrimary
+        button.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
         button.font = .systemFont(ofSize: AppTypography.size(11), weight: .medium)
         return button
     }
@@ -378,8 +381,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.focusRingType = .none
         field.wantsLayer = true
         field.layer?.cornerRadius = 4
-        field.layer?.borderWidth = 0
-        field.layer?.borderColor = LimaAppKitDesign.focus.cgColor
+        field.layer?.borderWidth = LimaDesign.borderWidth
+        field.layer?.borderColor = LimaAppKitDesign.separator.cgColor
         field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
@@ -433,13 +436,13 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
         let accent = SettingsStore.shared.accentTheme.nsPrimary
-        let background = LimaAppKitDesign.windowBackground
+        let background = LimaAppKitDesign.surfaceBackground
         let border = LimaAppKitDesign.strongSeparator
         let separator = LimaAppKitDesign.separator
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
         gridView?.layer?.backgroundColor = separator.cgColor
-        toolbarIcon?.contentTintColor = accent
+        toolbarIcon?.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
 
         for item in cellAppearances {
             let color: NSColor
@@ -649,7 +652,8 @@ private final class MarkdownTableField: NSTextField {
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
         if resigned {
-            layer?.borderWidth = 0
+            layer?.borderWidth = LimaDesign.borderWidth
+            layer?.borderColor = LimaAppKitDesign.separator.cgColor
             layer?.backgroundColor = nil
         }
         return resigned

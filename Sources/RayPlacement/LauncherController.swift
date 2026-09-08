@@ -22,6 +22,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
     private let notesWindow = NotesWindowController()
+    private lazy var extensionStoreWindow = ExtensionStoreWindowController { [weak self] in
+        self?.viewModel.reloadExtensions()
+    }
     private let terminalModel: DeveloperTerminalModel
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
     private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
@@ -131,6 +134,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func showNotes() {
         hide()
         notesWindow.toggleVisibility()
+    }
+
+    func showExtensionStore() {
+        hide()
+        extensionStoreWindow.present()
     }
 
     func showQuickNote() {
@@ -1658,6 +1666,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             try? ApplicationPaths.prepare()
             hide()
             NSWorkspace.shared.open(ApplicationPaths.extensions)
+
+        case .openExtensionStore:
+            showExtensionStore()
 
         case .reloadExtensions:
             viewModel.reloadExtensions()

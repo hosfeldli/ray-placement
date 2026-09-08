@@ -38,7 +38,7 @@ struct LimaToolbarTitle: View {
         HStack(spacing: 9) {
             Image(systemName: symbol)
                 .limaFont(.system(size: 13, weight: .semibold))
-                .foregroundStyle(settings.accentTheme.primary)
+                .foregroundStyle(settings.accentTheme.readablePrimary)
                 .frame(width: LimaDesign.titleIconSize, height: LimaDesign.titleIconSize)
                 .background(settings.accentTheme.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
                 .overlay { RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth) }

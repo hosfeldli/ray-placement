@@ -55,7 +55,7 @@ struct LauncherView: View {
                 .strokeBorder(LimaColors.border.opacity(0.92), lineWidth: LimaDesign.focusWidth)
         }
         .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
-        .tint(settings.accentTheme.primary)
+        .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
             if viewModel.mode == .terminal {
@@ -341,7 +341,7 @@ struct LauncherView: View {
                     .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
                 Image(systemName: "text.cursor")
                     .limaFont(.system(size: 13, weight: .bold))
-                    .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readableTertiary)
             }
             .frame(width: 30, height: 30)
 
@@ -438,7 +438,7 @@ struct LauncherView: View {
                 Button { viewModel.swapTimezones() } label: {
                     Image(systemName: "arrow.left.arrow.right")
                         .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(LimaColors.primaryText)
+                        .foregroundStyle(settings.accentTheme.onGradient)
                         .frame(width: 38, height: 38)
                         .background(LimaLauncherPalette.heroGradient, in: Circle())
                         .shadow(color: LimaLauncherPalette.indigo.opacity(0.28), radius: 9, y: 4)
@@ -465,7 +465,7 @@ struct LauncherView: View {
                     Label(viewModel.timezoneDidCopy ? "Copied" : "Copy result", systemImage: viewModel.timezoneDidCopy ? "checkmark" : "doc.on.doc")
                 }
                 .limaButton(prominent: true)
-                .tint(LimaLauncherPalette.indigo)
+                .tint(LimaLauncherPalette.readableIndigo)
                 .disabled(viewModel.timezoneConversion == nil)
             }
         }
@@ -485,7 +485,7 @@ struct LauncherView: View {
                 Text(title)
                     .limaFont(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
-                    .foregroundStyle(isSource ? LimaLauncherPalette.indigo : LimaLauncherPalette.cyan)
+                    .foregroundStyle(isSource ? LimaLauncherPalette.readableIndigo : LimaLauncherPalette.readableCyan)
                 Spacer()
                 Picker("", selection: selection) {
                     ForEach(LauncherViewModel.timezoneOptions) { option in
@@ -527,7 +527,7 @@ struct LauncherView: View {
                     Circle().fill((review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet).opacity(0.14))
                     Image(systemName: review.issues.isEmpty ? "checkmark" : "wand.and.stars")
                         .limaFont(.system(size: 16, weight: .bold))
-                        .foregroundStyle(review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet)
+                        .foregroundStyle(review.issues.isEmpty ? Color.green : LimaLauncherPalette.readableViolet)
                 }
                 .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
@@ -552,7 +552,7 @@ struct LauncherView: View {
                     viewModel.pasteWritingResult(review)
                 }
                 .limaButton(prominent: true)
-                .tint(LimaLauncherPalette.indigo)
+                .tint(LimaLauncherPalette.readableIndigo)
                 .accessibilityHint("Revalidates and replaces the exact original selection")
                 .keyboardShortcut(.return, modifiers: [])
             }
@@ -779,7 +779,7 @@ private struct WritingIssueRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: issue.kind == .spelling ? "character.cursor.ibeam" : "text.badge.checkmark")
-                .foregroundStyle(issue.kind == .spelling ? Color.orange : SettingsStore.shared.accentTheme.primary)
+                .foregroundStyle(issue.kind == .spelling ? Color.orange : SettingsStore.shared.accentTheme.readablePrimary)
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
@@ -848,7 +848,7 @@ private struct ResultRow: View {
                     Text(actionLabel)
                 }
                 .limaFont(.system(size: 10.25, weight: .bold, design: .rounded))
-                .foregroundStyle(LimaColors.primaryText)
+                .foregroundStyle(settings.accentTheme.onPrimary)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
                 .background(settings.accentTheme.primary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
@@ -873,7 +873,7 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.primary : Color.secondary)
+                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.readablePrimary : Color.secondary)
                     .padding(7.5)
                     .background(selected ? LimaColors.selectedFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
                     .overlay {
@@ -1055,6 +1055,9 @@ private enum LimaLauncherPalette {
     static var indigo: Color { SettingsStore.shared.accentTheme.primary }
     static var violet: Color { SettingsStore.shared.accentTheme.secondary }
     static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }
+    static var readableIndigo: Color { SettingsStore.shared.accentTheme.readablePrimary }
+    static var readableViolet: Color { SettingsStore.shared.accentTheme.readableSecondary }
+    static var readableCyan: Color { SettingsStore.shared.accentTheme.readableTertiary }
     static var heroGradient: LinearGradient { SettingsStore.shared.accentTheme.gradient }
     static let cardBackground = Color(nsColor: .controlBackgroundColor).opacity(0.78)
     static let selectionBackground = indigo.opacity(0.13)

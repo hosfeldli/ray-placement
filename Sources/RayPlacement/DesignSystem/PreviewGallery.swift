@@ -105,6 +105,8 @@ struct LimaUIPreviewGallery: View {
 
 private enum PreviewTheme {
     static let accent = LimaColors.accent
+    static var onAccent: Color { AppAccentTheme.current.onPrimary }
+    static var readableAccent: Color { AppAccentTheme.current.readablePrimary }
     static let red = LimaColors.danger
     static let orange = LimaColors.warning
     static let green = LimaColors.success
@@ -127,7 +129,7 @@ private struct PreviewWindowSurface<Content: View>: View {
             content
         }
         .foregroundStyle(LimaColors.primaryText)
-        .tint(PreviewTheme.accent)
+        .tint(PreviewTheme.readableAccent)
     }
 }
 
@@ -139,7 +141,7 @@ private struct PreviewToolbar: View {
     var body: some View {
         HStack(spacing: LimaSpacing.sm) {
             Image(systemName: symbol)
-                .foregroundStyle(PreviewTheme.accent)
+                .foregroundStyle(PreviewTheme.readableAccent)
                 .frame(width: 28, height: 28)
                 .background(LimaColors.accentSoft, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
@@ -172,7 +174,7 @@ private struct PreviewLauncher: View {
         VStack(spacing: 0) {
             HStack(spacing: 10) {
                 Image(systemName: results ? "rectangle.on.rectangle" : "sparkle.magnifyingglass")
-                    .foregroundStyle(PreviewTheme.accent)
+                    .foregroundStyle(PreviewTheme.readableAccent)
                 TextField("Search Lima…", text: $query)
                     .textFieldStyle(.plain)
                     .limaFont(.system(size: 17, weight: .medium))
@@ -242,7 +244,7 @@ private struct PreviewLauncherRow: View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .frame(width: 28, height: 28)
-                .foregroundStyle(selected ? PreviewTheme.accent : LimaColors.secondaryText)
+                .foregroundStyle(selected ? PreviewTheme.readableAccent : LimaColors.secondaryText)
                 .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).limaFont(LimaTypography.resultTitle)
@@ -253,7 +255,7 @@ private struct PreviewLauncherRow: View {
             if selected {
                 Text("↩ Open")
                     .limaFont(LimaTypography.shortcut)
-                    .foregroundStyle(Color.white)
+                    .foregroundStyle(PreviewTheme.onAccent)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(PreviewTheme.accent, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
@@ -351,7 +353,7 @@ private struct PreviewSettings: View {
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 8) {
                         Image(systemName: "sparkle.magnifyingglass")
-                            .foregroundStyle(PreviewTheme.accent)
+                            .foregroundStyle(PreviewTheme.readableAccent)
                         Text("Lima").limaFont(LimaTypography.sectionTitle)
                     }
                     .padding(.horizontal, 14)
@@ -497,7 +499,7 @@ private struct PreviewSettingLine: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: symbol).foregroundStyle(PreviewTheme.accent).frame(width: 20)
+            Image(systemName: symbol).foregroundStyle(PreviewTheme.readableAccent).frame(width: 20)
             Text(title).limaFont(LimaTypography.body)
             Spacer()
             LimaShortcutBadge(text: detail)
@@ -533,7 +535,7 @@ private struct PreviewExtensionPack: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "puzzlepiece.extension.fill").foregroundStyle(PreviewTheme.accent)
+                Image(systemName: "puzzlepiece.extension.fill").foregroundStyle(PreviewTheme.readableAccent)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(name).limaFont(LimaTypography.sectionTitle)
                     Text(detail).limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)

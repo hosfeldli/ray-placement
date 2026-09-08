@@ -123,6 +123,7 @@ enum SystemAction {
     case sleep
     case startScreenSaver
     case openExtensionsFolder
+    case openExtensionStore
     case reloadExtensions
     case clearClipboardHistory
     case openNotes

@@ -181,7 +181,7 @@ private struct PasswordGeneratorView: View {
             }
             .padding(10)
         }
-        .tint(SettingsStore.shared.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
     }
 
     private func option(_ label: String, isOn: Binding<Bool>) -> some View {

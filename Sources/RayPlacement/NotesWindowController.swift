@@ -483,7 +483,7 @@ private struct NotesView: View {
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
         )
-        .tint(SettingsStore.shared.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
         .onChange(of: presentation.focusDictationEditor) { shouldFocus in
             guard shouldFocus else { return }
             DispatchQueue.main.async {
@@ -687,7 +687,7 @@ private struct NotesView: View {
             HStack(spacing: 6) {
                 Image(systemName: "lock.fill")
                     .limaFont(.caption2)
-                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                 Text("Local")
                 Spacer()
                 Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
@@ -716,7 +716,7 @@ private struct NotesView: View {
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "note.text")
-                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                         Text(store.selectedNote?.displayTitle ?? "Choose a note")
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
@@ -798,7 +798,7 @@ private struct NotesView: View {
                     Circle().fill(SettingsStore.shared.accentTheme.primary.opacity(0.12))
                     Image(systemName: "note.text.badge.plus")
                         .limaFont(.system(size: 28, weight: .medium))
-                        .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                 }
                 .frame(width: 66, height: 66)
                 Text("Start a quick thought").limaFont(.title3.bold())
@@ -828,7 +828,7 @@ private struct NotesView: View {
                         if conversations.conversations.isEmpty {
                             VStack(alignment: .leading, spacing: 5) {
                                 Image(systemName: "waveform.and.mic")
-                                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                                 Text("No conversations yet")
                                     .limaFont(.caption.weight(.semibold))
                                 Text("Start dictation to create a private conversation.")
@@ -1000,7 +1000,7 @@ private struct NotesView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         Image(systemName: "waveform.and.mic")
                             .font(.system(size: 25, weight: .semibold))
-                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                         Text("Start a dictation conversation")
                             .limaFont(.title3.bold())
                         Text("Your transcript will appear in this tab and will never be appended to a Markdown note.")
@@ -1121,7 +1121,7 @@ private struct NotesView: View {
         switch dictation.phase {
         case .recording, .paused: return .red
         case .failed: return .orange
-        default: return SettingsStore.shared.accentTheme.primary
+        default: return SettingsStore.shared.accentTheme.readablePrimary
         }
     }
 
@@ -1245,7 +1245,7 @@ private struct NotesView: View {
                         ForEach(note.tags.prefix(4), id: \.self) { tag in
                             Text("#\(tag)")
                                 .limaFont(.system(size: 9, weight: .medium))
-                                .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                         }
                     }
                 } else if settings.notesShowMetadata {
@@ -1256,7 +1256,7 @@ private struct NotesView: View {
                             .limaFont(.system(size: 10, weight: .medium))
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                     .help("Add a tag to this note")
                     .accessibilityLabel("Add tag to note")
                 }
@@ -1637,7 +1637,7 @@ private struct RevisionHistorySheet: View {
                 }
                 Spacer()
                 Image(systemName: "clock.arrow.circlepath")
-                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             }
             if revisions.isEmpty {
                 Text("Revisions appear after a note has been edited.").foregroundStyle(.secondary)
@@ -1728,7 +1728,7 @@ private struct NoteListRow: View {
                     if note.isPinned {
                         Image(systemName: "pin.fill")
                             .limaFont(.system(size: 8))
-                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                             .accessibilityHidden(true)
                     }
                     if note.isFavorite {

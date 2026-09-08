@@ -121,7 +121,7 @@ private struct FocusedFileLauncherView: View {
             .padding(LimaDesign.windowPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .tint(settings.accentTheme.primary)
+        .tint(settings.accentTheme.readablePrimary)
     }
 
     private var header: some View {
@@ -163,7 +163,7 @@ private struct FocusedFileLauncherView: View {
                     HStack(alignment: .top, spacing: 10) {
                         Image(systemName: fileSymbol(url))
                             .limaFont(.system(size: 20, weight: .semibold))
-                            .foregroundStyle(settings.accentTheme.gradient)
+                            .foregroundStyle(settings.accentTheme.readablePrimary)
                             .frame(width: 46, height: 46)
                             .background(LimaDesign.controlFill, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
                             .overlay {

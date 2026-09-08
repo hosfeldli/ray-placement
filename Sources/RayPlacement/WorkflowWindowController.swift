@@ -162,7 +162,7 @@ private struct WorkflowEditorView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .tint(SettingsStore.shared.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
         .onReceive(store.$workflows) { _ in model.refresh() }
     }
 

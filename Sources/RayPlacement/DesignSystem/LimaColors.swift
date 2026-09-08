@@ -19,6 +19,42 @@ extension AppAppearance {
     }
 }
 
+private enum LimaContrast {
+    private static let white = NSColor(calibratedWhite: 1, alpha: 1)
+    private static let black = NSColor(calibratedWhite: 0, alpha: 1)
+
+    static func foreground(over backgrounds: [NSColor]) -> NSColor {
+        let whiteContrast = backgrounds.map { contrast(white, against: $0) }.min() ?? 1
+        let blackContrast = backgrounds.map { contrast(black, against: $0) }.min() ?? 1
+        return whiteContrast >= blackContrast ? white : black
+    }
+
+    static func contrast(_ foreground: NSColor, against background: NSColor) -> CGFloat {
+        let foregroundLuminance = luminance(foreground)
+        let backgroundLuminance = luminance(background)
+        let lighter = max(foregroundLuminance, backgroundLuminance)
+        let darker = min(foregroundLuminance, backgroundLuminance)
+        return (lighter + 0.05) / (darker + 0.05)
+    }
+
+    private static func luminance(_ color: NSColor) -> CGFloat {
+        guard let rgb = color.usingColorSpace(.sRGB) else { return 0.5 }
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        rgb.getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+
+        func linearize(_ component: CGFloat) -> CGFloat {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+
+        return 0.2126 * linearize(red) + 0.7152 * linearize(green) + 0.0722 * linearize(blue)
+    }
+}
+
 enum AppAccentTheme: String, CaseIterable, Identifiable {
     case violet
     case blue
@@ -34,6 +70,11 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
     case monochrome
 
     var id: String { rawValue }
+
+    nonisolated static var current: AppAccentTheme {
+        let rawValue = UserDefaults.standard.string(forKey: "accentTheme") ?? ""
+        return AppAccentTheme(rawValue: rawValue) ?? .violet
+    }
 
     var title: String {
         switch self {
@@ -55,6 +96,28 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
     var primary: Color { Color(nsColor: nsPrimary) }
     var secondary: Color { Color(nsColor: nsSecondary) }
     var tertiary: Color { Color(nsColor: nsTertiary) }
+
+    // Foreground tokens are selected against the complete surface they cover.
+    // This prevents light accents, such as Aurora and Monochrome, from being
+    // rendered as pale text/icons on a light surface or as white text on a
+    // light accent fill.
+    var readablePrimary: Color { Color(nsColor: readable(nsPrimary)) }
+    var readableNSPrimary: NSColor { readable(nsPrimary) }
+    var readableSecondary: Color { Color(nsColor: readable(nsSecondary)) }
+    var readableTertiary: Color { Color(nsColor: readable(nsTertiary)) }
+    var onPrimary: Color { Color(nsColor: LimaContrast.foreground(over: [nsPrimary])) }
+    var onSecondary: Color { Color(nsColor: LimaContrast.foreground(over: [nsSecondary])) }
+    var onTertiary: Color { Color(nsColor: LimaContrast.foreground(over: [nsTertiary])) }
+    var onGradient: Color {
+        Color(nsColor: LimaContrast.foreground(over: [nsPrimary, nsSecondary]))
+    }
+
+    private func readable(_ color: NSColor) -> NSColor {
+        let surface = NSColor.windowBackgroundColor
+        return LimaContrast.contrast(color, against: surface) >= 4.5
+            ? color
+            : LimaContrast.foreground(over: [surface])
+    }
 
     var nsPrimary: NSColor {
         switch self {
@@ -268,13 +331,17 @@ enum LimaColors {
     static var secondaryText: Color { Color(nsColor: .secondaryLabelColor) }
     static var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
     static var separator: Color { Color(nsColor: .separatorColor) }
-    static var border: Color { Color(nsColor: .separatorColor).opacity(0.82) }
+    static var border: Color { Color(nsColor: .separatorColor) }
     static var focusedBorder: Color { Color(nsColor: .controlAccentColor) }
-    static var accent: Color { Color(nsColor: .controlAccentColor) }
+    static var accent: Color { Color(nsColor: AppAccentTheme.current.nsPrimary) }
+    static var onAccent: Color { AppAccentTheme.current.onPrimary }
     static var accentSoft: Color { accent.opacity(0.12) }
     static var success: Color { Color(nsColor: .systemGreen) }
     static var warning: Color { Color(nsColor: .systemOrange) }
     static var danger: Color { Color(nsColor: .systemRed) }
+    static var onDanger: Color {
+        Color(nsColor: LimaContrast.foreground(over: [NSColor.systemRed]))
+    }
     static var dangerSoft: Color { danger.opacity(0.11) }
     static var info: Color { Color(nsColor: .systemBlue) }
     static var shadow: Color { Color(nsColor: .shadowColor) }

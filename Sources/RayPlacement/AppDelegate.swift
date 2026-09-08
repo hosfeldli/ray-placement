@@ -104,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showExtensionStore() { launcher.showExtensionStore() }
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
     @objc func showTerminal() { launcher.showDeveloperTerminal() }
@@ -423,6 +424,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         menu.addItem(dictate)
+        let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
+        store.target = self
+        menu.addItem(store)
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
@@ -456,6 +460,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         appMenu.addItem(dictate)
+        let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
+        store.target = self
+        appMenu.addItem(store)
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
         appMenu.addItem(updates)

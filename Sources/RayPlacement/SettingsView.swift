@@ -81,6 +81,9 @@ private enum SettingsColors {
     static var indigo: Color { SettingsStore.shared.accentTheme.primary }
     static var violet: Color { SettingsStore.shared.accentTheme.secondary }
     static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }
+    static var readableIndigo: Color { SettingsStore.shared.accentTheme.readablePrimary }
+    static var readableViolet: Color { SettingsStore.shared.accentTheme.readableSecondary }
+    static var readableCyan: Color { SettingsStore.shared.accentTheme.readableTertiary }
     static var heroGradient: LinearGradient { SettingsStore.shared.accentTheme.gradient }
 }
 
@@ -137,7 +140,7 @@ struct SettingsView: View {
             .padding(LimaDesign.windowPadding)
         }
         .frame(minWidth: 820, idealWidth: 820, minHeight: 590, idealHeight: 590)
-        .tint(settings.accentTheme.primary)
+        .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
         .onChange(of: settingsSearchQuery) { query in
             if let first = filteredSections.first {
@@ -162,7 +165,7 @@ struct SettingsView: View {
                         .fill(SettingsColors.heroGradient)
                     Image(systemName: "sparkle.magnifyingglass")
                         .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(settings.accentTheme.onGradient)
                 }
                 .frame(width: 30, height: 30)
                 .overlay(PrismaticPanelShape(cut: 7).stroke(LimaColors.primaryText.opacity(0.34), lineWidth: LimaDesign.borderWidth))
@@ -247,7 +250,7 @@ struct SettingsView: View {
             HStack(spacing: 9) {
                 Image(systemName: section.symbol)
                     .limaFont(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(selectedSection == section ? settings.accentTheme.primary : Color.secondary)
+                    .foregroundStyle(selectedSection == section ? settings.accentTheme.readablePrimary : Color.secondary)
                     .frame(width: 21)
                 Text(section.title)
                     .limaFont(.system(size: 12.5, weight: selectedSection == section ? .semibold : .medium))
@@ -317,7 +320,7 @@ struct SettingsView: View {
                 }
                 Label(settings.dynamicPerformanceDescription, systemImage: settings.dynamicPerformance ? "waveform.path.ecg" : "slider.horizontal.3")
                     .limaFont(.caption.weight(.medium))
-                    .foregroundStyle(settings.dynamicPerformance ? settings.accentTheme.primary : .secondary)
+                    .foregroundStyle(settings.dynamicPerformance ? settings.accentTheme.readablePrimary : .secondary)
             }
 
             Section("Local writing checks") {
@@ -1153,7 +1156,7 @@ struct SettingsView: View {
                             VStack(spacing: 0) {
                                 HStack(spacing: 8) {
                                     Image(systemName: "puzzlepiece.extension.fill")
-                                        .foregroundStyle(SettingsColors.violet)
+                                        .foregroundStyle(SettingsColors.readableViolet)
                                     VStack(alignment: .leading, spacing: 1) {
                                         Text(group.name)
                                             .limaFont(.system(size: 13, weight: .semibold))
@@ -1229,7 +1232,7 @@ struct SettingsView: View {
             Image(systemName: "sparkle.magnifyingglass")
                 .limaFont(.system(size: 56, weight: .medium))
                 .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(settings.accentTheme.primary)
+                .foregroundStyle(settings.accentTheme.readablePrimary)
             Text("Lima").limaFont(.title.bold())
             Text("A fast, local-only macOS command launcher")
                 .foregroundStyle(.secondary)
@@ -1246,7 +1249,7 @@ struct SettingsView: View {
             if updateService.isInstalling {
                 VStack(spacing: 7) {
                     ProgressView(value: updateService.installationProgress)
-                        .tint(SettingsColors.indigo)
+                        .tint(SettingsColors.readableIndigo)
                     Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
                         .limaFont(.caption2.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -1323,7 +1326,7 @@ private struct AccentThemePicker: View {
                 Spacer()
                 Text(selection.title)
                     .limaFont(.caption.weight(.semibold))
-                    .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             }
             LazyVGrid(columns: columns, alignment: .leading, spacing: 7) {
                 ForEach(AppAccentTheme.allCases) { theme in
@@ -1357,7 +1360,7 @@ private struct PrimaryShortcutRow: View {
     var body: some View {
         HStack(spacing: 10) {
             Image(systemName: symbol)
-                .foregroundStyle(enabled ? SettingsStore.shared.accentTheme.primary : .secondary)
+                .foregroundStyle(enabled ? SettingsStore.shared.accentTheme.readablePrimary : .secondary)
                 .frame(width: 20)
                 .accessibilityHidden(true)
             Text(title)
@@ -1382,7 +1385,7 @@ private struct ExtensionShortcutRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: loaded.command.icon ?? "puzzlepiece.extension.fill")
-                .foregroundStyle(settings.accentTheme.primary)
+                .foregroundStyle(settings.accentTheme.readablePrimary)
                 .frame(width: 24)
                 .accessibilityHidden(true)
             Text(loaded.command.title)

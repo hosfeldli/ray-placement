@@ -27,11 +27,13 @@ enum LimaWindowChrome {
 @MainActor
 enum LimaAppKitDesign {
     static var windowBackground: NSColor { NSColor.windowBackgroundColor.withAlphaComponent(0.94) }
-    static var editorBackground: NSColor { NSColor.textBackgroundColor.withAlphaComponent(0.24) }
-    static var recessedBackground: NSColor { NSColor.textBackgroundColor.withAlphaComponent(0.14) }
-    static var surfaceBackground: NSColor { NSColor.controlBackgroundColor.withAlphaComponent(0.62) }
-    static var separator: NSColor { NSColor.separatorColor.withAlphaComponent(0.72) }
-    static var strongSeparator: NSColor { NSColor.separatorColor.withAlphaComponent(0.92) }
+    // Notes and editable tables must not depend on the glass backdrop for
+    // contrast. These semantic AppKit colors are opaque in both appearances.
+    static var editorBackground: NSColor { NSColor.textBackgroundColor }
+    static var recessedBackground: NSColor { NSColor.controlBackgroundColor }
+    static var surfaceBackground: NSColor { NSColor.controlBackgroundColor }
+    static var separator: NSColor { NSColor.separatorColor.withAlphaComponent(1) }
+    static var strongSeparator: NSColor { NSColor.separatorColor.withAlphaComponent(1) }
     static var accent: NSColor { SettingsStore.shared.accentTheme.nsPrimary }
     static var accentSoft: NSColor { accent.withAlphaComponent(0.16) }
     static var focus: NSColor { accent.withAlphaComponent(0.82) }

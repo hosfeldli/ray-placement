@@ -68,7 +68,7 @@ private struct ExtensionDevelopmentView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .tint(SettingsStore.shared.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
     }
 
     private var header: some View {
@@ -81,7 +81,7 @@ private struct ExtensionDevelopmentView: View {
             Text("API 2")
                 .limaFont(.system(size: 9, weight: .bold, design: .rounded))
                 .tracking(0.7)
-                .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                .foregroundStyle(SettingsStore.shared.accentTheme.readableTertiary)
             Spacer()
             Button {
                 try? ApplicationPaths.prepare()

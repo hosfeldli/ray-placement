@@ -147,7 +147,7 @@ private struct ExtensionFormView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .tint(SettingsStore.shared.accentTheme.primary)
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
     }
 
     private var header: some View {
@@ -178,7 +178,7 @@ private struct ExtensionFormView: View {
                     if let section = field.section,
                        index == 0 || model.visibleFields[index - 1].section != section {
                         LimaSectionLabel(section, detail: "Required fields marked *")
-                            .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                             .padding(.top, index == 0 ? 0 : 7)
                     }
                     fieldView(field)
@@ -287,7 +287,7 @@ private struct ExtensionFormView: View {
                     Text(error).limaFont(.caption.weight(.medium)).lineLimit(2)
                 } else {
                     Image(systemName: model.phase == .running ? "waveform.path.ecg" : "terminal.fill")
-                        .foregroundStyle(SettingsStore.shared.accentTheme.primary)
+                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                     Text(model.phase == .running ? "Running…" : "Output")
                         .limaFont(.callout.weight(.semibold))
                 }
