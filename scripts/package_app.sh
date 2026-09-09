@@ -140,6 +140,7 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
         [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
     fi
 fi
+/usr/libexec/PlistBuddy -c "Add :LimaUpdatePolicyVersion integer 1" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdatePolicyVersion 1" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateSigningMode string $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateSigningMode $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedTeamIdentifier string $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedTeamIdentifier $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedSigningIdentity string $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedSigningIdentity $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist"

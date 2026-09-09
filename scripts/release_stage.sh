@@ -33,7 +33,7 @@ done
 [[ -n "$TAG" ]] || TAG="$(release_default_tag)"
 release_validate_tag "$TAG"
 DIST="$PROJECT_DIRECTORY/dist"
-for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json; do
+for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
     [[ -f "$DIST/$artifact" ]] || { print -u2 "Missing $DIST/$artifact; run release_build.sh first."; exit 1; }
 done
 (
@@ -43,11 +43,12 @@ done
 )
 
 if (( DRY_RUN )); then
-    print "Dry run: would create/resume draft $TAG, upload update assets, split DMG into $LIMA_RELEASE_DMG_PART_SIZE parts, and run assemble-signed-dmg.yml."
+    print "Dry run: would create/resume draft $TAG, upload update/feed assets, split DMG into $LIMA_RELEASE_DMG_PART_SIZE parts, and run assemble-signed-dmg.yml."
     exit 0
 fi
 
 release_assert_tag_matches_source "$TAG"
+release_assert_exact_tag_identity "$TAG"
 
 release_assert_clean_tree
 gh auth status >/dev/null
@@ -65,6 +66,8 @@ fi
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.zip" Lima-Update.zip "$(jq -er '.update.sha256' "$DIST/Lima-release.json")"
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.sha256" Lima-Update.sha256 "$(shasum -a 256 "$DIST/Lima-Update.sha256" | awk '{print $1}')"
 release_upload_if_needed "$TAG" "$DIST/Lima.dmg.sha256" Lima.dmg.sha256 "$(shasum -a 256 "$DIST/Lima.dmg.sha256" | awk '{print $1}')"
+release_upload_if_needed "$TAG" "$DIST/latest.json" latest.json "$(shasum -a 256 "$DIST/latest.json" | awk '{print $1}')"
+release_upload_if_needed "$TAG" "$DIST/appcast.xml" appcast.xml "$(shasum -a 256 "$DIST/appcast.xml" | awk '{print $1}')"
 
 remote_dmg_url="$(release_remote_asset_api_url "$TAG" Lima.dmg)"
 if [[ -n "$remote_dmg_url" ]]; then

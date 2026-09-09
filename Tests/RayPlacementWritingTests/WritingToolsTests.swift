@@ -75,6 +75,67 @@ private final class FakePasteboard: PlainTextPasteboard {
 }
 
 
+
+@Test func structuredGrammarEditsApplyValidUTF16Replacement() throws {
+    let source = "This are a café."
+    let start = (source as NSString).range(of: "are").location
+    let result = try StealthGrammarService.apply(
+        [StealthGrammarEdit(start: start, length: 3, replacement: "is")],
+        to: source
+    )
+
+    #expect(result == "This is a café.")
+}
+
+@Test func structuredGrammarEditsRejectOutOfRangeEdits() {
+    #expect(throws: StealthGrammarEditError.invalidRange) {
+        try StealthGrammarService.apply(
+            [StealthGrammarEdit(start: 100, length: 1, replacement: "x")],
+            to: "Short text"
+        )
+    }
+}
+
+@Test func structuredGrammarEditsRejectOverlappingEditsAndDuplicateInsertions() {
+    #expect(throws: StealthGrammarEditError.overlappingEdits) {
+        try StealthGrammarService.apply([
+            StealthGrammarEdit(start: 0, length: 4, replacement: "A"),
+            StealthGrammarEdit(start: 2, length: 2, replacement: "B")
+        ], to: "abcd")
+    }
+    #expect(throws: StealthGrammarEditError.overlappingEdits) {
+        try StealthGrammarService.apply([
+            StealthGrammarEdit(start: 1, length: 0, replacement: "A"),
+            StealthGrammarEdit(start: 1, length: 0, replacement: "B")
+        ], to: "abcd")
+    }
+}
+
+@Test func structuredGrammarEditsRejectProtectedTokenChanges() {
+    let protected = StealthGrammarService.protect(
+        "Keep https://example.com unchanged.",
+        ignoreList: ""
+    )
+    let tokenStart = (protected.maskedText as NSString).range(of: "\u{E000}LIMA_KEEP_").location
+
+    #expect(throws: StealthGrammarEditError.protectedTextChanged) {
+        try StealthGrammarService.apply(
+            [StealthGrammarEdit(start: tokenStart, length: 1, replacement: "X")],
+            to: protected.maskedText
+        )
+    }
+}
+
+@Test func structuredGrammarEditsSupportSafeInsertion() throws {
+    let source = "This is a sentence"
+    let result = try StealthGrammarService.apply(
+        [StealthGrammarEdit(start: (source as NSString).length, length: 0, replacement: ".")],
+        to: source
+    )
+
+    #expect(result == "This is a sentence.")
+}
+
 @Test func stealthProtectionPreservesRiskyTermsAndIgnoreListPhrases() {
     let source = "  This are a grammer sentence about RayPlacement API at https://example.com/a?x=1, with /Users/liam/project and Lima editor.  "
     let protected = StealthGrammarService.protect(

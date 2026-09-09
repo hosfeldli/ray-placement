@@ -36,10 +36,11 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
+          ref: ${{ inputs.release_tag }}
           # Harper is a versioned Apple-silicon binary stored in Git LFS.
-          lfs: true
           fetch-depth: 0
           fetch-tags: true
+          lfs: true
 
       - name: Import CI signing keychain
         if: ${{ inputs.signing_mode == 'self-signed-local' }}
@@ -66,6 +67,8 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/check_release_consistency.sh
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
+          ./scripts/release_assert_tag_identity.sh --tag "$RELEASE_TAG"
           ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
 
       - name: Build local artifacts without Git mutation

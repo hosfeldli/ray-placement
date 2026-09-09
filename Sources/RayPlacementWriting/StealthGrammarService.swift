@@ -45,7 +45,44 @@ public struct StealthProtectedText: Equatable, Sendable {
     public var protectedValues: [String] { Array(replacements.values) }
 }
 
+
+/// A provider edit is expressed in UTF-16 offsets so it maps directly to the
+/// ranges used by Foundation and by the provider transport contract.
+public struct StealthGrammarEdit: Codable, Equatable, Sendable {
+    public let start: Int
+    public let length: Int
+    public let replacement: String
+
+    public init(start: Int, length: Int, replacement: String) {
+        self.start = start
+        self.length = length
+        self.replacement = replacement
+    }
+}
+
+public enum StealthGrammarEditError: LocalizedError, Equatable, Sendable {
+    case invalidRange
+    case overlappingEdits
+    case protectedTextChanged
+    case unsafeReplacement
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidRange: return "The provider returned an edit outside the original text."
+        case .overlappingEdits: return "The provider returned overlapping grammar edits."
+        case .protectedTextChanged: return "The provider attempted to change protected text."
+        case .unsafeReplacement: return "The provider returned an unsafe grammar replacement."
+        }
+    }
+}
+
 public enum StealthGrammarService {
+    private static func protectedTokenRanges(in value: String) -> [NSRange] {
+        let pattern = "\u{E000}LIMA_KEEP_[0-9]+_\u{E001}"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).map(\.range)
+    }
     private static let correctableCapitalizedWords: Set<String> = [
         "teh", "thier", "wierd", "whot", "grammer", "recieve", "seperate",
         "definately", "occured", "untill", "alot", "dscernable", "naviattion",
@@ -166,6 +203,63 @@ public enum StealthGrammarService {
             trailingWhitespace: trailing,
             replacements: replacements
         )
+    }
+
+
+    /// Validates and applies provider edits to the exact text sent to the
+    /// provider. Protected tokens are rejected before any replacement is made;
+    /// the caller can then restore the protected values byte-for-byte.
+    public static func apply(_ edits: [StealthGrammarEdit], to source: String) throws -> String {
+        let sourceLength = (source as NSString).length
+        let tokenRanges = protectedTokenRanges(in: source)
+        var ranges: [NSRange] = []
+        ranges.reserveCapacity(edits.count)
+
+        for edit in edits {
+            guard edit.start >= 0, edit.length >= 0,
+                  edit.start <= sourceLength,
+                  edit.length <= sourceLength - edit.start else {
+                throw StealthGrammarEditError.invalidRange
+            }
+            let range = NSRange(location: edit.start, length: edit.length)
+            let touchesProtected = tokenRanges.contains { tokenRange in
+                if edit.length == 0 {
+                    return edit.start >= tokenRange.location && edit.start <= NSMaxRange(tokenRange)
+                }
+                return NSIntersectionRange(tokenRange, range).length > 0
+            }
+            guard !touchesProtected else { throw StealthGrammarEditError.protectedTextChanged }
+            guard isSafeReplacement((source as NSString).substring(with: range), edit.replacement)
+                    || (edit.length == 0 && !edit.replacement.isEmpty && edit.replacement.utf8.count <= 32) else {
+                throw StealthGrammarEditError.unsafeReplacement
+            }
+            guard !ranges.contains(where: { rangesOverlap($0, range) }) else {
+                throw StealthGrammarEditError.overlappingEdits
+            }
+            ranges.append(range)
+        }
+
+        let mutable = NSMutableString(string: source)
+        for (edit, range) in zip(edits, ranges).sorted(by: { $0.1.location > $1.1.location }) {
+            mutable.replaceCharacters(in: range, with: edit.replacement)
+        }
+        return mutable as String
+    }
+
+    private static func rangesOverlap(_ first: NSRange, _ second: NSRange) -> Bool {
+        // NSIntersectionRange treats two zero-length ranges as non-overlapping.
+        // Insertions at the same point, or inside a replacement range, still
+        // conflict because applying both edits would be order-dependent.
+        if first.length == 0 && second.length == 0 {
+            return first.location == second.location
+        }
+        if first.length == 0 {
+            return first.location > second.location && first.location < NSMaxRange(second)
+        }
+        if second.length == 0 {
+            return second.location > first.location && second.location < NSMaxRange(first)
+        }
+        return NSIntersectionRange(first, second).length > 0
     }
 
     public static func isSafeReplacement(_ source: String, _ replacement: String) -> Bool {

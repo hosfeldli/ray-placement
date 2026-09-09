@@ -36,8 +36,8 @@ Required tools include:
 * Xcode Command Line Tools/Swift 6, `make`, and the macOS packaging tools;
 * `gh`, authenticated to `hosfeldli/ray-placement` with permission to create
     draft releases, upload assets, and dispatch the DMG assembly workflow;
-* `jq`, `openssl`, `shasum`, `hdiutil`, `codesign`, `security`, `split`, and
-    `rsync`;
+* `jq`, `python3`, `openssl`, `shasum`, `hdiutil`, `codesign`, `security`,
+    `split`, and `rsync`;
 * enough free disk space for a full DMG and temporary build resources.
 
 Run `gh auth status` before starting. The preflight also checks authentication,
@@ -155,6 +155,8 @@ dist/Lima-Update.sha256
 dist/Lima.dmg
 dist/Lima.dmg.sha256
 dist/Lima-release.json
+dist/latest.json
+dist/appcast.xml
 ```
 
 A complete, checksum-matching build can be reused after an interrupted later
@@ -315,6 +317,8 @@ for f in scripts/release_*.sh scripts/check_release_consistency.sh scripts/deplo
     /bin/zsh -n "$f"
 done
 ./scripts/check_release_consistency.sh
+./scripts/test_release_metadata.sh
+./scripts/test_sparkle_migration.sh
 ./scripts/release.sh --help
 ```
 
@@ -386,3 +390,58 @@ extension submission quarantine, store catalog, and website archive directories
 are not part of this release lifecycle. Do not stage or modify website
 `archive/` directories while releasing the app. Deploy website changes through
 the website repository's own CI process and verify its live endpoints separately.
+
+## Immutable release identity and update metadata
+
+Immutable version tags are the source of truth for release artifacts. Every
+release build, CI workflow, DMG assembly job, and verification phase must resolve
+and build the exact commit referenced by its `vX.Y.Z` tag. The mutable
+`release/v3.12.0` branch is transitional debt and must not be used as the source
+identity for a release artifact.
+
+The staged release assets include:
+
+```text
+dist/Lima-release.json
+dist/latest.json
+dist/appcast.xml
+```
+
+`latest.json` is the active updater's stable feed. It is generated from the same
+metadata as the update archive and includes the release tag, commit, version,
+archive URL, archive size, and SHA-256 digest. The release scripts validate its
+schema and content locally and again after downloading the published assets.
+
+`appcast.xml` is a migration-only Sparkle 2 artifact. It intentionally carries
+`lima:signatureStatus="pending-sparkle-signature"` and must not be treated as a
+production Sparkle feed until a real N→N+1 installation test passes with a
+properly signed Sparkle archive. Lima's active updater remains the signed custom
+updater; the optional Sparkle package graph is only enabled with:
+
+```sh
+LIMA_ENABLE_SPARKLE_MIGRATION=1 swift package dump-package
+```
+
+The default package graph does not fetch or resolve Sparkle. The offline graph
+check is:
+
+```sh
+./scripts/test_sparkle_migration.sh
+```
+
+Feed and appcast assets are generated during the local build, uploaded during
+draft staging, included in remote digest verification, and required before
+publication. They are not optional release documentation.
+
+## Continuous integration gates
+
+The pull-request and branch workflow runs:
+
+* all Swift tests with `make test`;
+* Zsh syntax checks for every shell script;
+* release metadata/feed/appcast tests;
+* updater fault-injection tests;
+* conditional Sparkle package-graph validation; and
+* a debug package smoke build plus plist and package-resolution checks.
+
+The CI workflow does not sign, upload, stage, or publish a release.

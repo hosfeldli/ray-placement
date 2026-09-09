@@ -422,6 +422,7 @@ private struct NotesView: View {
     let toggleFullScreen: () -> Void
 
     @State private var searchQuery = ""
+    @State private var isSearchPresented = false
     @State private var confirmDelete = false
     @State private var confirmDeleteDictation = false
     @State private var pendingDictationDeleteID: UUID?
@@ -454,8 +455,13 @@ private struct NotesView: View {
                 windowChrome
                     .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 if presentation.mode.isDocked {
-                    quickNoteWorkspace
-                        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+                    VStack(spacing: 0) {
+                        noteBrowser(compact: true)
+                            .frame(minHeight: 132, maxHeight: 224)
+                        GlassHairline()
+                        editor
+                    }
+                    .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 } else if presentation.sidebarVisible && presentation.mode != .fullScreen {
                     HStack(spacing: 10) {
                         sidebar
@@ -601,16 +607,57 @@ private struct NotesView: View {
     }
 
     private var sidebar: some View {
+        noteBrowser(compact: false)
+            .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.panel, border: LimaColors.border)
+    }
+
+    private func noteBrowser(compact: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search notes", text: $searchQuery)
-                        .textFieldStyle(.plain)
+                if compact && !isSearchPresented {
+                    HStack(spacing: 5) {
+                        Image(systemName: "note.text")
+                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                        Text(store.selectedNote?.displayTitle ?? "Choose a note")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search notes", text: $searchQuery)
+                            .textFieldStyle(.plain)
+                        if compact {
+                            Button {
+                                searchQuery = ""
+                                isSearchPresented = false
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .help("Close note search")
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .frame(height: 30)
+                    .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 9)
-                .frame(height: 30)
-                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+
+                if compact {
+                    NotesChromeButton(
+                        symbol: isSearchPresented ? "xmark" : "magnifyingglass",
+                        label: isSearchPresented ? "Close note search" : "Find a note",
+                        action: {
+                            if isSearchPresented {
+                                searchQuery = ""
+                            }
+                            isSearchPresented.toggle()
+                        }
+                    )
+                }
 
                 Menu {
                     Section("New Note") {
@@ -632,7 +679,7 @@ private struct NotesView: View {
                         }
                     }
                 } label: {
-                    Image(systemName: "square.and.pencil")
+                    Image(systemName: compact ? "plus" : "square.and.pencil")
                         .frame(width: 28, height: 28)
                 }
                 .menuStyle(.borderlessButton)
@@ -640,140 +687,69 @@ private struct NotesView: View {
                 .controlSize(.small)
                 .help("New Note or Template (Command-N)")
                 .keyboardShortcut("n", modifiers: .command)
-
             }
-            .padding(10)
+            .padding(compact ? 8 : 10)
 
             GlassHairline()
 
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 5) {
-                if !pinnedNotes.isEmpty {
-                    sidebarSectionLabel("Pinned")
-                        .padding(.horizontal, 8)
-                        .padding(.top, 3)
-                    ForEach(pinnedNotes) { note in
-                        noteSelectionButton(note)
+                    if !pinnedNotes.isEmpty {
+                        sidebarSectionLabel("Pinned")
+                            .padding(.horizontal, 8)
+                            .padding(.top, 3)
+                        ForEach(pinnedNotes) { note in
+                            noteSelectionButton(note)
+                        }
                     }
-                }
 
-                if !favoriteNotes.isEmpty {
-                    sidebarSectionLabel("Favorites")
-                        .padding(.horizontal, 8)
-                        .padding(.top, 3)
-                    ForEach(favoriteNotes) { note in
-                        noteSelectionButton(note)
+                    if !favoriteNotes.isEmpty {
+                        sidebarSectionLabel("Favorites")
+                            .padding(.horizontal, 8)
+                            .padding(.top, 3)
+                        ForEach(favoriteNotes) { note in
+                            noteSelectionButton(note)
+                        }
                     }
-                }
 
-                if !regularNotes.isEmpty {
-                    sidebarSectionLabel(searchQuery.isEmpty ? "Recent" : "Results")
-                        .padding(.horizontal, 8)
-                        .padding(.top, 3)
-                    ForEach(regularNotes) { note in
-                        noteSelectionButton(note)
+                    if !regularNotes.isEmpty {
+                        sidebarSectionLabel(searchQuery.isEmpty ? "Recent" : "Results")
+                            .padding(.horizontal, 8)
+                            .padding(.top, 3)
+                        ForEach(regularNotes) { note in
+                            noteSelectionButton(note)
+                        }
                     }
-                }
+
+                    if filteredNotes.isEmpty {
+                        Text(searchQuery.isEmpty ? "No notes yet" : "No matching notes")
+                            .limaFont(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                    }
                 }
                 .padding(.horizontal, 7)
                 .padding(.vertical, 7)
             }
 
-            GlassHairline()
-            HStack(spacing: 6) {
-                Image(systemName: "lock.fill")
-                    .limaFont(.caption2)
-                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                Text("Local")
-                Spacer()
-                Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
+            if !compact {
+                GlassHairline()
+                HStack(spacing: 6) {
+                    Image(systemName: "lock.fill")
+                        .limaFont(.caption2)
+                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                    Text("Local")
+                    Spacer()
+                    Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
+                }
+                .limaFont(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .frame(height: LimaDesign.statusHeight)
             }
-            .limaFont(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 12)
-            .frame(height: LimaDesign.statusHeight)
         }
         .background(Color.clear)
-    }
-
-    private var quickNoteWorkspace: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Menu {
-                    ForEach(store.notes) { note in
-                        Button { selectNote(note.id) } label: {
-                            if note.id == store.selectedNoteID {
-                                Label(note.displayTitle, systemImage: "checkmark")
-                            } else {
-                                Text(note.displayTitle)
-                            }
-                        }
-                    }
-                } label: {
-                    HStack(spacing: 5) {
-                        Image(systemName: "note.text")
-                            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                        Text(store.selectedNote?.displayTitle ?? "Choose a note")
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .limaFont(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .menuStyle(.borderlessButton)
-
-                NotesChromeButton(symbol: "magnifyingglass", label: "Find a note") {
-                    searchQuery = searchQuery.isEmpty ? " " : ""
-                }
-                NotesChromeButton(symbol: "plus", label: "New Quick Note") { store.createNote() }
-                    .keyboardShortcut("n", modifiers: .command)
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 38)
-
-            if !searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Find a note", text: $searchQuery)
-                        .textFieldStyle(.plain)
-                    Button { searchQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 8)
-                .frame(height: 28)
-                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
-                .padding(.horizontal, 8)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(filteredNotes.prefix(10)) { note in
-                            Button {
-                                selectNote(note.id)
-                                searchQuery = ""
-                            } label: {
-                                Text(note.displayTitle)
-                                    .limaFont(.caption)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(LimaColors.accentSoft, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-                                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 5)
-                }
-                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-            }
-
-            Divider().opacity(0.6)
-            editor
-        }
     }
 
     @ViewBuilder

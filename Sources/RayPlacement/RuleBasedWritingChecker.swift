@@ -112,7 +112,7 @@ final class RuleBasedWritingChecker {
         }
         usageID = UsageMonitor.shared.begin(
             category: .writing,
-            operation: "Rule-based spelling and grammar",
+            operation: "Enhanced or local spelling and grammar",
             performance: SettingsStore.shared.runtimeWritingPerformance,
             inputCharacters: source.count
         )
@@ -122,86 +122,148 @@ final class RuleBasedWritingChecker {
             source,
             ignoreList: SettingsStore.shared.writingInstructions
         )
-        progress("Checking spelling locally…")
+
+        guard SettingsStore.shared.developerGrammarEnabled else {
+            guard SettingsStore.shared.grammarFallbackToLocal else {
+                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+                finish(success: false, detail: error.localizedDescription)
+                completion(.failure(error))
+                return
+            }
+            runLocalReview(
+                source: source,
+                protected: protected,
+                operationID: operationID,
+                progress: progress,
+                status: "Enhanced Grammar is disabled · Local result shown.",
+                completion: completion
+            )
+            return
+        }
+
+        guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
+            if SettingsStore.shared.grammarFallbackToLocal {
+                runLocalReview(
+                    source: source,
+                    protected: protected,
+                    operationID: operationID,
+                    progress: progress,
+                    status: "Enhanced Grammar is not configured · Local result shown.",
+                    completion: completion
+                )
+            } else {
+                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+                finish(success: false, detail: error.localizedDescription)
+                completion(.failure(error))
+            }
+            return
+        }
+
+        progress("Applying Enhanced Grammar…")
+        remoteTask = remoteClient.correctEdits(
+            protected.maskedText,
+            configuration: configuration
+        ) { [weak self] result in
+            guard let self, self.operationID == operationID else { return }
+            self.remoteTask = nil
+            switch result {
+            case .success(let edits):
+                do {
+                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
+                    guard let enhanced = protected.restore(correctedMasked),
+                          StealthGrammarService.isSafeReplacement(source, enhanced) else {
+                        throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                    }
+                    let review = try self.reviewer.review(
+                        sourceText: source,
+                        rewrittenText: enhanced,
+                        engineTitle: "Enhanced Grammar"
+                    )
+                    self.finish(success: true, output: enhanced.count)
+                    completion(.success(review))
+                } catch {
+                    self.finishOrFallback(
+                        error: error,
+                        source: source,
+                        protected: protected,
+                        operationID: operationID,
+                        progress: progress,
+                        completion: completion
+                    )
+                }
+            case .failure(let error):
+                self.finishOrFallback(
+                    error: error,
+                    source: source,
+                    protected: protected,
+                    operationID: operationID,
+                    progress: progress,
+                    completion: completion
+                )
+            }
+        }
+    }
+
+    private func finishOrFallback(
+        error: Error,
+        source: String,
+        protected: StealthProtectedText,
+        operationID: UUID,
+        progress: @escaping (String) -> Void,
+        completion: @escaping (Result<WritingReview, Error>) -> Void
+    ) {
+        guard SettingsStore.shared.grammarFallbackToLocal else {
+            finish(success: false, detail: error.localizedDescription)
+            completion(.failure(error))
+            return
+        }
+        let detail = "Enhanced Grammar unavailable (\(error.localizedDescription)) · Local result shown."
+        runLocalReview(
+            source: source,
+            protected: protected,
+            operationID: operationID,
+            progress: progress,
+            status: detail,
+            completion: completion
+        )
+    }
+
+    private func runLocalReview(
+        source: String,
+        protected: StealthProtectedText,
+        operationID: UUID,
+        progress: @escaping (String) -> Void,
+        status: String?,
+        completion: @escaping (Result<WritingReview, Error>) -> Void
+    ) {
+        progress("Checking locally…")
         runPython(protected.maskedText, mode: "standard") { [weak self] pythonResult in
             guard let self, self.operationID == operationID else { return }
-            let spelled: String
-            switch pythonResult {
-            case .success(let value): spelled = value
-            case .failure: spelled = protected.maskedText
-            }
-            progress("Applying grammar and style rules…")
+            let spelled = (try? pythonResult.get()) ?? protected.maskedText
+            progress("Applying local grammar rules…")
             self.runHarper(spelled) { [weak self] harperResult in
                 guard let self, self.operationID == operationID else { return }
                 do {
                     let correctedMasked: String
                     switch harperResult {
-                    case .success(let value) where protected.restore(value) != nil: correctedMasked = value
-                    case .success: correctedMasked = spelled
-                    case .failure where spelled != protected.maskedText: correctedMasked = spelled
-                    case .failure(let error): throw error
+                    case .success(let value) where protected.restore(value) != nil:
+                        correctedMasked = value
+                    case .success:
+                        correctedMasked = spelled
+                    case .failure where spelled != protected.maskedText:
+                        correctedMasked = spelled
+                    case .failure(let error):
+                        throw error
                     }
-                    let normalizedMasked = self.reviewer.normalizeProofreadRewrite(correctedMasked)
-                    let localNormalized = protected.restore(normalizedMasked) ?? source
-                    guard SettingsStore.shared.developerGrammarEnabled else {
-                        self.completeLocalReview(
-                            source: source,
-                            rewrittenText: localNormalized,
-                            operationID: operationID,
-                            status: nil,
-                            completion: completion
-                        )
-                        return
-                    }
-                    guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-                        if SettingsStore.shared.grammarFallbackToLocal {
-                            self.completeLocalReview(
-                                source: source,
-                                rewrittenText: localNormalized,
-                                operationID: operationID,
-                                status: "Enhanced check unavailable · Local result shown.",
-                                completion: completion
-                            )
-                        } else {
-                            let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
-                            self.finish(success: false, detail: error.localizedDescription)
-                            completion(.failure(error))
-                        }
-                        return
-                    }
-                    progress("Applying Enhanced Grammar…")
-                    self.remoteTask = self.remoteClient.correct(normalizedMasked, configuration: configuration) { [weak self] remoteResult in
-                        guard let self, self.operationID == operationID else { return }
-                        self.remoteTask = nil
-                        switch remoteResult {
-                        case .success(let remoteText):
-                            let candidate = self.reviewer.normalizeProofreadRewrite(remoteText)
-                            if let enhanced = protected.restore(candidate),
-                               StealthGrammarService.isSafeReplacement(source, enhanced) {
-                                do {
-                                    let review = try self.reviewer.review(sourceText: source, rewrittenText: enhanced, engineTitle: "Enhanced Grammar")
-                                    self.finish(success: true, output: enhanced.count)
-                                    completion(.success(review))
-                                } catch {
-                                    self.finish(success: false, detail: error.localizedDescription)
-                                    completion(.failure(error))
-                                }
-                            } else if SettingsStore.shared.grammarFallbackToLocal {
-                                self.completeLocalReview(source: source, rewrittenText: localNormalized, operationID: operationID, status: "Enhanced check unavailable · Local result shown.", completion: completion)
-                            } else {
-                                let error = WritingCheckService.CheckError.invalidProviderResponse
-                                self.finish(success: false, detail: error.localizedDescription)
-                                completion(.failure(error))
-                            }
-                        case .failure(let error):
-                            if SettingsStore.shared.grammarFallbackToLocal {
-                                self.completeLocalReview(source: source, rewrittenText: localNormalized, operationID: operationID, status: "Enhanced check unavailable · Local result shown.", completion: completion)
-                            } else {
-                                self.finish(success: false, detail: "Enhanced Grammar failed: \(error.localizedDescription)")
-                                completion(.failure(error))
-                            }
-                        }
-                    }
+                    let normalized = self.reviewer.normalizeProofreadRewrite(correctedMasked)
+                    let corrected = protected.restore(normalized) ?? source
+                    self.completeLocalReview(
+                        source: source,
+                        rewrittenText: corrected,
+                        operationID: operationID,
+                        status: status,
+                        completion: completion
+                    )
                 } catch {
                     self.finish(success: false, detail: error.localizedDescription)
                     completion(.failure(error))
@@ -282,28 +344,31 @@ final class RuleBasedWritingChecker {
                 return
             }
             progress("Checking with Enhanced Grammar…")
-            remoteTask = remoteClient.correct(
+            remoteTask = remoteClient.correctEdits(
                 protected.maskedText,
                 configuration: configuration
             ) { [weak self] result in
                 guard let self, self.operationID == operationID else { return }
                 self.remoteTask = nil
                 switch result {
-                case .success(let correctedMasked):
-                    guard let corrected = protected.restore(self.reviewer.normalizeProofreadRewrite(correctedMasked)),
-                          StealthGrammarService.isSafeReplacement(source, corrected) else {
+                case .success(let edits):
+                    do {
+                        let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
+                        guard let corrected = protected.restore(correctedMasked),
+                              StealthGrammarService.isSafeReplacement(source, corrected) else {
+                            throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                        }
+                        self.finish(success: true, output: corrected.count)
+                        completion(.success(corrected))
+                    } catch {
                         if SettingsStore.shared.grammarFallbackToLocal {
-                            progress("Enhanced check unavailable · Local result shown.")
+                            progress("Enhanced check unavailable (\(error.localizedDescription)) · Local result shown.")
                             self.runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
                         } else {
-                            let error = WritingCheckService.CheckError.invalidProviderResponse
                             self.finish(success: false, detail: error.localizedDescription)
                             completion(.failure(error))
                         }
-                        return
                     }
-                    self.finish(success: true, output: corrected.count)
-                    completion(.success(corrected))
                 case .failure(let error):
                     if SettingsStore.shared.grammarFallbackToLocal {
                         progress("Enhanced check unavailable · Local result shown.")

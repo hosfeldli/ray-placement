@@ -29,6 +29,8 @@ trap '[[ $? -eq 0 ]] || fail "The trusted updater stopped unexpectedly. The curr
 TRUSTED_RESOURCES="$TRUSTED_APP/Contents/Resources/Updater"
 [[ -x "$TRUSTED_RESOURCES/verify_update_app.sh" && -x "$TRUSTED_RESOURCES/approved_lima_replacement.sh" ]] || fail 'Trusted updater resources are missing.'
 TRUSTED_INFO="$TRUSTED_APP/Contents/Info.plist"
+POLICY_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdatePolicyVersion' "$TRUSTED_INFO")" || fail 'The installed app has no update trust policy version.'
+[[ "$POLICY_VERSION" == 1 ]] || fail "The installed app uses unsupported update trust policy version: $POLICY_VERSION"
 EXPECTED_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedTeamIdentifier' "$TRUSTED_INFO")" || fail 'The installed app has no expected Team ID policy.'
 EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$TRUSTED_INFO")" || fail 'The installed app has no expected signing identity policy.'
 EXPECTED_CERTIFICATE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedCertificateSHA256' "$TRUSTED_INFO")" || fail 'The installed app has no certificate policy.'

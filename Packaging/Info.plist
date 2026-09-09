@@ -26,8 +26,12 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<false/>
+	<key>LimaUpdatePolicyVersion</key>
+	<integer>1</integer>
 	<key>LimaUpdateMetadataURL</key>
-	<string>https://www.liamhosfeld.com/updates/latest.json</string>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/latest.json</string>
+	<key>LimaSparkleAppcastURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Lima uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
 	<key>NSAppleEventsUsageDescription</key>

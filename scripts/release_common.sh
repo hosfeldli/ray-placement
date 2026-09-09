@@ -49,6 +49,26 @@ release_assert_tag_matches_source() {
     }
 }
 
+# A release artifact must be built from the immutable tag commit, never from
+# whichever commit happens to be checked out on the long-lived release branch.
+# CI checkouts and local release rehearsals both use this helper when the tag is
+# available locally.
+release_assert_exact_tag_identity() {
+    local tag="$1"
+    release_validate_tag "$tag"
+    local head="$(git -C "$LIMA_PROJECT_DIRECTORY" rev-parse HEAD)"
+    local tag_commit="$(git -C "$LIMA_PROJECT_DIRECTORY" rev-list -n1 "$tag" 2>/dev/null || true)"
+    [[ -n "$tag_commit" ]] || {
+        print -u2 "Immutable release tag is not available locally: $tag"
+        return 1
+    }
+    [[ "$head" == "$tag_commit" ]] || {
+        print -u2 "Release source identity mismatch: HEAD $head is not $tag $tag_commit."
+        return 1
+    }
+    print "Exact source identity verified: $tag ($head)"
+}
+
 release_metadata_file() {
     local tag="$1"
     print -r -- "$(release_project_file "dist/Lima-release.json")"
@@ -80,13 +100,121 @@ release_write_metadata() {
         --arg signingIdentity "$LIMA_RELEASE_SIGNING_IDENTITY" \
         --arg teamIdentifier "$LIMA_RELEASE_TEAM_IDENTIFIER" \
         --arg certificateSHA256 "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" \
+        --arg releaseURL "https://github.com/hosfeldli/ray-placement/releases/tag/$tag" \
+        --arg updateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip" \
+        --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg updateSHA256 "$(shasum -a 256 "$update" | awk '{print $1}')" \
         --arg dmgSHA256 "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
         --argjson updateBytes "$(stat -f %z "$update")" \
         --argjson dmgBytes "$(stat -f %z "$dmg")" \
-        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, teamIdentifier: $teamIdentifier, certificateSHA256: $certificateSHA256, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
+        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, teamIdentifier: $teamIdentifier, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
         > "$metadata"
     chmod 600 "$metadata"
+}
+
+release_generate_distribution_metadata() {
+    local tag="$1"
+    local metadata="$(release_metadata_file "$tag")"
+    local dist="$(release_project_file dist)"
+    [[ -f "$metadata" ]] || { print -u2 "Release metadata is missing: $metadata"; return 1; }
+    "$RELEASE_COMMON_DIRECTORY/generate_update_feed.sh" --metadata "$metadata" --output "$dist/latest.json"
+    "$RELEASE_COMMON_DIRECTORY/generate_sparkle_appcast.sh" --metadata "$metadata" --output "$dist/appcast.xml"
+    chmod 600 "$dist/latest.json" "$dist/appcast.xml"
+}
+
+release_validate_distribution_content() {
+    local feed="$1"
+    local appcast="$2"
+    local tag="$3"
+    local update_sha="$4"
+    local update_bytes="$5"
+    local version="${tag#v}"
+    local release_url="https://github.com/hosfeldli/ray-placement/releases/tag/$tag"
+    local update_url="https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip"
+
+    [[ -f "$feed" && -f "$appcast" ]] || {
+        print -u2 'Update feed and appcast files are required for content validation.'
+        return 1
+    }
+
+    jq -e \
+        --arg tag "$tag" \
+        --arg version "$version" \
+        --arg release_url "$release_url" \
+        --arg update_url "$update_url" \
+        --arg update_digest "sha256:${update_sha:l}" \
+        --argjson update_size "$update_bytes" \
+        '(.schemaVersion == 1) and
+         (.tag == $tag) and
+         (.version == $version) and
+         (.releaseUrl == $release_url) and
+         (.update == $update_url) and
+         (.updateDigest == $update_digest) and
+         (.updateSize == $update_size) and
+         (.publication.channel == "stable") and
+         (.publication.tag == $tag) and
+         (.publication.commit | strings | length == 40)' \
+        "$feed" >/dev/null || {
+        print -u2 'Stable update feed content does not match the verified release.'
+        return 1
+    }
+
+    python3 - "$appcast" "$tag" "$version" "$update_url" "$update_sha" "$update_bytes" "$release_url" <<'APPCAST_VALIDATOR'
+import sys
+from xml.etree import ElementTree
+
+appcast, tag, version, update_url, update_sha, update_bytes, release_url = sys.argv[1:]
+ns = {
+    "sparkle": "http://www.andymatushek.org/xml-namespaces/sparkle",
+    "lima": "https://www.liamhosfeld.com/xml-namespaces/lima",
+}
+root = ElementTree.parse(appcast).getroot()
+if root.tag != "rss":
+    raise SystemExit("Appcast root is not RSS")
+channel = root.find("channel")
+if channel is None:
+    raise SystemExit("Appcast channel is missing")
+if (channel.findtext("title") or "") != "Lima Updates":
+    raise SystemExit("Appcast title mismatch")
+if (channel.findtext("link") or "") != release_url:
+    raise SystemExit("Appcast release URL mismatch")
+items = channel.findall("item")
+if len(items) != 1:
+    raise SystemExit("Appcast must contain exactly one release item")
+item = items[0]
+if item.get(f"{{{ns['sparkle']}}}version") != version:
+    raise SystemExit("Appcast Sparkle version mismatch")
+if item.get("version") != version:
+    raise SystemExit("Appcast version mismatch")
+enclosure = item.find("enclosure")
+if enclosure is None:
+    raise SystemExit("Appcast enclosure is missing")
+if enclosure.get("url") != update_url:
+    raise SystemExit("Appcast update URL mismatch")
+if enclosure.get("length") != update_bytes:
+    raise SystemExit("Appcast update size mismatch")
+if enclosure.get(f"{{{ns['lima']}}}sha256") != update_sha.lower():
+    raise SystemExit("Appcast update digest mismatch")
+if enclosure.get(f"{{{ns['lima']}}}signatureStatus") != "pending-sparkle-signature":
+    raise SystemExit("Appcast signature migration marker is missing")
+if f"{{{ns['sparkle']}}}edSignature" in enclosure.attrib:
+    raise SystemExit("Unsigned migration appcast must not claim a Sparkle signature")
+APPCAST_VALIDATOR
+}
+
+release_assert_distribution_metadata() {
+    local tag="$1"
+    local metadata="$(release_metadata_file "$tag")"
+    local dist="$(release_project_file dist)"
+    for file in "$dist/latest.json" "$dist/appcast.xml"; do
+        [[ -f "$file" ]] || { print -u2 "Distribution metadata is missing: $file"; return 1; }
+    done
+    release_validate_distribution_content \
+        "$dist/latest.json" \
+        "$dist/appcast.xml" \
+        "$tag" \
+        "$(jq -er '.update.sha256' "$metadata")" \
+        "$(jq -er '.update.bytes' "$metadata")"
 }
 
 release_remote_asset_api_url() {

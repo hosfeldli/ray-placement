@@ -5,6 +5,11 @@ final class StealthGrammarRemoteClient {
     enum ClientError: LocalizedError {
         case invalidConfiguration
         case requestFailed(statusCode: Int, detail: String? = nil)
+        case authenticationFailed(statusCode: Int, detail: String? = nil)
+        case rateLimited
+        case modelUnavailable(statusCode: Int, detail: String? = nil)
+        case invalidJSON
+        case safetyRejected
         case invalidResponse
         case responseTooLarge
         case noModelsFound
@@ -15,6 +20,13 @@ final class StealthGrammarRemoteClient {
             case .requestFailed(let statusCode, let detail):
                 if let detail, !detail.isEmpty { return "The Enhanced Grammar provider returned HTTP \(statusCode): \(detail)" }
                 return "The Enhanced Grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
+            case .authenticationFailed(let statusCode, let detail):
+                return "Enhanced Grammar authentication failed (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the saved key.")
+            case .rateLimited: return "Enhanced Grammar is rate-limited (HTTP 429). Try again later."
+            case .modelUnavailable(let statusCode, let detail):
+                return "Enhanced Grammar model is unavailable (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the selected model.")
+            case .invalidJSON: return "Enhanced Grammar returned invalid JSON instead of structured edits."
+            case .safetyRejected: return "Enhanced Grammar returned an edit that failed Lima’s safety checks."
             case .invalidResponse: return "The Enhanced Grammar provider returned an unreadable correction."
             case .responseTooLarge: return "The Enhanced Grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."
@@ -23,11 +35,25 @@ final class StealthGrammarRemoteClient {
     }
 
     static let systemPrompt = """
+    You are a high-confidence copy editor. Return only a JSON object with this exact shape:
+    {"edits":[{"start":0,"length":0,"replacement":"text"}]}
+
+    Offsets are UTF-16 offsets into the input. Make only high-confidence grammar,
+    spelling, punctuation, capitalization, and subject-verb agreement corrections.
+    If uncertain, return no edit. Preserve meaning, tone, paragraph breaks, line
+    breaks, formatting, and voice. Never rewrite the whole document.
+
+    Never alter URLs, email addresses, file paths, code, shell commands,
+    identifiers, version strings, acronyms, product names, application names,
+    people names, company names, proper nouns, technical terms, or opaque
+    protected tokens. Never change a protected token or an edit that touches one.
+    """
+
+    static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
+
+    static let legacyCorrectionSystemPrompt = """
     You are a high-confidence copy editor. Return only the corrected text, with no explanation, labels, Markdown fences, or surrounding quotation marks.
-
-    Preserve the exact meaning, tone, paragraph breaks, line breaks, intentional whitespace boundaries, and formatting of the input. Make only high-confidence grammar, spelling, punctuation, capitalization, and subject-verb agreement corrections. If uncertain, leave the text unchanged. Do not rewrite style, add content, invent facts, or change a user's voice.
-
-    Never alter URLs, email addresses, file paths, code, shell commands, identifiers, version strings, acronyms, product names, application names, people names, company names, proper nouns, technical terms, or opaque protected tokens. Never expand or rewrite acronyms. Preserve every protected token exactly once. Do not change quoted text unless it is clearly grammatical prose. Opaque private-use tokens may appear in the input; copy them exactly.
+    Preserve meaning, tone, paragraph breaks, line breaks, intentional whitespace boundaries, and formatting. Make only high-confidence grammar, spelling, punctuation, capitalization, and subject-verb agreement corrections. If uncertain, leave the text unchanged. Never rewrite style, add content, invent facts, or change the user's voice.
     """
 
     private let session: URLSession
@@ -78,6 +104,44 @@ final class StealthGrammarRemoteClient {
     }
 
     @discardableResult
+    func testConnection(
+        configuration: DeveloperGrammarConfiguration,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let request = makeRequest(
+                text: "Reply with the single word OK.",
+                configuration: configuration,
+                systemPrompt: Self.connectionSystemPrompt
+              ) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider, completion: completion)
+    }
+
+    @discardableResult
+    func correctEdits(
+        _ text: String,
+        configuration: DeveloperGrammarConfiguration,
+        completion: @escaping (Result<[StealthGrammarEdit], Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let request = makeRequest(text: text, configuration: configuration, systemPrompt: Self.systemPrompt) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider) { result in
+            completion(result.flatMap { value in
+                do { return .success(try Self.extractEdits(from: value)) }
+                catch { return .failure(error) }
+            })
+        }
+    }
+
+    @discardableResult
     func correct(
         _ text: String,
         configuration: DeveloperGrammarConfiguration,
@@ -85,10 +149,30 @@ final class StealthGrammarRemoteClient {
     ) -> URLSessionDataTask? {
         guard !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let request = makeRequest(text: text, configuration: configuration) else {
+              let request = makeRequest(
+                text: text,
+                configuration: configuration,
+                systemPrompt: Self.legacyCorrectionSystemPrompt
+              ) else {
             completion(.failure(ClientError.invalidConfiguration))
             return nil
         }
+        return perform(request: request, provider: configuration.provider) { result in
+            completion(result.flatMap { value in
+                guard !value.contains("```"), !StealthGrammarService.isChattyResponse(value) else {
+                    return .failure(ClientError.invalidResponse)
+                }
+                return .success(value)
+            })
+        }
+    }
+
+    @discardableResult
+    private func perform(
+        request: URLRequest,
+        provider: DeveloperGrammarProvider,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) -> URLSessionDataTask? {
         let task = session.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let error {
@@ -99,9 +183,8 @@ final class StealthGrammarRemoteClient {
                     completion(.failure(ClientError.requestFailed(statusCode: 0, detail: nil)))
                     return
                 }
-                guard (200..<300).contains(http.statusCode),
-                      let data else {
-                    completion(.failure(ClientError.requestFailed(statusCode: http.statusCode, detail: Self.responseDetail(data))))
+                guard (200..<300).contains(http.statusCode), let data else {
+                    completion(.failure(Self.httpError(statusCode: http.statusCode, detail: Self.responseDetail(data))))
                     return
                 }
                 guard data.count <= 1_000_000 else {
@@ -109,7 +192,7 @@ final class StealthGrammarRemoteClient {
                     return
                 }
                 do {
-                    completion(.success(try Self.extractText(data: data, provider: configuration.provider)))
+                    completion(.success(try Self.extractText(data: data, provider: provider)))
                 } catch {
                     completion(.failure(error))
                 }
@@ -118,6 +201,16 @@ final class StealthGrammarRemoteClient {
         task.resume()
         return task
     }
+
+    private static func httpError(statusCode: Int, detail: String?) -> ClientError {
+        switch statusCode {
+        case 401, 403: return .authenticationFailed(statusCode: statusCode, detail: detail)
+        case 404: return .modelUnavailable(statusCode: statusCode, detail: detail)
+        case 429: return .rateLimited
+        default: return .requestFailed(statusCode: statusCode, detail: detail)
+        }
+    }
+
 
     private static func responseDetail(_ data: Data?) -> String? {
         guard let data, !data.isEmpty else { return nil }
@@ -168,7 +261,7 @@ final class StealthGrammarRemoteClient {
         return request
     }
 
-    private func makeRequest(text: String, configuration: DeveloperGrammarConfiguration) -> URLRequest? {
+    private func makeRequest(text: String, configuration: DeveloperGrammarConfiguration, systemPrompt: String) -> URLRequest? {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
         let url: URL?
         switch configuration.provider {
@@ -194,7 +287,7 @@ final class StealthGrammarRemoteClient {
                 "model": configuration.model,
                 "temperature": 0,
                 "messages": [
-                    ["role": "system", "content": Self.systemPrompt],
+                    ["role": "system", "content": systemPrompt],
                     ["role": "user", "content": text]
                 ]
             ])
@@ -205,12 +298,12 @@ final class StealthGrammarRemoteClient {
                 "model": configuration.model,
                 "max_tokens": 8_000,
                 "temperature": 0,
-                "system": Self.systemPrompt,
+                "system": systemPrompt,
                 "messages": [["role": "user", "content": text]]
             ])
         case .gemini:
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
-                "systemInstruction": ["parts": [["text": Self.systemPrompt]]],
+                "systemInstruction": ["parts": [["text": systemPrompt]]],
                 "contents": [["role": "user", "parts": [["text": text]]]],
                 "generationConfig": ["temperature": 0]
             ])
@@ -286,9 +379,45 @@ final class StealthGrammarRemoteClient {
         return first["text"] as? String
     }
 
+    private struct EditEnvelope: Decodable {
+        let edits: [StealthGrammarEdit]
+    }
+
+    private static func extractEdits(from value: String) throws -> [StealthGrammarEdit] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var candidates = [trimmed]
+
+        // Some providers ignore the “JSON only” instruction and add a Markdown
+        // fence or a short preamble. Accept only the smallest JSON object we can
+        // isolate; all range, overlap, and safety checks still happen later.
+        if trimmed.hasPrefix("```") {
+            var fenced = trimmed
+            if let newline = fenced.firstIndex(of: "\n") {
+                fenced = String(fenced[fenced.index(after: newline)...])
+            }
+            if fenced.hasSuffix("```") {
+                fenced.removeLast(3)
+            }
+            candidates.append(fenced.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        if let firstBrace = trimmed.firstIndex(of: "{"),
+           let lastBrace = trimmed.lastIndex(of: "}"),
+           firstBrace < lastBrace {
+            candidates.append(String(trimmed[firstBrace...lastBrace]))
+        }
+
+        for candidate in candidates {
+            guard let data = candidate.data(using: .utf8) else { continue }
+            if let envelope = try? JSONDecoder().decode(EditEnvelope.self, from: data) {
+                return envelope.edits
+            }
+        }
+        throw ClientError.invalidJSON
+    }
+
     private static func extractText(data: Data, provider: DeveloperGrammarProvider) throws -> String {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw ClientError.invalidResponse
+            throw ClientError.invalidJSON
         }
         let value: String?
         switch provider {
@@ -304,9 +433,7 @@ final class StealthGrammarRemoteClient {
                 .joined()
         }
         guard let value,
-              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !value.contains("```"),
-              !StealthGrammarService.isChattyResponse(value) else { throw ClientError.invalidResponse }
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ClientError.invalidResponse }
         return value
     }
 }

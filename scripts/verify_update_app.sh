@@ -15,6 +15,7 @@ PLIST="$APP/Contents/Info.plist"
 POLICY_PLIST="$POLICY_APP/Contents/Info.plist"
 value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1"; }
 SIGNING_MODE="$(value "$POLICY_PLIST" LimaUpdateSigningMode 2>/dev/null || print developer-id)"
+POLICY_VERSION="$(value "$POLICY_PLIST" LimaUpdatePolicyVersion 2>/dev/null || print 0)"
 fail() { echo "Update verification failed: $1" >&2; exit 1; }
 
 [[ -d "$APP" && ! -L "$APP" ]] || fail 'app bundle is missing or symbolic'
@@ -25,6 +26,7 @@ fail() { echo "Update verification failed: $1" >&2; exit 1; }
 [[ "$(value "$PLIST" CFBundleExecutable)" == Lima ]] || fail 'bundle executable is not Lima'
 [[ -x "$APP/Contents/MacOS/Lima" ]] || fail 'Lima executable is missing'
 [[ "$SIGNING_MODE" == "developer-id" || "$SIGNING_MODE" == "self-signed-local" ]] || fail 'the signing mode is not recognized'
+[[ "$POLICY_VERSION" == 1 ]] || fail 'the update trust policy version is unsupported'
 [[ -n "$EXPECTED_IDENTITY" ]] || fail 'expected signing identity is not configured'
 [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || fail 'expected certificate fingerprint is not configured'
 if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then

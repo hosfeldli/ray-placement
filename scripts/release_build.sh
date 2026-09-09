@@ -34,11 +34,12 @@ else
     "$SCRIPT_DIRECTORY/release_preflight.sh" --tag "$TAG"
 fi
 lima_release_export_packaging_policy
+release_assert_exact_tag_identity "$TAG"
 
 DIST="$PROJECT_DIRECTORY/dist"
 
 reuse_complete=1
-for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json; do
+for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
     [[ -f "$DIST/$artifact" ]] || reuse_complete=0
 done
 if (( reuse_complete )); then
@@ -52,6 +53,7 @@ if (( REUSE && reuse_complete )); then
     print "Reusing complete checksum-matching build for $TAG."
     RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$PROJECT_DIRECTORY/build/Lima.app"
     RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_dmg.sh" "$DIST/Lima.dmg"
+    release_assert_distribution_metadata "$TAG"
     print "Reuse verification passed."
     exit 0
 fi
@@ -59,7 +61,7 @@ if (( REUSE && ! reuse_complete )); then
     print -- "--reuse requested, but the existing build is incomplete or mismatched; rebuilding."
 fi
 mkdir -p "$DIST"
-rm -f "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima.dmg" "$DIST/Lima.dmg.sha256" "$DIST/Lima-release.json"
+rm -f "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima.dmg" "$DIST/Lima.dmg.sha256" "$DIST/Lima-release.json" "$DIST/latest.json" "$DIST/appcast.xml"
 rm -rf "$DIST/.release-work/${TAG}"
 
 print '==> Running Swift tests'
@@ -87,6 +89,8 @@ codesign --verify --deep --strict "$PROJECT_DIRECTORY/build/Lima.app"
     shasum -a 256 --check Lima.dmg.sha256
 )
 release_write_metadata "$TAG"
+release_generate_distribution_metadata "$TAG"
+release_assert_distribution_metadata "$TAG"
 print "Build complete for $TAG"
 print "  metadata: $DIST/Lima-release.json"
 print "  next:     ./scripts/release_stage.sh --tag $TAG"

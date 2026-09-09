@@ -1,5 +1,6 @@
 import SwiftUI
 import Combine
+import RayPlacementWriting
 
 @MainActor
 struct DeveloperGrammarSettingsView: View {
@@ -8,6 +9,8 @@ struct DeveloperGrammarSettingsView: View {
     @State private var saveMessage: String?
     @State private var isTesting = false
     @State private var testMessage: String?
+    @State private var isTestingCompatibility = false
+    @State private var compatibilityMessage: String?
     @State private var isLoadingModels = false
     @State private var discoveredModels: [DeveloperGrammarModelOption] = []
     @State private var modelsMessage: String?
@@ -145,18 +148,38 @@ struct DeveloperGrammarSettingsView: View {
                             Label("Test Connection", systemImage: "bolt.horizontal.circle")
                         }
                     }
-                    .disabled(isTesting || settings.developerGrammarAPIKey.isEmpty)
+                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
                     if let testMessage {
                         Text(testMessage)
                             .font(.caption)
                             .foregroundStyle(testMessage.hasPrefix("Connected") ? .green : .secondary)
                     }
                 }
-                Text("The test sends a short protected sample and reports whether the provider returns a safe proofreading response.")
+                Text("Tests authentication, the selected endpoint, and the selected model with a minimal request. It does not proofread text.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Button {
+                        testGrammarCompatibility()
+                    } label: {
+                        if isTestingCompatibility {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Test Grammar Compatibility", systemImage: "text.badge.checkmark")
+                        }
+                    }
+                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
+                    if let compatibilityMessage {
+                        Text(compatibilityMessage)
+                            .font(.caption)
+                            .foregroundStyle(compatibilityMessage.hasPrefix("Compatible") ? .green : .secondary)
+                    }
+                }
+                Text("Sends a protected sample, requests structured UTF-16 edits, and validates the provider response without changing your notes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
-
             Section("Available providers") {
                 Text("OpenAI, Anthropic, Google Gemini, Mistral, xAI, DeepSeek, OpenRouter, and generic OpenAI-compatible endpoints are supported. Credentials are stored in macOS Keychain and are not written to UserDefaults, logs, usage records, or the source tree.")
                     .font(.caption)
@@ -203,21 +226,50 @@ struct DeveloperGrammarSettingsView: View {
         }
         isTesting = true
         testMessage = nil
-        let sample = "This are a grammer sentence with \u{E000}LIMA_KEEP_0000_\u{E001}."
         let started = Date()
-        StealthGrammarRemoteClient().correct(sample, configuration: configuration) { result in
+        StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTesting = false
             switch result {
-            case .success(let value) where value.contains("\u{E000}LIMA_KEEP_0000_\u{E001}"):
-                testMessage = "Connected · \(selectedProvider.title) · \(settings.developerGrammarModel) · \(latency) ms"
             case .success:
-                testMessage = "Failed: the provider changed the protected token."
+                testMessage = "Connected · \(selectedProvider.title) · \(settings.developerGrammarModel) · \(latency) ms"
             case .failure(let error):
                 testMessage = "Failed: \(error.localizedDescription)"
             }
         }
     }
+
+    private func testGrammarCompatibility() {
+        guard let configuration = settings.developerGrammarConfigurationForTesting else {
+            compatibilityMessage = "Save a key, model, and base URL first."
+            return
+        }
+        isTestingCompatibility = true
+        compatibilityMessage = nil
+        let source = "This are a grammer sentence with Lima and https://example.com."
+        let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
+        let started = Date()
+        StealthGrammarRemoteClient().correctEdits(protected.maskedText, configuration: configuration) { result in
+            let latency = Int(Date().timeIntervalSince(started) * 1_000)
+            isTestingCompatibility = false
+            switch result {
+            case .success(let edits):
+                do {
+                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
+                    guard let corrected = protected.restore(correctedMasked),
+                          StealthGrammarService.isSafeReplacement(source, corrected) else {
+                        throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                    }
+                    compatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"
+                } catch {
+                    compatibilityMessage = "Failed: \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                compatibilityMessage = "Failed: \(error.localizedDescription)"
+            }
+        }
+    }
+
 }
 
 @MainActor

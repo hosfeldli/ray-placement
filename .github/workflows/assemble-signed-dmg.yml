@@ -32,6 +32,20 @@ jobs:
       EXPECTED_SHA: ${{ inputs.sha256 }}
       PART_COUNT: ${{ inputs.part_count }}
     steps:
+      - name: Checkout immutable release source identity
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          lfs: true
+
+      - name: Assert exact release tag identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
+
       - name: Reassemble and verify the approved draft download
         shell: bash
         run: |

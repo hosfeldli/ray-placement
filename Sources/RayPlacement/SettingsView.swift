@@ -112,6 +112,8 @@ struct SettingsView: View {
     @State private var grammarAPIKey = ""
     @State private var grammarConnectionMessage: String?
     @State private var isTestingGrammarConnection = false
+    @State private var grammarCompatibilityMessage: String?
+    @State private var isTestingGrammarCompatibility = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
 
@@ -508,16 +510,34 @@ struct SettingsView: View {
                         .limaFont(.caption)
                         .foregroundStyle(.secondary)
                 }
-                Button {
-                    testGrammarConnection()
-                } label: {
-                    if isTestingGrammarConnection {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Label("Test Connection", systemImage: "bolt.horizontal.circle")
+                HStack(spacing: 10) {
+                    Button {
+                        testGrammarConnection()
+                    } label: {
+                        if isTestingGrammarConnection {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Test Connection", systemImage: "bolt.horizontal.circle")
+                        }
                     }
+                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
+
+                    Button {
+                        testGrammarCompatibility()
+                    } label: {
+                        if isTestingGrammarCompatibility {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("Test Grammar Compatibility", systemImage: "text.badge.checkmark")
+                        }
+                    }
+                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
                 }
-                .disabled(isTestingGrammarConnection || !settings.enhancedGrammarAPIKeyStored)
+                if let grammarCompatibilityMessage {
+                    Text(grammarCompatibilityMessage)
+                        .limaFont(.caption)
+                        .foregroundStyle(.secondary)
+                }
             } else {
                 Label("Everything stays on this Mac", systemImage: "lock.shield.fill")
                     .foregroundStyle(.green)
@@ -536,20 +556,45 @@ struct SettingsView: View {
         isTestingGrammarConnection = true
         grammarConnectionMessage = nil
         let started = Date()
-        let token = "\u{E000}LIMA_KEEP_0000_\u{E001}"
-        StealthGrammarRemoteClient().correct(
-            "This are a grammer sentence with \(token).",
-            configuration: configuration
-        ) { result in
+        StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingGrammarConnection = false
             switch result {
-            case .success(let value) where value.contains(token):
-                grammarConnectionMessage = "Connected · \(configuration.provider.title) · \(configuration.model) · \(latency) ms"
             case .success:
-                grammarConnectionMessage = "Failed · the provider changed protected text."
+                grammarConnectionMessage = "Connected · \(configuration.provider.title) · \(configuration.model) · \(latency) ms"
             case .failure(let error):
                 grammarConnectionMessage = "Failed · \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func testGrammarCompatibility() {
+        guard let configuration = settings.developerGrammarConfigurationForTesting else {
+            grammarCompatibilityMessage = "Save an API key and model first."
+            return
+        }
+        isTestingGrammarCompatibility = true
+        grammarCompatibilityMessage = nil
+        let started = Date()
+        let source = "This are a grammer sentence with Lima and https://example.com."
+        let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
+        StealthGrammarRemoteClient().correctEdits(protected.maskedText, configuration: configuration) { result in
+            let latency = Int(Date().timeIntervalSince(started) * 1_000)
+            isTestingGrammarCompatibility = false
+            switch result {
+            case .success(let edits):
+                do {
+                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
+                    guard let corrected = protected.restore(correctedMasked),
+                          StealthGrammarService.isSafeReplacement(source, corrected) else {
+                        throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                    }
+                    grammarCompatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"
+                } catch {
+                    grammarCompatibilityMessage = "Failed · \(error.localizedDescription)"
+                }
+            case .failure(let error):
+                grammarCompatibilityMessage = "Failed · \(error.localizedDescription)"
             }
         }
     }

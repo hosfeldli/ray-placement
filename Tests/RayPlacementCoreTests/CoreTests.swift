@@ -54,6 +54,34 @@ private func packageRoot() -> URL {
     #expect(clamped == CGRect(x: 0, y: 0, width: 800, height: 800))
 }
 
+@Test func notesDockLayoutSupportsResponsiveWidthClasses() {
+    let widthClasses: [(screenWidth: CGFloat, expectedDockWidth: CGFloat)] = [
+        (320, 320),
+        (420, 420),
+        (600, 560),
+        (900, 560)
+    ]
+
+    for widthClass in widthClasses {
+        let visibleFrame = CGRect(x: 0, y: 0, width: widthClass.screenWidth, height: 800)
+        let left = NotesWindowLayout.dockedFrame(
+            edge: .left,
+            visibleFrame: visibleFrame,
+            preferredWidth: 900
+        )
+        let right = NotesWindowLayout.dockedFrame(
+            edge: .right,
+            visibleFrame: visibleFrame,
+            preferredWidth: 900
+        )
+
+        #expect(left.width == widthClass.expectedDockWidth)
+        #expect(right.width == widthClass.expectedDockWidth)
+        #expect(left.minX == visibleFrame.minX)
+        #expect(right.maxX == visibleFrame.maxX)
+    }
+}
+
 @Test func semanticVersionsCompareReleaseTags() {
     #expect(SemanticVersion("v1.7.0") == SemanticVersion("1.7"))
     #expect(SemanticVersion("1.6.9")! < SemanticVersion("1.7.0")!)

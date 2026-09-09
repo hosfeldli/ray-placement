@@ -37,7 +37,8 @@ DIST="$PROJECT_DIRECTORY/dist"
 
 if (( ! REMOTE_ONLY )); then
     release_assert_tag_matches_source "$TAG"
-    for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json; do
+    release_assert_exact_tag_identity "$TAG"
+    for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
         [[ -f "$DIST/$artifact" ]] || { print -u2 "Missing $DIST/$artifact."; exit 1; }
     done
     (
@@ -55,17 +56,25 @@ if (( ! REMOTE_ONLY )); then
     [[ "$(jq -er '.commit' "$DIST/Lima-release.json")" == "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" ]] || { print -u2 'Release metadata commit mismatch.'; exit 1; }
     [[ "$(jq -er '.signingMode' "$DIST/Lima-release.json")" == "$LIMA_RELEASE_SIGNING_MODE" ]] || { print -u2 'Release metadata signing mode mismatch.'; exit 1; }
     [[ "$(jq -er '.certificateSHA256' "$DIST/Lima-release.json")" == "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" ]] || { print -u2 'Release metadata certificate mismatch.'; exit 1; }
+    release_assert_distribution_metadata "$TAG"
     update_sha="$(jq -er '.update.sha256' "$DIST/Lima-release.json")"
     dmg_sha="$(jq -er '.dmg.sha256' "$DIST/Lima-release.json")"
 else
     checksum_directory="$(mktemp -d "${TMPDIR%/}/lima-remote-checksums.XXXXXX")"
     trap 'rm -rf "$checksum_directory"' EXIT
-    gh release download "$TAG" --pattern 'Lima-Update.sha256' --pattern 'Lima.dmg.sha256' --dir "$checksum_directory" >/dev/null
+    gh release download "$TAG" --pattern 'Lima-Update.sha256' --pattern 'Lima.dmg.sha256' --pattern 'latest.json' --pattern 'appcast.xml' --dir "$checksum_directory" >/dev/null
     update_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "Lima-Update.zip" {print tolower($1); exit}' "$checksum_directory/Lima-Update.sha256")"
     [[ -n "$update_sha" ]] || update_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "*Lima-Update.zip" {print tolower($1); exit}' "$checksum_directory/Lima-Update.sha256")"
     dmg_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "Lima.dmg" {print tolower($1); exit}' "$checksum_directory/Lima.dmg.sha256")"
     [[ -n "$dmg_sha" ]] || dmg_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "*Lima.dmg" {print tolower($1); exit}' "$checksum_directory/Lima.dmg.sha256")"
     [[ -n "$update_sha" && -n "$dmg_sha" ]] || { print -u2 'Remote checksum assets do not contain filename-matched SHA-256 values.'; exit 1; }
+    remote_update_bytes="$(jq -er '.updateSize' "$checksum_directory/latest.json")"
+    release_validate_distribution_content \
+        "$checksum_directory/latest.json" \
+        "$checksum_directory/appcast.xml" \
+        "$TAG" \
+        "$update_sha" \
+        "$remote_update_bytes"
 fi
 
 [[ "$update_sha" =~ '^[[:xdigit:]]{64}$' && "$dmg_sha" =~ '^[[:xdigit:]]{64}$' ]] || {
@@ -78,7 +87,7 @@ fi
 release_state="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
 [[ "$release_state" == true || "$release_state" == false ]] || { print -u2 "Could not determine release state for $TAG."; exit 1; }
 
-for asset in Lima-Update.zip Lima.dmg Lima-Update.sha256 Lima.dmg.sha256; do
+for asset in Lima-Update.zip Lima.dmg Lima-Update.sha256 Lima.dmg.sha256 latest.json appcast.xml; do
     api_url="$(release_remote_asset_api_url "$TAG" "$asset")"
     [[ -n "$api_url" ]] || { print -u2 "$asset is missing from $TAG."; exit 1; }
     actual="$(gh api "$api_url" --jq '.digest // empty')"
@@ -93,6 +102,10 @@ for asset in Lima-Update.zip Lima.dmg Lima-Update.sha256 Lima.dmg.sha256; do
         Lima.dmg.sha256)
             if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/Lima.dmg.sha256" | awk '{print tolower($1)}')";
             else expected="$(shasum -a 256 "$DIST/Lima.dmg.sha256" | awk '{print tolower($1)}')"; fi
+            ;;
+        latest.json|appcast.xml)
+            if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/$asset" | awk '{print tolower($1)}')";
+            else expected="$(shasum -a 256 "$DIST/$asset" | awk '{print tolower($1)}')"; fi
             ;;
     esac
     [[ "$actual" == "sha256:${expected:l}" ]] || {

@@ -43,4 +43,8 @@ fi
 gh release edit "$TAG" --draft=false
 # Confirm GitHub has promoted the exact release we verified.
 [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == false ]] || { print -u2 "GitHub did not publish $TAG."; exit 1; }
+# Re-read the now-public release and all feed/appcast assets. The release was
+# staged atomically: publication is refused before promotion if any asset is
+# missing or mismatched, and this postcondition confirms the stable URLs.
+"$SCRIPT_DIRECTORY/release_verify.sh" --tag "$TAG" --remote-only
 print "Published: https://github.com/hosfeldli/ray-placement/releases/tag/$TAG"

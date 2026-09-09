@@ -6,6 +6,7 @@ import RayPlacementCore
 private let rayPlacementUpdateAssetMaximumBytes = 100 * 1_024 * 1_024
 private let rayPlacementUpdateMetadataTimeout: TimeInterval = 20
 private let rayPlacementUpdateDownloadTimeout: TimeInterval = 15 * 60
+private let rayPlacementUpdateTrustPolicyVersion = 1
 
 @MainActor
 final class UpdateService: ObservableObject {
@@ -72,6 +73,7 @@ final class UpdateService: ObservableObject {
         case extractionFailed(String)
         case invalidPackage
         case helperFailed(String)
+        case metadataUnavailable(stage: String, detail: String)
 
         var errorDescription: String? {
             switch self {
@@ -83,6 +85,8 @@ final class UpdateService: ObservableObject {
             case .extractionFailed(let message): return message.isEmpty ? "The update kit could not be opened." : message
             case .invalidPackage: return "The update kit is incomplete or its version does not match the GitHub Release."
             case .helperFailed(let message): return message
+            case .metadataUnavailable(let stage, let detail):
+                return "Update check failed during \(stage): \(detail)"
             }
         }
     }
@@ -175,57 +179,114 @@ final class UpdateService: ObservableObject {
         guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking for Lima updates…"
+        fetchReleaseMetadata(manual: manual, candidates: Self.metadataCandidates())
+    }
 
-        let usingSiteMetadata = Self.siteMetadataURL != nil
-        var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
+    private static func metadataCandidates() -> [(url: URL, isSite: Bool)] {
+        var candidates: [(url: URL, isSite: Bool)] = []
+        if let siteMetadataURL {
+            candidates.append((siteMetadataURL, true))
+        }
+        candidates.append((latestReleaseURL, false))
+        return candidates
+    }
+
+    private func fetchReleaseMetadata(
+        manual: Bool,
+        candidates: [(url: URL, isSite: Bool)],
+        index: Int = 0,
+        failures: [String] = []
+    ) {
+        guard index < candidates.count else {
+            isBusy = false
+            let detail = failures.isEmpty
+                ? "Neither the configured update feed nor GitHub returned a usable release."
+                : failures.joined(separator: "; ")
+            let error = UpdateError.metadataUnavailable(
+                stage: "metadata",
+                detail: detail
+            )
+            statusText = manual ? error.localizedDescription : "Updates are checked from the Lima site and GitHub when Lima starts."
+            return
+        }
+
+        let candidate = candidates[index]
+        var request = URLRequest(url: candidate.url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = rayPlacementUpdateMetadataTimeout
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor in
                 guard let self else { return }
-                self.isBusy = false
+                let sourceName = candidate.isSite ? "site metadata" : "GitHub metadata"
                 if let error {
-                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from the Lima site when Lima starts."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): \(error.localizedDescription)"]
+                    )
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
-                    return
-                }
-                if http.statusCode == 404 {
-                    self.statusText = manual ? UpdateError.noRelease.localizedDescription : "No published update is available."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): invalid HTTP response"]
+                    )
                     return
                 }
                 guard (200..<300).contains(http.statusCode), let data else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): HTTP \(http.statusCode)"]
+                    )
                     return
                 }
+
                 let release: Release?
-                if usingSiteMetadata {
+                if candidate.isSite {
                     let decoder = JSONDecoder()
                     decoder.dateDecodingStrategy = .iso8601
                     release = try? decoder.decode(SiteRelease.self, from: data).asRelease()
                 } else {
                     release = try? JSONDecoder().decode(Release.self, from: data)
                 }
-                guard let release,
-                      let remoteVersion = SemanticVersion(release.versionText),
-                      let installedVersion = SemanticVersion(self.currentVersion) else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
+                guard let release else {
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): invalid release metadata"]
+                    )
                     return
                 }
-                self.latestVersion = release.versionText
-                guard installedVersion < remoteVersion else {
-                    self.statusText = "Lima \(self.currentVersion) is up to date."
-                    return
-                }
-                self.statusText = "Lima \(release.versionText) is available."
-                self.onReleaseAvailable?(release)
+                self.finishUpdateCheck(release, manual: manual)
             }
         }.resume()
+    }
+
+    private func finishUpdateCheck(_ release: Release, manual: Bool) {
+        isBusy = false
+        guard let remoteVersion = SemanticVersion(release.versionText),
+              let installedVersion = SemanticVersion(currentVersion) else {
+            let error = UpdateError.metadataUnavailable(stage: "version validation", detail: "The release version is not semantic.")
+            statusText = manual ? error.localizedDescription : "Updates are checked from the Lima site and GitHub when Lima starts."
+            return
+        }
+        latestVersion = release.versionText
+        guard installedVersion < remoteVersion else {
+            statusText = "Lima \(currentVersion) is up to date."
+            return
+        }
+        statusText = "Lima \(release.versionText) is available."
+        onReleaseAvailable?(release)
     }
 
     func install(_ release: Release) {
@@ -239,8 +300,11 @@ final class UpdateService: ObservableObject {
             rejectInstall(UpdateError.oversizedAsset, release: release)
             return
         }
-        guard asset.browserDownloadURL.scheme == "https",
-              asset.browserDownloadURL.host?.lowercased() == "github.com" else {
+        guard asset.browserDownloadURL.scheme?.lowercased() == "https",
+              let host = asset.browserDownloadURL.host,
+              !host.isEmpty,
+              asset.browserDownloadURL.user == nil,
+              asset.browserDownloadURL.password == nil else {
             rejectInstall(UpdateError.invalidResponse, release: release)
             return
         }
@@ -462,7 +526,8 @@ final class UpdateService: ObservableObject {
         let verifier = canonicalBundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
         guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
         let policy = Bundle.main.infoDictionary ?? [:]
-        guard let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
+        guard (policy["LimaUpdatePolicyVersion"] as? Int ?? 0) == rayPlacementUpdateTrustPolicyVersion,
+              let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
               let identity = policy["LimaUpdateExpectedSigningIdentity"] as? String,
               let certificate = policy["LimaUpdateExpectedCertificateSHA256"] as? String,
               !team.isEmpty, !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }

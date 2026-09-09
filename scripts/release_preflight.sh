@@ -31,11 +31,12 @@ while (( $# > 0 )); do
 done
 
 [[ -n "$TAG" ]] || TAG="$(release_default_tag)"
-for cmd in git gh jq swift codesign security shasum rsync hdiutil split plutil openssl; do release_require_cmd "$cmd"; done
+for cmd in git gh jq python3 swift codesign security shasum rsync hdiutil split plutil openssl; do release_require_cmd "$cmd"; done
 [[ -f "$PROJECT_DIRECTORY/Package.swift" ]] || { print -u2 "Not a Lima project: $PROJECT_DIRECTORY"; exit 1; }
 release_assert_clean_tree
 "$SCRIPT_DIRECTORY/check_release_consistency.sh"
 release_assert_tag_matches_source "$TAG"
+release_assert_exact_tag_identity "$TAG"
 
 branch="$(git -C "$PROJECT_DIRECTORY" branch --show-current)"
 upstream="$(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
