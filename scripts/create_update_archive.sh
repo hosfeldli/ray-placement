@@ -35,7 +35,7 @@ test ! -f "$PREBUILT_APP/Contents/Resources/Whisper/model/ggml-small.en-tdrz.bin
 }
 (
     cd "$TEMP_DIRECTORY"
-    ditto -c -k --sequesterRsrc --keepParent LimaUpdate "$ARCHIVE"
+    ditto -c -k --norsrc --keepParent LimaUpdate "$ARCHIVE"
 )
 ARCHIVE_BYTES="$(stat -f %z "$ARCHIVE")"
 if (( ARCHIVE_BYTES <= 0 || ARCHIVE_BYTES > LIMA_RELEASE_MAX_UPDATE_BYTES )); then
