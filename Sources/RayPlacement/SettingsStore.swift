@@ -307,6 +307,7 @@ final class SettingsStore: ObservableObject {
         static let developerGrammarModel = "developerGrammarModel"
         static let developerGrammarBaseURL = "developerGrammarBaseURL"
         static let grammarFallbackToLocal = "grammarFallbackToLocal"
+        static let inlineGrammarCheckingEnabled = "inlineGrammarCheckingEnabled"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
         static let dictationComputeMode = "dictationComputeMode"
@@ -550,6 +551,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(grammarFallbackToLocal, forKey: Key.grammarFallbackToLocal) }
     }
 
+    @Published var inlineGrammarCheckingEnabled: Bool {
+        didSet { defaults.set(inlineGrammarCheckingEnabled, forKey: Key.inlineGrammarCheckingEnabled) }
+    }
+
     // User-facing aliases. The legacy developerGrammar names remain the
     // persistence and migration boundary for existing installations.
     var grammarEngineEnhanced: Bool {
@@ -684,7 +689,9 @@ final class SettingsStore: ObservableObject {
         showInDock = defaults.object(forKey: Key.showInDock) as? Bool ?? true
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
-        stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? false
+        // The keyboard command is useful immediately after installation.
+        // Existing explicit user choices remain respected.
+        stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? true
         stealthGrammarShortcut = defaults.string(forKey: Key.stealthGrammarShortcut) ?? "control+option+g"
         developerGrammarEnabled = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
         let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
@@ -692,6 +699,7 @@ final class SettingsStore: ObservableObject {
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
         developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
         grammarFallbackToLocal = defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true
+        inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
@@ -1004,6 +1012,7 @@ final class SettingsStore: ObservableObject {
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
         case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
         case Key.grammarFallbackToLocal: if let value = bool() { grammarFallbackToLocal = value }
+        case Key.inlineGrammarCheckingEnabled: if let value = bool() { inlineGrammarCheckingEnabled = value }
         case Key.dictationPerformance:
             if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }
         case Key.dictationEngine:

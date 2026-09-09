@@ -558,6 +558,10 @@ struct SettingsView: View {
         Form {
             grammarEngineSection
             Section("Local checker") {
+                Toggle("Check Notes while typing", isOn: $settings.inlineGrammarCheckingEnabled)
+                Text("Lima checks the current paragraph after a short pause. Code, links, protected terms, and Markdown structure are excluded.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
                 Label("Python spelling + Harper grammar", systemImage: "checkmark.shield.fill")
                     .foregroundStyle(.green)
                 Text("Checks stay on this Mac. No text-generation model is installed or used.")
@@ -565,15 +569,15 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Section("Stealth Grammar") {
-                Toggle("Enable Stealth Mode", isOn: $settings.stealthGrammarEnabled)
+            Section("Keyboard Grammar") {
+                Toggle("Enable keyboard grammar correction", isOn: $settings.stealthGrammarEnabled)
                 PrimaryShortcutRow(
-                    title: "Stealth Grammar",
+                    title: "Check and Correct Selected Text",
                     symbol: "wand.and.stars",
                     enabled: $settings.stealthGrammarEnabled,
                     shortcut: $settings.stealthGrammarShortcut
                 )
-                Text("Corrects highlighted text in place without opening a review. It uses a conservative local pass and keeps URLs, proper nouns, acronyms, code-like text, and your preserved terms unchanged.")
+                Text("Corrects highlighted text in place without opening a review. It uses the local checker by default and keeps URLs, proper nouns, acronyms, code-like text, and your preserved terms unchanged.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
             }

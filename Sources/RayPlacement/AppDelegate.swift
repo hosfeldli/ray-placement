@@ -198,15 +198,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previous: &registeredTerminalShortcut,
             restore: SettingsStore.shared.restoreTerminalShortcut
         ) { [weak self] in self?.launcher.showDeveloperTerminal() }
-        registerActionHotkey(
+        registerActionHotkeyFromApplication(
             identifier: "builtin.stealth-grammar",
-            displayName: "Stealth Grammar",
+            displayName: "Check and Correct Selected Text",
             enabled: SettingsStore.shared.stealthGrammarEnabled,
             rawShortcut: SettingsStore.shared.stealthGrammarShortcut,
             previous: &registeredStealthGrammarShortcut,
             restore: SettingsStore.shared.restoreStealthGrammarShortcut
-        ) { [weak self] in
-            self?.launcher.runStealthGrammar()
+        ) { [weak self] application in
+            self?.launcher.runStealthGrammar(from: application)
         }
     }
 
@@ -293,6 +293,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
             "left": 123, "right": 124, "down": 125, "up": 126
         ]
+    }
+
+    private func registerActionHotkeyFromApplication(
+        identifier: String,
+        displayName: String,
+        enabled: Bool,
+        rawShortcut: String,
+        previous: inout ShortcutSpec?,
+        restore: (String) -> Void,
+        handler: @escaping (NSRunningApplication?) -> Void
+    ) {
+        guard enabled else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            return
+        }
+        guard let shortcut = ShortcutSpec(string: rawShortcut) else {
+            SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
+            if let previous { restore(previous.storageString) }
+            return
+        }
+        do {
+            try hotKeys.registerFromApplication(identifier: identifier, shortcut: shortcut, handler: handler)
+            previous = shortcut
+            SettingsStore.shared.lastError = nil
+        } catch {
+            SettingsStore.shared.lastError = error.localizedDescription
+            if let previous { restore(previous.storageString) }
+        }
     }
 
     private func registerActionHotkey(

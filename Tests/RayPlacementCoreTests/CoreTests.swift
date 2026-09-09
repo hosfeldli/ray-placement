@@ -291,6 +291,24 @@ private func packageRoot() -> URL {
     #expect(blocks.contains(.code(language: "swift", text: "let ready = true")))
 }
 
+@Test func plainTextPastePreservesEmojiSequencesAndUnicode() {
+    let text = "Emoji: 👨‍💻 ❤️ 🏳️‍🌈\n日本語 — café"
+
+    #expect(PlainTextPastePolicy.normalize(text) == text)
+    #expect(PlainTextPastePolicy.normalize("👩🏽‍🚀") == "👩🏽‍🚀")
+}
+
+@Test func plainTextPasteNormalizesOnlyLineEndings() {
+    let text = "first\r\nsecond\rthird\n👨‍👩‍👧‍👦"
+
+    #expect(PlainTextPastePolicy.normalize(text) == "first\nsecond\nthird\n👨‍👩‍👧‍👦")
+}
+
+@Test func singleLineTabbedProseIsNotConvertedToATable() {
+    #expect(TabularDataParser.parse(text: "Owner\tStatus") == nil)
+    #expect(TabularDataParser.parse(text: "hello, world") == nil)
+}
+
 @Test func tabularPasteParsesSpreadsheetMarkdownCSVAndHTML() {
     #expect(TabularDataParser.parse(text: "Owner\tStatus\nMaya\tReady") == TabularData(rows: [
         ["Owner", "Status"], ["Maya", "Ready"]

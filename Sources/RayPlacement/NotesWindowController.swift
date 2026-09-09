@@ -1336,7 +1336,8 @@ private struct NotesView: View {
             fontStyle: settings.notesFontStyle,
             fontSize: settings.notesFontSize,
             lineSpacing: settings.notesLineSpacing,
-            theme: settings.notesVisualTheme
+            theme: settings.notesVisualTheme,
+            inlineGrammarCheckingEnabled: settings.inlineGrammarCheckingEnabled
         )
         .accessibilityLabel("Inline formatted Markdown editor")
 

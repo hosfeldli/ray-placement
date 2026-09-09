@@ -922,18 +922,29 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         try? process.run()
     }
 
-    func runStealthGrammar() {
-        guard SettingsStore.shared.stealthGrammarEnabled else { return }
-        guard let previousApplication, !previousApplication.isTerminated else {
-            toast.show("Select text first", style: .error, duration: 2.2)
+    func runStealthGrammar(from sourceApplication: NSRunningApplication? = nil) {
+        guard SettingsStore.shared.stealthGrammarEnabled else {
+            presentError(title: "Check and Correct Selected Text", message: "Enable the keyboard grammar command in Settings → Writing & Dictation.")
+            return
+        }
+        let candidate = sourceApplication
+            ?? NSWorkspace.shared.frontmostApplication
+            ?? lastExternalApplication
+            ?? previousApplication
+        guard let application = candidate,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !application.isTerminated else {
+            presentError(title: "Check and Correct Selected Text", message: "Select text in another app, then press the grammar shortcut.")
             return
         }
         guard WindowManager.trusted(prompt: true) else {
-            toast.show("Accessibility access is required", style: .error, duration: 2.8)
+            presentError(title: "Check and Correct Selected Text", message: "Enable Lima in System Settings → Privacy & Security → Accessibility, then try again.")
             return
         }
+        previousApplication = application
+        lastExternalApplication = application
         hide()
-        captureWritingSelectionWithKeyboard(from: previousApplication, stealth: true)
+        captureWritingSelectionWithKeyboard(from: application, stealth: true)
     }
 
     private func performWritingCheck() {
@@ -995,7 +1006,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                         self.selectedTextContext = nil
                         self.keyboardSelectionContext = nil
                         self.focusedTextContext = nil
-                        self.toast.showStealth("Couldn’t read selection", style: .error, duration: 2.4)
+                        self.presentError(
+                            title: "Check and Correct Selected Text",
+                            message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                        )
                     } else {
                         self.presentError(
                             title: "Check Spelling & Grammar",
@@ -1046,25 +1060,30 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let taskID = UUID()
         writingTaskID = taskID
         toast.showStealth("Editing…")
-        writingChecker.checkStealth(text, progress: { [weak self] message in
+        // The keyboard command is privacy-preserving by default. The regular
+        // Writing review command remains the opt-in path for Enhanced Grammar.
+        writingChecker.checkLocal(text, progress: { [weak self] message in
             guard let self, self.writingTaskID == taskID else { return }
             self.toast.showStealth(message)
         }) { [weak self] result in
             guard let self, self.writingTaskID == taskID else { return }
             self.writingTaskID = nil
             switch result {
-            case .success(let corrected) where corrected == text:
+            case .success(let review) where review.suggestedText == text:
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
                 self.toast.showStealth("No changes needed", style: .success, duration: 1.6)
-            case .success(let corrected):
-                self.replaceStealthText(corrected)
-            case .failure:
+            case .success(let review):
+                self.replaceStealthText(review.suggestedText)
+            case .failure(let error):
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
-                self.toast.showStealth("Couldn’t edit selection", style: .error, duration: 2.4)
+                self.presentError(
+                    title: "Check and Correct Selected Text",
+                    message: "The local grammar check could not complete. \(error.localizedDescription)"
+                )
             }
         }
     }
@@ -1087,10 +1106,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             do {
                 let context = try self.replacementContext(in: application)
                 try SelectedTextService.replaceSelectedText(text, using: context)
-                self.selectedTextContext = nil
-                self.keyboardSelectionContext = nil
-                self.focusedTextContext = nil
-                self.toast.showStealth("Text corrected", style: .success, duration: 1.6)
+                self.finishDirectStealthReplacement(text, using: context, attempt: 0)
             } catch SelectedTextService.SelectionError.replacementUnavailable {
                 self.pasteStealthReplacement(text, into: application)
             } catch {
@@ -1101,17 +1117,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func pasteStealthReplacement(_ text: String, into application: NSRunningApplication) {
-        KeyboardSelectionService.paste(text, into: application, clipboardHistory: clipboard) { [weak self] result in
+        let originalText = keyboardSelectionContext?.text
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            originalText: originalText,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success:
-                self.selectedTextContext = nil
-                self.keyboardSelectionContext = nil
-                self.focusedTextContext = nil
-                self.toast.showStealth("Text corrected", style: .success, duration: 1.6)
-            case .failure:
+            case .success(let receipt):
+                self.verifyKeyboardReplacement(receipt, attempt: 0, stealth: true)
+            case .failure(let error):
                 self.clipboard.copy(text)
-                self.toast.showStealth("Couldn’t replace selection · corrected text copied", style: .error, duration: 3.2)
+                self.presentError(
+                    title: "Check and Correct Selected Text",
+                    message: "Lima could not paste the correction. The corrected text is on the clipboard. \(error.localizedDescription)"
+                )
             }
         }
     }
@@ -1180,7 +1202,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 )
                 completion()
             } catch {
-                self.postPasteShortcut(
+                self.pasteTextWithKeyboard(
+                    text,
                     into: previousApplication,
                     successMessage: "Pasted as plain text",
                     completion: completion
@@ -1244,32 +1267,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         successMessage: String,
         completion: @escaping () -> Void = {}
     ) {
-        KeyboardSelectionService.paste(text, into: application, clipboardHistory: clipboard) { [weak self] result in
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            originalText: keyboardSelectionContext?.text,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
             switch result {
-            case .success:
-                self?.toast.show(successMessage)
+            case .success(let receipt):
+                self?.verifyKeyboardReplacement(receipt, attempt: 0)
             case .failure(let error):
                 self?.clipboard.copy(text)
                 self?.presentError(title: "Paste", message: "Lima could not restore focus and paste. The text was copied instead. \(error.localizedDescription)")
-            }
-            completion()
-        }
-    }
-
-    private func postPasteShortcut(
-        into application: NSRunningApplication,
-        successMessage: String?,
-        completion: @escaping () -> Void = {}
-    ) {
-        KeyboardSelectionService.paste(into: application) { [weak self] result in
-            switch result {
-            case .success:
-                if let successMessage { self?.toast.show(successMessage) }
-            case .failure(let error):
-                self?.presentError(
-                    title: "Paste",
-                    message: "Lima could not return keyboard focus and paste. The text remains on the clipboard. \(error.localizedDescription)"
-                )
             }
             completion()
         }
@@ -1311,32 +1320,52 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func finishDirectStealthReplacement(
+        _ text: String,
+        using context: SelectedTextService.SelectionContext,
+        attempt: Int
+    ) {
+        switch SelectedTextService.observeReplacement(text, using: context) {
+        case .replaced:
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
+        case .originalStillPresent where attempt < 5:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.finishDirectStealthReplacement(text, using: context, attempt: attempt + 1)
+            }
+        case .originalStillPresent, .changed, .unavailable:
+            clipboard.copy(text)
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            presentError(
+                title: "Check and Correct Selected Text",
+                message: "Lima changed the target, but could not verify the final text. The corrected text is on the clipboard; review the target before pasting again."
+            )
+        }
+    }
+
     private func finishDirectReplacement(
         _ text: String,
         using context: SelectedTextService.SelectionContext,
         retryCount: Int
     ) {
         switch SelectedTextService.observeReplacement(text, using: context) {
-        case .replaced, .changed, .unavailable:
+        case .replaced:
             selectedTextContext = nil
             focusedTextContext = nil
             toast.show("Replaced the exact highlighted text")
-        case .originalStillPresent:
-            if retryCount == 0 {
-                toast.show("The editor delayed the change · retrying once…", style: .working, duration: 8)
-                do {
-                    let refreshed = try SelectedTextService.reconnectedContext(using: context)
-                    selectedTextContext = refreshed
-                    try SelectedTextService.replaceSelectedText(text, using: refreshed)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
-                        self?.finishDirectReplacement(text, using: refreshed, retryCount: 1)
-                    }
-                } catch {
-                    pasteReplacement(text, using: context)
-                }
-            } else {
-                pasteReplacement(text, using: context)
+        case .originalStillPresent where retryCount < 5:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.finishDirectReplacement(text, using: context, retryCount: retryCount + 1)
             }
+        case .originalStillPresent, .changed, .unavailable:
+            clipboard.copy(text)
+            selectedTextContext = nil
+            focusedTextContext = nil
+            presentError(title: "Replace Selected Text", message: "Lima could not verify the direct replacement. The replacement text is on the clipboard.")
         }
     }
 
@@ -1359,26 +1388,59 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return
         }
         toast.show("Returning to the source selection…", style: .working, duration: 5)
+        let originalText = keyboardSelectionContext?.text
         KeyboardSelectionService.paste(
             text,
             into: application,
+            originalText: originalText,
             clipboardHistory: clipboard
         ) { [weak self] result in
             guard let self else { return }
-            guard case .success = result else {
-                let detail: String
-                if case .failure(let error) = result { detail = error.localizedDescription } else { detail = "Unknown error." }
+            switch result {
+            case .success(let receipt):
+                self.verifyKeyboardReplacement(receipt, attempt: 0)
+            case .failure(let error):
                 self.clipboard.copy(text)
                 self.presentError(
                     title: "Replace Selected Text",
-                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
+                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(error.localizedDescription)"
                 )
-                return
             }
-            self.selectedTextContext = nil
-            self.keyboardSelectionContext = nil
-            self.focusedTextContext = nil
-            self.toast.show("Correction pasted into the highlight")
+        }
+    }
+
+    private func verifyKeyboardReplacement(
+        _ receipt: KeyboardSelectionService.PasteReceipt,
+        attempt: Int,
+        stealth: Bool = false
+    ) {
+        switch SelectedTextService.observeReplacementText(
+            receipt.text,
+            originalText: receipt.originalText,
+            in: receipt.processIdentifier
+        ) {
+        case .replaced:
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            if stealth {
+                toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
+            } else {
+                toast.show("Correction pasted and verified", style: .success, duration: 2.4)
+            }
+        case .pending where attempt < 6:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.verifyKeyboardReplacement(receipt, attempt: attempt + 1, stealth: stealth)
+            }
+        case .changed, .unavailable, .pending:
+            clipboard.copy(receipt.text)
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            presentError(
+                title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
+                message: "Lima sent the correction, but could not verify that the target accepted it. The corrected text is on the clipboard; review the target before pasting again."
+            )
         }
     }
 
@@ -1398,12 +1460,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             KeyboardSelectionService.paste(
                 text,
                 into: application,
+                originalText: refreshed.text,
                 clipboardHistory: clipboard
             ) { [weak self] result in
                 guard let self else { return }
                 switch result {
-                case .success:
-                    self.finishPastedReplacement(text, using: refreshed, attempt: 0)
+                case .success(let receipt):
+                    self.verifyKeyboardReplacement(receipt, attempt: 0)
                 case .failure(let error):
                     self.clipboard.copy(text)
                     self.presentError(
@@ -1414,31 +1477,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
         } catch {
             presentError(title: "Replace Selected Text", error: error)
-        }
-    }
-
-    private func finishPastedReplacement(
-        _ text: String,
-        using context: SelectedTextService.SelectionContext,
-        attempt: Int
-    ) {
-        switch SelectedTextService.observeReplacement(text, using: context) {
-        case .replaced, .changed, .unavailable:
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            toast.show("Replaced the exact highlighted text")
-        case .originalStillPresent where attempt < 5:
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.finishPastedReplacement(text, using: context, attempt: attempt + 1)
-            }
-        case .originalStillPresent:
-            // Command-V was accepted, but some web editors keep stale AX text
-            // for seconds. Avoid a false failure or a destructive second paste.
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            toast.show("Replacement sent to the highlighted text", style: .success, duration: 2.4)
         }
     }
 

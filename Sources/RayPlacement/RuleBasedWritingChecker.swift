@@ -40,6 +40,62 @@ final class RuleBasedWritingChecker {
         }
     }
 
+    /// Runs the privacy-preserving local pipeline only. Inline Notes checking
+    /// uses this entry point so an optional provider can never put keystrokes
+    /// on the network or make live checking depend on an API key.
+    func checkLocal(
+        _ source: String,
+        progress: @escaping (String) -> Void = { _ in },
+        completion: @escaping (Result<WritingReview, Error>) -> Void
+    ) {
+        cancel()
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            completion(.failure(WritingCheckService.CheckError.emptyText))
+            return
+        }
+        guard source.count <= reviewer.characterLimit else {
+            completion(.failure(WritingCheckService.CheckError.textTooLong(reviewer.characterLimit)))
+            return
+        }
+        let operationID = UUID()
+        self.operationID = operationID
+        let protected = StealthGrammarService.protect(
+            source,
+            ignoreList: SettingsStore.shared.writingInstructions
+        )
+        progress("Checking locally…")
+        runPython(protected.maskedText, mode: "standard") { [weak self] pythonResult in
+            guard let self, self.operationID == operationID else { return }
+            let spelled: String
+            switch pythonResult {
+            case .success(let value): spelled = value
+            case .failure: spelled = protected.maskedText
+            }
+            self.runHarper(spelled) { [weak self] harperResult in
+                guard let self, self.operationID == operationID else { return }
+                let correctedMasked: String
+                switch harperResult {
+                case .success(let value) where protected.restore(value) != nil: correctedMasked = value
+                case .success: correctedMasked = spelled
+                case .failure where spelled != protected.maskedText: correctedMasked = spelled
+                case .failure(let error):
+                    self.finish(success: false, detail: error.localizedDescription)
+                    completion(.failure(error))
+                    return
+                }
+                let normalized = self.reviewer.normalizeProofreadRewrite(correctedMasked)
+                let corrected = protected.restore(normalized) ?? source
+                self.completeLocalReview(
+                    source: source,
+                    rewrittenText: corrected,
+                    operationID: operationID,
+                    status: nil,
+                    completion: completion
+                )
+            }
+        }
+    }
+
     func check(
         _ source: String,
         progress: @escaping (String) -> Void,

@@ -224,8 +224,11 @@ final class HotKeyManager {
                 )
                 guard status == noErr else { return status }
                 let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
-                let application = NSWorkspace.shared.frontmostApplication
-                manager.registrations[hotKeyID.id]?.handler(application)
+                // Sample the source application before Lima presents any UI.
+                // The handler must use this value rather than asking for the
+                // frontmost app again after activation has changed focus.
+                let sourceApplication = NSWorkspace.shared.frontmostApplication
+                manager.registrations[hotKeyID.id]?.handler(sourceApplication)
                 return noErr
             },
             1,

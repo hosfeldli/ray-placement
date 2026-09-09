@@ -1,5 +1,6 @@
 import AppKit
 import RayPlacementCore
+import RayPlacementWriting
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -12,6 +13,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     var fontSize: Double = 15.5
     var lineSpacing: Double = 3.5
     var theme: NotesVisualTheme = .prism
+    var inlineGrammarCheckingEnabled: Bool = true
 
     init(
         text: Binding<String>,
@@ -20,7 +22,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         fontStyle: NotesFontStyle = .system,
         fontSize: Double = 15.5,
         lineSpacing: Double = 3.5,
-        theme: NotesVisualTheme = .prism
+        theme: NotesVisualTheme = .prism,
+        inlineGrammarCheckingEnabled: Bool = true
     ) {
         _text = text
         self.compact = compact
@@ -29,10 +32,11 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         self.fontSize = fontSize
         self.lineSpacing = lineSpacing
         self.theme = theme
+        self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -54,8 +58,11 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isContinuousSpellCheckingEnabled = true
-        textView.isGrammarCheckingEnabled = true
+        // Lima owns grammar annotations so Markdown syntax, attachments, and
+        // protected technical terms are handled consistently.
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
         scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.insertionPointColor = NotesEditorPalette(theme: theme).accent
@@ -120,6 +127,16 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.lineSpacing = lineSpacing
         context.coordinator.theme = theme
+        let inlineGrammarSettingChanged = context.coordinator.inlineGrammarCheckingEnabled != inlineGrammarCheckingEnabled
+        context.coordinator.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        if inlineGrammarSettingChanged {
+            if inlineGrammarCheckingEnabled {
+                context.coordinator.scheduleInlineGrammarCheckForUpdate()
+            } else {
+                context.coordinator.cancelInlineGrammarCheckForUpdate()
+            }
+        }
         let palette = NotesEditorPalette(theme: theme)
         scrollView.drawsBackground = true
         scrollView.backgroundColor = palette.background
@@ -155,18 +172,25 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var fontSize: Double
         var lineSpacing: Double
         var theme: NotesVisualTheme
+        var inlineGrammarCheckingEnabled: Bool
         private var stylingWorkItem: DispatchWorkItem?
+        private var grammarWorkItem: DispatchWorkItem?
+        private var grammarGeneration = 0
+        private var grammarChecker: RuleBasedWritingChecker?
 
-        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool) {
             self.text = text
             self.scrollOffset = .constant(0)
             self.fontStyle = fontStyle
             self.fontSize = fontSize
             self.lineSpacing = lineSpacing
             self.theme = theme
+            self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+            self.grammarChecker = RuleBasedWritingChecker()
         }
 
         deinit {
+            grammarWorkItem?.cancel()
             if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
         }
 
@@ -192,6 +216,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             lastMarkdown = markdown
             text.wrappedValue = markdown
             applyStyles(immediately: false)
+            scheduleInlineGrammarCheck()
         }
 
         func tableDidChange() {
@@ -201,9 +226,11 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             text.wrappedValue = markdown
             textView.updateTableOverlays()
             applyStyles(immediately: true)
+            scheduleInlineGrammarCheck()
         }
 
         func rerenderCurrentDocument() {
+            cancelInlineGrammarCheck()
             guard let textView else { return }
             let markdown = MarkdownTableDocumentCodec.markdown(from: textView.attributedString())
             lastMarkdown = markdown
@@ -211,6 +238,66 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.render(markdown: markdown, preservingSelection: true)
             }
+        }
+
+        func scheduleInlineGrammarCheckForUpdate() {
+            scheduleInlineGrammarCheck()
+        }
+
+        func cancelInlineGrammarCheckForUpdate() {
+            cancelInlineGrammarCheck()
+        }
+
+        private func cancelInlineGrammarCheck() {
+            grammarGeneration += 1
+            grammarWorkItem?.cancel()
+            grammarWorkItem = nil
+            grammarChecker?.cancel()
+            textView?.clearGrammarAnnotations()
+        }
+
+        private func scheduleInlineGrammarCheck() {
+            grammarGeneration += 1
+            let generation = grammarGeneration
+            grammarWorkItem?.cancel()
+            grammarChecker?.cancel()
+            guard inlineGrammarCheckingEnabled, let textView else {
+                textView?.clearGrammarAnnotations()
+                return
+            }
+            let source = textView.string
+            let selection = textView.selectedRange()
+            let nsSource = source as NSString
+            guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  nsSource.length > 0 else {
+                textView.clearGrammarAnnotations()
+                return
+            }
+            let location = min(selection.location, nsSource.length)
+            let paragraphRange = nsSource.paragraphRange(for: NSRange(location: location, length: 0))
+            let paragraph = nsSource.substring(with: paragraphRange)
+                .trimmingCharacters(in: .newlines)
+            guard paragraph.count >= 3,
+                  !paragraph.contains("```") else {
+                textView.clearGrammarAnnotations()
+                return
+            }
+            var workItem: DispatchWorkItem!
+            workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let textView, !workItem.isCancelled, self.grammarGeneration == generation else { return }
+                self.grammarChecker?.checkLocal(paragraph, progress: { _ in }) { [weak self, weak textView] result in
+                    guard let textView, !workItem.isCancelled, self?.grammarGeneration == generation, textView.string == source else { return }
+                    switch result {
+                    case .success(let review):
+                        let offset = paragraphRange.location
+                        textView.applyGrammarAnnotations(review.issues, offset: offset)
+                    case .failure:
+                        textView.clearGrammarAnnotations()
+                    }
+                }
+            }
+            grammarWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: workItem)
         }
 
         func render(markdown: String, preservingSelection: Bool) {
@@ -307,6 +394,29 @@ final class MarkdownTextView: NSTextView {
     var documentChangeHandler: (() -> Void)?
     var richContentRenderHandler: (() -> Void)?
     private var tableOverlays: [ObjectIdentifier: MarkdownNativeTableView] = [:]
+    var inlineGrammarCheckingEnabled = true
+
+    func clearGrammarAnnotations() {
+        guard let layoutManager, let textStorage else { return }
+        let range = NSRange(location: 0, length: textStorage.length)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: range)
+    }
+
+    func applyGrammarAnnotations(_ issues: [WritingIssue], offset: Int) {
+        guard let layoutManager, let textStorage else { return }
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: fullRange)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: fullRange)
+        for issue in issues {
+            let location = offset + issue.range.location
+            guard issue.range.length > 0, location >= 0, location + issue.range.length <= textStorage.length else { continue }
+            layoutManager.addTemporaryAttributes([
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: NSColor.systemOrange
+            ], forCharacterRange: NSRange(location: location, length: issue.range.length))
+        }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let becameFirstResponder = super.becomeFirstResponder()
@@ -386,16 +496,56 @@ final class MarkdownTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
+
+        // Text always wins over image representations. Emoji and rich text
+        // pasteboards can advertise image flavors as well as Unicode text;
+        // checking NSImage first silently converted valid text into an image.
+        if let plainText = PlainTextPastePolicy.normalize(pasteboard.string(forType: .string)) {
+            if let table = TabularDataParser.parse(
+                text: plainText,
+                html: pasteboard.string(forType: .html)
+            ), table.rows.count > 1 {
+                insertTable(table)
+            } else {
+                insertPlainText(plainText)
+            }
+            return
+        }
+
+        if let html = pasteboard.string(forType: .html),
+           let attributed = try? NSAttributedString(
+               data: Data(html.utf8),
+               options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue
+               ],
+               documentAttributes: nil
+           ),
+           let htmlText = PlainTextPastePolicy.normalize(attributed.string) {
+            if let table = TabularDataParser.parse(text: htmlText, html: html), table.rows.count > 1 {
+                insertTable(table)
+            } else {
+                insertPlainText(htmlText)
+            }
+            return
+        }
+
+        // An image is valid only when the pasteboard has no usable text.
         if let image = NSImage(pasteboard: pasteboard), insertImage(image, alt: "Pasted image") {
             return
         }
-        let plainText = pasteboard.string(forType: .string) ?? ""
-        let html = pasteboard.string(forType: .html)
-        guard let data = TabularDataParser.parse(text: plainText, html: html) else {
-            super.paste(sender)
-            return
-        }
-        insertTable(data)
+
+        // Keep AppKit's fallback for pasteboard types that are neither text nor
+        // images, but never use it for ordinary text: NSTextView is rich-text
+        // enabled and would otherwise import HTML/RTF formatting into Markdown.
+        super.paste(sender)
+    }
+
+    private func insertPlainText(_ text: String) {
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: text) else { return }
+        textStorage?.replaceCharacters(in: range, with: text)
+        didChangeText()
     }
 
     override func mouseDown(with event: NSEvent) {
