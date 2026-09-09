@@ -7,10 +7,29 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     @ObservedObject private var typography = AppTypography.shared
     @Binding var text: String
     var compact = false
+    @Binding var scrollOffset: CGFloat
     var fontStyle: NotesFontStyle = .system
     var fontSize: Double = 15.5
     var lineSpacing: Double = 3.5
     var theme: NotesVisualTheme = .prism
+
+    init(
+        text: Binding<String>,
+        compact: Bool = false,
+        scrollOffset: Binding<CGFloat> = .constant(0),
+        fontStyle: NotesFontStyle = .system,
+        fontSize: Double = 15.5,
+        lineSpacing: Double = 3.5,
+        theme: NotesVisualTheme = .prism
+    ) {
+        _text = text
+        self.compact = compact
+        _scrollOffset = scrollOffset
+        self.fontStyle = fontStyle
+        self.fontSize = fontSize
+        self.lineSpacing = lineSpacing
+        self.theme = theme
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme)
@@ -54,6 +73,19 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.setAccessibilityLabel("Inline Markdown editor")
         MarkdownEditorFocus.shared.editor = textView
         context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
+        context.coordinator.scrollOffset = $scrollOffset
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        context.coordinator.boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak coordinator = context.coordinator, weak scrollView] _ in
+            guard let coordinator, let scrollView else { return }
+            Task { @MainActor in
+                coordinator.captureScrollOffset(from: scrollView)
+            }
+        }
         textView.attachmentChangeHandler = { [weak coordinator = context.coordinator] in
             coordinator?.tableDidChange()
         }
@@ -69,13 +101,17 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
-        DispatchQueue.main.async { textView.updateTableOverlays() }
+        DispatchQueue.main.async {
+            textView.updateTableOverlays()
+            context.coordinator.applyScrollOffset()
+        }
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
         context.coordinator.text = $text
+        context.coordinator.scrollOffset = $scrollOffset
         let styleChanged = context.coordinator.fontStyle != fontStyle
             || context.coordinator.fontSize != fontSize
             || context.coordinator.lineSpacing != lineSpacing
@@ -98,6 +134,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         if context.coordinator.lastMarkdown != text {
             context.coordinator.render(markdown: text, preservingSelection: true)
         }
+        DispatchQueue.main.async { context.coordinator.applyScrollOffset() }
         if context.coordinator.lastTextScale != typography.scale || styleChanged {
             context.coordinator.lastTextScale = typography.scale
             context.coordinator.applyStyles(immediately: true)
@@ -107,7 +144,10 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var scrollOffset: Binding<CGFloat>
         fileprivate weak var textView: MarkdownTextView?
+        fileprivate weak var scrollView: NSScrollView?
+        var boundsObserver: NSObjectProtocol?
         var isApplyingExternalUpdate = false
         fileprivate var lastMarkdown = ""
         fileprivate var lastTextScale = AppTypography.shared.scale
@@ -119,10 +159,31 @@ struct InlineMarkdownEditor: NSViewRepresentable {
 
         init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
             self.text = text
+            self.scrollOffset = .constant(0)
             self.fontStyle = fontStyle
             self.fontSize = fontSize
             self.lineSpacing = lineSpacing
             self.theme = theme
+        }
+
+        deinit {
+            if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+        }
+
+        func captureScrollOffset(from scrollView: NSScrollView) {
+            guard scrollView.contentView.bounds.origin.y.isFinite else { return }
+            scrollOffset.wrappedValue = max(0, scrollView.contentView.bounds.origin.y)
+        }
+
+        func applyScrollOffset() {
+            guard let scrollView else { return }
+            let target = max(0, scrollOffset.wrappedValue)
+            guard abs(scrollView.contentView.bounds.origin.y - target) > 0.5 else { return }
+            var bounds = scrollView.contentView.bounds
+            let documentHeight = scrollView.documentView?.frame.height ?? 0
+            let maximum = max(0, documentHeight - scrollView.contentView.bounds.height)
+            bounds.origin.y = min(target, maximum)
+            scrollView.contentView.setBoundsOrigin(bounds.origin)
         }
 
         func textDidChange(_ notification: Notification) {

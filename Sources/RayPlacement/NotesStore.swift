@@ -11,6 +11,10 @@ final class NotesStore: ObservableObject {
     @Published private(set) var notes: [MarkdownNote]
     @Published var selectedNoteID: UUID?
     @Published var lastError: String?
+    @Published private(set) var noteBackStack: [UUID] = []
+    @Published private(set) var noteForwardStack: [UUID] = []
+
+    private var noteScrollOffsets: [String: CGFloat] = [:]
     @Published private(set) var recoveryURL: URL?
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
@@ -56,6 +60,9 @@ final class NotesStore: ObservableObject {
         notes = replacement
         sortNotes()
         selectedNoteID = notes.first?.id
+        noteBackStack.removeAll()
+        noteForwardStack.removeAll()
+        noteScrollOffsets.removeAll()
         try Self.persist(notes)
         lastError = nil
     }
@@ -87,9 +94,58 @@ final class NotesStore: ObservableObject {
         return notes.first { $0.id == selectedNoteID }
     }
 
+    var canNavigateBack: Bool { !noteBackStack.isEmpty }
+    var canNavigateForward: Bool { !noteForwardStack.isEmpty }
+
+    /// Selects a note by stable ID and records the previous note as a
+    /// navigation location. Titles are intentionally never used as routes.
+    func selectNote(_ identifier: UUID, recordHistory: Bool = true) {
+        guard notes.contains(where: { $0.id == identifier }) else { return }
+        guard selectedNoteID != identifier else { return }
+        if recordHistory, let selectedNoteID {
+            noteBackStack.append(selectedNoteID)
+            noteForwardStack.removeAll()
+        }
+        selectedNoteID = identifier
+        persistSelectedNote()
+    }
+
+    @discardableResult
+    func navigateBack() -> Bool {
+        pruneNavigationHistory()
+        guard let destination = noteBackStack.popLast(),
+              let current = selectedNoteID,
+              notes.contains(where: { $0.id == destination }) else { return false }
+        noteForwardStack.append(current)
+        selectedNoteID = destination
+        persistSelectedNote()
+        return true
+    }
+
+    @discardableResult
+    func navigateForward() -> Bool {
+        pruneNavigationHistory()
+        guard let destination = noteForwardStack.popLast(),
+              let current = selectedNoteID,
+              notes.contains(where: { $0.id == destination }) else { return false }
+        noteBackStack.append(current)
+        selectedNoteID = destination
+        persistSelectedNote()
+        return true
+    }
+
+    func noteScrollOffset(for identifier: UUID, compact: Bool) -> CGFloat? {
+        noteScrollOffsets[scrollKey(for: identifier, compact: compact)]
+    }
+
+    func setNoteScrollOffset(_ offset: CGFloat, for identifier: UUID, compact: Bool) {
+        guard offset.isFinite, offset >= 0 else { return }
+        noteScrollOffsets[scrollKey(for: identifier, compact: compact)] = offset
+    }
+
     func selectMostRecentNote() {
         if let identifier = notes.max(by: { $0.modifiedAt < $1.modifiedAt })?.id {
-            selectedNoteID = identifier
+            selectNote(identifier)
         } else {
             createNote()
         }
@@ -171,6 +227,8 @@ final class NotesStore: ObservableObject {
               let index = notes.firstIndex(where: { $0.id == selectedNoteID }) else { return }
         notes.remove(at: index)
         self.selectedNoteID = notes.indices.contains(index) ? notes[index].id : notes.last?.id
+        pruneNavigationHistory()
+        persistSelectedNote()
         scheduleSave()
     }
 
@@ -237,6 +295,23 @@ final class NotesStore: ObservableObject {
         _ = persistenceGeneration.next()
         let snapshot = notes
         do { try persistenceQueue.sync { try Self.persist(snapshot) } } catch { lastError = error.localizedDescription }
+    }
+
+    private func scrollKey(for identifier: UUID, compact: Bool) -> String {
+        "\(identifier.uuidString):\(compact ? "sideview" : "workspace")"
+    }
+
+    private func pruneNavigationHistory() {
+        let validIDs = Set(notes.map(\.id))
+        noteBackStack.removeAll { !validIDs.contains($0) }
+        noteForwardStack.removeAll { !validIDs.contains($0) }
+    }
+
+    private func persistSelectedNote() {
+        WorkspaceStateRegistry.shared.update {
+            $0.selectedNoteID = selectedNoteID
+            $0.notesSection = "notes"
+        }
     }
 
     private func updateSelected(_ change: (inout MarkdownNote) -> Void) {

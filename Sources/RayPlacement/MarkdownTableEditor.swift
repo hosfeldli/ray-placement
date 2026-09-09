@@ -164,6 +164,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private let table: MarkdownTableData
     private let toolbar = NSStackView()
     private var gridView: NSGridView?
+    private var gridScrollView: NSScrollView?
     private var fields: [MarkdownTableField] = []
     private var cellAppearances: [(view: NSView, header: Bool, alternate: Bool)] = []
     private weak var toolbarIcon: NSImageView?
@@ -237,14 +238,36 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         super.layout()
         guard !isSizingColumns,
               let gridView,
+              let gridScrollView,
               gridView.numberOfColumns > 0 else { return }
         isSizingColumns = true
+        let availableWidth = max(220, gridScrollView.bounds.width)
         let separators = CGFloat(max(0, gridView.numberOfColumns - 1)) * gridView.columnSpacing
-        let width = floor(max(72, gridView.bounds.width - separators) / CGFloat(gridView.numberOfColumns))
+        let preferred = preferredColumnWidths()
+        let preferredTotal = preferred.reduce(0, +) + separators
+        let gridWidth = max(availableWidth, preferredTotal)
+        var x: CGFloat = 0
         for column in 0..<gridView.numberOfColumns {
+            let width = floor(preferred[column])
             gridView.column(at: column).width = width
+            x += width + (column + 1 < gridView.numberOfColumns ? gridView.columnSpacing : 0)
         }
+        gridView.frame = NSRect(x: 0, y: 0, width: max(gridWidth, x), height: gridScrollView.bounds.height)
+        gridScrollView.hasHorizontalScroller = gridWidth > availableWidth + 1
         isSizingColumns = false
+    }
+
+    private func preferredColumnWidths() -> [CGFloat] {
+        let values = table.headers + table.rows.flatMap { $0 }
+        return table.headers.indices.map { column in
+            let columnValues = values.enumerated().compactMap { index, value -> String? in
+                if index < table.headers.count { return index == column ? value : nil }
+                let bodyIndex = index - table.headers.count
+                return bodyIndex % table.columnCount == column ? value : nil
+            }
+            let characterWidth = columnValues.map { CGFloat($0.count) * 7.1 }.max() ?? 0
+            return min(280, max(88, characterWidth + 34))
+        }
     }
 
     private func configureToolbar() {
@@ -280,10 +303,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let spacer = NSView()
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
 
-        let addRow = makeButton(title: "+ Row", action: #selector(addRow))
-        addRow.setAccessibilityLabel("Add table row")
-        let addColumn = makeButton(title: "+ Column", action: #selector(addColumn))
-        addColumn.setAccessibilityLabel("Add table column")
+        let addRow = makeIconButton(symbol: "plus", label: "Add table row", action: #selector(addRow))
+        let addColumn = makeIconButton(symbol: "rectangle.split.3x1", label: "Add table column", action: #selector(addColumn))
 
         let more = NSButton(
             image: NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "Table actions") ?? NSImage(),
@@ -304,6 +325,21 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             toolbar.topAnchor.constraint(equalTo: topAnchor, constant: 6),
             toolbar.heightAnchor.constraint(equalToConstant: 28)
         ])
+    }
+
+    private func makeIconButton(symbol: String, label: String, action: Selector) -> NSButton {
+        let button = NSButton(
+            image: NSImage(systemSymbolName: symbol, accessibilityDescription: label) ?? NSImage(),
+            target: self,
+            action: action
+        )
+        button.bezelStyle = .recessed
+        button.controlSize = .small
+        button.imagePosition = .imageOnly
+        button.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
+        button.toolTip = label
+        button.setAccessibilityLabel(label)
+        return button
     }
 
     private func makeButton(title: String, action: Selector) -> NSButton {
@@ -331,7 +367,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         }
 
         let grid = NSGridView(views: visualRows)
-        grid.translatesAutoresizingMaskIntoConstraints = false
+        grid.translatesAutoresizingMaskIntoConstraints = true
         grid.rowSpacing = 1
         grid.columnSpacing = 1
         grid.xPlacement = .fill
@@ -340,14 +376,23 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         for row in 0..<grid.numberOfRows { grid.row(at: row).height = 34 }
         for column in 0..<grid.numberOfColumns { grid.column(at: column).xPlacement = .fill }
 
-        addSubview(grid)
+        let scrollView = NSScrollView()
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.hasVerticalScroller = false
+        scrollView.hasHorizontalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.borderType = .noBorder
+        scrollView.drawsBackground = false
+        scrollView.documentView = grid
+        addSubview(scrollView)
         NSLayoutConstraint.activate([
-            grid.leadingAnchor.constraint(equalTo: leadingAnchor),
-            grid.trailingAnchor.constraint(equalTo: trailingAnchor),
-            grid.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
-            grid.bottomAnchor.constraint(equalTo: bottomAnchor)
+            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: toolbar.bottomAnchor, constant: 4),
+            scrollView.bottomAnchor.constraint(equalTo: bottomAnchor)
         ])
         gridView = grid
+        gridScrollView = scrollView
         updateAppearance()
 
         if let coordinate {
@@ -387,6 +432,16 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
         field.lineBreakMode = .byTruncatingTail
+        switch coordinate {
+        case .header:
+            field.alignment = .left
+        case .body(_, let column):
+            switch table.alignments[column] {
+            case .leading: field.alignment = .left
+            case .center: field.alignment = .center
+            case .trailing: field.alignment = .right
+            }
+        }
         field.setAccessibilityLabel(coordinate.accessibilityLabel)
         field.onPasteTable = { [weak self, weak field] data in
             guard let self, let field else { return false }
@@ -584,6 +639,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         sortItem.submenu = sortMenu
         menu.addItem(sortItem)
         menu.addItem(.separator())
+        let copy = NSMenuItem(title: "Copy as Markdown", action: #selector(copyMarkdown), keyEquivalent: "")
+        copy.target = self
+        menu.addItem(copy)
         let delete = NSMenuItem(title: "Delete Table", action: #selector(deleteTable), keyEquivalent: "")
         delete.target = self
         menu.addItem(delete)
@@ -609,6 +667,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         table.sortRows(column: column, ascending: sender.tag > 0)
         rebuildGrid()
         onChange?()
+    }
+
+    @objc private func copyMarkdown() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(table.markdown, forType: .string)
     }
 
     @objc private func deleteTable() {

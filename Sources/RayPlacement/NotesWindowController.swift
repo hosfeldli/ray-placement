@@ -152,12 +152,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     func selectNote(_ id: UUID) {
         guard store.notes.contains(where: { $0.id == id }) else { return }
-        store.selectedNoteID = id
+        store.selectNote(id)
         presentation.section = .notes
-        WorkspaceStateRegistry.shared.update {
-            $0.selectedNoteID = id
-            $0.notesSection = "notes"
-        }
     }
 
     func selectDictation(_ id: UUID) {
@@ -705,7 +701,7 @@ private struct NotesView: View {
             HStack(spacing: 6) {
                 Menu {
                     ForEach(store.notes) { note in
-                        Button { store.selectedNoteID = note.id } label: {
+                        Button { selectNote(note.id) } label: {
                             if note.id == store.selectedNoteID {
                                 Label(note.displayTitle, systemImage: "checkmark")
                             } else {
@@ -755,7 +751,7 @@ private struct NotesView: View {
                     HStack(spacing: 6) {
                         ForEach(filteredNotes.prefix(10)) { note in
                             Button {
-                                store.selectedNoteID = note.id
+                                selectNote(note.id)
                                 searchQuery = ""
                             } label: {
                                 Text(note.displayTitle)
@@ -1217,7 +1213,30 @@ private struct NotesView: View {
     }
 
     private func editorHeader(_ note: MarkdownNote) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            HStack(spacing: 2) {
+                Button(action: navigateBack) {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(LimaToolbarIconButtonStyle(size: 25))
+                .disabled(!store.canNavigateBack)
+                .help("Previous Note (Command-[)")
+                .accessibilityLabel("Previous Note")
+                .keyboardShortcut("[", modifiers: .command)
+
+                Button(action: navigateForward) {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 25, height: 25)
+                }
+                .buttonStyle(LimaToolbarIconButtonStyle(size: 25))
+                .disabled(!store.canNavigateForward)
+                .help("Next Note (Command-])")
+                .accessibilityLabel("Next Note")
+                .keyboardShortcut("]", modifiers: .command)
+            }
+            .opacity(presentation.mode.isDocked ? 0.92 : 1)
+
             VStack(alignment: .leading, spacing: 3) {
                 TextField(
                     "Untitled Note",
@@ -1303,12 +1322,17 @@ private struct NotesView: View {
 
     @ViewBuilder
     private func editorCanvas(_ note: MarkdownNote) -> some View {
+        let compact = presentation.mode.isDocked
         let markdownEditor = InlineMarkdownEditor(
             text: Binding(
                 get: { store.selectedNote?.content ?? "" },
                 set: store.updateContent
             ),
-            compact: presentation.mode.isDocked,
+            compact: compact,
+            scrollOffset: Binding(
+                get: { store.noteScrollOffset(for: note.id, compact: compact) ?? 0 },
+                set: { store.setNoteScrollOffset($0, for: note.id, compact: compact) }
+            ),
             fontStyle: settings.notesFontStyle,
             fontSize: settings.notesFontSize,
             lineSpacing: settings.notesLineSpacing,
@@ -1320,6 +1344,8 @@ private struct NotesView: View {
             HStack(spacing: 0) {
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
                 markdownEditor
+                    .id(note.id)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
                     .frame(maxWidth: settings.notesContentWidth.maximum)
                     .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
@@ -1328,6 +1354,8 @@ private struct NotesView: View {
             .background(Color.clear)
         } else {
             markdownEditor
+                .id(note.id)
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
                 .background(LimaColors.editorBackground)
         }
     }
@@ -1386,14 +1414,14 @@ private struct NotesView: View {
                         if !store.referencedNotes().isEmpty {
                             Section("References") {
                                 ForEach(store.referencedNotes()) { linked in
-                                    Button(linked.displayTitle) { store.selectedNoteID = linked.id }
+                                    Button(linked.displayTitle) { selectNote(linked.id) }
                                 }
                             }
                         }
                         if !store.backlinks().isEmpty {
                             Section("Backlinks") {
                                 ForEach(store.backlinks()) { linked in
-                                    Button(linked.displayTitle) { store.selectedNoteID = linked.id }
+                                    Button(linked.displayTitle) { selectNote(linked.id) }
                                 }
                             }
                         }
@@ -1453,9 +1481,27 @@ private struct NotesView: View {
         catch { exportError = error.localizedDescription }
     }
 
+    private func selectNote(_ identifier: UUID) {
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.12) : LimaDesign.spring(0.28)) {
+            store.selectNote(identifier)
+        }
+    }
+
+    private func navigateBack() {
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.12) : LimaDesign.spring(0.28)) {
+            _ = store.navigateBack()
+        }
+    }
+
+    private func navigateForward() {
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.12) : LimaDesign.spring(0.28)) {
+            _ = store.navigateForward()
+        }
+    }
+
     private func noteSelectionButton(_ note: MarkdownNote) -> some View {
         Button {
-            store.selectedNoteID = note.id
+            selectNote(note.id)
         } label: {
             NoteListRow(note: note, selected: store.selectedNoteID == note.id)
         }
