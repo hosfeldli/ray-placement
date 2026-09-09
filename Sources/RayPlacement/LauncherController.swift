@@ -547,6 +547,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 pasteTextIntoPreviousApplication(action.value, successMessage: "Pasted text", completion: completion)
                 return
             case "pastePlainText":
+                // The executor has already normalized the clipboard. Use the
+                // clipboard-aware path so the focused source selection and the
+                // verified keyboard paste transaction are preserved.
                 pasteIntoPreviousApplication(completion: completion)
                 return
             case "copy":

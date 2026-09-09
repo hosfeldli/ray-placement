@@ -197,7 +197,7 @@ final class RuleBasedWritingChecker {
                             if SettingsStore.shared.grammarFallbackToLocal {
                                 self.completeLocalReview(source: source, rewrittenText: localNormalized, operationID: operationID, status: "Enhanced check unavailable · Local result shown.", completion: completion)
                             } else {
-                                self.finish(success: false, detail: error.localizedDescription)
+                                self.finish(success: false, detail: "Enhanced Grammar failed: \(error.localizedDescription)")
                                 completion(.failure(error))
                             }
                         }

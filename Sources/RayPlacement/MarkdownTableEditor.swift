@@ -490,10 +490,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
-        let accent = SettingsStore.shared.accentTheme.nsPrimary
-        let background = LimaAppKitDesign.surfaceBackground
+        let background = LimaAppKitDesign.editorBackground
         let border = LimaAppKitDesign.strongSeparator
-        let separator = LimaAppKitDesign.separator
+        let separator = LimaAppKitDesign.separator.withAlphaComponent(0.24)
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
         gridView?.layer?.backgroundColor = separator.cgColor
@@ -502,11 +501,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         for item in cellAppearances {
             let color: NSColor
             if item.header {
-                color = background.blended(withFraction: 0.30, of: accent) ?? background
+                color = LimaAppKitDesign.tableHeaderBackground
             } else if item.alternate {
-                color = LimaAppKitDesign.editorBackground
+                color = LimaAppKitDesign.tableAlternateBackground
             } else {
-                color = LimaAppKitDesign.recessedBackground
+                color = LimaAppKitDesign.editorBackground
             }
             item.view.layer?.backgroundColor = color.cgColor
         }

@@ -698,7 +698,7 @@ final class SettingsStore: ObservableObject {
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
         developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
-        grammarFallbackToLocal = defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true
+        grammarFallbackToLocal = false
         inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper

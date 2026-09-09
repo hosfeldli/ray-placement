@@ -321,7 +321,11 @@ public enum PlainTextPasteboardService {
 
     @discardableResult
     static func rewriteAsPlainText(_ pasteboard: any PlainTextPasteboard) throws -> String {
-        guard let text = pasteboard.string(forType: .string) else { throw PasteboardError.noText }
+        guard let rawText = pasteboard.string(forType: .string),
+              !rawText.isEmpty else { throw PasteboardError.noText }
+        let text = rawText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
         _ = pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else { throw PasteboardError.noText }
         return text

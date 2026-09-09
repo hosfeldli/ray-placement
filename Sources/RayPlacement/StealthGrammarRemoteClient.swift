@@ -4,7 +4,7 @@ import RayPlacementWriting
 final class StealthGrammarRemoteClient {
     enum ClientError: LocalizedError {
         case invalidConfiguration
-        case requestFailed(statusCode: Int)
+        case requestFailed(statusCode: Int, detail: String? = nil)
         case invalidResponse
         case responseTooLarge
         case noModelsFound
@@ -12,7 +12,9 @@ final class StealthGrammarRemoteClient {
         var errorDescription: String? {
             switch self {
             case .invalidConfiguration: return "The Enhanced Grammar provider configuration is incomplete."
-            case .requestFailed(let statusCode): return "The Enhanced Grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
+            case .requestFailed(let statusCode, let detail):
+                if let detail, !detail.isEmpty { return "The Enhanced Grammar provider returned HTTP \(statusCode): \(detail)" }
+                return "The Enhanced Grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
             case .invalidResponse: return "The Enhanced Grammar provider returned an unreadable correction."
             case .responseTooLarge: return "The Enhanced Grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."
@@ -51,12 +53,12 @@ final class StealthGrammarRemoteClient {
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    completion(.failure(ClientError.requestFailed(statusCode: 0)))
+                    completion(.failure(ClientError.requestFailed(statusCode: 0, detail: nil)))
                     return
                 }
                 guard (200..<300).contains(http.statusCode),
                       let data else {
-                    completion(.failure(ClientError.requestFailed(statusCode: http.statusCode)))
+                    completion(.failure(ClientError.requestFailed(statusCode: http.statusCode, detail: Self.responseDetail(data))))
                     return
                 }
                 guard data.count <= 2_000_000 else {
@@ -94,12 +96,12 @@ final class StealthGrammarRemoteClient {
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    completion(.failure(ClientError.requestFailed(statusCode: 0)))
+                    completion(.failure(ClientError.requestFailed(statusCode: 0, detail: nil)))
                     return
                 }
                 guard (200..<300).contains(http.statusCode),
                       let data else {
-                    completion(.failure(ClientError.requestFailed(statusCode: http.statusCode)))
+                    completion(.failure(ClientError.requestFailed(statusCode: http.statusCode, detail: Self.responseDetail(data))))
                     return
                 }
                 guard data.count <= 1_000_000 else {
@@ -115,6 +117,23 @@ final class StealthGrammarRemoteClient {
         }
         task.resume()
         return task
+    }
+
+    private static func responseDetail(_ data: Data?) -> String? {
+        guard let data, !data.isEmpty else { return nil }
+        let raw = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !raw.isEmpty else { return nil }
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for key in ["error", "message", "detail"] {
+                if let value = object[key] as? String, !value.isEmpty { return String(value.prefix(500)) }
+                if let value = object[key] as? [String: Any],
+                   let message = value["message"] as? String, !message.isEmpty {
+                    return String(message.prefix(500))
+                }
+            }
+        }
+        return String(raw.prefix(500))
     }
 
     private static func validatedBaseURL(_ rawValue: String) -> String? {
@@ -138,7 +157,7 @@ final class StealthGrammarRemoteClient {
         guard let url = components?.url else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 20
+        request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if configuration.provider == .anthropic {
             request.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
@@ -166,7 +185,7 @@ final class StealthGrammarRemoteClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 20
+        request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch configuration.provider {
         case .openAI, .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:

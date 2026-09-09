@@ -33,13 +33,13 @@ enum LimaAppKitDesign {
     static var recessedBackground: NSColor { NSColor.controlBackgroundColor }
     static var surfaceBackground: NSColor { NSColor.controlBackgroundColor }
     static var separator: NSColor { NSColor.separatorColor.withAlphaComponent(1) }
-    static var strongSeparator: NSColor { NSColor.separatorColor.withAlphaComponent(1) }
+    static var strongSeparator: NSColor { NSColor.separatorColor.withAlphaComponent(0.28) }
     static var accent: NSColor { SettingsStore.shared.accentTheme.nsPrimary }
-    static var accentSoft: NSColor { accent.withAlphaComponent(0.16) }
+    static var accentSoft: NSColor { accent.withAlphaComponent(0.08) }
     static var focus: NSColor { accent.withAlphaComponent(0.82) }
     static var selection: NSColor { accent.withAlphaComponent(0.25) }
-    static var tableHeaderBackground: NSColor { (windowBackground.blended(withFraction: 0.22, of: accent) ?? windowBackground).withAlphaComponent(0.98) }
-    static var tableAlternateBackground: NSColor { editorBackground.blended(withFraction: 0.18, of: windowBackground) ?? editorBackground }
+    static var tableHeaderBackground: NSColor { (editorBackground.blended(withFraction: 0.045, of: accent) ?? editorBackground) }
+    static var tableAlternateBackground: NSColor { editorBackground.blended(withFraction: 0.018, of: windowBackground) ?? editorBackground }
     static var primaryText: NSColor { .labelColor }
     static var secondaryText: NSColor { .secondaryLabelColor }
     static var tertiaryText: NSColor { .tertiaryLabelColor }

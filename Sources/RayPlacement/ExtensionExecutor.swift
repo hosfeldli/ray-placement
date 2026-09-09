@@ -135,7 +135,7 @@ final class ExtensionExecutor {
                 do {
                     let text = try PlainTextPasteboardService.rewriteAsPlainText()
                     clipboard.copy(text)
-                    completion(.success(.native(ExtensionAction(type: .clipboard, value: text, operation: "paste"))))
+                    completion(.success(.native(ExtensionAction(type: .clipboard, value: text, operation: "pastePlainText"))))
                 } catch {
                     completion(.failure(error))
                 }

@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 2,
+  "id": "community.plain-text-paste",
+  "name": "Plain Text Paste",
+  "version": "1.0.0",
+  "description": "Paste the current clipboard as normalized plain text without carrying rich formatting into the target app.",
+  "pack": "Plain Text Paste",
+  "category": "Writing",
+  "bundled": false,
+  "provenance": "unsigned",
+  "trust": "unsigned",
+  "capabilities": [
+    "clipboard",
+    "accessibility",
+    "selectedText"
+  ],
+  "commands": [
+    {
+      "id": "paste-plain-text",
+      "title": "Paste as Plain Text",
+      "subtitle": "Strip rich formatting from the clipboard and paste the text",
+      "keywords": [
+        "paste",
+        "plain",
+        "text",
+        "formatting",
+        "clipboard"
+      ],
+      "icon": "doc.plaintext",
+      "hotkey": "control+option+v",
+      "action": {
+        "type": "clipboard",
+        "operation": "pastePlainText"
+      }
+    }
+  ]
+}
