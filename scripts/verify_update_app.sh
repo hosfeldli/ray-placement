@@ -47,7 +47,7 @@ trap '/bin/rm -rf "$CERTIFICATE_DIRECTORY"' EXIT
 /usr/bin/codesign -d --extract-certificates="$CERTIFICATE_DIRECTORY/cert" "$APP" >/dev/null 2>&1 || fail 'the app certificate could not be extracted'
 LEAF="$CERTIFICATE_DIRECTORY/cert0"
 [[ -f "$LEAF" ]] || fail 'the app leaf certificate is missing'
-CERTIFICATE_HASH="$(/usr/bin/openssl x509 -in "$LEAF" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print toupper($1)}')"
+CERTIFICATE_HASH="$(/usr/bin/openssl x509 -inform der -in "$LEAF" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print toupper($1)}')"
 [[ "${CERTIFICATE_HASH:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || fail 'the signing certificate fingerprint is not pinned'
 
 # Never accept links or special files anywhere inside the candidate bundle.
