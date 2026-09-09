@@ -4,13 +4,16 @@
 set -euo pipefail
 (( $# == 7 )) || { echo 'Usage: apply_trusted_update.sh <pid> <current-app> <source-root> <version> <result-file> <progress-file> <trusted-app>' >&2; exit 2; }
 CURRENT_PID="$1"
-CURRENT_APP="$2"
-SOURCE_ROOT="$3"
+# Canonicalize once at the boundary. This supports /Applications,
+# ~/Applications, spaces, and LaunchServices symlink/alias spellings while
+# ensuring every later operation targets the same bundle.
+CURRENT_APP="${2:A}"
+SOURCE_ROOT="${3:A}"
 VERSION="$4"
-RESULT_FILE="$5"
-PROGRESS_FILE="$6"
-TRUSTED_APP="$7"
-READY_APP="$SOURCE_ROOT/Prebuilt/Lima.app"
+RESULT_FILE="${5:A}"
+PROGRESS_FILE="${6:A}"
+TRUSTED_APP="${7:A}"
+READY_APP="${SOURCE_ROOT}/Prebuilt/Lima.app"
 BUILD=""
 UPDATES_DIRECTORY="${HOME:?}/Library/Application Support/Lima/Updates"
 TRANSACTION=""
@@ -19,8 +22,10 @@ fail() { local message="$1"; write "$RESULT_FILE" failure "$message"; write "$PR
 trap '[[ $? -eq 0 ]] || fail "The trusted updater stopped unexpectedly. The current app was preserved."' EXIT
 [[ "$CURRENT_PID" == <-> && "$CURRENT_PID" -gt 1 ]] || fail 'The running app process is invalid.'
 [[ -d "$READY_APP" ]] || fail 'The verified app is missing.'
-[[ "$CURRENT_APP" == /*.app && -d "$CURRENT_APP" ]] || fail 'The current app path is invalid.'
-[[ "$TRUSTED_APP" == /*.app && -d "$TRUSTED_APP" ]] || fail 'The trusted app path is invalid.'
+[[ "$CURRENT_APP" == /* && "$CURRENT_APP" == *.app && -d "$CURRENT_APP" && ! -L "$CURRENT_APP" ]] || fail "The running Lima bundle is not a canonical app path: $CURRENT_APP"
+[[ -f "$CURRENT_APP/Contents/Info.plist" && -x "$CURRENT_APP/Contents/MacOS/Lima" ]] || fail "The running Lima bundle is incomplete: $CURRENT_APP"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CURRENT_APP/Contents/Info.plist")" == dev.liam.lima ]] || fail "The running bundle is not Lima: $CURRENT_APP"
+[[ "$TRUSTED_APP" == /* && "$TRUSTED_APP" == *.app && -d "$TRUSTED_APP" && ! -L "$TRUSTED_APP" ]] || fail 'The trusted app path is invalid.'
 TRUSTED_RESOURCES="$TRUSTED_APP/Contents/Resources/Updater"
 [[ -x "$TRUSTED_RESOURCES/verify_update_app.sh" && -x "$TRUSTED_RESOURCES/approved_lima_replacement.sh" ]] || fail 'Trusted updater resources are missing.'
 TRUSTED_INFO="$TRUSTED_APP/Contents/Info.plist"

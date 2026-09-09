@@ -131,6 +131,14 @@ final class UpdateService: ObservableObject {
         return "\(formatter.string(fromByteCount: downloadedBytes)) of \(formatter.string(fromByteCount: totalDownloadBytes))"
     }
 
+    /// The updater must use one canonical identity for the running bundle.
+    /// LaunchServices may start Lima through a symlink, alias, or a stale Dock
+    /// reference; passing those spellings between Swift and the shell updater
+    /// made a valid installation look like an invalid path.
+    private nonisolated var canonicalBundleURL: URL {
+        Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
@@ -142,8 +150,8 @@ final class UpdateService: ObservableObject {
         guard let status = lines.first else { return nil }
         let message = lines.count > 1 ? String(lines[1]) : ""
         if status == "success", lines.count >= 5 {
-            let expectedPath = URL(fileURLWithPath: String(lines[4])).resolvingSymlinksInPath().path
-            let runningPath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+            let expectedPath = URL(fileURLWithPath: String(lines[4])).standardizedFileURL.resolvingSymlinksInPath().path
+            let runningPath = canonicalBundleURL.path
             let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
             guard String(lines[2]) == currentVersion, String(lines[3]) == runningBuild, expectedPath == runningPath else {
                 return (false, "The update was installed at \(expectedPath), but this is Lima \(currentVersion) at \(runningPath). Quit this copy and open the updated app from Finder; replace any Dock shortcut pointing at the old copy.")
@@ -451,14 +459,14 @@ final class UpdateService: ObservableObject {
     }
 
     private nonisolated func runTrustedVerification(_ app: URL, expectedVersion: String, expectedBuild: String) throws {
-        let verifier = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
+        let verifier = canonicalBundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
         guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
         let policy = Bundle.main.infoDictionary ?? [:]
         guard let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
               let identity = policy["LimaUpdateExpectedSigningIdentity"] as? String,
               let certificate = policy["LimaUpdateExpectedCertificateSHA256"] as? String,
               !team.isEmpty, !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }
-        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, team, identity, certificate, Bundle.main.bundleURL.path])
+        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, team, identity, certificate, canonicalBundleURL.path])
     }
 
     private nonisolated func runProcess(_ executable: String, arguments: [String]) throws -> String {
@@ -497,7 +505,7 @@ final class UpdateService: ObservableObject {
 
     private func launchInstaller(sourceRoot: URL, version: String) {
         statusText = "Preparing the verified Lima update…"
-        let helper = Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Updater/apply_trusted_update.sh")
+        let helper = canonicalBundleURL.appendingPathComponent("Contents/Resources/Updater/apply_trusted_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
         try? FileManager.default.removeItem(at: progressFile)
         FileManager.default.createFile(atPath: log.path, contents: Data())
@@ -508,12 +516,12 @@ final class UpdateService: ObservableObject {
             process.arguments = [
                 helper.path,
                 String(ProcessInfo.processInfo.processIdentifier),
-                Bundle.main.bundleURL.path,
-                sourceRoot.path,
+                canonicalBundleURL.path,
+                sourceRoot.standardizedFileURL.path,
                 version,
                 resultFile.path,
                 progressFile.path,
-                Bundle.main.bundleURL.path
+                canonicalBundleURL.path
             ]
             process.standardOutput = handle
             process.standardError = handle
