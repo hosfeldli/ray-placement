@@ -133,6 +133,12 @@ jobs:
           set -euo pipefail
           ./scripts/release_build.sh --tag "$RELEASE_TAG"
 
+      - name: Restore immutable tagged source before staging
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -- scripts/verify_liamflow_app.sh
+
       - name: Stage the existing draft
         shell: zsh {0}
         env:
