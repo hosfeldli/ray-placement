@@ -166,7 +166,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private var gridView: NSGridView?
     private var gridScrollView: NSScrollView?
     private var fields: [MarkdownTableField] = []
-    private var cellAppearances: [(view: NSView, header: Bool, alternate: Bool)] = []
+    private var cellAppearances: [(view: NSView, header: Bool)] = []
     private weak var toolbarIcon: NSImageView?
     private weak var titleField: NSTextField?
     private var isSizingColumns = false
@@ -360,11 +360,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
         var visualRows: [[NSView]] = []
         visualRows.append(table.headers.enumerated().map { column, value in
-            cellView(value: value, coordinate: .header(column), header: true, alternate: false)
+            cellView(value: value, coordinate: .header(column), header: true)
         })
         for (row, values) in table.rows.enumerated() {
             visualRows.append(values.enumerated().map { column, value in
-                cellView(value: value, coordinate: .body(row, column), header: false, alternate: row.isMultiple(of: 2))
+                cellView(value: value, coordinate: .body(row, column), header: false)
             })
         }
 
@@ -410,8 +410,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private func cellView(
         value: String,
         coordinate: CellCoordinate,
-        header: Bool,
-        alternate: Bool
+        header: Bool
     ) -> NSView {
         let container = MarkdownTableCellView()
         container.onHoverChanged = { [weak self] in self?.updateAppearance() }
@@ -455,7 +454,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             field.centerYAnchor.constraint(equalTo: container.centerYAnchor)
         ])
         fields.append(field)
-        cellAppearances.append((container, header, alternate))
+        cellAppearances.append((container, header))
         return container
     }
 
@@ -506,8 +505,6 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
                 color = LimaAppKitDesign.tableHover
             } else if item.header {
                 color = LimaAppKitDesign.tableHeaderBackground
-            } else if item.alternate {
-                color = LimaAppKitDesign.tableAlternateBackground
             } else {
                 color = palette.background
             }

@@ -21,6 +21,7 @@ enum KeyboardSelectionService {
         let originalText: String?
         let text: String
         let clipboardChangeCount: Int
+        let selectionContext: SelectedTextService.SelectionContext?
     }
 
     enum CaptureError: LocalizedError {
@@ -28,6 +29,7 @@ enum KeyboardSelectionService {
         case activationFailed
         case copyUnavailable
         case emptySelection
+        case selectionChangedBeforePaste
 
         var errorDescription: String? {
             switch self {
@@ -39,6 +41,8 @@ enum KeyboardSelectionService {
                 return "Lima sent Copy, but the app did not place readable text on the clipboard."
             case .emptySelection:
                 return "The app copied no text. Highlight text in the source app and try again."
+            case .selectionChangedBeforePaste:
+                return "The original selection could not be restored safely."
             }
         }
     }
@@ -96,22 +100,28 @@ enum KeyboardSelectionService {
             ) { result in
                 switch result {
                 case .success(let copiedChangeCount):
-                    let text = pasteboard.string(forType: .string) ?? ""
-                    // Rich editors may publish extra pasteboard flavors shortly
-                    // after the string. Restore after that small write window.
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
-                        snapshot.restore(to: pasteboard, ifUnchangedSince: copiedChangeCount)
-                        clipboardHistory.synchronizePasteboardChangeCount()
+                    waitForReadableText(
+                        pasteboard: pasteboard,
+                        changeCount: copiedChangeCount,
+                        attemptsRemaining: 16
+                    ) { text in
+                        // Rich editors may publish extra pasteboard flavors shortly
+                        // after the string. Restore after that small write window.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) {
+                            snapshot.restore(to: pasteboard, ifUnchangedSince: copiedChangeCount)
+                            clipboardHistory.synchronizePasteboardChangeCount()
+                        }
+                        guard let text,
+                              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                            completion(.failure(CaptureError.emptySelection))
+                            return
+                        }
+                        completion(.success(Capture(
+                            processIdentifier: application.processIdentifier,
+                            text: text,
+                            clipboardChangeCount: copiedChangeCount
+                        )))
                     }
-                    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-                        completion(.failure(CaptureError.emptySelection))
-                        return
-                    }
-                    completion(.success(Capture(
-                        processIdentifier: application.processIdentifier,
-                        text: text,
-                        clipboardChangeCount: copiedChangeCount
-                    )))
                 case .failure(let error):
                     completion(.failure(error))
                 }
@@ -125,6 +135,7 @@ enum KeyboardSelectionService {
         _ text: String,
         into application: NSRunningApplication,
         originalText: String? = nil,
+        selectionContext: SelectedTextService.SelectionContext? = nil,
         clipboardHistory: ClipboardHistoryService,
         completion: @escaping (Result<PasteReceipt, Error>) -> Void
     ) {
@@ -132,6 +143,17 @@ enum KeyboardSelectionService {
             guard ready else {
                 completion(.failure(CaptureError.activationFailed))
                 return
+            }
+            if let selectionContext {
+                do {
+                    try SelectedTextService.restoreSelection(using: selectionContext)
+                } catch {
+                    // Do not paste at an uncertain insertion point. This is a
+                    // pre-delivery failure, so callers may safely offer Copy.
+                    _ = error
+                    completion(.failure(CaptureError.selectionChangedBeforePaste))
+                    return
+                }
             }
             let pasteboard = NSPasteboard.general
             let snapshot = PasteboardSnapshot(pasteboard)
@@ -150,15 +172,20 @@ enum KeyboardSelectionService {
                 completion(.failure(CaptureError.copyUnavailable))
                 return
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            // A receipt means Command-V was sent, not that the destination
+            // consumed it. Verification is performed by the caller.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 completion(.success(PasteReceipt(
                     processIdentifier: application.processIdentifier,
                     originalText: originalText,
                     text: text,
-                    clipboardChangeCount: replacementChangeCount
+                    clipboardChangeCount: replacementChangeCount,
+                    selectionContext: selectionContext
                 )))
             }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.90) {
+            // This is a bounded failsafe, not the definition of success. The
+            // pasteboard is restored only if no other transaction replaced it.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.50) {
                 snapshot.restore(to: pasteboard, ifUnchangedSince: replacementChangeCount)
                 clipboardHistory.synchronizePasteboardChangeCount()
             }
@@ -219,6 +246,34 @@ enum KeyboardSelectionService {
             waitForCopy(
                 pasteboard: pasteboard,
                 originalChangeCount: originalChangeCount,
+                attemptsRemaining: attemptsRemaining - 1,
+                completion: completion
+            )
+        }
+    }
+
+    private static func waitForReadableText(
+        pasteboard: NSPasteboard,
+        changeCount: Int,
+        attemptsRemaining: Int,
+        completion: @escaping (String?) -> Void
+    ) {
+        guard pasteboard.changeCount == changeCount else {
+            completion(nil)
+            return
+        }
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            completion(text)
+            return
+        }
+        guard attemptsRemaining > 0 else {
+            completion(nil)
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) {
+            waitForReadableText(
+                pasteboard: pasteboard,
+                changeCount: changeCount,
                 attemptsRemaining: attemptsRemaining - 1,
                 completion: completion
             )

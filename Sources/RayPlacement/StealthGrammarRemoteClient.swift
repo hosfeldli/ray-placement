@@ -17,20 +17,20 @@ final class StealthGrammarRemoteClient {
 
         var errorDescription: String? {
             switch self {
-            case .invalidConfiguration: return "The Enhanced Grammar provider configuration is incomplete."
+            case .invalidConfiguration: return "The external grammar provider configuration is incomplete."
             case .requestFailed(let statusCode, let detail):
-                if let detail, !detail.isEmpty { return "The Enhanced Grammar provider returned HTTP \(statusCode): \(detail)" }
-                return "The Enhanced Grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
+                if let detail, !detail.isEmpty { return "The external grammar provider returned HTTP \(statusCode): \(detail)" }
+                return "The external grammar provider returned HTTP \(statusCode). Check the saved key, base URL, and model."
             case .authenticationFailed(let statusCode, let detail):
-                return "Enhanced Grammar authentication failed (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the saved key.")
-            case .rateLimited: return "Enhanced Grammar is rate-limited (HTTP 429). Try again later."
+                return "External grammar authentication failed (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the saved key.")
+            case .rateLimited: return "External grammar is rate-limited (HTTP 429). Try again later."
             case .modelUnavailable(let statusCode, let detail):
-                return "Enhanced Grammar model is unavailable (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the selected model.")
-            case .invalidJSON: return "Enhanced Grammar returned invalid JSON instead of structured edits."
-            case .safetyRejected: return "Enhanced Grammar returned an edit that failed Lima’s safety checks."
-            case .compatibilityFailed: return "Enhanced Grammar returned no effective grammar correction for the compatibility sample."
-            case .invalidResponse: return "The Enhanced Grammar provider returned an unreadable correction."
-            case .responseTooLarge: return "The Enhanced Grammar provider returned too much data."
+                return "External grammar model is unavailable (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the selected model.")
+            case .invalidJSON: return "External grammar returned invalid JSON instead of structured edits."
+            case .safetyRejected: return "External grammar returned an edit that failed Lima’s safety checks."
+            case .compatibilityFailed: return "External grammar returned no effective grammar correction for the compatibility sample."
+            case .invalidResponse: return "The external grammar provider returned an unreadable correction."
+            case .responseTooLarge: return "The external grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."
             }
         }
@@ -50,10 +50,30 @@ final class StealthGrammarRemoteClient {
 
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
 
-    static let legacyCorrectionSystemPrompt = """
-    You are a high-confidence copy editor. Return only the corrected text, with no explanation, labels, Markdown fences, or surrounding quotation marks.
-    Preserve meaning, tone, paragraph breaks, line breaks, intentional whitespace boundaries, and formatting. Make only high-confidence grammar, spelling, punctuation, capitalization, and subject-verb agreement corrections. If uncertain, leave the text unchanged. Never rewrite style, add content, invent facts, or change the user's voice.
-    """
+    static let openAIStructuredOutputFormat: [String: Any] = [
+        "type": "json_schema",
+        "name": "grammar_correction",
+        "strict": true,
+        "schema": [
+            "type": "object",
+            "properties": [
+                "segments": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": [
+                            "id": ["type": "string"],
+                            "corrected": ["type": "string"]
+                        ],
+                        "required": ["id", "corrected"],
+                        "additionalProperties": false
+                    ]
+                ]
+            ],
+            "required": ["segments"],
+            "additionalProperties": false
+        ]
+    ]
 
     private let session: URLSession
 
@@ -110,14 +130,29 @@ final class StealthGrammarRemoteClient {
         guard !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let request = makeRequest(
-                text: "Reply with the single word OK.",
+                text: configuration.provider == .openAI ? "{\"segments\":[]}" : "Reply with the single word OK.",
                 configuration: configuration,
-                systemPrompt: Self.connectionSystemPrompt
+                systemPrompt: configuration.provider == .openAI
+                    ? "Return an empty segments array to confirm the structured correction contract."
+                    : Self.connectionSystemPrompt
               ) else {
             completion(.failure(ClientError.invalidConfiguration))
             return nil
         }
-        return perform(request: request, provider: configuration.provider, completion: completion)
+        return perform(request: request, provider: configuration.provider) { result in
+            guard configuration.provider == .openAI else {
+                completion(result)
+                return
+            }
+            completion(result.flatMap { value in
+                do {
+                    _ = try Self.extractSegmentCorrections(from: value)
+                    return .success("OK")
+                } catch {
+                    return .failure(error)
+                }
+            })
+        }
     }
 
     private static func segmentRequestText(_ segments: [StealthEditableSegment]) -> String? {
@@ -143,32 +178,6 @@ final class StealthGrammarRemoteClient {
             completion(result.flatMap { value in
                 do { return .success(try Self.extractSegmentCorrections(from: value)) }
                 catch { return .failure(error) }
-            })
-        }
-    }
-
-    @discardableResult
-    func correct(
-        _ text: String,
-        configuration: DeveloperGrammarConfiguration,
-        completion: @escaping (Result<String, Error>) -> Void
-    ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
-              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let request = makeRequest(
-                text: text,
-                configuration: configuration,
-                systemPrompt: Self.legacyCorrectionSystemPrompt
-              ) else {
-            completion(.failure(ClientError.invalidConfiguration))
-            return nil
-        }
-        return perform(request: request, provider: configuration.provider) { result in
-            completion(result.flatMap { value in
-                guard !value.contains("```"), !StealthGrammarService.isChattyResponse(value) else {
-                    return .failure(ClientError.invalidResponse)
-                }
-                return .success(value)
             })
         }
     }
@@ -271,7 +280,9 @@ final class StealthGrammarRemoteClient {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
         let url: URL?
         switch configuration.provider {
-        case .openAI, .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
+        case .openAI:
+            url = URL(string: base + "/responses")
+        case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
             url = URL(string: base + "/chat/completions")
         case .anthropic:
             url = URL(string: base + "/messages")
@@ -287,7 +298,17 @@ final class StealthGrammarRemoteClient {
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch configuration.provider {
-        case .openAI, .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
+        case .openAI:
+            request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+                "model": configuration.model,
+                "input": [
+                    ["role": "system", "content": [["type": "input_text", "text": systemPrompt]]],
+                    ["role": "user", "content": [["type": "input_text", "text": text]]]
+                ],
+                "text": ["format": Self.openAIStructuredOutputFormat]
+            ])
+        case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "model": configuration.model,
@@ -385,6 +406,15 @@ final class StealthGrammarRemoteClient {
         return first["text"] as? String
     }
 
+    private static func extractResponsesText(from object: [String: Any]) -> String? {
+        if let text = object["output_text"] as? String, !text.isEmpty { return text }
+        guard let output = object["output"] as? [[String: Any]] else { return nil }
+        return output.flatMap { item -> [String] in
+            guard let content = item["content"] as? [[String: Any]] else { return [] }
+            return content.compactMap { $0["text"] as? String }
+        }.joined()
+    }
+
     private struct SegmentEnvelope: Decodable {
         let segments: [StealthGrammarSegmentCorrection]
     }
@@ -409,7 +439,9 @@ final class StealthGrammarRemoteClient {
         }
         let value: String?
         switch provider {
-        case .openAI, .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
+        case .openAI:
+            value = Self.extractResponsesText(from: object)
+        case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
             value = Self.extractChatCompletionText(from: object)
         case .anthropic:
             value = (object["content"] as? [[String: Any]])?

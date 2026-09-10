@@ -2,12 +2,37 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+enum ReplacementOutcome {
+    case verified
+    case sentUnverified
+    case failedBeforeDelivery(Error)
+    case targetChanged
+}
+
 enum SelectedTextService {
     struct SelectionContext {
         let processIdentifier: pid_t
         let text: String
         fileprivate let element: AXUIElement
         fileprivate let range: CFRange?
+        fileprivate let contextPrefix: String?
+        fileprivate let contextSuffix: String?
+
+        fileprivate init(
+            processIdentifier: pid_t,
+            text: String,
+            element: AXUIElement,
+            range: CFRange?,
+            contextPrefix: String? = nil,
+            contextSuffix: String? = nil
+        ) {
+            self.processIdentifier = processIdentifier
+            self.text = text
+            self.element = element
+            self.range = range
+            self.contextPrefix = contextPrefix
+            self.contextSuffix = contextSuffix
+        }
     }
 
     enum SelectionError: LocalizedError {
@@ -62,7 +87,7 @@ enum SelectedTextService {
             if let selection = selection(in: element) {
                 foundReadableSelection = true
                 guard !selection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
-                return SelectionContext(
+                return makeSelectionContext(
                     processIdentifier: processIdentifier,
                     text: selection.text,
                     element: element,
@@ -91,7 +116,7 @@ enum SelectedTextService {
                 kAXSelectedTextAttribute as CFString,
                 &isSettable
             ) == .success, isSettable.boolValue else { continue }
-            return SelectionContext(
+            return makeSelectionContext(
                 processIdentifier: processIdentifier,
                 text: selection.text,
                 element: element,
@@ -145,29 +170,63 @@ enum SelectedTextService {
     static func observeReplacementText(
         _ replacement: String,
         originalText: String? = nil,
+        selectionContext: SelectionContext? = nil,
         in processIdentifier: pid_t
     ) -> ReplacementTextObservation {
         guard AXIsProcessTrusted() else { return .unavailable }
-        let candidates = focusedElementCandidates(in: processIdentifier)
-        guard !candidates.isEmpty else { return .unavailable }
-        var foundValue = false
-        var foundOriginal = false
-        for element in candidates {
-            guard let value = value(in: element) else { continue }
-            foundValue = true
-            if value.contains(replacement) {
-                if let originalText, originalText != replacement, value.contains(originalText) {
-                    foundOriginal = true
-                    continue
-                }
-                return .replaced
-            }
-            if let originalText, value.contains(originalText) {
-                foundOriginal = true
+
+        // If the original AX element/range is available, verify only the
+        // captured target. Never infer success from a match elsewhere in the
+        // document; repeated prose makes that inherently unsafe.
+        if let selectionContext {
+            switch observeReplacement(replacement, using: selectionContext) {
+            case .replaced: return .replaced
+            case .originalStillPresent: return .pending
+            case .changed: return .changed
+            case .unavailable: break
             }
         }
-        if foundOriginal { return .pending }
-        return foundValue ? .changed : .unavailable
+
+        // Some controls expose their value and selected text but not a usable
+        // AX range. Verify a short, captured local context in that case. The
+        // context must be unique; a document-wide match is never sufficient.
+        if let selectionContext,
+           let prefix = selectionContext.contextPrefix,
+           let suffix = selectionContext.contextSuffix,
+           let currentValue = value(in: selectionContext.element) {
+            let current = currentValue as NSString
+            let replacementContext = prefix + replacement + suffix
+            let originalContext = prefix + (originalText ?? selectionContext.text) + suffix
+            let replacementRange = current.range(of: replacementContext)
+            if replacementRange.location != NSNotFound {
+                let remainder = NSRange(
+                    location: NSMaxRange(replacementRange),
+                    length: current.length - NSMaxRange(replacementRange)
+                )
+                if current.range(of: replacementContext, options: [], range: remainder).location == NSNotFound {
+                    return .replaced
+                }
+            }
+            let originalRange = current.range(of: originalContext)
+            if originalRange.location != NSNotFound {
+                let remainder = NSRange(
+                    location: NSMaxRange(originalRange),
+                    length: current.length - NSMaxRange(originalRange)
+                )
+                if current.range(of: originalContext, options: [], range: remainder).location == NSNotFound {
+                    return .pending
+                }
+            }
+            // A readable local context is useful evidence, but the target may
+            // still be settling immediately after Command-V. Let the caller
+            // perform its bounded polling before classifying the result.
+            return .pending
+        }
+
+        // Keyboard-only targets may not expose a useful AX value at all. A
+        // Command-V receipt is therefore deliberately non-error evidence.
+        _ = processIdentifier
+        return .unavailable
     }
 
     /// Restores the exact captured selection without modifying it. Callers use
@@ -209,7 +268,7 @@ enum SelectedTextService {
         let candidates = focusedElementCandidates(in: context.processIdentifier)
         for element in candidates where elementBelongsToProcess(element, context.processIdentifier) {
             if let current = selection(in: element), current.text == context.text {
-                return SelectionContext(
+                return makeSelectionContext(
                     processIdentifier: context.processIdentifier,
                     text: context.text,
                     element: element,
@@ -219,12 +278,39 @@ enum SelectedTextService {
             if let originalRange = context.range,
                string(in: originalRange, from: element) == context.text,
                setSelectedRange(originalRange, in: element) {
-                return SelectionContext(
+                return makeSelectionContext(
                     processIdentifier: context.processIdentifier,
                     text: context.text,
                     element: element,
                     range: originalRange
                 )
+            }
+            if let prefix = context.contextPrefix,
+               let suffix = context.contextSuffix,
+               let fullText = value(in: element) {
+                let full = fullText as NSString
+                let localContext = prefix + context.text + suffix
+                let localRange = full.range(of: localContext)
+                if localRange.location != NSNotFound {
+                    let remainder = NSRange(
+                        location: NSMaxRange(localRange),
+                        length: full.length - NSMaxRange(localRange)
+                    )
+                    if full.range(of: localContext, options: [], range: remainder).location == NSNotFound {
+                        let selectedRange = CFRange(
+                            location: localRange.location + (prefix as NSString).length,
+                            length: (context.text as NSString).length
+                        )
+                        if setSelectedRange(selectedRange, in: element) {
+                            return makeSelectionContext(
+                                processIdentifier: context.processIdentifier,
+                                text: context.text,
+                                element: element,
+                                range: selectedRange
+                            )
+                        }
+                    }
+                }
             }
             guard let fullText = value(in: element) else { continue }
             let source = fullText as NSString
@@ -235,7 +321,7 @@ enum SelectedTextService {
             guard source.range(of: context.text, options: [], range: remaining).location == NSNotFound else { continue }
             let uniqueRange = CFRange(location: first.location, length: first.length)
             guard setSelectedRange(uniqueRange, in: element) else { continue }
-            return SelectionContext(
+            return makeSelectionContext(
                 processIdentifier: context.processIdentifier,
                 text: context.text,
                 element: element,
@@ -243,6 +329,59 @@ enum SelectedTextService {
             )
         }
         throw SelectionError.selectionChanged
+    }
+
+    private static func makeSelectionContext(
+        processIdentifier: pid_t,
+        text: String,
+        element: AXUIElement,
+        range: CFRange?
+    ) -> SelectionContext {
+        var selectedRange = range.map { NSRange(location: $0.location, length: $0.length) }
+        var prefix: String?
+        var suffix: String?
+
+        if let fullValue = value(in: element) {
+            let full = fullValue as NSString
+            if selectedRange == nil {
+                let first = full.range(of: text)
+                if first.location != NSNotFound {
+                    let remainder = NSRange(
+                        location: NSMaxRange(first),
+                        length: full.length - NSMaxRange(first)
+                    )
+                    if full.range(of: text, options: [], range: remainder).location == NSNotFound {
+                        selectedRange = first
+                    }
+                }
+            }
+            if let selectedRange,
+               selectedRange.location >= 0,
+               selectedRange.length >= 0,
+               selectedRange.location <= full.length,
+               selectedRange.length <= full.length - selectedRange.location {
+                let prefixLength = min(64, selectedRange.location)
+                let suffixStart = NSMaxRange(selectedRange)
+                let suffixLength = min(64, full.length - suffixStart)
+                prefix = full.substring(with: NSRange(
+                    location: selectedRange.location - prefixLength,
+                    length: prefixLength
+                ))
+                suffix = full.substring(with: NSRange(
+                    location: suffixStart,
+                    length: suffixLength
+                ))
+            }
+        }
+
+        return SelectionContext(
+            processIdentifier: processIdentifier,
+            text: text,
+            element: element,
+            range: selectedRange.map { CFRange(location: $0.location, length: $0.length) },
+            contextPrefix: prefix,
+            contextSuffix: suffix
+        )
     }
 
     private static func focusedElementCandidates(in processIdentifier: pid_t) -> [AXUIElement] {

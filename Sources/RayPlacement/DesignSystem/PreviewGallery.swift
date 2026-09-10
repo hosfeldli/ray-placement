@@ -404,7 +404,7 @@ private struct PreviewSettingsContent: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if variant == "writing-local" || variant == "writing-enhanced" {
                         PreviewSettingsSection(title: "Grammar Engine") {
-                            PreviewSegmented(labels: ["Local", "Enhanced"], selected: variant == "writing-enhanced" ? 1 : 0)
+                            PreviewSegmented(labels: ["Local", "External API"], selected: variant == "writing-enhanced" ? 1 : 0)
                             Text(variant == "writing-enhanced" ? "Use Local + your AI provider · text is sent for checking" : "Everything stays on this Mac")
                                 .limaFont(LimaTypography.caption)
                                 .foregroundStyle(LimaColors.secondaryText)
@@ -412,7 +412,6 @@ private struct PreviewSettingsContent: View {
                             if variant == "writing-enhanced" {
                                 PreviewSettingLine(title: "API key", detail: "Stored securely", symbol: "key.fill")
                             }
-                            PreviewSettingLine(title: "Fall back to Local", detail: "On", symbol: "arrow.uturn.backward")
                         }
                         PreviewSettingsSection(title: "Stealth Grammar") {
                             PreviewSettingLine(title: "Shortcut", detail: "⌃ ⌥ G", symbol: "wand.and.stars")
@@ -423,7 +422,7 @@ private struct PreviewSettingsContent: View {
                             PreviewSettingLine(title: "Accessibility", detail: "Allowed", symbol: "checkmark.shield.fill")
                             PreviewSettingLine(title: "Microphone", detail: "Allowed", symbol: "mic.fill")
                             PreviewSettingLine(title: "Speech Recognition", detail: "Allowed", symbol: "waveform")
-                            PreviewSettingLine(title: "Enhanced Grammar", detail: "OpenAI · Connected", symbol: "lock.shield.fill")
+                            PreviewSettingLine(title: "Correction Engine", detail: "External API · Connected", symbol: "lock.shield.fill")
                         }
                         PreviewSettingsSection(title: "Local storage") {
                             Text("Notes, dictation, and clipboard data stay in Lima’s private local storage. Remote grammar is opt-in and clearly identified.")

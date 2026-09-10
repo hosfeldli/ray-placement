@@ -112,7 +112,7 @@ final class RuleBasedWritingChecker {
         }
         usageID = UsageMonitor.shared.begin(
             category: .writing,
-            operation: "Enhanced or local spelling and grammar",
+            operation: "Selected spelling and grammar engine",
             performance: SettingsStore.shared.runtimeWritingPerformance,
             inputCharacters: source.count
         )
@@ -123,43 +123,26 @@ final class RuleBasedWritingChecker {
             ignoreList: SettingsStore.shared.writingInstructions
         )
 
-        guard SettingsStore.shared.developerGrammarEnabled else {
-            guard SettingsStore.shared.grammarFallbackToLocal else {
-                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
-                finish(success: false, detail: error.localizedDescription)
-                completion(.failure(error))
-                return
-            }
+        guard SettingsStore.shared.grammarEngineMode == .externalAPI else {
             runLocalReview(
                 source: source,
                 protected: protected,
                 operationID: operationID,
                 progress: progress,
-                status: "Enhanced Grammar is disabled · Local result shown.",
+                status: nil,
                 completion: completion
             )
             return
         }
 
         guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-            if SettingsStore.shared.grammarFallbackToLocal {
-                runLocalReview(
-                    source: source,
-                    protected: protected,
-                    operationID: operationID,
-                    progress: progress,
-                    status: "Enhanced Grammar is not configured · Local result shown.",
-                    completion: completion
-                )
-            } else {
-                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
-                finish(success: false, detail: error.localizedDescription)
-                completion(.failure(error))
-            }
+            let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+            finish(success: false, detail: error.localizedDescription)
+            completion(.failure(error))
             return
         }
 
-        progress("Applying Enhanced Grammar…")
+        progress("Applying External Grammar…")
         remoteTask = remoteClient.correctSegments(
             protected.editableSegments(),
             configuration: configuration
@@ -176,55 +159,25 @@ final class RuleBasedWritingChecker {
                     let review = try self.reviewer.review(
                         sourceText: source,
                         rewrittenText: enhanced,
-                        engineTitle: "Enhanced Grammar"
+                        engineTitle: "External API"
                     )
                     self.finish(success: true, output: enhanced.count)
                     completion(.success(review))
                 } catch {
-                    self.finishOrFallback(
-                        error: error,
-                        source: source,
-                        protected: protected,
-                        operationID: operationID,
-                        progress: progress,
-                        completion: completion
-                    )
+                    self.finishExternalFailure(error, completion: completion)
                 }
             case .failure(let error):
-                self.finishOrFallback(
-                    error: error,
-                    source: source,
-                    protected: protected,
-                    operationID: operationID,
-                    progress: progress,
-                    completion: completion
-                )
+                self.finishExternalFailure(error, completion: completion)
             }
         }
     }
 
-    private func finishOrFallback(
-        error: Error,
-        source: String,
-        protected: StealthProtectedText,
-        operationID: UUID,
-        progress: @escaping (String) -> Void,
+    private func finishExternalFailure(
+        _ error: Error,
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
-        guard SettingsStore.shared.grammarFallbackToLocal else {
-            finish(success: false, detail: error.localizedDescription)
-            completion(.failure(error))
-            return
-        }
-        let detail = "Enhanced Grammar unavailable (\(error.localizedDescription)) · Local result shown."
-        runLocalReview(
-            source: source,
-            protected: protected,
-            operationID: operationID,
-            progress: progress,
-            status: detail,
-            completion: completion
-        )
+        finish(success: false, detail: error.localizedDescription)
+        completion(.failure(error))
     }
 
     private func runLocalReview(
@@ -330,19 +283,14 @@ final class RuleBasedWritingChecker {
             source,
             ignoreList: SettingsStore.shared.writingInstructions
         )
-        if SettingsStore.shared.developerGrammarEnabled {
+        if SettingsStore.shared.grammarEngineMode == .externalAPI {
             guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-                if SettingsStore.shared.grammarFallbackToLocal {
-                    progress("Enhanced check unavailable · Local result shown.")
-                    runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
-                } else {
-                    let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
-                    finish(success: false, detail: error.localizedDescription)
-                    completion(.failure(error))
-                }
+                let error = StealthGrammarRemoteClient.ClientError.invalidConfiguration
+                finish(success: false, detail: error.localizedDescription)
+                completion(.failure(error))
                 return
             }
-            progress("Checking with Enhanced Grammar…")
+            progress("Checking with External Grammar…")
             remoteTask = remoteClient.correctSegments(
                 protected.editableSegments(),
                 configuration: configuration
@@ -359,22 +307,12 @@ final class RuleBasedWritingChecker {
                         self.finish(success: true, output: corrected.count)
                         completion(.success(corrected))
                     } catch {
-                        if SettingsStore.shared.grammarFallbackToLocal {
-                            progress("Enhanced check unavailable (\(error.localizedDescription)) · Local result shown.")
-                            self.runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
-                        } else {
-                            self.finish(success: false, detail: error.localizedDescription)
-                            completion(.failure(error))
-                        }
-                    }
-                case .failure(let error):
-                    if SettingsStore.shared.grammarFallbackToLocal {
-                        progress("Enhanced check unavailable · Local result shown.")
-                        self.runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
-                    } else {
                         self.finish(success: false, detail: error.localizedDescription)
                         completion(.failure(error))
                     }
+                case .failure(let error):
+                    self.finish(success: false, detail: error.localizedDescription)
+                    completion(.failure(error))
                 }
             }
             return

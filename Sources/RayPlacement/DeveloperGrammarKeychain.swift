@@ -47,6 +47,6 @@ enum DeveloperGrammarKeychain {
 
     struct KeychainError: LocalizedError {
         let status: OSStatus
-        var errorDescription: String? { "Could not save the Enhanced Grammar key (Keychain status \(status))." }
+        var errorDescription: String? { "Could not save the external grammar key (Keychain status \(status))." }
     }
 }

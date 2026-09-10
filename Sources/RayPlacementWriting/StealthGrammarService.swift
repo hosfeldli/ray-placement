@@ -80,8 +80,8 @@ public struct StealthProtectedText: Equatable, Sendable {
 }
 
 
-/// A provider edit is expressed in UTF-16 offsets so it maps directly to the
-/// ranges used by Foundation and by the provider transport contract.
+/// A local edit is expressed in UTF-16 offsets so Foundation can apply it
+/// safely after a provider correction has been mapped by segment ID.
 public struct StealthEditableSegment: Codable, Equatable, Sendable {
     public let id: String
     public let text: String

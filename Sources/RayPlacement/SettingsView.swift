@@ -280,9 +280,9 @@ struct SettingsView: View {
             SettingsCompactStatus(title: "Microphone", value: compactPermission(.microphone))
             SettingsCompactStatus(title: "Whisper", value: settings.dictationEngine == .localWhisper ? "Ready" : "Apple Speech")
             SettingsCompactStatus(
-                title: "Enhanced Grammar",
-                value: settings.grammarEngineEnhanced
-                    ? (settings.enhancedGrammarAPIKeyStored ? "\(settings.developerGrammarProvider.title) · Connected" : "Needs key")
+                title: "Correction Engine",
+                value: settings.grammarEngineMode == .externalAPI
+                    ? (settings.enhancedGrammarAPIKeyStored ? "External API · Connected" : "External API · Needs key")
                     : "Local"
             )
             SettingsCompactStatus(title: "Extensions", value: "\(viewModel.extensionCommands.count) enabled")
@@ -448,16 +448,13 @@ struct SettingsView: View {
 
     private var grammarEngineSection: some View {
         Section("Grammar Engine") {
-            Picker("Grammar engine", selection: Binding(
-                get: { settings.grammarEngineEnhanced },
-                set: { settings.grammarEngineEnhanced = $0 }
-            )) {
-                Text("Local").tag(false)
-                Text("Enhanced").tag(true)
+            Picker("Correction engine", selection: $settings.grammarEngineMode) {
+                Text("Local").tag(GrammarEngineMode.local)
+                Text("External API").tag(GrammarEngineMode.externalAPI)
             }
             .pickerStyle(.segmented)
-            if settings.grammarEngineEnhanced {
-                Text("Enhanced uses Local plus your selected AI provider. Text being checked is sent to that provider after protected spans are masked.")
+            if settings.grammarEngineMode == .externalAPI {
+                Text("External API sends the checked text to the selected provider after protected spans are masked. It never falls back to Local on failure.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
                 Picker("Provider", selection: Binding(
@@ -497,7 +494,6 @@ struct SettingsView: View {
                             .limaFont(.caption)
                     }
                 }
-                Toggle("Fall back to Local", isOn: $settings.grammarFallbackToLocal)
                 DisclosureGroup("Advanced provider settings") {
                     TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
                         .textFieldStyle(.roundedBorder)
@@ -523,12 +519,12 @@ struct SettingsView: View {
                     .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
 
                     Button {
-                        testGrammarCompatibility()
+                        testExternalGrammar()
                     } label: {
                         if isTestingGrammarCompatibility {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Test Grammar Compatibility", systemImage: "text.badge.checkmark")
+                            Label("Test External Grammar", systemImage: "text.badge.checkmark")
                         }
                     }
                     .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
@@ -568,7 +564,7 @@ struct SettingsView: View {
         }
     }
 
-    private func testGrammarCompatibility() {
+    private func testExternalGrammar() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
             grammarCompatibilityMessage = "Save an API key and model first."
             return

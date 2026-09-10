@@ -44,7 +44,6 @@ struct NotesAppearancePalette {
     let taskHover: NSColor
     let taskCompletedText: NSColor
     let tableHeader: NSColor
-    let tableAlternate: NSColor
     let tableGrid: NSColor
     let tableOuterBorder: NSColor
     let tableHover: NSColor
@@ -85,7 +84,6 @@ struct NotesAppearancePalette {
         // values are semantic, not calibrated RGBs, so native appearance and
         // accessibility settings remain the source of truth.
         tableHeader = Self.blend(background, with: baseAccent, fraction: isDark ? 0.13 : 0.085)
-        tableAlternate = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.045 : 0.030)
         tableGrid = separator.withAlphaComponent(isDark ? 0.78 : 0.58)
         tableOuterBorder = Self.blend(separator, with: textPrimary, fraction: isDark ? 0.58 : 0.42)
         tableHover = Self.blend(tableHeader, with: baseAccent, fraction: isDark ? 0.20 : 0.12)
@@ -142,7 +140,6 @@ enum LimaAppKitDesign {
     static var selection: NSColor { notesPalette.tableSelectedCell }
     static var taskHover: NSColor { notesPalette.taskHover }
     static var tableHeaderBackground: NSColor { notesPalette.tableHeader }
-    static var tableAlternateBackground: NSColor { notesPalette.tableAlternate }
     static var tableGrid: NSColor { notesPalette.tableGrid }
     static var tableOuterBorder: NSColor { notesPalette.tableOuterBorder }
     static var tableHover: NSColor { notesPalette.tableHover }

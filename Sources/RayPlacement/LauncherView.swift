@@ -608,7 +608,7 @@ struct LauncherView: View {
     }
 
     private var activeWritingModelTitle: String {
-        SettingsStore.shared.grammarEngineEnhanced ? "Enhanced Grammar" : "Python + Harper"
+        SettingsStore.shared.grammarEngineMode == .externalAPI ? "External API" : "Python + Harper"
     }
 
     @ViewBuilder

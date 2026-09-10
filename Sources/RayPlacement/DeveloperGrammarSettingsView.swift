@@ -30,12 +30,14 @@ struct DeveloperGrammarSettingsView: View {
     var body: some View {
         Form {
             Section("Grammar Engine") {
-                Toggle("Use Enhanced Grammar", isOn: $settings.developerGrammarEnabled)
-                Text("Local keeps all text on this Mac. Enhanced sends the text being checked to your selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Fall back to Local", isOn: $settings.grammarFallbackToLocal)
-                Text("If Enhanced is unavailable, Lima keeps the local result and shows a quiet status instead of replacing text with an unsafe response.")
+                Picker("Correction engine", selection: $settings.grammarEngineMode) {
+                    Text("Local").tag(GrammarEngineMode.local)
+                    Text("External API").tag(GrammarEngineMode.externalAPI)
+                }
+                .pickerStyle(.segmented)
+                Text(settings.grammarEngineMode == .local
+                     ? "Local keeps all text on this Mac."
+                     : "External API sends checked text to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected. External failures are reported directly; there is no fallback.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -161,12 +163,12 @@ struct DeveloperGrammarSettingsView: View {
 
                 HStack {
                     Button {
-                        testGrammarCompatibility()
+                        testExternalGrammar()
                     } label: {
                         if isTestingCompatibility {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Test Grammar Compatibility", systemImage: "text.badge.checkmark")
+                            Label("Test External Grammar", systemImage: "text.badge.checkmark")
                         }
                     }
                     .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
@@ -176,7 +178,7 @@ struct DeveloperGrammarSettingsView: View {
                             .foregroundStyle(compatibilityMessage.hasPrefix("Compatible") ? .green : .secondary)
                     }
                 }
-                Text("Sends a protected sample, requests structured UTF-16 edits, and validates the provider response without changing your notes.")
+                Text("Sends a protected sample, requests ID-based structured edits, and validates the provider response without changing your notes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -239,7 +241,7 @@ struct DeveloperGrammarSettingsView: View {
         }
     }
 
-    private func testGrammarCompatibility() {
+    private func testExternalGrammar() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
             compatibilityMessage = "Save a key, model, and base URL first."
             return
