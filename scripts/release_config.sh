@@ -3,15 +3,15 @@
 #
 # This file is sourced by packaging and release scripts. It is intentionally
 # free of side effects: it does not create keychains, modify Git, or contact
-# GitHub. Override values with environment variables in CI when necessary.
+# GitHub. The signing identity and certificate fingerprint are fixed public
+# policy; CI supplies only the private key through its temporary keychain.
 
-# The self-signed local identity is the supported default for the current
-# distribution model. Developer ID remains available when CI supplies a
-# complete policy and signing identity.
-LIMA_RELEASE_SIGNING_MODE="${RAYPLACEMENT_SIGNING_MODE:-self-signed-local}"
-LIMA_RELEASE_SIGNING_IDENTITY="${RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY:-RayPlacement Local Code Signing}"
-LIMA_RELEASE_TEAM_IDENTIFIER="${RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER:-not set}"
-LIMA_RELEASE_CERTIFICATE_SHA256="${RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256:-ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da}"
+# Lima currently uses one stable local certificate for both application
+# signing and custom-updater trust. The identity and public fingerprint are
+# policy, not credentials; only the private key material must be provisioned.
+LIMA_RELEASE_SIGNING_MODE="self-signed-local"
+LIMA_RELEASE_SIGNING_IDENTITY="RayPlacement Local Code Signing"
+LIMA_RELEASE_CERTIFICATE_SHA256="ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da"
 LIMA_RELEASE_DMG_PART_SIZE="${RAYPLACEMENT_DMG_PART_SIZE:-24m}"
 LIMA_RELEASE_DMG_PART_SUFFIX_LENGTH="${RAYPLACEMENT_DMG_PART_SUFFIX_LENGTH:-2}"
 LIMA_RELEASE_MINIMUM_FREE_KB="${RAYPLACEMENT_MINIMUM_FREE_KB:-5242880}"
@@ -25,37 +25,18 @@ lima_release_export_packaging_policy() {
     export RAYPLACEMENT_SIGNING_MODE="$LIMA_RELEASE_SIGNING_MODE"
     export RAYPLACEMENT_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
     export RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
-    export RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER="$LIMA_RELEASE_TEAM_IDENTIFIER"
     export RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256="$LIMA_RELEASE_CERTIFICATE_SHA256"
 }
 
 lima_release_validate_signing_policy() {
-    case "$LIMA_RELEASE_SIGNING_MODE" in
-        self-signed-local)
-            [[ "$LIMA_RELEASE_TEAM_IDENTIFIER" == "not set" ]] || {
-                print -u2 "Self-signed local releases must use TeamIdentifier=not set."
-                return 1
-            }
-            [[ "$LIMA_RELEASE_SIGNING_IDENTITY" == "RayPlacement Local Code Signing" ]] || {
-                print -u2 "Self-signed local releases must use RayPlacement Local Code Signing."
-                return 1
-            }
-            ;;
-        developer-id)
-            [[ -n "$LIMA_RELEASE_TEAM_IDENTIFIER" && "$LIMA_RELEASE_TEAM_IDENTIFIER" != "not set" ]] || {
-                print -u2 "Developer ID releases require a Team ID."
-                return 1
-            }
-            [[ -n "$LIMA_RELEASE_SIGNING_IDENTITY" ]] || {
-                print -u2 "Developer ID releases require a signing identity."
-                return 1
-            }
-            ;;
-        *)
-            print -u2 "Unsupported signing mode: $LIMA_RELEASE_SIGNING_MODE"
-            return 1
-            ;;
-    esac
+    [[ "$LIMA_RELEASE_SIGNING_MODE" == "self-signed-local" ]] || {
+        print -u2 "Only the self-signed-local release policy is supported."
+        return 1
+    }
+    [[ "$LIMA_RELEASE_SIGNING_IDENTITY" == "RayPlacement Local Code Signing" ]] || {
+        print -u2 "The release identity must be RayPlacement Local Code Signing."
+        return 1
+    }
     [[ "$LIMA_RELEASE_CERTIFICATE_SHA256" =~ '^[[:xdigit:]]{64}$' ]] || {
         print -u2 "The release certificate fingerprint must be 64 hexadecimal characters."
         return 1

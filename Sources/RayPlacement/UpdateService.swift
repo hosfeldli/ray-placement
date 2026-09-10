@@ -527,11 +527,10 @@ final class UpdateService: ObservableObject {
         guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
         let policy = Bundle.main.infoDictionary ?? [:]
         guard (policy["LimaUpdatePolicyVersion"] as? Int ?? 0) == rayPlacementUpdateTrustPolicyVersion,
-              let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
               let identity = policy["LimaUpdateExpectedSigningIdentity"] as? String,
               let certificate = policy["LimaUpdateExpectedCertificateSHA256"] as? String,
-              !team.isEmpty, !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }
-        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, team, identity, certificate, canonicalBundleURL.path])
+              !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }
+        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, identity, certificate, canonicalBundleURL.path])
     }
 
     private nonisolated func runProcess(_ executable: String, arguments: [String]) throws -> String {

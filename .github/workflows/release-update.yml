@@ -18,15 +18,7 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
-      # The ephemeral hosted runner only provisions the pinned local signing
-      # keychain below. Developer ID remains a separately configured local
-      # policy and is intentionally not offered by this workflow.
       RAYPLACEMENT_SIGNING_MODE: self-signed-local
-      RAYPLACEMENT_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
-      RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER: ${{ secrets.LIMA_TEAM_IDENTIFIER }}
-      RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
-      RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256: ${{ secrets.LIMA_CERTIFICATE_SHA256 }}
-      RAYPLACEMENT_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
       LIMA_RELEASE_EXPECTED_REF: refs/tags/${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -37,21 +29,38 @@ jobs:
           fetch-tags: true
           lfs: true
 
-      - name: Import CI signing keychain
+      - name: Configure ephemeral signing directory
         shell: bash
         env:
-          SIGNING_KEYCHAIN_B64: ${{ secrets.LIMA_SIGNING_KEYCHAIN_B64 }}
-          SIGNING_PASSWORD: ${{ secrets.LIMA_SIGNING_KEYCHAIN_PASSWORD }}
-          SIGNING_CERTIFICATE_B64: ${{ secrets.LIMA_SIGNING_CERTIFICATE_B64 }}
+          SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
         run: |
           set -euo pipefail
-          test -n "$SIGNING_KEYCHAIN_B64"
-          test -n "$SIGNING_PASSWORD"
-          test -n "$SIGNING_CERTIFICATE_B64"
+          printf 'RAYPLACEMENT_SIGNING_DIRECTORY=%s\n' "$SIGNING_DIRECTORY" >> "$GITHUB_ENV"
+
+      - name: Import CI signing P12
+        shell: bash
+        env:
+          SIGNING_P12_B64: ${{ secrets.LIMA_SIGNING_P12_B64 }}
+          SIGNING_PASSWORD: ${{ secrets.LIMA_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$SIGNING_P12_B64" || { echo 'Missing LIMA_SIGNING_P12_B64 repository secret.' >&2; exit 1; }
+          test -n "$SIGNING_PASSWORD" || { echo 'Missing LIMA_SIGNING_P12_PASSWORD repository secret.' >&2; exit 1; }
           mkdir -p "$RAYPLACEMENT_SIGNING_DIRECTORY"
-          printf '%s' "$SIGNING_KEYCHAIN_B64" | base64 --decode > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
+          P12_PATH="$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.p12"
+          KEYCHAIN_PATH="$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
+          printf '%s' "$SIGNING_P12_B64" | base64 --decode > "$P12_PATH"
           printf '%s\n' "$SIGNING_PASSWORD" > "$RAYPLACEMENT_SIGNING_DIRECTORY/keychain-password"
-          printf '%s' "$SIGNING_CERTIFICATE_B64" | base64 --decode > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+          security create-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$P12_PATH" -k "$KEYCHAIN_PATH" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$SIGNING_PASSWORD" \
+            "$KEYCHAIN_PATH" >/dev/null
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F '"RayPlacement Local Code Signing"'
           chmod 600 "$RAYPLACEMENT_SIGNING_DIRECTORY"/*
 
       - name: Verify source tag and signing policy
@@ -82,3 +91,14 @@ jobs:
           set -euo pipefail
           ./scripts/release_stage.sh --tag "$RELEASE_TAG"
           ./scripts/release_verify.sh --tag "$RELEASE_TAG" --remote-only
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="${RAYPLACEMENT_SIGNING_DIRECTORY:-}/RayPlacementSigning.keychain-db"
+          if [[ -n "${RAYPLACEMENT_SIGNING_DIRECTORY:-}" ]]; then
+            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
+            rm -rf -- "$RAYPLACEMENT_SIGNING_DIRECTORY"
+          fi

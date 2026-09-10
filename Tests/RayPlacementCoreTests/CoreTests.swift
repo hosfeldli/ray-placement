@@ -624,22 +624,13 @@ private func packageRoot() -> URL {
     #expect(throws: UpdateValidationError.wrongCertificate) {
         try UpdateVerificationPolicy.validateSigningIdentity(
             certificateFingerprint: "bad", expectedCertificateFingerprint: "good",
-            teamIdentifier: "TEAM", expectedTeamIdentifier: "TEAM",
-            signingIdentity: "Developer ID Application: Lima", expectedSigningIdentity: "Developer ID Application: Lima"
-        )
-    }
-    #expect(throws: UpdateValidationError.wrongTeamIdentifier) {
-        try UpdateVerificationPolicy.validateSigningIdentity(
-            certificateFingerprint: "good", expectedCertificateFingerprint: "good",
-            teamIdentifier: "WRONG", expectedTeamIdentifier: "TEAM",
-            signingIdentity: "Developer ID Application: Lima", expectedSigningIdentity: "Developer ID Application: Lima"
+            signingIdentity: "RayPlacement Local Code Signing", expectedSigningIdentity: "RayPlacement Local Code Signing"
         )
     }
     #expect(throws: UpdateValidationError.wrongSigningIdentity) {
         try UpdateVerificationPolicy.validateSigningIdentity(
             certificateFingerprint: "good", expectedCertificateFingerprint: "good",
-            teamIdentifier: "TEAM", expectedTeamIdentifier: "TEAM",
-            signingIdentity: "Wrong Identity", expectedSigningIdentity: "Developer ID Application: Lima"
+            signingIdentity: "Wrong Identity", expectedSigningIdentity: "RayPlacement Local Code Signing"
         )
     }
     #expect(throws: UpdateValidationError.buildMismatch) {

@@ -5,9 +5,11 @@ release lifecycle is deliberately split into small, resumable phases. A build,
 upload, draft review, and publication are separate operations.
 
 The current distribution uses Lima's pinned local self-signed certificate. It is
-not an Apple-notarized Developer ID distribution. macOS may require **Control-
-click → Open** the first time the app is installed. Developer ID is supported
-only as an explicit, fully configured alternate signing policy.
+not an Apple-notarized Developer ID distribution, and this repository does not
+support Developer ID or Apple Developer Program signing variables. macOS may
+require **Control-click → Open** the first time the app is installed. The custom
+updater trusts the same stable certificate across releases; Sparkle migration is
+a separate future project.
 
 ## Safety rules
 
@@ -54,7 +56,6 @@ self-signed local defaults are:
 |---|---|
 | Signing mode | `self-signed-local` |
 | Identity | `RayPlacement Local Code Signing` |
-| Team identifier | `not set` |
 | Certificate SHA-256 | `ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da` |
 | DMG part size | `24m` |
 | DMG part suffix length | `2` |
@@ -72,16 +73,30 @@ Local signing files normally reside at:
 
 Use `scripts/setup_local_signing.sh` to install or repair the local signing
 identity when necessary. `release_preflight.sh` checks that the keychain identity
-and the actual certificate match the pinned SHA-256 fingerprint.
+and the actual certificate match the pinned SHA-256 fingerprint. The identity and
+fingerprint are public policy, not credentials; never rotate the certificate
+without intentionally changing the updater trust anchor for existing installs.
 
-Environment overrides are intended for CI or an explicit alternate policy:
+### Hosted release signing
 
-```sh
-RAYPLACEMENT_SIGNING_MODE=developer-id
-RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY='Developer ID Application: Example (TEAMID)'
-RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER='TEAMID'
-RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256='...64 hexadecimal characters...'
-```
+GitHub Actions imports the same certificate and private key into a disposable
+keychain for each release run. Configure exactly these repository secrets:
+
+| Secret | Contents |
+|---|---|
+| `LIMA_SIGNING_P12_B64` | Base64-encoded PKCS #12 bundle containing the `RayPlacement Local Code Signing` certificate and private key |
+| `LIMA_SIGNING_P12_PASSWORD` | Password protecting the PKCS #12 bundle |
+
+The workflow creates a temporary keychain, imports the P12, verifies that the
+pinned identity is present, and writes the P12 password to the temporary
+`keychain-password` file consumed by the release scripts. The P12 password is
+also used as the temporary keychain password. An always-run cleanup step deletes
+the temporary keychain and signing directory after the job.
+
+Do not create secrets for the signing identity, certificate fingerprint, Team ID,
+serialized keychains, or a separate public certificate. The identity and
+fingerprint are source-controlled policy, and the public certificate is already
+inside the P12 bundle. There is no supported Developer ID signing override.
 
 Other supported overrides are `RAYPLACEMENT_SIGNING_DIRECTORY`,
 `RAYPLACEMENT_SIGNING_KEYCHAIN`, `RAYPLACEMENT_SIGNING_PASSWORD_FILE`,

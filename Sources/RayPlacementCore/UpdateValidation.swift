@@ -13,7 +13,6 @@ public enum UpdateValidationError: Error, Equatable, Sendable {
     case wrongBundleIdentifier
     case versionNotNewer
     case wrongCertificate
-    case wrongTeamIdentifier
     case wrongSigningIdentity
 }
 
@@ -91,16 +90,11 @@ public enum UpdateVerificationPolicy {
     public static func validateSigningIdentity(
         certificateFingerprint: String,
         expectedCertificateFingerprint: String,
-        teamIdentifier: String,
-        expectedTeamIdentifier: String,
         signingIdentity: String,
         expectedSigningIdentity: String
     ) throws {
         guard certificateFingerprint.caseInsensitiveCompare(expectedCertificateFingerprint) == .orderedSame else {
             throw UpdateValidationError.wrongCertificate
-        }
-        guard teamIdentifier == expectedTeamIdentifier else {
-            throw UpdateValidationError.wrongTeamIdentifier
         }
         guard signingIdentity == expectedSigningIdentity else {
             throw UpdateValidationError.wrongSigningIdentity

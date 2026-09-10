@@ -98,7 +98,6 @@ release_write_metadata() {
         --arg commit "$commit" \
         --arg signingMode "$LIMA_RELEASE_SIGNING_MODE" \
         --arg signingIdentity "$LIMA_RELEASE_SIGNING_IDENTITY" \
-        --arg teamIdentifier "$LIMA_RELEASE_TEAM_IDENTIFIER" \
         --arg certificateSHA256 "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" \
         --arg releaseURL "https://github.com/hosfeldli/ray-placement/releases/tag/$tag" \
         --arg updateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip" \
@@ -107,7 +106,7 @@ release_write_metadata() {
         --arg dmgSHA256 "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
         --argjson updateBytes "$(stat -f %z "$update")" \
         --argjson dmgBytes "$(stat -f %z "$dmg")" \
-        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, teamIdentifier: $teamIdentifier, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
+        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
         > "$metadata"
     chmod 600 "$metadata"
 }

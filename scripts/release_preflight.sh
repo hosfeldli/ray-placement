@@ -16,7 +16,7 @@ Usage: release_preflight.sh [--tag vX.Y.Z]
 Checks:
   * clean, pushed Git worktree
   * plist version/build/tag consistency
-  * self-signed or Developer ID signing policy
+  * Lima's pinned self-signed signing policy
   * local signing keychain and certificate fingerprint
   * required tools, GitHub authentication, and disk space
   * existing release/tag state without modifying it
@@ -74,13 +74,6 @@ if [[ "$LIMA_RELEASE_SIGNING_MODE" == self-signed-local ]]; then
     actual_certificate="$(security find-certificate -a -c "$LIMA_RELEASE_SIGNING_IDENTITY" -p "$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN" | openssl x509 -outform der 2>/dev/null | shasum -a 256 | awk '{print tolower($1)}')"
     [[ "$actual_certificate" == "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" ]] || {
         print -u2 "Signing certificate mismatch: configured ${LIMA_RELEASE_CERTIFICATE_SHA256:l}, found $actual_certificate."; exit 1;
-    }
-elif [[ "$LIMA_RELEASE_SIGNING_MODE" == developer-id ]]; then
-    identity_hash="$(security find-identity -v -p codesigning | awk -v identity="$LIMA_RELEASE_SIGNING_IDENTITY" 'index($0, "\"" identity "\"") {print $2; exit}')"
-    [[ -n "$identity_hash" ]] || { print -u2 "Developer ID identity is not available: $LIMA_RELEASE_SIGNING_IDENTITY"; exit 1; }
-    actual_certificate="$(security find-certificate -a -c "$LIMA_RELEASE_SIGNING_IDENTITY" -p | openssl x509 -outform der 2>/dev/null | shasum -a 256 | awk '{print tolower($1)}')"
-    [[ "$actual_certificate" == "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" ]] || {
-        print -u2 "Developer ID certificate mismatch: configured ${LIMA_RELEASE_CERTIFICATE_SHA256:l}, found $actual_certificate."; exit 1;
     }
 fi
 

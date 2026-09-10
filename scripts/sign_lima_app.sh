@@ -1,9 +1,8 @@
 #!/bin/zsh
 # Sign an already-built Lima.app with the pinned local signing identity.
 #
-# This helper is intentionally limited to the self-signed-local policy. CI or
-# package_app.sh handles the explicit Developer ID path. It does not modify Git,
-# upload artifacts, or publish a release.
+# This helper signs with Lima's pinned self-signed-local identity. It does not
+# modify Git, upload artifacts, or publish a release.
 set -euo pipefail
 
 SCRIPT_DIRECTORY="${0:A:h}"
@@ -16,7 +15,7 @@ LOCAL_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
 
 lima_release_validate_signing_policy
 [[ "$LIMA_RELEASE_SIGNING_MODE" == "self-signed-local" ]] || {
-    print -u2 "sign_lima_app.sh only supports the self-signed-local policy; use package_app.sh for Developer ID builds."
+    print -u2 "sign_lima_app.sh only supports Lima's self-signed-local policy."
     exit 1
 }
 [[ -d "$APP_DIRECTORY" ]] || { print -u2 "Lima.app is missing: $APP_DIRECTORY"; exit 1; }

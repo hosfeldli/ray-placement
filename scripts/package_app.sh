@@ -27,7 +27,6 @@ LOCAL_SIGNING_DIRECTORY="$LIMA_RELEASE_LOCAL_SIGNING_DIRECTORY"
 LOCAL_SIGNING_KEYCHAIN="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
 LOCAL_SIGNING_PASSWORD="$LIMA_RELEASE_LOCAL_SIGNING_PASSWORD"
 LOCAL_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
-EXPECTED_TEAM_IDENTIFIER="$LIMA_RELEASE_TEAM_IDENTIFIER"
 EXPECTED_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
 EXPECTED_CERTIFICATE_SHA256="$LIMA_RELEASE_CERTIFICATE_SHA256"
 SIGNING_MODE="$LIMA_RELEASE_SIGNING_MODE"
@@ -128,21 +127,17 @@ cp "$PROJECT_DIRECTORY/scripts/verify_update_app.sh" "$CONTENTS_DIRECTORY/Resour
 cp "$PROJECT_DIRECTORY/scripts/request_lima_update_approval.sh" "$CONTENTS_DIRECTORY/Resources/Updater/request_lima_update_approval.sh"
 chmod 755 "$CONTENTS_DIRECTORY/Resources/Updater"/*.sh
 # The installed app carries the immutable policy used to verify future update
-# candidates. Release builds must provide all three values; an ad-hoc build is
-# never eligible for protected updates.
+# candidates. Stable release builds must provide the pinned identity and
+# certificate fingerprint; an ad-hoc build is never eligible for protected
+# updates.
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     [[ -n "$EXPECTED_SIGNING_IDENTITY" && -n "$EXPECTED_CERTIFICATE_SHA256" ]] || { echo "Release signing identity and certificate fingerprint are required." >&2; exit 1; }
     [[ "$EXPECTED_CERTIFICATE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Release certificate fingerprint must be SHA-256 hex." >&2; exit 1; }
-    if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
-        [[ "$EXPECTED_TEAM_IDENTIFIER" == "not set" ]] || { echo "Self-signed local releases must use TeamIdentifier=not set." >&2; exit 1; }
-        [[ "$EXPECTED_SIGNING_IDENTITY" == "$LOCAL_SIGNING_IDENTITY" ]] || { echo "Self-signed local releases must use the pinned local identity." >&2; exit 1; }
-    else
-        [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
-    fi
+    [[ "$SIGNING_MODE" == "self-signed-local" ]] || { echo "Only the self-signed-local release policy is supported." >&2; exit 1; }
+    [[ "$EXPECTED_SIGNING_IDENTITY" == "$LOCAL_SIGNING_IDENTITY" ]] || { echo "Self-signed local releases must use the pinned local identity." >&2; exit 1; }
 fi
 /usr/libexec/PlistBuddy -c "Add :LimaUpdatePolicyVersion integer 1" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdatePolicyVersion 1" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateSigningMode string $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateSigningMode $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist"
-/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedTeamIdentifier string $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedTeamIdentifier $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedSigningIdentity string $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedSigningIdentity $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedCertificateSHA256 string $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedCertificateSHA256 $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist"
 cp "$PROJECT_DIRECTORY/scripts/authorize_lima_update.applescript" "$CONTENTS_DIRECTORY/Resources/Updater/authorize_lima_update.applescript"
@@ -155,14 +150,7 @@ fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
-if [[ "$SIGNING_MODE" == "developer-id" ]]; then
-    # Developer ID builds select the identity explicitly. Self-signed local
-    # builds intentionally continue through the pinned private keychain path
-    # below, even when CI exposes a similarly named environment variable.
-    CODESIGN_IDENTITY="${RAYPLACEMENT_SIGNING_IDENTITY:-$EXPECTED_SIGNING_IDENTITY}"
-    codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIRECTORY"
-    echo "Signed with the configured Developer ID identity."
-elif [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: local signing was disabled; this build is ad-hoc signed."
 elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then

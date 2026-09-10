@@ -38,23 +38,17 @@ require "the administrator approval dialog is missing" test -f "$RESOURCES/Updat
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
 
-EXPECTED_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedTeamIdentifier' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
 EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
 EXPECTED_CERTIFICATE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedCertificateSHA256' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
-SIGNING_MODE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateSigningMode' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || print developer-id)"
+SIGNING_MODE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateSigningMode' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || print self-signed-local)"
 if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     [[ -n "$EXPECTED_IDENTITY" ]] || { echo 'Verification failed: expected signing identity policy is missing' >&2; exit 1; }
     [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Verification failed: expected certificate fingerprint policy is missing' >&2; exit 1; }
-    if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
-        [[ "$EXPECTED_TEAM_ID" == 'not set' ]] || { echo 'Verification failed: self-signed local policy must use TeamIdentifier=not set' >&2; exit 1; }
-        [[ "$EXPECTED_IDENTITY" == "$LIMA_RELEASE_SIGNING_IDENTITY" ]] || { echo 'Verification failed: self-signed local identity is not pinned' >&2; exit 1; }
-    else
-        [[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || { echo 'Verification failed: a release Team ID policy is required' >&2; exit 1; }
-    fi
+    [[ "$SIGNING_MODE" == "self-signed-local" ]] || { echo 'Verification failed: only the self-signed-local policy is supported' >&2; exit 1; }
+    [[ "$EXPECTED_IDENTITY" == "$LIMA_RELEASE_SIGNING_IDENTITY" ]] || { echo 'Verification failed: self-signed local identity is not pinned' >&2; exit 1; }
     SIGNATURE_INFO="$(codesign -dvv "$APP_DIRECTORY" 2>&1)"
     [[ "$SIGNATURE_INFO" != *'Signature=adhoc'* ]] || { echo 'Verification failed: release app is ad-hoc signed' >&2; exit 1; }
     [[ "$SIGNATURE_INFO" == *"Authority=$EXPECTED_IDENTITY"* ]] || { echo 'Verification failed: signing identity does not match policy' >&2; exit 1; }
-    [[ "$SIGNATURE_INFO" == *"TeamIdentifier=$EXPECTED_TEAM_ID"* ]] || { echo 'Verification failed: Team ID does not match policy' >&2; exit 1; }
     CERT_DIR="$(mktemp -d "${TMPDIR%/}/lima-package-cert.XXXXXX")"
     trap 'rm -rf "$CERT_DIR"' EXIT
     codesign -d --extract-certificates="$CERT_DIR/cert" "$APP_DIRECTORY" >/dev/null 2>&1

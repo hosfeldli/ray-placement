@@ -31,6 +31,13 @@ jobs:
             /bin/zsh -n "$file"
           done
 
+      - name: Lint GitHub Actions workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install actionlint
+          actionlint
+
       - name: Run Swift tests
         run: make test
 
