@@ -7,6 +7,7 @@ source "$SCRIPT_DIRECTORY/release_config.sh"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
+SPARKLE_FRAMEWORK="$APP_DIRECTORY/Contents/Frameworks/Sparkle.framework"
 SOURCE_INFO="$PROJECT_DIRECTORY/Packaging/Info.plist"
 
 require() {
@@ -17,6 +18,10 @@ require() {
 
 require "Lima.app is missing" test -d "$APP_DIRECTORY"
 require "the Lima executable is missing" test -x "$BINARY"
+require "Sparkle.framework is missing" test -d "$SPARKLE_FRAMEWORK"
+require "the Sparkle framework binary is missing" test -x "$SPARKLE_FRAMEWORK/Versions/B/Sparkle"
+require "Sparkle's updater helper is missing" test -d "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+require "Sparkle's XPC services are missing" test -d "$SPARKLE_FRAMEWORK/Versions/B/XPCServices"
 require "the app icon is missing" test -f "$RESOURCES/RayPlacement.icns"
 require "the Harper executable is missing" test -x "$RESOURCES/Tools/harper-cli"
 require "the Python grammar checker is missing" test -x "$RESOURCES/Tools/PythonGrammar/grammar_check.py"
@@ -36,6 +41,7 @@ require "the update verifier is missing" test -x "$RESOURCES/Updater/verify_upda
 require "the trusted approval helper is missing" test -x "$RESOURCES/Updater/request_lima_update_approval.sh"
 require "the administrator approval dialog is missing" test -f "$RESOURCES/Updater/authorize_lima_update.applescript"
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
+require "the executable is not linked to the embedded Sparkle framework" sh -c "(xcrun otool -L '$BINARY' 2>/dev/null || otool -L '$BINARY') | grep -q '@rpath/Sparkle.framework'"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
 
 EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
@@ -59,6 +65,8 @@ fi
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the display name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the executable name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIRECTORY/Contents/Info.plist")" == "dev.liam.lima" ]] || { echo "Verification failed: the bundle identifier is incorrect" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP_DIRECTORY/Contents/Info.plist")" == "https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml" ]] || { echo "Verification failed: Sparkle feed URL is missing or incorrect" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_DIRECTORY/Contents/Info.plist")" == "Lt/Wlxc0rmkpNrz0YQ4hBpgeO51ynD+yALaUtE45f0c=" ]] || { echo "Verification failed: Sparkle public EdDSA key is missing or incorrect" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP_DIRECTORY/Contents/Info.plist")" == "false" ]] || { echo "Verification failed: Lima is not configured to appear in the Dock" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIRECTORY/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SOURCE_INFO")" ]] || { echo "Verification failed: the app version does not match the release version" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIRECTORY/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SOURCE_INFO")" ]] || { echo "Verification failed: the app build number does not match the release build" >&2; exit 1; }

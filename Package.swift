@@ -3,19 +3,16 @@
 import Foundation
 import PackageDescription
 
-let enableSparkleMigration = ProcessInfo.processInfo.environment["LIMA_ENABLE_SPARKLE_MIGRATION"] == "1"
-var packageDependencies: [Package.Dependency] = [
-    .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0")
+let packageDependencies: [Package.Dependency] = [
+    .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0"),
+    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6")
 ]
-var appDependencies: [Target.Dependency] = [
+let appDependencies: [Target.Dependency] = [
     "RayPlacementCore",
     "RayPlacementWriting",
-    .product(name: "SwiftTerm", package: "SwiftTerm")
+    .product(name: "SwiftTerm", package: "SwiftTerm"),
+    .product(name: "Sparkle", package: "Sparkle")
 ]
-if enableSparkleMigration {
-    packageDependencies.append(.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.6.4"))
-    appDependencies.append(.product(name: "Sparkle", package: "Sparkle"))
-}
 
 let package = Package(
     name: "RayPlacement",
@@ -33,8 +30,7 @@ let package = Package(
         .target(name: "RayPlacementWriting"),
         .executableTarget(
             name: "RayPlacement",
-            dependencies: appDependencies,
-            swiftSettings: enableSparkleMigration ? [.define("LIMA_SPARKLE_MIGRATION")] : []
+            dependencies: appDependencies
         ),
         .testTarget(
             name: "RayPlacementCoreTests",

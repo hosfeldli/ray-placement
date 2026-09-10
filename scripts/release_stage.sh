@@ -33,12 +33,13 @@ done
 [[ -n "$TAG" ]] || TAG="$(release_default_tag)"
 release_validate_tag "$TAG"
 DIST="$PROJECT_DIRECTORY/dist"
-for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
+for artifact in Lima-Update.zip Lima-Update.sha256 Lima-Sparkle.zip Lima-Sparkle.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
     [[ -f "$DIST/$artifact" ]] || { print -u2 "Missing $DIST/$artifact; run release_build.sh first."; exit 1; }
 done
 (
     cd "$DIST"
     shasum -a 256 --check Lima-Update.sha256
+    shasum -a 256 --check Lima-Sparkle.sha256
     shasum -a 256 --check Lima.dmg.sha256
 )
 
@@ -65,6 +66,8 @@ fi
 
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.zip" Lima-Update.zip "$(jq -er '.update.sha256' "$DIST/Lima-release.json")"
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.sha256" Lima-Update.sha256 "$(shasum -a 256 "$DIST/Lima-Update.sha256" | awk '{print $1}')"
+release_upload_if_needed "$TAG" "$DIST/Lima-Sparkle.zip" Lima-Sparkle.zip "$(jq -er '.sparkleUpdate.sha256' "$DIST/Lima-release.json")"
+release_upload_if_needed "$TAG" "$DIST/Lima-Sparkle.sha256" Lima-Sparkle.sha256 "$(shasum -a 256 "$DIST/Lima-Sparkle.sha256" | awk '{print $1}')"
 release_upload_if_needed "$TAG" "$DIST/Lima.dmg.sha256" Lima.dmg.sha256 "$(shasum -a 256 "$DIST/Lima.dmg.sha256" | awk '{print $1}')"
 release_upload_if_needed "$TAG" "$DIST/latest.json" latest.json "$(shasum -a 256 "$DIST/latest.json" | awk '{print $1}')"
 release_upload_if_needed "$TAG" "$DIST/appcast.xml" appcast.xml "$(shasum -a 256 "$DIST/appcast.xml" | awk '{print $1}')"
@@ -119,6 +122,7 @@ if [[ -z "$remote_dmg_url" ]]; then
     jq --arg runId "$run_id" '.workflowRunId = ($runId | tonumber)' "$metadata" > "$temporary_metadata"
     mv -f "$temporary_metadata" "$metadata"
     if (( ! WAIT )); then
+        release_upload_if_needed "$TAG" "$DIST/Lima-release.json" Lima-release.json "$(shasum -a 256 "$DIST/Lima-release.json" | awk '{print $1}')"
         print "Not waiting for workflow $run_id (--no-wait)."
         exit 0
     fi
@@ -126,6 +130,10 @@ if [[ -z "$remote_dmg_url" ]]; then
     gh run watch "$run_id" --exit-status
 fi
 
+# Upload the final metadata only after the DMG workflow ID, if any, has been
+# recorded. Remote verification treats this file as the source of truth for
+# the Sparkle archive URL, size, and digest.
+release_upload_if_needed "$TAG" "$DIST/Lima-release.json" Lima-release.json "$(shasum -a 256 "$DIST/Lima-release.json" | awk '{print $1}')"
 "$SCRIPT_DIRECTORY/release_verify.sh" --tag "$TAG" --remote-only
 print "Draft staged and verified: $TAG"
 print "Next: ./scripts/release_publish.sh --tag $TAG"

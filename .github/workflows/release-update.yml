@@ -79,6 +79,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           LIMA_RELEASE_SKIP_PREFLIGHT: "1"
+          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           ./scripts/release_build.sh --tag "$RELEASE_TAG"

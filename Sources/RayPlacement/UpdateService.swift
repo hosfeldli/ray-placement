@@ -176,6 +176,11 @@ final class UpdateService: ObservableObject {
     }
 
     func checkForUpdates(manual: Bool) {
+        if SparkleMigrationBoundary.activeBackend == .sparkle {
+            statusText = "Sparkle is checking for Lima updates…"
+            SparkleUpdateService.shared.checkForUpdates()
+            return
+        }
         guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking for Lima updates…"

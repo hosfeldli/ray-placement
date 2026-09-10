@@ -12,6 +12,8 @@ SCRATCH_DIRECTORY="${RAYPLACEMENT_SCRATCH_DIRECTORY:-$PROJECT_DIRECTORY/.build}"
 MODULE_CACHE_DIRECTORY="${RAYPLACEMENT_MODULE_CACHE_DIRECTORY:-$SCRATCH_DIRECTORY/module-cache}"
 APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
+FRAMEWORKS_DIRECTORY="$CONTENTS_DIRECTORY/Frameworks"
+SPARKLE_FRAMEWORK_SOURCE="${RAYPLACEMENT_SPARKLE_FRAMEWORK_SOURCE:-$PROJECT_DIRECTORY/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework}"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
 source "$SCRIPT_DIRECTORY/release_config.sh"
@@ -41,13 +43,26 @@ if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" ]]; then
 fi
 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
 BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
+if [[ -z "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
+    SPARKLE_FRAMEWORK_SOURCE="$BIN_DIRECTORY/Sparkle.framework"
+fi
+[[ -d "$SPARKLE_FRAMEWORK_SOURCE" ]] || {
+    echo "Sparkle.framework is missing at $SPARKLE_FRAMEWORK_SOURCE. Build Sparkle before packaging." >&2
+    exit 1
+}
 
 if [[ -d "$APP_DIRECTORY" ]]; then
     rm -rf "$APP_DIRECTORY"
 fi
-mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
+mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources" "$FRAMEWORKS_DIRECTORY"
 
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
+install_name_tool -add_rpath '@loader_path/../Frameworks' "$CONTENTS_DIRECTORY/MacOS/Lima"
+# SwiftPM's executable links Sparkle through @rpath/@loader_path. Copy the
+# complete framework bundle with ditto so its versions, helper bundles, XPC
+# services, symlinks, and permissions remain intact.
+rm -rf "$FRAMEWORKS_DIRECTORY/Sparkle.framework"
+ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIRECTORY/Sparkle.framework"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
 
 # Keep the uninstaller inside the bundle so the packaged app is self-contained
@@ -150,7 +165,43 @@ fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
+sign_sparkle_framework() {
+    local framework="$1"
+    local signing_identity="$2"
+    local nested_app
+    local nested_binary
+
+    nested_app="$framework/Versions/B/Updater.app"
+    if [[ -d "$nested_app" ]]; then
+        nested_binary="$nested_app/Contents/MacOS/Updater"
+        if [[ -x "$nested_binary" ]]; then
+            codesign --force --sign "$signing_identity" "$nested_binary"
+        fi
+        codesign --force --deep --sign "$signing_identity" "$nested_app"
+    fi
+
+    for nested_binary in "$framework/Versions/B/Autoupdate" "$framework/Versions/B/Sparkle"; do
+        if [[ -f "$nested_binary" ]]; then
+            codesign --force --sign "$signing_identity" "$nested_binary"
+        fi
+    done
+
+    if [[ -d "$framework/Versions/B/XPCServices" ]]; then
+        for nested_app in "$framework/Versions/B/XPCServices"/*.xpc(N); do
+            [[ -d "$nested_app" ]] || continue
+            nested_binary="$nested_app/Contents/MacOS/${nested_app:t:r}"
+            if [[ -x "$nested_binary" ]]; then
+                codesign --force --sign "$signing_identity" "$nested_binary"
+            fi
+            codesign --force --deep --sign "$signing_identity" "$nested_app"
+        done
+    fi
+
+    codesign --force --sign "$signing_identity" "$framework"
+}
+
 if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+    sign_sparkle_framework "$FRAMEWORKS_DIRECTORY/Sparkle.framework" -
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: local signing was disabled; this build is ad-hoc signed."
 elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then
@@ -164,6 +215,7 @@ elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then
         }
         trap restore_signing_search_list EXIT INT TERM
         security list-keychains -d user -s "$LOCAL_SIGNING_KEYCHAIN" "${ORIGINAL_USER_KEYCHAINS[@]}"
+        sign_sparkle_framework "$FRAMEWORKS_DIRECTORY/Sparkle.framework" "$LOCAL_SIGNING_HASH"
         codesign \
             --force \
             --deep \
@@ -176,6 +228,7 @@ elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then
         echo "RayPlacement's local signing identity exists but is not trusted for code signing."
         exit 1
     else
+        sign_sparkle_framework "$FRAMEWORKS_DIRECTORY/Sparkle.framework" -
         codesign --force --deep --sign - "$APP_DIRECTORY"
         echo "Warning: the local identity is not trusted yet; this build is ad-hoc signed."
     fi
@@ -184,6 +237,7 @@ else
         echo "Stable signing is required. Run scripts/setup_local_signing.sh first."
         exit 1
     fi
+    sign_sparkle_framework "$FRAMEWORKS_DIRECTORY/Sparkle.framework" -
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
 fi

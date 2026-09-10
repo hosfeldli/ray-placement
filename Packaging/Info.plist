@@ -19,19 +19,19 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.12.9</string>
+	<string>3.12.10</string>
 	<key>CFBundleVersion</key>
-	<string>3129</string>
+	<string>31210</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<false/>
-	<key>LimaUpdatePolicyVersion</key>
-	<integer>1</integer>
-	<key>LimaUpdateMetadataURL</key>
-	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/latest.json</string>
 	<key>LimaSparkleAppcastURL</key>
 	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
+	<key>LimaUpdateMetadataURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/latest.json</string>
+	<key>LimaUpdatePolicyVersion</key>
+	<integer>1</integer>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Lima uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
 	<key>NSAppleEventsUsageDescription</key>
@@ -46,5 +46,9 @@
 	<string>NSApplication</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Lima uses on-device speech recognition to transcribe short recorded segments into a separate local dictation conversation.</string>
+	<key>SUFeedURL</key>
+	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
+	<key>SUPublicEDKey</key>
+	<string>Lt/Wlxc0rmkpNrz0YQ4hBpgeO51ynD+yALaUtE45f0c=</string>
 </dict>
 </plist>

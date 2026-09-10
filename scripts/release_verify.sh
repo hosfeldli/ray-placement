@@ -38,12 +38,13 @@ DIST="$PROJECT_DIRECTORY/dist"
 if (( ! REMOTE_ONLY )); then
     release_assert_tag_matches_source "$TAG"
     release_assert_exact_tag_identity "$TAG"
-    for artifact in Lima-Update.zip Lima-Update.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
+    for artifact in Lima-Update.zip Lima-Update.sha256 Lima-Sparkle.zip Lima-Sparkle.sha256 Lima.dmg Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
         [[ -f "$DIST/$artifact" ]] || { print -u2 "Missing $DIST/$artifact."; exit 1; }
     done
     (
         cd "$DIST"
         shasum -a 256 --check Lima-Update.sha256
+        shasum -a 256 --check Lima-Sparkle.sha256
         shasum -a 256 --check Lima.dmg.sha256
     )
     lima_release_validate_signing_policy
@@ -62,7 +63,7 @@ if (( ! REMOTE_ONLY )); then
 else
     checksum_directory="$(mktemp -d "${TMPDIR%/}/lima-remote-checksums.XXXXXX")"
     trap 'rm -rf "$checksum_directory"' EXIT
-    gh release download "$TAG" --pattern 'Lima-Update.sha256' --pattern 'Lima.dmg.sha256' --pattern 'latest.json' --pattern 'appcast.xml' --dir "$checksum_directory" >/dev/null
+    gh release download "$TAG" --pattern 'Lima-Update.sha256' --pattern 'Lima-Sparkle.sha256' --pattern 'Lima.dmg.sha256' --pattern 'Lima-release.json' --pattern 'latest.json' --pattern 'appcast.xml' --dir "$checksum_directory" >/dev/null
     update_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "Lima-Update.zip" {print tolower($1); exit}' "$checksum_directory/Lima-Update.sha256")"
     [[ -n "$update_sha" ]] || update_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "*Lima-Update.zip" {print tolower($1); exit}' "$checksum_directory/Lima-Update.sha256")"
     dmg_sha="$(awk '$1 ~ /^[[:xdigit:]]{64}$/ && $2 == "Lima.dmg" {print tolower($1); exit}' "$checksum_directory/Lima.dmg.sha256")"
@@ -74,7 +75,8 @@ else
         "$checksum_directory/appcast.xml" \
         "$TAG" \
         "$update_sha" \
-        "$remote_update_bytes"
+        "$remote_update_bytes" \
+        "$checksum_directory/Lima-release.json"
 fi
 
 [[ "$update_sha" =~ '^[[:xdigit:]]{64}$' && "$dmg_sha" =~ '^[[:xdigit:]]{64}$' ]] || {
@@ -87,17 +89,29 @@ fi
 release_state="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
 [[ "$release_state" == true || "$release_state" == false ]] || { print -u2 "Could not determine release state for $TAG."; exit 1; }
 
-for asset in Lima-Update.zip Lima.dmg Lima-Update.sha256 Lima.dmg.sha256 latest.json appcast.xml; do
+for asset in Lima-Update.zip Lima-Sparkle.zip Lima.dmg Lima-Update.sha256 Lima-Sparkle.sha256 Lima.dmg.sha256 Lima-release.json latest.json appcast.xml; do
     api_url="$(release_remote_asset_api_url "$TAG" "$asset")"
     [[ -n "$api_url" ]] || { print -u2 "$asset is missing from $TAG."; exit 1; }
     actual="$(gh api "$api_url" --jq '.digest // empty')"
     [[ "$actual" == sha256:* ]] || { print -u2 "$asset has no GitHub API SHA-256 digest."; exit 1; }
     case "$asset" in
         Lima-Update.zip) expected="$update_sha";;
+        Lima-Sparkle.zip)
+            if (( REMOTE_ONLY )); then expected="$(jq -er '.sparkleUpdate.sha256' "$checksum_directory/Lima-release.json")";
+            else expected="$(jq -er '.sparkleUpdate.sha256' "$DIST/Lima-release.json")"; fi
+            ;;
         Lima.dmg) expected="$dmg_sha";;
         Lima-Update.sha256)
             if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/Lima-Update.sha256" | awk '{print tolower($1)}')";
             else expected="$(shasum -a 256 "$DIST/Lima-Update.sha256" | awk '{print tolower($1)}')"; fi
+            ;;
+        Lima-Sparkle.sha256)
+            if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/Lima-Sparkle.sha256" | awk '{print tolower($1)}')";
+            else expected="$(shasum -a 256 "$DIST/Lima-Sparkle.sha256" | awk '{print tolower($1)}')"; fi
+            ;;
+        Lima-release.json)
+            if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/Lima-release.json" | awk '{print tolower($1)}')";
+            else expected="$(shasum -a 256 "$DIST/Lima-release.json" | awk '{print tolower($1)}')"; fi
             ;;
         Lima.dmg.sha256)
             if (( REMOTE_ONLY )); then expected="$(shasum -a 256 "$checksum_directory/Lima.dmg.sha256" | awk '{print tolower($1)}')";

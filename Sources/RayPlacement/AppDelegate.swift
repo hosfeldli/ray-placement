@@ -9,6 +9,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
+    // Keep Sparkle alive for bridge rehearsals without changing the default
+    // signed-custom updater path. UpdateService routes to it only when the
+    // explicit LIMA_UPDATE_BACKEND=sparkle test switch is supplied.
+    private let sparkleUpdateService = SparkleUpdateService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -538,7 +542,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.updateService.checkForUpdates(manual: false)
+            guard let self else { return }
+            if SparkleMigrationBoundary.activeBackend == .sparkle {
+                self.sparkleUpdateService.checkForUpdatesInBackground()
+            } else {
+                self.updateService.checkForUpdates(manual: false)
+            }
         }
         return false
     }

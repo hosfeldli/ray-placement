@@ -89,6 +89,7 @@ release_write_metadata() {
     local metadata="$(release_metadata_file "$tag")"
     local dist="$(release_project_file dist)"
     local update="$dist/Lima-Update.zip"
+    local sparkle_update="$dist/Lima-Sparkle.zip"
     local dmg="$dist/Lima.dmg"
     local commit="$(git -C "$LIMA_PROJECT_DIRECTORY" rev-parse HEAD)"
     jq -n \
@@ -101,12 +102,15 @@ release_write_metadata() {
         --arg certificateSHA256 "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" \
         --arg releaseURL "https://github.com/hosfeldli/ray-placement/releases/tag/$tag" \
         --arg updateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip" \
+        --arg sparkleUpdateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Sparkle.zip" \
         --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --arg updateSHA256 "$(shasum -a 256 "$update" | awk '{print $1}')" \
+        --arg sparkleUpdateSHA256 "$(shasum -a 256 "$sparkle_update" | awk '{print $1}')" \
         --arg dmgSHA256 "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
-        --argjson updateBytes "$(stat -f %z "$update")" \
-        --argjson dmgBytes "$(stat -f %z "$dmg")" \
-        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
+        --argjson updateBytes "$(/usr/bin/stat -f %z "$update")" \
+        --argjson sparkleUpdateBytes "$(/usr/bin/stat -f %z "$sparkle_update")" \
+        --argjson dmgBytes "$(/usr/bin/stat -f %z "$dmg")" \
+        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, sparkleUpdateUrl: $sparkleUpdateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, sparkleUpdate: {name: "Lima-Sparkle.zip", bytes: $sparkleUpdateBytes, sha256: $sparkleUpdateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
         > "$metadata"
     chmod 600 "$metadata"
 }
@@ -117,7 +121,18 @@ release_generate_distribution_metadata() {
     local dist="$(release_project_file dist)"
     [[ -f "$metadata" ]] || { print -u2 "Release metadata is missing: $metadata"; return 1; }
     "$RELEASE_COMMON_DIRECTORY/generate_update_feed.sh" --metadata "$metadata" --output "$dist/latest.json"
-    "$RELEASE_COMMON_DIRECTORY/generate_sparkle_appcast.sh" --metadata "$metadata" --output "$dist/appcast.xml"
+    local appcast_args=(
+        --metadata "$metadata"
+        --output "$dist/appcast.xml"
+        --archive "$dist/Lima-Sparkle.zip"
+    )
+    if [[ -n "${SPARKLE_EDDSA_PRIVATE_KEY_FILE:-}" ]]; then
+        appcast_args+=(--key-file "$SPARKLE_EDDSA_PRIVATE_KEY_FILE")
+    elif [[ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]]; then
+        print -u2 'SPARKLE_EDDSA_PRIVATE_KEY or SPARKLE_EDDSA_PRIVATE_KEY_FILE is required to generate a signed Sparkle appcast.'
+        return 1
+    fi
+    "$RELEASE_COMMON_DIRECTORY/generate_sparkle_appcast.sh" "${appcast_args[@]}"
     chmod 600 "$dist/latest.json" "$dist/appcast.xml"
 }
 
@@ -127,12 +142,48 @@ release_validate_distribution_content() {
     local tag="$3"
     local update_sha="$4"
     local update_bytes="$5"
+    local metadata="${6:-$(release_metadata_file "$tag")}"
     local version="${tag#v}"
+    local build="$(jq -er '.build' "$metadata")"
+    local sparkle_update_sha="$(jq -er '.sparkleUpdate.sha256' "$metadata")"
+    local sparkle_update_bytes="$(jq -er '.sparkleUpdate.bytes' "$metadata")"
     local release_url="https://github.com/hosfeldli/ray-placement/releases/tag/$tag"
     local update_url="https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip"
+    local sparkle_update_url="https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Sparkle.zip"
 
-    [[ -f "$feed" && -f "$appcast" ]] || {
-        print -u2 'Update feed and appcast files are required for content validation.'
+    [[ -f "$feed" && -f "$appcast" && -f "$metadata" ]] || {
+        print -u2 'Release metadata, update feed, and appcast files are required for content validation.'
+        return 1
+    }
+
+    jq -e \
+        --arg tag "$tag" \
+        --arg version "$version" \
+        --arg build "$build" \
+        --arg release_url "$release_url" \
+        --arg update_url "$update_url" \
+        --arg sparkle_update_url "$sparkle_update_url" \
+        --arg update_digest "$update_sha" \
+        --arg sparkle_update_digest "$sparkle_update_sha" \
+        --argjson update_size "$update_bytes" \
+        --argjson sparkle_update_size "$sparkle_update_bytes" \
+        '(.schemaVersion == 1) and
+         (.tag == $tag) and
+         (.version == $version) and
+         (.build == $build) and
+         (.releaseUrl == $release_url) and
+         (.updateUrl == $update_url) and
+         (.sparkleUpdateUrl == $sparkle_update_url) and
+         (.update.name == "Lima-Update.zip") and
+         (.update.bytes == $update_size) and
+         (.update.sha256 == $update_digest) and
+         (.sparkleUpdate.name == "Lima-Sparkle.zip") and
+         (.sparkleUpdate.bytes == $sparkle_update_size) and
+         (.sparkleUpdate.sha256 == $sparkle_update_digest) and
+         (.dmg.name == "Lima.dmg") and
+         (.commit | strings | length == 40)' \
+        "$metadata" >/dev/null || {
+        print -u2 'Release metadata does not match the verified release artifacts.'
         return 1
     }
 
@@ -141,13 +192,16 @@ release_validate_distribution_content() {
         --arg version "$version" \
         --arg release_url "$release_url" \
         --arg update_url "$update_url" \
+        --arg sparkle_update_url "$sparkle_update_url" \
         --arg update_digest "sha256:${update_sha:l}" \
         --argjson update_size "$update_bytes" \
         '(.schemaVersion == 1) and
          (.tag == $tag) and
          (.version == $version) and
          (.releaseUrl == $release_url) and
+         (.updateUrl == $update_url) and
          (.update == $update_url) and
+         (.sparkleUpdateUrl == $sparkle_update_url) and
          (.updateDigest == $update_digest) and
          (.updateSize == $update_size) and
          (.publication.channel == "stable") and
@@ -158,49 +212,46 @@ release_validate_distribution_content() {
         return 1
     }
 
-    python3 - "$appcast" "$tag" "$version" "$update_url" "$update_sha" "$update_bytes" "$release_url" <<'APPCAST_VALIDATOR'
+    python3 - "$appcast" "$build" "$version" "$sparkle_update_url" "$sparkle_update_bytes" "$release_url" <<'APPCAST_VALIDATOR'
 import sys
 from xml.etree import ElementTree
 
-appcast, tag, version, update_url, update_sha, update_bytes, release_url = sys.argv[1:]
-ns = {
-    "sparkle": "http://www.andymatushek.org/xml-namespaces/sparkle",
-    "lima": "https://www.liamhosfeld.com/xml-namespaces/lima",
-}
+appcast, build, version, sparkle_update_url, sparkle_update_bytes, release_url = sys.argv[1:]
+ns = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 root = ElementTree.parse(appcast).getroot()
 if root.tag != "rss":
     raise SystemExit("Appcast root is not RSS")
 channel = root.find("channel")
 if channel is None:
     raise SystemExit("Appcast channel is missing")
-if (channel.findtext("title") or "") != "Lima Updates":
+if (channel.findtext("title") or "") != "Lima":
     raise SystemExit("Appcast title mismatch")
-if (channel.findtext("link") or "") != release_url:
-    raise SystemExit("Appcast release URL mismatch")
 items = channel.findall("item")
 if len(items) != 1:
     raise SystemExit("Appcast must contain exactly one release item")
 item = items[0]
-if item.get(f"{{{ns['sparkle']}}}version") != version:
-    raise SystemExit("Appcast Sparkle version mismatch")
-if item.get("version") != version:
-    raise SystemExit("Appcast version mismatch")
+if (item.findtext("link") or "") != release_url:
+    raise SystemExit("Appcast release URL mismatch")
+if item.findtext(f"{{{ns}}}version") != build:
+    raise SystemExit("Appcast Sparkle build version mismatch")
+if item.findtext(f"{{{ns}}}shortVersionString") != version:
+    raise SystemExit("Appcast Sparkle short version mismatch")
 enclosure = item.find("enclosure")
 if enclosure is None:
     raise SystemExit("Appcast enclosure is missing")
-if enclosure.get("url") != update_url:
-    raise SystemExit("Appcast update URL mismatch")
-if enclosure.get("length") != update_bytes:
-    raise SystemExit("Appcast update size mismatch")
-if enclosure.get(f"{{{ns['lima']}}}sha256") != update_sha.lower():
-    raise SystemExit("Appcast update digest mismatch")
-if enclosure.get(f"{{{ns['lima']}}}signatureStatus") != "pending-sparkle-signature":
-    raise SystemExit("Appcast signature migration marker is missing")
-if f"{{{ns['sparkle']}}}edSignature" in enclosure.attrib:
-    raise SystemExit("Unsigned migration appcast must not claim a Sparkle signature")
+if enclosure.get("url") != sparkle_update_url:
+    raise SystemExit("Appcast Sparkle update URL mismatch")
+if enclosure.get("length") != sparkle_update_bytes:
+    raise SystemExit("Appcast Sparkle update size mismatch")
+if not enclosure.get(f"{{{ns}}}edSignature"):
+    raise SystemExit("Appcast EdDSA signature is missing")
+raw = open(appcast, encoding="utf-8").read()
+if "pending-sparkle-signature" in raw:
+    raise SystemExit("Appcast contains a placeholder Sparkle signature")
+if "sparkle-signatures:" not in raw or "edSignature:" not in raw:
+    raise SystemExit("Appcast feed signature is missing")
 APPCAST_VALIDATOR
 }
-
 release_assert_distribution_metadata() {
     local tag="$1"
     local metadata="$(release_metadata_file "$tag")"
@@ -213,7 +264,8 @@ release_assert_distribution_metadata() {
         "$dist/appcast.xml" \
         "$tag" \
         "$(jq -er '.update.sha256' "$metadata")" \
-        "$(jq -er '.update.bytes' "$metadata")"
+        "$(jq -er '.update.bytes' "$metadata")" \
+        "$metadata"
 }
 
 release_remote_asset_api_url() {
