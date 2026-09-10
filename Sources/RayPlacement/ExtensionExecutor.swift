@@ -11,6 +11,12 @@ final class ExtensionExecutor {
         let output: String
         let succeeded: Bool
     }
+
+    enum ExecutionResult {
+        case completed(String?)
+        case native(ExtensionAction)
+        case nativeChain([ExtensionAction])
+    }
     private var activeProcesses: [UUID: Process] = [:]
     private var cancelledProcesses = Set<UUID>()
     private var timedOutProcesses = Set<UUID>()
@@ -28,12 +34,41 @@ final class ExtensionExecutor {
         }
     }
 
+    /// Async bridge used by workflows. The callback API remains the launcher
+    /// surface, while this bridge does not advance until the underlying action
+    /// has actually completed.
+    func executeAsync(
+        _ loaded: LoadedExtensionCommand,
+        clipboard: ClipboardHistoryService
+    ) async throws -> ExecutionResult {
+        try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                execute(loaded, clipboard: clipboard, reportCancellation: true) { result in
+                    continuation.resume(with: result)
+                }
+            }
+        }, onCancel: {
+            Task { @MainActor [weak self] in self?.cancelAll() }
+        })
+    }
+
     func execute(
         _ loaded: LoadedExtensionCommand,
         clipboard: ClipboardHistoryService,
-        completion: @escaping (Result<String?, Error>) -> Void
+        reportCancellation: Bool = false,
+        completion: @escaping (Result<ExecutionResult, Error>) -> Void
     ) {
         let action = loaded.command.action
+        if let chain = action.chain, !chain.isEmpty {
+            do {
+                try ExtensionAction.validateNativeChain(chain)
+            } catch {
+                completion(.failure(ExecutionError.invalidAction("Action chains may contain at most eight approved native actions.")))
+                return
+            }
+            completion(.success(.nativeChain(chain)))
+            return
+        }
         switch action.type {
         case .url:
             guard let url = URL(string: action.value) else {
@@ -41,71 +76,78 @@ final class ExtensionExecutor {
                 return
             }
             if NSWorkspace.shared.open(url) {
-                completion(.success(nil))
+                completion(.success(.completed(nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.absoluteString)))
             }
 
-        case .file, .application:
-            let url = resolve(action.value, relativeTo: loaded.directory)
+        case .file:
+            let url: URL
+            do {
+                url = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: loaded.directory, capabilities: loaded.capabilities, executable: false)
+            } catch {
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
             guard FileManager.default.fileExists(atPath: url.path) else {
                 completion(.failure(ExecutionError.missingFile(url.path)))
                 return
             }
             if NSWorkspace.shared.open(url) {
-                completion(.success(nil))
+                completion(.success(.completed(nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.path)))
             }
 
-        case .copy, .paste:
-            clipboard.copy(action.value)
-            completion(.success(action.type == .paste ? "__PASTE__" : nil))
-
-        case .pastePlainText:
+        case .application:
+            // A path-based application action is retained for user extensions;
+            // operation-based actions are public native host requests.
+            if let operation = action.operation, !operation.isEmpty {
+                completion(.success(.native(action)))
+                return
+            }
+            let url: URL
             do {
-                let text = try PlainTextPasteboardService.rewriteAsPlainText()
-                clipboard.copy(text)
-                completion(.success("__PASTE__"))
+                url = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: loaded.directory, capabilities: loaded.capabilities, executable: false)
             } catch {
-                completion(.failure(error))
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                completion(.failure(ExecutionError.missingFile(url.path)))
+                return
+            }
+            if NSWorkspace.shared.open(url) {
+                completion(.success(.completed(nil)))
+            } else {
+                completion(.failure(ExecutionError.cannotOpen(url.path)))
             }
 
-        case .checkWriting:
-            completion(.success("__CHECK_WRITING__"))
+        case .clipboard:
+            switch action.operation ?? "copy" {
+            case "copy":
+                clipboard.copy(action.value)
+                completion(.success(.completed(nil)))
+            case "paste":
+                clipboard.copy(action.value)
+                completion(.success(.native(action)))
+            case "pastePlainText":
+                do {
+                    let text = try PlainTextPasteboardService.rewriteAsPlainText()
+                    clipboard.copy(text)
+                    completion(.success(.native(ExtensionAction(type: .clipboard, value: text, operation: "pastePlainText"))))
+                } catch {
+                    completion(.failure(error))
+                }
+            default:
+                completion(.failure(ExecutionError.invalidAction("Unknown clipboard operation.")))
+            }
 
-        case .openFocusedFileLauncher:
-            completion(.success("__OPEN_FOCUSED_FILE_LAUNCHER__"))
-
-        case .convertTimezones:
-            completion(.success("__CONVERT_TIMEZONES__"))
-
-        case .forceQuitApplications:
-            completion(.success("__FORCE_QUIT_APPLICATIONS__"))
-
-        case .forceQuitAllApplications:
-            completion(.success("__FORCE_QUIT_ALL_APPLICATIONS__"))
-
-        case .openFormatterWorkspace:
-            completion(.success("__OPEN_FORMATTER_WORKSPACE__"))
-
-        case .openEmojiPicker:
-            completion(.success("__OPEN_EMOJI_PICKER__"))
-
-        case .openPasswordGenerator:
-            completion(.success("__OPEN_PASSWORD_GENERATOR__"))
-
-        case .openExtensionDevelopment:
-            completion(.success("__OPEN_EXTENSION_DEVELOPMENT__"))
-
-        case .uninstallApplication:
-            completion(.success("__UNINSTALL_APPLICATION__"))
-
-        case .form:
-            completion(.success("__OPEN_EXTENSION_FORM__"))
+        case .form, .picker, .system, .window, .workspace:
+            completion(.success(.native(action)))
 
         case .shell:
-            run(action, relativeTo: loaded.directory, completion: completion)
+            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation, completion: completion)
         }
     }
 
@@ -124,39 +166,33 @@ final class ExtensionExecutor {
                 return
             }
         }
-        // Process arguments and a process environment are observable to other
-        // local processes. Do not turn the visual masking of a secure field
-        // into a false promise by substituting it into shell execution.
-        let secureTemplate = definition.fields
-            .filter { $0.type == .secure }
-            .map { "{{\($0.id)}}" }
-        let executionValues = [definition.execution.executable ?? ""]
-            + (definition.execution.arguments ?? [])
-            + [definition.execution.workingDirectory ?? ""]
-        guard !executionValues.contains(where: { value in secureTemplate.contains(where: value.contains) }) else {
-            completion(.failure(ExecutionError.invalidForm("Secure fields cannot be passed to a shell extension. Use a local Keychain-backed native tool instead.")))
-            return
-        }
-        guard let executable = definition.execution.executable, !executable.isEmpty else {
-            completion(.failure(ExecutionError.invalidForm("The executable is missing.")))
-            return
-        }
-        let action = ExtensionAction(
-            type: .shell,
-            value: ExtensionTemplate.render(executable, values: values),
-            arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
-            workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
-        )
-        run(action, relativeTo: loaded.directory) { result in
-            switch result {
-            case .success(let output):
-                completion(.success(FormResult(
-                    headline: "Command completed",
-                    detail: "Exit status 0",
-                    output: output ?? "No output",
-                    succeeded: true
-                )))
-            case .failure(let error): completion(.failure(error))
+        switch definition.execution.type {
+        case .shell:
+            guard let executable = definition.execution.executable, !executable.isEmpty else {
+                completion(.failure(ExecutionError.invalidForm("The executable is missing.")))
+                return
+            }
+            let action = ExtensionAction(
+                type: .shell,
+                value: ExtensionTemplate.render(executable, values: values),
+                arguments: definition.execution.arguments?.map { ExtensionTemplate.render($0, values: values) },
+                workingDirectory: definition.execution.workingDirectory.map { ExtensionTemplate.render($0, values: values) }
+            )
+            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: false) { result in
+                switch result {
+                case .success(let executionResult):
+                    guard case .completed(let output) = executionResult else {
+                        completion(.failure(ExecutionError.invalidAction("Form execution returned a native action instead of command output.")))
+                        return
+                    }
+                    completion(.success(FormResult(
+                        headline: "Command completed",
+                        detail: "Exit status 0",
+                        output: output ?? "No output",
+                        succeeded: true
+                    )))
+                case .failure(let error): completion(.failure(error))
+                }
             }
         }
     }
@@ -172,9 +208,17 @@ final class ExtensionExecutor {
     private func run(
         _ action: ExtensionAction,
         relativeTo directory: URL,
-        completion: @escaping (Result<String?, Error>) -> Void
+        capabilities: Set<ExtensionManifest.Capability>,
+        reportCancellation: Bool = false,
+        completion: @escaping (Result<ExecutionResult, Error>) -> Void
     ) {
-        let executable = resolve(action.value, relativeTo: directory)
+        let executable: URL
+        do {
+            executable = try ExtensionSecurityPolicy.resolvePath(action.value, relativeTo: directory, capabilities: capabilities, executable: true)
+        } catch {
+            completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+            return
+        }
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
             completion(.failure(ExecutionError.notExecutable(executable.path)))
             return
@@ -203,7 +247,12 @@ final class ExtensionExecutor {
             "RAYPLACEMENT_TIMEOUT_SECONDS": String(Int(performance.extensionTimeout))
         ]
         if let workingDirectory = action.workingDirectory {
-            task.currentDirectoryURL = resolve(workingDirectory, relativeTo: directory)
+            do {
+                task.currentDirectoryURL = try ExtensionSecurityPolicy.resolvePath(workingDirectory, relativeTo: directory, capabilities: capabilities, executable: false)
+            } catch {
+                completion(.failure(ExecutionError.securityViolation(error.localizedDescription)))
+                return
+            }
         } else {
             task.currentDirectoryURL = directory
         }
@@ -266,6 +315,7 @@ final class ExtensionExecutor {
                     self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
                     if self.cancelledProcesses.remove(identifier) != nil {
                         self.timedOutProcesses.remove(identifier)
+                        if reportCancellation { completion(.failure(ExecutionError.cancelled)) }
                         return
                     }
                     if self.timedOutProcesses.remove(identifier) != nil {
@@ -277,7 +327,7 @@ final class ExtensionExecutor {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: true, outputCharacters: outputText.count)
                         }
-                        completion(.success(outputText.isEmpty ? nil : outputText))
+                        completion(.success(.completed(outputText.isEmpty ? nil : outputText)))
                     } else {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Exit \(task.terminationStatus)")
@@ -303,12 +353,6 @@ final class ExtensionExecutor {
         }
     }
 
-    private func resolve(_ path: String, relativeTo directory: URL) -> URL {
-        let expanded = NSString(string: path).expandingTildeInPath
-        if expanded.hasPrefix("/") { return URL(fileURLWithPath: expanded) }
-        return directory.appendingPathComponent(expanded).standardizedFileURL
-    }
-
     enum ExecutionError: LocalizedError {
         case invalidURL(String)
         case missingFile(String)
@@ -317,6 +361,9 @@ final class ExtensionExecutor {
         case processFailed(Int32, String)
         case timedOut(Int)
         case invalidForm(String)
+        case cancelled
+        case securityViolation(String)
+        case invalidAction(String)
 
         var errorDescription: String? {
             switch self {
@@ -327,6 +374,9 @@ final class ExtensionExecutor {
             case .processFailed(let code, let message): return message.isEmpty ? "The command exited with status \(code)." : message
             case .timedOut(let seconds): return "The extension exceeded its \(seconds)-second performance limit and was stopped."
             case .invalidForm(let message): return message
+            case .cancelled: return "The workflow command was cancelled."
+            case .securityViolation(let message): return "Extension security policy rejected this action: \(message)"
+            case .invalidAction(let message): return message
             }
         }
     }

@@ -1,5 +1,6 @@
 import AppKit
 import RayPlacementCore
+import RayPlacementWriting
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -7,13 +8,35 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     @ObservedObject private var typography = AppTypography.shared
     @Binding var text: String
     var compact = false
+    @Binding var scrollOffset: CGFloat
     var fontStyle: NotesFontStyle = .system
     var fontSize: Double = 15.5
     var lineSpacing: Double = 3.5
     var theme: NotesVisualTheme = .prism
+    var inlineGrammarCheckingEnabled: Bool = true
+
+    init(
+        text: Binding<String>,
+        compact: Bool = false,
+        scrollOffset: Binding<CGFloat> = .constant(0),
+        fontStyle: NotesFontStyle = .system,
+        fontSize: Double = 15.5,
+        lineSpacing: Double = 3.5,
+        theme: NotesVisualTheme = .prism,
+        inlineGrammarCheckingEnabled: Bool = true
+    ) {
+        _text = text
+        self.compact = compact
+        _scrollOffset = scrollOffset
+        self.fontStyle = fontStyle
+        self.fontSize = fontSize
+        self.lineSpacing = lineSpacing
+        self.theme = theme
+        self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+    }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -21,7 +44,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = false
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
 
         let textView = MarkdownTextView()
         textView.delegate = context.coordinator
@@ -34,9 +58,15 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = false
-        textView.isContinuousSpellCheckingEnabled = true
-        textView.isGrammarCheckingEnabled = true
-        textView.backgroundColor = .clear
+        // Lima owns grammar annotations so Markdown syntax, attachments, and
+        // protected technical terms are handled consistently.
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
+        textView.backgroundColor = NotesEditorPalette(theme: theme).background
+        textView.insertionPointColor = NotesEditorPalette(theme: theme).accent
+        textView.selectedTextAttributes = NotesEditorPalette(theme: theme).selectionAttributes
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -50,6 +80,19 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.setAccessibilityLabel("Inline Markdown editor")
         MarkdownEditorFocus.shared.editor = textView
         context.coordinator.textView = textView
+        context.coordinator.scrollView = scrollView
+        context.coordinator.scrollOffset = $scrollOffset
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        context.coordinator.boundsObserver = NotificationCenter.default.addObserver(
+            forName: NSView.boundsDidChangeNotification,
+            object: scrollView.contentView,
+            queue: .main
+        ) { [weak coordinator = context.coordinator, weak scrollView] _ in
+            guard let coordinator, let scrollView else { return }
+            Task { @MainActor in
+                coordinator.captureScrollOffset(from: scrollView)
+            }
+        }
         textView.attachmentChangeHandler = { [weak coordinator = context.coordinator] in
             coordinator?.tableDidChange()
         }
@@ -65,13 +108,17 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
-        DispatchQueue.main.async { textView.updateTableOverlays() }
+        DispatchQueue.main.async {
+            textView.updateTableOverlays()
+            context.coordinator.applyScrollOffset()
+        }
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
         context.coordinator.text = $text
+        context.coordinator.scrollOffset = $scrollOffset
         let styleChanged = context.coordinator.fontStyle != fontStyle
             || context.coordinator.fontSize != fontSize
             || context.coordinator.lineSpacing != lineSpacing
@@ -80,6 +127,23 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.lineSpacing = lineSpacing
         context.coordinator.theme = theme
+        let inlineGrammarSettingChanged = context.coordinator.inlineGrammarCheckingEnabled != inlineGrammarCheckingEnabled
+        context.coordinator.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        if inlineGrammarSettingChanged {
+            if inlineGrammarCheckingEnabled {
+                context.coordinator.scheduleInlineGrammarCheckForUpdate()
+            } else {
+                context.coordinator.cancelInlineGrammarCheckForUpdate()
+            }
+        }
+        let palette = NotesEditorPalette(theme: theme)
+        scrollView.drawsBackground = true
+        scrollView.backgroundColor = palette.background
+        textView.drawsBackground = true
+        textView.backgroundColor = palette.background
+        textView.insertionPointColor = palette.accent
+        textView.selectedTextAttributes = palette.selectionAttributes
         textView.textContainerInset = compact
             ? NSSize(width: 16, height: 18)
             : NSSize(width: 32, height: 26)
@@ -87,6 +151,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         if context.coordinator.lastMarkdown != text {
             context.coordinator.render(markdown: text, preservingSelection: true)
         }
+        DispatchQueue.main.async { context.coordinator.applyScrollOffset() }
         if context.coordinator.lastTextScale != typography.scale || styleChanged {
             context.coordinator.lastTextScale = typography.scale
             context.coordinator.applyStyles(immediately: true)
@@ -96,7 +161,10 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var scrollOffset: Binding<CGFloat>
         fileprivate weak var textView: MarkdownTextView?
+        fileprivate weak var scrollView: NSScrollView?
+        var boundsObserver: NSObjectProtocol?
         var isApplyingExternalUpdate = false
         fileprivate var lastMarkdown = ""
         fileprivate var lastTextScale = AppTypography.shared.scale
@@ -104,14 +172,42 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var fontSize: Double
         var lineSpacing: Double
         var theme: NotesVisualTheme
+        var inlineGrammarCheckingEnabled: Bool
         private var stylingWorkItem: DispatchWorkItem?
+        private var grammarWorkItem: DispatchWorkItem?
+        private var grammarGeneration = 0
+        private var grammarChecker: RuleBasedWritingChecker?
 
-        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool) {
             self.text = text
+            self.scrollOffset = .constant(0)
             self.fontStyle = fontStyle
             self.fontSize = fontSize
             self.lineSpacing = lineSpacing
             self.theme = theme
+            self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+            self.grammarChecker = RuleBasedWritingChecker()
+        }
+
+        deinit {
+            grammarWorkItem?.cancel()
+            if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+        }
+
+        func captureScrollOffset(from scrollView: NSScrollView) {
+            guard scrollView.contentView.bounds.origin.y.isFinite else { return }
+            scrollOffset.wrappedValue = max(0, scrollView.contentView.bounds.origin.y)
+        }
+
+        func applyScrollOffset() {
+            guard let scrollView else { return }
+            let target = max(0, scrollOffset.wrappedValue)
+            guard abs(scrollView.contentView.bounds.origin.y - target) > 0.5 else { return }
+            var bounds = scrollView.contentView.bounds
+            let documentHeight = scrollView.documentView?.frame.height ?? 0
+            let maximum = max(0, documentHeight - scrollView.contentView.bounds.height)
+            bounds.origin.y = min(target, maximum)
+            scrollView.contentView.setBoundsOrigin(bounds.origin)
         }
 
         func textDidChange(_ notification: Notification) {
@@ -120,6 +216,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             lastMarkdown = markdown
             text.wrappedValue = markdown
             applyStyles(immediately: false)
+            scheduleInlineGrammarCheck()
         }
 
         func tableDidChange() {
@@ -129,9 +226,11 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             text.wrappedValue = markdown
             textView.updateTableOverlays()
             applyStyles(immediately: true)
+            scheduleInlineGrammarCheck()
         }
 
         func rerenderCurrentDocument() {
+            cancelInlineGrammarCheck()
             guard let textView else { return }
             let markdown = MarkdownTableDocumentCodec.markdown(from: textView.attributedString())
             lastMarkdown = markdown
@@ -139,6 +238,66 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak self] in
                 self?.render(markdown: markdown, preservingSelection: true)
             }
+        }
+
+        func scheduleInlineGrammarCheckForUpdate() {
+            scheduleInlineGrammarCheck()
+        }
+
+        func cancelInlineGrammarCheckForUpdate() {
+            cancelInlineGrammarCheck()
+        }
+
+        private func cancelInlineGrammarCheck() {
+            grammarGeneration += 1
+            grammarWorkItem?.cancel()
+            grammarWorkItem = nil
+            grammarChecker?.cancel()
+            textView?.clearGrammarAnnotations()
+        }
+
+        private func scheduleInlineGrammarCheck() {
+            grammarGeneration += 1
+            let generation = grammarGeneration
+            grammarWorkItem?.cancel()
+            grammarChecker?.cancel()
+            guard inlineGrammarCheckingEnabled, let textView else {
+                textView?.clearGrammarAnnotations()
+                return
+            }
+            let source = textView.string
+            let selection = textView.selectedRange()
+            let nsSource = source as NSString
+            guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  nsSource.length > 0 else {
+                textView.clearGrammarAnnotations()
+                return
+            }
+            let location = min(selection.location, nsSource.length)
+            let paragraphRange = nsSource.paragraphRange(for: NSRange(location: location, length: 0))
+            let paragraph = nsSource.substring(with: paragraphRange)
+                .trimmingCharacters(in: .newlines)
+            guard paragraph.count >= 3,
+                  !paragraph.contains("```") else {
+                textView.clearGrammarAnnotations()
+                return
+            }
+            var workItem: DispatchWorkItem!
+            workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self, let textView, !workItem.isCancelled, self.grammarGeneration == generation else { return }
+                self.grammarChecker?.checkLocal(paragraph, progress: { _ in }) { [weak self, weak textView] result in
+                    guard let textView, !workItem.isCancelled, self?.grammarGeneration == generation, textView.string == source else { return }
+                    switch result {
+                    case .success(let review):
+                        let offset = paragraphRange.location
+                        textView.applyGrammarAnnotations(review.issues, offset: offset)
+                    case .failure:
+                        textView.clearGrammarAnnotations()
+                    }
+                }
+            }
+            grammarWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: workItem)
         }
 
         func render(markdown: String, preservingSelection: Bool) {
@@ -235,6 +394,29 @@ final class MarkdownTextView: NSTextView {
     var documentChangeHandler: (() -> Void)?
     var richContentRenderHandler: (() -> Void)?
     private var tableOverlays: [ObjectIdentifier: MarkdownNativeTableView] = [:]
+    var inlineGrammarCheckingEnabled = true
+
+    func clearGrammarAnnotations() {
+        guard let layoutManager, let textStorage else { return }
+        let range = NSRange(location: 0, length: textStorage.length)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: range)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: range)
+    }
+
+    func applyGrammarAnnotations(_ issues: [WritingIssue], offset: Int) {
+        guard let layoutManager, let textStorage else { return }
+        let fullRange = NSRange(location: 0, length: textStorage.length)
+        layoutManager.removeTemporaryAttribute(.underlineStyle, forCharacterRange: fullRange)
+        layoutManager.removeTemporaryAttribute(.underlineColor, forCharacterRange: fullRange)
+        for issue in issues {
+            let location = offset + issue.range.location
+            guard issue.range.length > 0, location >= 0, location + issue.range.length <= textStorage.length else { continue }
+            layoutManager.addTemporaryAttributes([
+                .underlineStyle: NSUnderlineStyle.single.rawValue,
+                .underlineColor: NSColor.systemOrange
+            ], forCharacterRange: NSRange(location: location, length: issue.range.length))
+        }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let becameFirstResponder = super.becomeFirstResponder()
@@ -314,16 +496,56 @@ final class MarkdownTextView: NSTextView {
 
     override func paste(_ sender: Any?) {
         let pasteboard = NSPasteboard.general
+
+        // Text always wins over image representations. Emoji and rich text
+        // pasteboards can advertise image flavors as well as Unicode text;
+        // checking NSImage first silently converted valid text into an image.
+        if let plainText = PlainTextPastePolicy.normalize(pasteboard.string(forType: .string)) {
+            if let table = TabularDataParser.parse(
+                text: plainText,
+                html: pasteboard.string(forType: .html)
+            ), table.rows.count > 1 {
+                insertTable(table)
+            } else {
+                insertPlainText(plainText)
+            }
+            return
+        }
+
+        if let html = pasteboard.string(forType: .html),
+           let attributed = try? NSAttributedString(
+               data: Data(html.utf8),
+               options: [
+                   .documentType: NSAttributedString.DocumentType.html,
+                   .characterEncoding: String.Encoding.utf8.rawValue
+               ],
+               documentAttributes: nil
+           ),
+           let htmlText = PlainTextPastePolicy.normalize(attributed.string) {
+            if let table = TabularDataParser.parse(text: htmlText, html: html), table.rows.count > 1 {
+                insertTable(table)
+            } else {
+                insertPlainText(htmlText)
+            }
+            return
+        }
+
+        // An image is valid only when the pasteboard has no usable text.
         if let image = NSImage(pasteboard: pasteboard), insertImage(image, alt: "Pasted image") {
             return
         }
-        let plainText = pasteboard.string(forType: .string) ?? ""
-        let html = pasteboard.string(forType: .html)
-        guard let data = TabularDataParser.parse(text: plainText, html: html) else {
-            super.paste(sender)
-            return
-        }
-        insertTable(data)
+
+        // Keep AppKit's fallback for pasteboard types that are neither text nor
+        // images, but never use it for ordinary text: NSTextView is rich-text
+        // enabled and would otherwise import HTML/RTF formatting into Markdown.
+        super.paste(sender)
+    }
+
+    private func insertPlainText(_ text: String) {
+        let range = selectedRange()
+        guard shouldChangeText(in: range, replacementString: text) else { return }
+        textStorage?.replaceCharacters(in: range, with: text)
+        didChangeText()
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -597,7 +819,10 @@ private enum MarkdownInlineStyler {
 
     static func apply(to textView: NSTextView, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme) {
         let palette = NotesEditorPalette(theme: theme)
+        textView.drawsBackground = true
+        textView.backgroundColor = palette.background
         textView.insertionPointColor = palette.accent
+        textView.selectedTextAttributes = palette.selectionAttributes
         let baseFont = font(style: fontStyle, size: CGFloat(fontSize), weight: .regular)
         let monoFont = NSFont.monospacedSystemFont(ofSize: AppTypography.size(CGFloat(max(12, fontSize - 1.5))), weight: .regular)
         guard let storage = textView.textStorage else { return }
@@ -606,7 +831,7 @@ private enum MarkdownInlineStyler {
         let selection = textView.selectedRanges
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = CGFloat(lineSpacing)
-        paragraph.paragraphSpacing = 5 + CGFloat(lineSpacing) * 0.6
+        paragraph.paragraphSpacing = 3.5 + CGFloat(lineSpacing) * 0.45
         let fencedCodePattern = #"(?ms)^```([^\n]*)\n(.*?)^```[ \t]*$"#
         let fencedCodeMatches = matches(pattern: fencedCodePattern, in: source)
         let fencedCodeRanges = fencedCodeMatches.map(\.range)
@@ -619,6 +844,7 @@ private enum MarkdownInlineStyler {
         storage.setAttributes([
             .font: baseFont,
             .foregroundColor: palette.text,
+            .backgroundColor: palette.background,
             .paragraphStyle: paragraph
         ], range: fullRange)
         for attachment in attachments {
@@ -632,7 +858,7 @@ private enum MarkdownInlineStyler {
             if task.checked, textRange.length > 0 {
                 storage.addAttributes([
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: NSColor.secondaryLabelColor
+                    .foregroundColor: palette.secondaryText
                 ], range: textRange)
             }
         }
@@ -640,11 +866,11 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"(?m)^(#{1,6})[ \t]+(.+)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let level = min(max(match.range(at: 1).length, 1), 6)
-            let sizes: [CGFloat] = [28, 24, 21, 18, 16, 15]
+            let sizes: [CGFloat] = [24, 20, 18, 16, 15, 14]
             let contentRange = match.range(at: 2)
             let headingParagraph = paragraph.mutableCopy() as! NSMutableParagraphStyle
-            headingParagraph.paragraphSpacingBefore = level <= 2 ? 12 : 8
-            headingParagraph.paragraphSpacing = level <= 2 ? 9 : 6
+            headingParagraph.paragraphSpacingBefore = level <= 2 ? 8 : 5
+            headingParagraph.paragraphSpacing = level <= 2 ? 6 : 4
             storage.addAttributes([
                 .font: font(style: fontStyle, size: sizes[level - 1] * CGFloat(fontSize / 15.5), weight: level <= 3 ? .bold : .semibold),
                 .paragraphStyle: headingParagraph
@@ -725,12 +951,12 @@ private enum MarkdownInlineStyler {
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range(at: 1))
             let italic = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
-            storage.addAttributes([.font: italic, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 2))
+            storage.addAttributes([.font: italic, .foregroundColor: palette.secondaryText], range: match.range(at: 2))
         }
         apply(pattern: #"(?m)^(---|\*\*\*|___)[ \t]*$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttributes([
-                .foregroundColor: NSColor.separatorColor,
+                .foregroundColor: palette.separator,
                 .font: NSFont.monospacedSystemFont(ofSize: AppTypography.size(13), weight: .regular),
                 .kern: 2.2
             ], range: match.range)
@@ -738,7 +964,11 @@ private enum MarkdownInlineStyler {
 
         storage.endEditing()
         textView.selectedRanges = selection
-        textView.typingAttributes = [.font: baseFont, .foregroundColor: palette.text]
+        textView.typingAttributes = [
+            .font: baseFont,
+            .foregroundColor: palette.text,
+            .backgroundColor: palette.background
+        ]
     }
 
     private static func font(style: NotesFontStyle, size: CGFloat, weight: NSFont.Weight) -> NSFont {
@@ -805,33 +1035,41 @@ private enum MarkdownInlineStyler {
 }
 
 private struct NotesEditorPalette {
+    let background: NSColor
     let text: NSColor
+    let secondaryText: NSColor
+    let separator: NSColor
     let accent: NSColor
     let codeBackground: NSColor
 
+    var selectionAttributes: [NSAttributedString.Key: Any] {
+        [
+            .backgroundColor: NSColor.selectedTextBackgroundColor,
+            .foregroundColor: NSColor.selectedTextColor
+        ]
+    }
+
     init(theme: NotesVisualTheme) {
+        background = NSColor.textBackgroundColor
+        text = NSColor.textColor
+        secondaryText = NSColor.secondaryLabelColor
+        separator = NSColor.separatorColor.withAlphaComponent(1)
         switch theme {
         case .prism:
-            text = NSColor(calibratedRed: 0.92, green: 0.93, blue: 0.98, alpha: 1)
-            accent = NSColor(calibratedRed: 0.67, green: 0.48, blue: 1, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.10, green: 0.08, blue: 0.18, alpha: 0.92)
+            accent = NSColor(calibratedRed: 0.48, green: 0.28, blue: 0.84, alpha: 1)
         case .graphite:
-            text = NSColor(calibratedWhite: 0.90, alpha: 1)
-            accent = NSColor(calibratedWhite: 0.72, alpha: 1)
-            codeBackground = NSColor(calibratedWhite: 0.04, alpha: 0.92)
+            accent = NSColor.secondaryLabelColor
         case .midnight:
-            text = NSColor(calibratedRed: 0.84, green: 0.90, blue: 1, alpha: 1)
-            accent = NSColor(calibratedRed: 0.30, green: 0.68, blue: 1, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.02, green: 0.05, blue: 0.13, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.08, green: 0.38, blue: 0.82, alpha: 1)
         case .aurora:
-            text = NSColor(calibratedRed: 0.84, green: 0.98, blue: 0.94, alpha: 1)
-            accent = NSColor(calibratedRed: 0.22, green: 0.91, blue: 0.74, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.02, green: 0.12, blue: 0.12, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.02, green: 0.55, blue: 0.42, alpha: 1)
         case .ink:
-            text = NSColor(calibratedRed: 0.96, green: 0.89, blue: 0.79, alpha: 1)
-            accent = NSColor(calibratedRed: 1, green: 0.59, blue: 0.28, alpha: 1)
-            codeBackground = NSColor(calibratedRed: 0.13, green: 0.08, blue: 0.05, alpha: 0.94)
+            accent = NSColor(calibratedRed: 0.78, green: 0.30, blue: 0.05, alpha: 1)
         }
+        // Blend semantic surfaces instead of hard-coding a dark palette. This
+        // keeps code blocks and inline code legible when Notes is in Light mode.
+        let control = NSColor.controlBackgroundColor
+        codeBackground = background.blended(withFraction: 0.28, of: control) ?? control
     }
 }
 

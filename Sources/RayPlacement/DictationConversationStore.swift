@@ -1,4 +1,5 @@
 import Foundation
+import RayPlacementCore
 
 struct DictationConversation: Codable, Identifiable, Hashable {
     let id: UUID
@@ -49,21 +50,57 @@ struct DictationConversation: Codable, Identifiable, Hashable {
 
 @MainActor
 final class DictationConversationStore: ObservableObject {
+    static let shared = DictationConversationStore()
     static let maximumConversations = 100
     static let maximumCharactersPerConversation = 200_000
 
     @Published private(set) var conversations: [DictationConversation]
+    @Published private(set) var currentConversationID: UUID?
+    /// Increments for every genuinely new recording session, including a
+    /// retry that intentionally reuses the same conversation.
+    @Published private(set) var currentSessionGeneration: UInt64 = 0
     @Published var selectedConversationID: UUID?
+    @Published var lastError: String?
+    @Published private(set) var recoveryURL: URL?
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.dictation-persistence", qos: .utility)
     private let persistenceGeneration = PersistenceGeneration()
     private var pendingSave: DispatchWorkItem?
     private var activeConversationID: UUID?
     private var resumableConversationID: UUID?
+    // Kept after finish so a HUD click during .transcribing or .completed
+    // still routes to the conversation created by this dictation session.
+    private var lastSessionConversationID: UUID?
 
     init() {
-        conversations = Self.load()
+        let loaded = Self.load()
+        conversations = loaded.conversations
+        lastError = loaded.error
+        recoveryURL = loaded.recoveryURL
         selectedConversationID = conversations.first?.id
+        currentConversationID = nil
+    }
+
+    func replace(with replacement: [DictationConversation]) throws {
+        guard replacement.count <= Self.maximumConversations,
+              replacement.allSatisfy({ $0.characterCount <= Self.maximumCharactersPerConversation }) else {
+            throw NSError(domain: "LimaDictation", code: 1, userInfo: [NSLocalizedDescriptionKey: "The imported dictation exceeds Lima's limits."])
+        }
+        conversations = replacement
+        selectedConversationID = conversations.first?.id
+        try Self.persist(conversations)
+        lastError = nil
+    }
+
+    func search(_ query: String) -> [DictationConversation] {
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return conversations }
+        return conversations.filter { $0.title.lowercased().contains(clean) || $0.transcript.lowercased().contains(clean) }
+    }
+
+    func exportTranscript(_ conversation: DictationConversation, to url: URL) throws {
+        try conversation.transcript.write(to: url, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     var selectedConversation: DictationConversation? {
@@ -81,7 +118,10 @@ final class DictationConversationStore: ObservableObject {
         let conversation = DictationConversation()
         conversations.insert(conversation, at: 0)
         resumableConversationID = nil
+        currentSessionGeneration &+= 1
         activeConversationID = conversation.id
+        lastSessionConversationID = conversation.id
+        currentConversationID = conversation.id
         selectedConversationID = conversation.id
         trimAndSave()
     }
@@ -91,7 +131,10 @@ final class DictationConversationStore: ObservableObject {
            let index = conversations.firstIndex(where: { $0.id == resumableConversationID }) {
             conversations[index].isComplete = false
             conversations[index].modifiedAt = Date()
+            currentSessionGeneration &+= 1
             activeConversationID = resumableConversationID
+            lastSessionConversationID = resumableConversationID
+            currentConversationID = resumableConversationID
             self.resumableConversationID = nil
             selectedConversationID = resumableConversationID
             scheduleSave()
@@ -117,11 +160,31 @@ final class DictationConversationStore: ObservableObject {
         scheduleSave()
     }
 
+    func updateTranscript(_ transcript: String, for conversationID: UUID? = nil) {
+        let identifier = conversationID ?? selectedConversationID
+        guard let identifier,
+              let index = conversations.firstIndex(where: { $0.id == identifier }) else { return }
+
+        let bounded = String(transcript.prefix(Self.maximumCharactersPerConversation))
+        conversations[index].segments = bounded
+            .components(separatedBy: "\n\n")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        conversations[index].modifiedAt = Date()
+        selectedConversationID = identifier
+        scheduleSave()
+    }
+
     func finishConversation() {
         guard let activeConversationID,
               let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else { return }
         if !conversations[index].hasContent {
+            let removedID = conversations[index].id
             conversations.remove(at: index)
+            if lastSessionConversationID == removedID {
+                lastSessionConversationID = nil
+                currentConversationID = nil
+            }
             selectedConversationID = conversations.first?.id
         } else {
             conversations[index].isComplete = true
@@ -129,6 +192,7 @@ final class DictationConversationStore: ObservableObject {
         }
         self.activeConversationID = nil
         resumableConversationID = nil
+        currentConversationID = lastSessionConversationID
         scheduleSave()
     }
 
@@ -136,7 +200,12 @@ final class DictationConversationStore: ObservableObject {
         guard let activeConversationID,
               let index = conversations.firstIndex(where: { $0.id == activeConversationID }) else { return }
         if !conversations[index].hasContent {
+            let removedID = conversations[index].id
             conversations.remove(at: index)
+            if lastSessionConversationID == removedID {
+                lastSessionConversationID = nil
+                currentConversationID = nil
+            }
             selectedConversationID = conversations.first?.id
             resumableConversationID = nil
         } else {
@@ -146,6 +215,7 @@ final class DictationConversationStore: ObservableObject {
             selectedConversationID = activeConversationID
         }
         self.activeConversationID = nil
+        currentConversationID = lastSessionConversationID
         scheduleSave()
     }
 
@@ -153,6 +223,10 @@ final class DictationConversationStore: ObservableObject {
         conversations.removeAll { $0.id == conversation.id }
         if activeConversationID == conversation.id { activeConversationID = nil }
         if resumableConversationID == conversation.id { resumableConversationID = nil }
+        if lastSessionConversationID == conversation.id {
+            lastSessionConversationID = nil
+            currentConversationID = nil
+        }
         selectedConversationID = conversations.first?.id
         scheduleSave()
     }
@@ -165,7 +239,7 @@ final class DictationConversationStore: ObservableObject {
         pendingSave?.cancel()
         pendingSave = nil
         let snapshot = conversations
-        persistenceQueue.sync { Self.persist(snapshot) }
+        do { try persistenceQueue.sync { try Self.persist(snapshot) } } catch { lastError = error.localizedDescription }
     }
 
     private func trimAndSave() {
@@ -180,26 +254,28 @@ final class DictationConversationStore: ObservableObject {
         let gate = persistenceGeneration
         let work = DispatchWorkItem {
             guard gate.isCurrent(generation) else { return }
-            Self.persist(snapshot)
+            do {
+                try Self.persist(snapshot)
+                DispatchQueue.main.async { [weak self] in self?.lastError = nil }
+            } catch {
+                DispatchQueue.main.async { [weak self] in self?.lastError = error.localizedDescription }
+            }
         }
         pendingSave = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.45, execute: work)
     }
 
-    private static func load() -> [DictationConversation] {
-        guard let data = try? Data(contentsOf: ApplicationPaths.dictationConversations),
-              let decoded = try? JSONDecoder().decode([DictationConversation].self, from: data) else { return [] }
-        return Array(decoded
-            .filter { $0.characterCount <= maximumCharactersPerConversation }
-            .prefix(maximumConversations))
+    private static func load() -> (conversations: [DictationConversation], error: String?, recoveryURL: URL?) {
+        let loaded = PrivateFileStore().loadJSON([DictationConversation].self, from: ApplicationPaths.dictationConversations)
+        guard let decoded = loaded.value else {
+            guard loaded.result.state != .missing else { return ([], nil, nil) }
+            return ([], "Dictation history could not be loaded safely. The original file was preserved.", loaded.result.recoveryURL)
+        }
+        return (Array(decoded.filter { $0.characterCount <= maximumCharactersPerConversation }.prefix(maximumConversations)), nil, nil)
     }
 
-    private nonisolated static func persist(_ conversations: [DictationConversation]) {
-        guard let data = try? JSONEncoder().encode(conversations) else { return }
-        try? FileManager.default.createDirectory(
-            at: ApplicationPaths.applicationSupport,
-            withIntermediateDirectories: true
-        )
-        try? data.write(to: ApplicationPaths.dictationConversations, options: .atomic)
+    private nonisolated static func persist(_ conversations: [DictationConversation]) throws {
+        let data = try JSONEncoder().encode(conversations)
+        try PrivateFileStore().write(data: data, to: ApplicationPaths.dictationConversations)
     }
 }

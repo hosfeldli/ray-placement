@@ -1,16 +1,27 @@
 #!/bin/zsh
+# Sign an already-built Lima.app with the pinned local signing identity.
+#
+# This helper is intentionally limited to the self-signed-local policy. CI or
+# package_app.sh handles the explicit Developer ID path. It does not modify Git,
+# upload artifacts, or publish a release.
 set -euo pipefail
 
-APP_DIRECTORY="${1:?Usage: sign_lima_app.sh <Lima.app>}"
-USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
-SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
-LOCAL_SIGNING_KEYCHAIN="$SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-LOCAL_SIGNING_PASSWORD="$SIGNING_DIRECTORY/keychain-password"
-LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
+SCRIPT_DIRECTORY="${0:A:h}"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 
-[[ -d "$APP_DIRECTORY" ]] || { echo "Lima.app is missing: $APP_DIRECTORY" >&2; exit 1; }
+APP_DIRECTORY="${1:?Usage: sign_lima_app.sh <Lima.app>}"
+LOCAL_SIGNING_KEYCHAIN="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
+LOCAL_SIGNING_PASSWORD="$LIMA_RELEASE_LOCAL_SIGNING_PASSWORD"
+LOCAL_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
+
+lima_release_validate_signing_policy
+[[ "$LIMA_RELEASE_SIGNING_MODE" == "self-signed-local" ]] || {
+    print -u2 "sign_lima_app.sh only supports the self-signed-local policy; use package_app.sh for Developer ID builds."
+    exit 1
+}
+[[ -d "$APP_DIRECTORY" ]] || { print -u2 "Lima.app is missing: $APP_DIRECTORY"; exit 1; }
 [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]] || {
-    echo "Lima's stable local signing identity is unavailable. Run scripts/setup_local_signing.sh first." >&2
+    print -u2 "Lima's stable local signing identity is unavailable. Run scripts/setup_local_signing.sh first."
     exit 1
 }
 
@@ -18,7 +29,7 @@ KEYCHAIN_PASSWORD="$(<"$LOCAL_SIGNING_PASSWORD")"
 security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$LOCAL_SIGNING_KEYCHAIN"
 LOCAL_SIGNING_HASH="$(security find-identity -v -p codesigning "$LOCAL_SIGNING_KEYCHAIN" | awk -v identity="$LOCAL_SIGNING_IDENTITY" 'index($0, "\"" identity "\"") { print $2; exit }')"
 [[ -n "$LOCAL_SIGNING_HASH" ]] || {
-    echo "Lima's local signing identity is not trusted for code signing." >&2
+    print -u2 "Lima's local signing identity is not trusted for code signing."
     exit 1
 }
 
@@ -32,4 +43,4 @@ codesign --force --deep --sign "$LOCAL_SIGNING_HASH" "$APP_DIRECTORY"
 codesign --verify --deep --strict "$APP_DIRECTORY"
 restore_signing_search_list
 trap - EXIT INT TERM
-echo "Signed Lima with the stable local identity."
+print "Signed Lima with the stable local identity."

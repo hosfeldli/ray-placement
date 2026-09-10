@@ -1,0 +1,386 @@
+import Foundation
+
+/// Masks text that a correction engine must never rewrite. The mask is shared
+/// by the local and optional developer BYOK paths so both paths have the same
+/// safety boundary before a replacement is attempted.
+public struct StealthProtectedText: Equatable, Sendable {
+    public let maskedText: String
+    public let leadingWhitespace: String
+    public let trailingWhitespace: String
+    private let replacements: [String: String]
+
+    init(maskedText: String, leadingWhitespace: String, trailingWhitespace: String, replacements: [String: String]) {
+        self.maskedText = maskedText
+        self.leadingWhitespace = leadingWhitespace
+        self.trailingWhitespace = trailingWhitespace
+        self.replacements = replacements
+    }
+
+    public func restore(_ corrected: String) -> String? {
+        guard !corrected.contains("```") else { return nil }
+        // A provider must preserve the exact token sequence. Checking only
+        // token counts would allow two protected values to be swapped.
+        guard tokenSequence(in: corrected) == tokenSequence(in: maskedText) else { return nil }
+        var result = corrected
+        for (token, original) in replacements {
+            guard result.components(separatedBy: token).count == 2 else { return nil }
+            result = result.replacingOccurrences(of: token, with: original)
+        }
+        guard !replacements.keys.contains(where: { result.contains($0) }) else { return nil }
+        return leadingWhitespace + result + trailingWhitespace
+    }
+
+    private func tokenSequence(in value: String) -> [String] {
+        // Embed the private-use sentinels as literal Unicode scalars. Using
+        // a regex-level \u{...} escape is not portable across the Foundation
+        // ICU implementations used by supported macOS versions.
+        let pattern = "\u{E000}LIMA_KEEP_[0-9]+_\u{E001}"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).map {
+            (value as NSString).substring(with: $0.range)
+        }
+    }
+
+    public var protectedValues: [String] { Array(replacements.values) }
+}
+
+
+/// A provider edit is expressed in UTF-16 offsets so it maps directly to the
+/// ranges used by Foundation and by the provider transport contract.
+public struct StealthGrammarEdit: Codable, Equatable, Sendable {
+    public let start: Int
+    public let length: Int
+    public let replacement: String
+
+    public init(start: Int, length: Int, replacement: String) {
+        self.start = start
+        self.length = length
+        self.replacement = replacement
+    }
+}
+
+public enum StealthGrammarEditError: LocalizedError, Equatable, Sendable {
+    case invalidRange
+    case overlappingEdits
+    case protectedTextChanged
+    case unsafeReplacement
+
+    public var errorDescription: String? {
+        switch self {
+        case .invalidRange: return "The provider returned an edit outside the original text."
+        case .overlappingEdits: return "The provider returned overlapping grammar edits."
+        case .protectedTextChanged: return "The provider attempted to change protected text."
+        case .unsafeReplacement: return "The provider returned an unsafe grammar replacement."
+        }
+    }
+}
+
+public enum StealthGrammarService {
+    private static func protectedTokenRanges(in value: String) -> [NSRange] {
+        let pattern = "\u{E000}LIMA_KEEP_[0-9]+_\u{E001}"
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).map(\.range)
+    }
+    private static let correctableCapitalizedWords: Set<String> = [
+        "teh", "thier", "wierd", "whot", "grammer", "recieve", "seperate",
+        "definately", "occured", "untill", "alot", "dscernable", "naviattion",
+        "performace", "effciency", "imrpove", "cna", "unistaller", "continu",
+        "speach", "highltinged", "highlighing", "recieved", "recieved", "eror",
+        "mistke", "adress", "begining", "calender", "comming", "enviroment",
+        "occassion", "untill", "tomorow", "writting", "seperately", "becuase",
+        "beleive", "freind", "goverment", "langauge"
+    ]
+    private static let commonTitleWords: Set<String> = [
+        "a", "an", "and", "another", "are", "as", "at", "be", "but", "can", "could",
+        "did", "do", "does", "for", "from", "hello", "hey", "hi", "how", "i", "if",
+        "in", "is", "it", "my", "no", "not", "of", "on", "or", "our", "please",
+        "should", "so", "some", "that", "the", "their", "there", "these", "they", "this",
+        "those", "to", "was", "we", "were", "what", "when", "where", "which", "who",
+        "why", "will", "with", "would", "you", "your"
+    ]
+    // Private-use sentinels are intentionally invisible to normal language
+    // rules and are not valid user prose. The numeric portion is regenerated
+    // until the complete token is absent from the source text.
+    private static let tokenPrefix = "\u{E000}LIMA_KEEP_"
+    private static let tokenSuffix = "_\u{E001}"
+
+    /// Protects URLs, email addresses, code-like values, acronyms, title-case
+    /// terms, and every user-supplied ignore-list term. Title-case protection is
+    /// intentionally conservative: a possible name is safer left unchanged
+    /// than silently spell-corrected into a different name.
+    public static func protect(_ source: String, ignoreList: String) -> StealthProtectedText {
+        let leading = String(source.prefix { $0.isWhitespace })
+        var trailing = String(source.reversed().prefix { $0.isWhitespace }.reversed())
+        // When the entire input is whitespace, the leading and trailing slices
+        // overlap. Treat the complete value as leading whitespace so restore()
+        // remains lossless instead of duplicating it.
+        if leading.count + trailing.count > source.count {
+            trailing = ""
+        }
+        let bodyStart = source.index(source.startIndex, offsetBy: leading.count)
+        let bodyEnd = source.index(source.endIndex, offsetBy: -trailing.count)
+        let body = bodyStart <= bodyEnd ? String(source[bodyStart..<bodyEnd]) : ""
+
+        var ranges: [NSRange] = []
+        let fullRange = NSRange(body.startIndex..<body.endIndex, in: body)
+        let patterns = [
+            #"(?i)\b(?:https?://|ftp://|www\.)[^\s<>\"']+"#,
+            #"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"#,
+            #"`[^`\n]+`|```[\s\S]*?```"#,
+            #"(?<![A-Za-z0-9])(?:~?/|/|\./|\.\./)[^\s]+"#,
+            #"\b(?:v?\d+(?:\.\d+){1,}[A-Za-z0-9.-]*)\b"#,
+            #"\b[A-Z]{2,}[A-Z0-9_./:+-]*\b"#,
+            #"\b[A-Za-z][A-Za-z0-9_]*[A-Z][A-Za-z0-9_]*\b"#
+        ]
+        for pattern in patterns {
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            ranges += expression.matches(in: body, range: fullRange).map(\.range)
+        }
+
+        // Preserve exact ignore-list entries, including phrases and hyphenated
+        // terms. Longest entries win so a phrase is masked as one unit.
+        let ignored = ignoreList
+            .components(separatedBy: .newlines)
+            .flatMap { line -> [String] in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return [] }
+                if trimmed.contains(",") {
+                    return trimmed.split(separator: ",").flatMap { part in
+                        let value = String(part).trimmingCharacters(in: .whitespacesAndNewlines)
+                        return [value] + value.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+                    }
+                }
+                return [trimmed] + trimmed.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .sorted { $0.count > $1.count }
+        for term in ignored {
+            let escaped = NSRegularExpression.escapedPattern(for: term)
+            let pattern = "(?i)(?<![A-Za-z0-9_])" + escaped + "(?![A-Za-z0-9_])"
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { continue }
+            ranges += expression.matches(in: body, range: fullRange).map(\.range)
+        }
+
+        // Title-case words are treated as possible proper nouns. This also
+        // shields product names such as RayPlacement and macOS-like tokens.
+        if let expression = try? NSRegularExpression(pattern: #"\b[A-Z][a-z]{2,}\b"#) {
+            ranges += expression.matches(in: body, range: fullRange)
+                .filter { match in
+                    let word = (body as NSString).substring(with: match.range)
+                    let lowercased = word.lowercased()
+                    return !commonTitleWords.contains(lowercased)
+                        && !correctableCapitalizedWords.contains(lowercased)
+                }
+                .map(\.range)
+        }
+
+        let merged = merge(ranges)
+        var replacements: [String: String] = [:]
+        var output = ""
+        var cursor = 0
+        for (index, range) in merged.enumerated() {
+            guard range.location >= cursor,
+                  NSMaxRange(range) <= (body as NSString).length else { continue }
+            let prefix = (body as NSString).substring(with: NSRange(location: cursor, length: range.location - cursor))
+            let original = (body as NSString).substring(with: range)
+            var token = ""
+            var tokenIndex = index
+            repeat {
+                token = "\(tokenPrefix)\(String(format: "%04d", tokenIndex))\(tokenSuffix)"
+                tokenIndex += 1
+            } while body.contains(token) || replacements[token] != nil
+            output += prefix + token
+            replacements[token] = original
+            cursor = NSMaxRange(range)
+        }
+        output += (body as NSString).substring(from: cursor)
+        return StealthProtectedText(
+            maskedText: output,
+            leadingWhitespace: leading,
+            trailingWhitespace: trailing,
+            replacements: replacements
+        )
+    }
+
+
+    /// Validates and applies provider edits to the exact text sent to the
+    /// provider. Protected tokens are rejected before any replacement is made;
+    /// the caller can then restore the protected values byte-for-byte.
+    public static func apply(_ edits: [StealthGrammarEdit], to source: String) throws -> String {
+        let sourceLength = (source as NSString).length
+        let tokenRanges = protectedTokenRanges(in: source)
+        var ranges: [NSRange] = []
+        ranges.reserveCapacity(edits.count)
+
+        for edit in edits {
+            guard edit.start >= 0, edit.length >= 0,
+                  edit.start <= sourceLength,
+                  edit.length <= sourceLength - edit.start else {
+                throw StealthGrammarEditError.invalidRange
+            }
+            let range = NSRange(location: edit.start, length: edit.length)
+            let touchesProtected = tokenRanges.contains { tokenRange in
+                if edit.length == 0 {
+                    return edit.start >= tokenRange.location && edit.start <= NSMaxRange(tokenRange)
+                }
+                return NSIntersectionRange(tokenRange, range).length > 0
+            }
+            guard !touchesProtected else { throw StealthGrammarEditError.protectedTextChanged }
+            guard isSafeReplacement((source as NSString).substring(with: range), edit.replacement)
+                    || (edit.length == 0 && !edit.replacement.isEmpty && edit.replacement.utf8.count <= 32) else {
+                throw StealthGrammarEditError.unsafeReplacement
+            }
+            guard !ranges.contains(where: { rangesOverlap($0, range) }) else {
+                throw StealthGrammarEditError.overlappingEdits
+            }
+            ranges.append(range)
+        }
+
+        let mutable = NSMutableString(string: source)
+        for (edit, range) in zip(edits, ranges).sorted(by: { $0.1.location > $1.1.location }) {
+            mutable.replaceCharacters(in: range, with: edit.replacement)
+        }
+        return mutable as String
+    }
+
+    private static func rangesOverlap(_ first: NSRange, _ second: NSRange) -> Bool {
+        // NSIntersectionRange treats two zero-length ranges as non-overlapping.
+        // Insertions at the same point, or inside a replacement range, still
+        // conflict because applying both edits would be order-dependent.
+        if first.length == 0 && second.length == 0 {
+            return first.location == second.location
+        }
+        if first.length == 0 {
+            return first.location > second.location && first.location < NSMaxRange(second)
+        }
+        if second.length == 0 {
+            return second.location > first.location && second.location < NSMaxRange(first)
+        }
+        return NSIntersectionRange(first, second).length > 0
+    }
+
+    public static func isSafeReplacement(_ source: String, _ replacement: String) -> Bool {
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !replacement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        // A proofreading response may be a little longer, but it must not
+        // become a rewrite or a generated explanation.
+        let sourceBytes = source.utf8.count
+        let replacementBytes = replacement.utf8.count
+        // Proofreading may insert a small amount of punctuation or expand a
+        // contraction, but it must not turn into a generated paragraph.
+        let allowedExpansion = max(8, min(96, sourceBytes / 5))
+        guard replacementBytes <= sourceBytes + allowedExpansion else { return false }
+        let distance = editDistance(source, replacement)
+        let allowedDistance = max(4, min(96, max(sourceBytes, replacementBytes) * 28 / 100))
+        guard distance <= allowedDistance else { return false }
+        guard newlineSignature(source) == newlineSignature(replacement) else { return false }
+        guard markdownStructure(source) == markdownStructure(replacement) else { return false }
+        guard immutableMarkdownSegments(source) == immutableMarkdownSegments(replacement) else { return false }
+        guard !replacement.contains("<CORRECTED>"), !isChattyResponse(replacement) else { return false }
+        guard !replacement.unicodeScalars.contains(where: { scalar in
+            let value = scalar.value
+            return (value <= 0x1F && value != 0x09 && value != 0x0A && value != 0x0D) || value == 0x7F
+        }) else { return false }
+        return true
+    }
+
+    public static func isChattyResponse(_ value: String) -> Bool {
+        let clean = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let prefixes = [
+            "here is the corrected", "here's the corrected", "corrected text:",
+            "the corrected text is", "i corrected", "i would change", "sure,",
+            "<corrected>", "<proofread>", "answer:", "revision:"
+        ]
+        return prefixes.contains(where: clean.hasPrefix)
+            || clean.hasSuffix("</corrected>")
+            || clean.hasSuffix("</proofread>")
+    }
+
+    private static func markdownStructure(_ value: String) -> [String] {
+        let lines = value.components(separatedBy: .newlines)
+        var structure: [String] = []
+        for line in lines {
+            let leading = String(line.prefix { $0 == " " || $0 == "\t" })
+            let body = String(line.dropFirst(leading.count))
+            if body.hasPrefix("#") {
+                structure.append("heading:\(leading.count):\(body.prefix { $0 == "#" }.count)")
+            } else if body.hasPrefix(">") {
+                structure.append("quote:\(leading.count)")
+            } else if body.hasPrefix("- ") || body.hasPrefix("* ") || body.hasPrefix("+ ") {
+                structure.append("bullet:\(leading.count):\(body.first!)")
+            } else if body.range(of: #"^\d+[.)]\s"#, options: .regularExpression) != nil {
+                structure.append("ordered:\(leading.count)")
+            } else {
+                structure.append("text")
+            }
+        }
+        return structure
+    }
+
+    private static func immutableMarkdownSegments(_ value: String) -> [String] {
+        let patterns = [
+            #"```[\s\S]*?```"#,
+            #"`[^`\n]+`"#,
+            #"!?(?:\[[^]\n]*\])\([^)]*\)"#
+        ]
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return patterns.reduce(into: [String]()) { result, pattern in
+            guard let expression = try? NSRegularExpression(pattern: pattern) else { return }
+            result.append(contentsOf: expression.matches(in: value, range: range).map {
+                (value as NSString).substring(with: $0.range)
+            })
+        }
+    }
+
+    private static func editDistance(_ source: String, _ replacement: String) -> Int {
+        let a = Array(source.utf8)
+        let b = Array(replacement.utf8)
+        if a.isEmpty { return b.count }
+        if b.isEmpty { return a.count }
+        var previous = Array(0...b.count)
+        for (i, left) in a.enumerated() {
+            var current = [i + 1]
+            current.reserveCapacity(b.count + 1)
+            for (j, right) in b.enumerated() {
+                let cost = left == right ? 0 : 1
+                current.append(min(current[j] + 1, previous[j + 1] + 1, previous[j] + cost))
+            }
+            previous = current
+        }
+        return previous[b.count]
+    }
+
+    private static func newlineSignature(_ value: String) -> [UInt32] {
+        value.unicodeScalars.compactMap { scalar in
+            switch scalar.value {
+            case 0x0A, 0x0B, 0x0C, 0x0D, 0x85, 0x2028, 0x2029:
+                return scalar.value
+            default:
+                return nil
+            }
+        }
+    }
+
+    private static func merge(_ ranges: [NSRange]) -> [NSRange] {
+        ranges
+            .filter { $0.location != NSNotFound && $0.length > 0 }
+            .sorted { first, second in
+                if first.location == second.location { return first.length > second.length }
+                return first.location < second.location
+            }
+            .reduce(into: [NSRange]()) { result, range in
+                guard let previous = result.last else {
+                    result.append(range)
+                    return
+                }
+                if NSIntersectionRange(previous, range).length > 0 || NSMaxRange(previous) >= range.location {
+                    result[result.count - 1] = NSUnionRange(previous, range)
+                } else {
+                    result.append(range)
+                }
+            }
+    }
+}

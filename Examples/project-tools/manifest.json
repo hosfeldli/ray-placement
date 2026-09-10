@@ -3,7 +3,7 @@
   "id": "local.project-tools",
   "name": "Project Tools",
   "version": "1.0.0",
-  "description": "Example RayPlacement commands",
+  "description": "Example Lima commands",
   "commands": [
     {
       "id": "open-codex-folder",

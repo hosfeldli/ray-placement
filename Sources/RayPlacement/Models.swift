@@ -9,12 +9,17 @@ enum LauncherOutputState: Equatable {
     case error
 }
 
+enum PickerSurface: Equatable {
+    case emoji
+    case applications(operation: String)
+    case displays(operation: String)
+    case timezone
+}
+
 enum LauncherMode: Equatable {
     case root
     case files
-    case timezoneConverter
-    case forceQuitPicker
-    case emojiPicker
+    case picker(PickerSurface)
     case clipboard
     case history
     case terminal
@@ -25,12 +30,13 @@ enum LauncherMode: Equatable {
         switch self {
         case .root: return nil
         case .files: return "Search Files"
-        case .timezoneConverter: return "Timezone Converter"
-        case .forceQuitPicker: return "Force Quit"
-        case .emojiPicker: return "Emoji Picker"
+        case .picker(.timezone): return "Timezone Converter"
+        case .picker(.applications): return "Applications"
+        case .picker(.displays): return "Displays"
+        case .picker(.emoji): return "Emoji Picker"
         case .clipboard: return "Clipboard History"
         case .history: return "Command History"
-        case .terminal: return "Developer Terminal"
+        case .terminal: return "Terminal"
         case .writingReview: return "Writing Review"
         case .output(let title, _, _): return title
         }
@@ -51,6 +57,19 @@ enum WindowLayout: String, CaseIterable {
     case bottomHalf
     case maximize
     case center
+    case leftThird
+    case centerThird
+    case rightThird
+    case leftTwoThirds
+    case rightTwoThirds
+    case topLeftQuarter
+    case topRightQuarter
+    case bottomLeftQuarter
+    case bottomRightQuarter
+    case restorePrevious
+    case nextDisplay
+    case previousDisplay
+    case mainDisplay
 
     var title: String {
         switch self {
@@ -60,6 +79,19 @@ enum WindowLayout: String, CaseIterable {
         case .bottomHalf: return "Bottom Half"
         case .maximize: return "Maximize"
         case .center: return "Center"
+        case .leftThird: return "Left Third"
+        case .centerThird: return "Center Third"
+        case .rightThird: return "Right Third"
+        case .leftTwoThirds: return "Left Two Thirds"
+        case .rightTwoThirds: return "Right Two Thirds"
+        case .topLeftQuarter: return "Top Left Quarter"
+        case .topRightQuarter: return "Top Right Quarter"
+        case .bottomLeftQuarter: return "Bottom Left Quarter"
+        case .bottomRightQuarter: return "Bottom Right Quarter"
+        case .restorePrevious: return "Restore Previous Position"
+        case .nextDisplay: return "Next Display"
+        case .previousDisplay: return "Previous Display"
+        case .mainDisplay: return "Main Display"
         }
     }
 
@@ -71,6 +103,17 @@ enum WindowLayout: String, CaseIterable {
         case .bottomHalf: return "rectangle.bottomhalf.inset.filled"
         case .maximize: return "rectangle.inset.filled"
         case .center: return "rectangle.center.inset.filled"
+        case .leftThird, .leftTwoThirds: return "rectangle.lefthalf.inset.filled"
+        case .centerThird: return "rectangle.center.inset.filled"
+        case .rightThird, .rightTwoThirds: return "rectangle.righthalf.inset.filled"
+        case .topLeftQuarter: return "rectangle.topthird.inset.filled"
+        case .topRightQuarter: return "rectangle.topthird.inset.filled"
+        case .bottomLeftQuarter: return "rectangle.bottomthird.inset.filled"
+        case .bottomRightQuarter: return "rectangle.bottomthird.inset.filled"
+        case .restorePrevious: return "arrow.uturn.backward"
+        case .nextDisplay: return "rectangle.on.rectangle"
+        case .previousDisplay: return "rectangle.on.rectangle"
+        case .mainDisplay: return "display.2"
         }
     }
 }
@@ -80,18 +123,18 @@ enum SystemAction {
     case sleep
     case startScreenSaver
     case openExtensionsFolder
+    case openExtensionStore
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
-    case openFocusedFileLauncher
-    case openPasswordGenerator
-    case openFormatter
-    case openExtensionGuide
-    case openExtensionStore
+    case openPermissionCenter
+    case exportDiagnostics
+    case openWorkflows
     case openSettings
+    case openDeveloperGrammarSettings
     case quit
 }
 
@@ -105,9 +148,12 @@ enum LauncherAction {
     case replaceSelectedText(String)
     case saveSelectionToQuickNote(String)
     case checkSelectedText
-    case forceQuitApplication(processIdentifier: Int32, name: String)
+    case applicationOperation(operation: String, processIdentifier: Int32, name: String)
+    case displayOperation(operation: String, displayIdentifier: CGDirectDisplayID, name: String)
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
+    case universalSearch(LimaSearchResult)
+    case workflow(UUID)
     case window(WindowLayout)
     case system(SystemAction)
     case noOp
@@ -163,13 +209,31 @@ struct ExtensionIssue: Identifiable, Hashable {
     let id = UUID()
     let file: String
     let message: String
+    let extensionID: String?
+    let manifestHash: String?
+    let capabilities: Set<ExtensionManifest.Capability>?
+
+    init(file: String, message: String, extensionID: String? = nil, manifestHash: String? = nil, capabilities: Set<ExtensionManifest.Capability>? = nil) {
+        self.file = file
+        self.message = message
+        self.extensionID = extensionID
+        self.manifestHash = manifestHash
+        self.capabilities = capabilities
+    }
+}
+
+extension LoadedExtensionCommand {
+    var capabilitySummary: String { capabilities.map(\.rawValue).sorted().joined(separator: ", ") }
+    var trustLabel: String { trust.rawValue }
 }
 
 extension Notification.Name {
     static let rayPlacementShortcutChanged = Notification.Name("RayPlacementShortcutChanged")
     static let rayPlacementActionShortcutsChanged = Notification.Name("RayPlacementActionShortcutsChanged")
     static let rayPlacementAccentChanged = Notification.Name("RayPlacementAccentChanged")
+    static let rayPlacementAppearanceChanged = Notification.Name("RayPlacementAppearanceChanged")
     static let rayPlacementClipboardSettingsChanged = Notification.Name("RayPlacementClipboardSettingsChanged")
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")
+    static let rayPlacementCommandProfilesChanged = Notification.Name("RayPlacementCommandProfilesChanged")
 }

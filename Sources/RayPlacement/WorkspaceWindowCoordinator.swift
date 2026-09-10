@@ -1,6 +1,6 @@
 import AppKit
 
-/// Keeps RayPlacement tools as independent, resizable workspaces. This avoids
+/// Keeps Lima tools as independent, resizable workspaces. This avoids
 /// macOS tab bars while still letting the launcher act as the central navigator.
 @MainActor
 final class WorkspaceWindowCoordinator {

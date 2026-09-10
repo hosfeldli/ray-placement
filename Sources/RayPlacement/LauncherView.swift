@@ -9,6 +9,8 @@ struct LauncherView: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hoveredEmojiID: String?
+    @State private var hoveredResultID: String?
 
     init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
         self.viewModel = viewModel
@@ -17,7 +19,7 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow)
+            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow, identityLayer: true)
             VStack(spacing: 5) {
                 searchHeader
                 content
@@ -26,38 +28,34 @@ struct LauncherView: View {
                 footer
             }
         }
-        .frame(width: settings.interfaceDensity.launcherWidth, height: settings.interfaceDensity.launcherHeight)
-        .clipShape(PrismaticPanelShape(cut: 18))
-        .overlay(
-            PrismaticPanelShape(cut: 18)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.82), LimaLauncherPalette.cyan.opacity(0.54), LimaLauncherPalette.indigo.opacity(0.34), Color.black.opacity(0.28)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.0
-                )
+        .frame(
+            width: LauncherPanelLayout.size(
+                for: viewModel.mode,
+                density: settings.interfaceDensity,
+                resultCount: viewModel.results.count,
+                query: viewModel.query
+            ).width,
+            height: LauncherPanelLayout.size(
+                for: viewModel.mode,
+                density: settings.interfaceDensity,
+                resultCount: viewModel.results.count,
+                query: viewModel.query
+            ).height
         )
-        .overlay(
-            PrismaticPanelShape(cut: 18)
-                .strokeBorder(Color.black.opacity(0.56), lineWidth: 0.7)
-                .padding(1.35)
+        // The shell is intentionally one continuous shape. The shadow is
+        // applied after the clip so it remains outside the perimeter and does
+        // not become a fuzzy second border.
+        .background(
+            LimaColors.windowBackground.opacity(0.90),
+            in: RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
         )
-        .overlay(alignment: .topTrailing) {
-            LinearGradient(
-                colors: [.clear, LimaLauncherPalette.cyan.opacity(0.44), Color.white.opacity(0.36)],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-            .frame(width: 118, height: 1)
-            .padding(.trailing, 31)
-            .padding(.top, 0.7)
+        .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
+                .strokeBorder(LimaColors.border.opacity(0.92), lineWidth: LimaDesign.focusWidth)
         }
-        .shadow(color: LimaLauncherPalette.indigo.opacity(0.08), radius: 18, y: 7)
-        .shadow(color: .black.opacity(0.22), radius: 14, y: 7)
-        .tint(settings.accentTheme.primary)
-        .preferredColorScheme(.dark)
+        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+        .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
             if viewModel.mode == .terminal {
@@ -82,24 +80,7 @@ struct LauncherView: View {
 
     private var searchHeader: some View {
         HStack(spacing: 10) {
-            if viewModel.mode == .root {
-                HStack(spacing: 7) {
-                    ZStack {
-                        PrismaticPanelShape(cut: 7).fill(LimaLauncherPalette.heroGradient)
-                        Image(systemName: "sparkle.magnifyingglass")
-                            .limaFont(.system(size: 14, weight: .bold))
-                            .foregroundStyle(.white)
-                    }
-                    .frame(width: 27, height: 27)
-                    Text("LIMA")
-                        .limaFont(.system(size: 11, weight: .black, design: .rounded))
-                        .tracking(1.6)
-                        .foregroundStyle(.primary)
-                }
-                .overlay(PrismaticPanelShape(cut: 7).stroke(Color.white.opacity(0.48), lineWidth: 0.7))
-                .shadow(color: LimaLauncherPalette.indigo.opacity(0.20), radius: 8, y: 3)
-                .accessibilityHidden(true)
-            } else {
+            if viewModel.mode != .root {
                 Button {
                     viewModel.enter(.root)
                 } label: {
@@ -110,7 +91,7 @@ struct LauncherView: View {
                 }
                 .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
                 .accessibilityLabel("Back")
-                .help("Back")
+                .help("Back to search")
             }
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
@@ -122,51 +103,40 @@ struct LauncherView: View {
                     .foregroundStyle(.tertiary)
             }
 
-            if viewModel.mode == .timezoneConverter {
+            if viewModel.isTimezonePicker {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
-            } else if viewModel.mode == .terminal {
-                TextField("Search or draft a terminal command…", text: $terminalModel.commandComposer)
-                    .textFieldStyle(.plain)
-                    .limaFont(.system(size: 16, weight: .medium, design: .monospaced))
-                    .focused($searchFocused)
-                    .onSubmit { terminalModel.insertComposer() }
-                    .accessibilityLabel("Terminal command search")
-                if !terminalModel.commandComposer.isEmpty {
-                    Text("↩ insert")
-                        .limaFont(.system(size: 9.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.secondary)
-                }
-                StatusCapsule(text: terminalModel.isLive ? "LIVE" : "STOPPED", color: terminalModel.isLive ? .green : .orange)
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
-            } else {
+            } else if viewModel.mode != .terminal {
                 TextField(viewModel.placeholder, text: $viewModel.query)
                     .textFieldStyle(.plain)
                     .limaFont(.system(size: 17, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
+            } else {
+                Spacer(minLength: 0)
             }
 
-            if viewModel.isSearching {
+            if viewModel.mode != .terminal, viewModel.isSearching {
                 ProgressView()
                     .controlSize(.small)
                     .frame(width: 20)
-            } else if !viewModel.query.isEmpty {
+            } else if viewModel.mode != .terminal, !viewModel.query.isEmpty {
                 Text("esc")
                     .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: PrismaticPanelShape(cut: 4))
+                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
             }
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
-        .liquidGlass(cornerRadius: 13, depth: .raised, accentOpacity: 0.024)
+        .liquidGlass(cornerRadius: LimaRadius.searchField, depth: .raised, accentOpacity: 0.024)
         .padding(.horizontal, 8)
         .padding(.top, 8)
     }
@@ -174,7 +144,7 @@ struct LauncherView: View {
     @ViewBuilder
     private var content: some View {
         switch viewModel.mode {
-        case .timezoneConverter:
+        case .picker(.timezone):
             timezoneConverterView
         case .writingReview(let review):
             writingReviewView(review)
@@ -182,8 +152,10 @@ struct LauncherView: View {
             outputView(title: title, text: text, state: state)
         case .terminal:
             DeveloperTerminalView(model: terminalModel)
-        case .emojiPicker:
+        case .picker(.emoji):
             emojiGrid
+        case .picker(.applications):
+            resultList
         default:
             resultList
         }
@@ -218,22 +190,38 @@ struct LauncherView: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 40, maximum: 46), spacing: 5)],
+                        columns: Array(
+                            repeating: GridItem(.flexible(minimum: 42, maximum: 64), spacing: 5),
+                            count: LauncherViewModel.emojiGridColumnCount
+                        ),
                         spacing: 5
                     ) {
                         ForEach(viewModel.emojiVisibleRange, id: \.self) { index in
                             let entry = viewModel.emojiMatches[index]
+                            let isSelected = index == viewModel.selectedIndex
+                            let isHovered = entry.id == hoveredEmojiID
                             Button {
                                 viewModel.executeEmoji(at: index)
                             } label: {
                                 EmojiGridTile(
                                     emoji: entry.emoji,
-                                    selected: index == viewModel.selectedIndex
+                                    selected: isSelected,
+                                    hovered: isHovered
                                 )
                             }
                             .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity, minHeight: 48)
+                            .contentShape(Rectangle())
+                            .onHover { hovering in
+                                if hovering {
+                                    hoveredEmojiID = entry.id
+                                } else if hoveredEmojiID == entry.id {
+                                    hoveredEmojiID = nil
+                                }
+                            }
                             .accessibilityLabel(entry.name)
-                            .accessibilityValue(index == viewModel.selectedIndex ? "Selected" : "")
+                            .accessibilityValue(isSelected ? "Selected" : "")
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
                             .id(entry.id)
                         }
                     }
@@ -242,9 +230,10 @@ struct LauncherView: View {
                 }
                 .onChange(of: viewModel.navigationGeneration) { _ in
                     let newIndex = viewModel.selectedIndex
-                    guard viewModel.emojiVisibleRange.contains(newIndex),
-                          viewModel.emojiMatches.indices.contains(newIndex) else { return }
-                    proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
+                    guard viewModel.emojiMatches.indices.contains(newIndex) else { return }
+                    withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                        proxy.scrollTo(viewModel.emojiMatches[newIndex].id, anchor: .center)
+                    }
                 }
                 .scrollIndicators(.hidden)
             }
@@ -256,6 +245,9 @@ struct LauncherView: View {
                         .limaFont(.system(size: 22, weight: .medium))
                     Text("No matching emoji")
                         .limaFont(.system(size: 13, weight: .semibold))
+                    Text("Try another name or clear the search")
+                        .limaFont(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.tertiary)
                 }
                 .foregroundStyle(.secondary)
             }
@@ -267,7 +259,11 @@ struct LauncherView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
-                    if viewModel.mode == .root, viewModel.contextualSelectionText != nil {
+                    if viewModel.mode == .root,
+                       viewModel.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       viewModel.contextualSelectionText == nil {
+                        idleLauncherHeader
+                    } else if viewModel.mode == .root, viewModel.contextualSelectionText != nil {
                         contextualSelectionHeader
                     }
 
@@ -281,7 +277,8 @@ struct LauncherView: View {
                                 ResultRow(
                                     item: item,
                                     selected: index == viewModel.selectedIndex,
-                                    actionLabel: actionLabel(for: item)
+                                    actionLabel: actionLabel(for: item),
+                                    hovered: hoveredResultID == item.id
                                 )
                             }
                             .buttonStyle(.plain)
@@ -291,10 +288,10 @@ struct LauncherView: View {
                             .accessibilityAddTraits(index == viewModel.selectedIndex ? .isSelected : [])
                             .id(item.id)
                             .onHover { hovering in
-                                if hovering { viewModel.select(index) }
+                                hoveredResultID = hovering ? item.id : (hoveredResultID == item.id ? nil : hoveredResultID)
                             }
                         } else {
-                            ResultRow(item: item, selected: false, actionLabel: nil)
+                            ResultRow(item: item, selected: false, actionLabel: nil, hovered: hoveredResultID == item.id)
                                 .accessibilityElement(children: .combine)
                                 .accessibilityLabel(Text(accessibilityLabel(for: item)))
                                 .id(item.id)
@@ -317,6 +314,21 @@ struct LauncherView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private var idleLauncherHeader: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Ready when you are")
+                .limaFont(LimaTypography.sectionTitle)
+                .foregroundStyle(LimaColors.primaryText)
+            Text("Recent and favorite actions")
+                .limaFont(LimaTypography.body)
+                .foregroundStyle(LimaColors.secondaryText)
+        }
+        .padding(.horizontal, 11)
+        .padding(.top, 8)
+        .padding(.bottom, 1)
+        .accessibilityElement(children: .combine)
+    }
+
     private var contextualSelectionHeader: some View {
         let text = viewModel.contextualSelectionText ?? ""
         let preview = text.replacingOccurrences(of: "\n", with: " ")
@@ -329,7 +341,7 @@ struct LauncherView: View {
                     .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.22))
                 Image(systemName: "text.cursor")
                     .limaFont(.system(size: 13, weight: .bold))
-                    .foregroundStyle(SettingsStore.shared.accentTheme.tertiary)
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readableTertiary)
             }
             .frame(width: 30, height: 30)
 
@@ -426,7 +438,7 @@ struct LauncherView: View {
                 Button { viewModel.swapTimezones() } label: {
                     Image(systemName: "arrow.left.arrow.right")
                         .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(settings.accentTheme.onGradient)
                         .frame(width: 38, height: 38)
                         .background(LimaLauncherPalette.heroGradient, in: Circle())
                         .shadow(color: LimaLauncherPalette.indigo.opacity(0.28), radius: 9, y: 4)
@@ -453,7 +465,7 @@ struct LauncherView: View {
                     Label(viewModel.timezoneDidCopy ? "Copied" : "Copy result", systemImage: viewModel.timezoneDidCopy ? "checkmark" : "doc.on.doc")
                 }
                 .limaButton(prominent: true)
-                .tint(LimaLauncherPalette.indigo)
+                .tint(LimaLauncherPalette.readableIndigo)
                 .disabled(viewModel.timezoneConversion == nil)
             }
         }
@@ -473,7 +485,7 @@ struct LauncherView: View {
                 Text(title)
                     .limaFont(.system(size: 10, weight: .bold, design: .rounded))
                     .tracking(1.4)
-                    .foregroundStyle(isSource ? LimaLauncherPalette.indigo : LimaLauncherPalette.cyan)
+                    .foregroundStyle(isSource ? LimaLauncherPalette.readableIndigo : LimaLauncherPalette.readableCyan)
                 Spacer()
                 Picker("", selection: selection) {
                     ForEach(LauncherViewModel.timezoneOptions) { option in
@@ -515,7 +527,7 @@ struct LauncherView: View {
                     Circle().fill((review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet).opacity(0.14))
                     Image(systemName: review.issues.isEmpty ? "checkmark" : "wand.and.stars")
                         .limaFont(.system(size: 16, weight: .bold))
-                        .foregroundStyle(review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet)
+                        .foregroundStyle(review.issues.isEmpty ? Color.green : LimaLauncherPalette.readableViolet)
                 }
                 .frame(width: 30, height: 30)
                 VStack(alignment: .leading, spacing: 2) {
@@ -524,6 +536,11 @@ struct LauncherView: View {
                     Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
                         .limaFont(.caption)
                         .foregroundStyle(.secondary)
+                    if let status = review.status {
+                        Text(status)
+                            .limaFont(.caption2)
+                            .foregroundStyle(.orange)
+                    }
                 }
                 Spacer()
                 Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
@@ -535,7 +552,7 @@ struct LauncherView: View {
                     viewModel.pasteWritingResult(review)
                 }
                 .limaButton(prominent: true)
-                .tint(LimaLauncherPalette.indigo)
+                .tint(LimaLauncherPalette.readableIndigo)
                 .accessibilityHint("Revalidates and replaces the exact original selection")
                 .keyboardShortcut(.return, modifiers: [])
             }
@@ -591,13 +608,19 @@ struct LauncherView: View {
     }
 
     private var activeWritingModelTitle: String {
-        "Python + Harper"
+        SettingsStore.shared.grammarEngineEnhanced ? "Enhanced Grammar" : "Python + Harper"
     }
 
     @ViewBuilder
     private var footer: some View {
         if viewModel.mode == .terminal {
-            EmptyView()
+            HStack {
+                Spacer()
+                KeyHint(keys: "esc", label: "Back to search")
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 27)
+            .padding(.bottom, 5)
         } else if viewModel.mode == .root {
             HStack(spacing: 12) {
                 LimaStatusLine(
@@ -688,7 +711,7 @@ struct LauncherView: View {
         case .replaceSelectedText: return "Replace"
         case .saveSelectionToQuickNote: return "Save"
         case .checkSelectedText: return "Review"
-        case .forceQuitApplication: return "Review"
+        case .applicationOperation: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -702,7 +725,7 @@ struct LauncherView: View {
         case .replaceSelectedText: return "Replace"
         case .saveSelectionToQuickNote: return "Save"
         case .checkSelectedText: return "Review"
-        case .forceQuitApplication: return "Review"
+        case .applicationOperation: return "Review"
         case .enterMode: return "Enter"
         default: return "Run"
         }
@@ -715,7 +738,7 @@ struct LauncherView: View {
     private func focusSearch() {
         guard !isOutputMode, viewModel.mode != .terminal else { return }
         DispatchQueue.main.async {
-            if viewModel.mode == .timezoneConverter {
+            if viewModel.isTimezonePicker {
                 timezoneFocused = true
             } else {
                 searchFocused = true
@@ -744,7 +767,8 @@ private struct EmojiPageButtonStyle: ButtonStyle {
             .limaFont(.system(size: 9, weight: .bold))
             .foregroundStyle(disabled ? Color.secondary.opacity(0.38) : Color.primary.opacity(0.85))
             .frame(width: 20, height: 20)
-            .background(Color.white.opacity(configuration.isPressed ? 0.12 : 0.055), in: PrismaticPanelShape(cut: 4))
+            .background(configuration.isPressed ? LimaColors.hoverFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             .scaleEffect(configuration.isPressed ? 0.92 : 1)
     }
 }
@@ -755,7 +779,7 @@ private struct WritingIssueRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 11) {
             Image(systemName: issue.kind == .spelling ? "character.cursor.ibeam" : "text.badge.checkmark")
-                .foregroundStyle(issue.kind == .spelling ? Color.orange : SettingsStore.shared.accentTheme.primary)
+                .foregroundStyle(issue.kind == .spelling ? Color.orange : SettingsStore.shared.accentTheme.readablePrimary)
                 .frame(width: 22)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 4) {
@@ -792,20 +816,21 @@ private struct ResultRow: View {
     let item: LauncherItem
     let selected: Bool
     let actionLabel: String?
+    let hovered: Bool
 
     var body: some View {
         HStack(spacing: 10) {
             LauncherIconView(icon: item.icon, selected: selected)
-                .frame(width: 27, height: 27)
+                .frame(width: 28, height: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .limaFont(.system(size: 13.5, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(Color.white.opacity(selected ? 1 : 0.92))
+                    .foregroundStyle(LimaColors.primaryText)
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
-                        .limaFont(.system(size: 11.25, weight: .regular))
-                        .foregroundStyle(Color.white.opacity(selected ? 0.68 : 0.56))
+                        .limaFont(.system(size: 11.25))
+                        .foregroundStyle(LimaColors.secondaryText)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -814,59 +839,25 @@ private struct ResultRow: View {
             if let accessory = item.accessory {
                 Text(accessory)
                     .limaFont(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaColors.secondaryText)
             }
-            if let shortcut = item.shortcut {
-                Text(shortcut)
-                    .limaFont(.system(size: 10.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 4))
-                    .overlay(PrismaticPanelShape(cut: 4).stroke(Color.white.opacity(0.20), lineWidth: 0.6))
-            }
+            if let shortcut = item.shortcut { LimaShortcutBadge(text: shortcut) }
             if selected, let actionLabel {
                 HStack(spacing: 4) {
                     Text("↩")
                     Text(actionLabel)
                 }
                 .limaFont(.system(size: 10.25, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+                .foregroundStyle(settings.accentTheme.onPrimary)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 5)
-                .background(SettingsStore.shared.accentTheme.gradient, in: PrismaticPanelShape(cut: 5))
-                .overlay(PrismaticPanelShape(cut: 5).stroke(Color.white.opacity(0.35), lineWidth: 0.6))
-                .shadow(color: SettingsStore.shared.accentTheme.primary.opacity(0.24), radius: 7, y: 3)
+                .background(settings.accentTheme.primary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
             }
         }
         .padding(.horizontal, 11)
         .frame(height: settings.interfaceDensity.resultRowHeight)
-        .background {
-            if selected {
-                ZStack {
-                    PrismaticPanelShape(cut: 7).fill(.ultraThinMaterial)
-                    PrismaticPanelShape(cut: 7)
-                        .fill(SettingsStore.shared.accentTheme.gradient.opacity(0.09))
-                }
-            }
-        }
-        .overlay {
-            if selected {
-                PrismaticPanelShape(cut: 7)
-                    .strokeBorder(
-                        LinearGradient(
-                            colors: [Color.white.opacity(0.66), SettingsStore.shared.accentTheme.primary.opacity(0.36), Color.white.opacity(0.12)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        ),
-                        lineWidth: 0.85
-                    )
-            }
-        }
-        .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.07) : .clear, radius: 8, y: 3)
-        .opacity(selected ? 1 : 0.97)
-        .scaleEffect(selected ? 1 : 0.998)
-        .limaAnimation(LimaDesign.spring(0.24), value: selected)
+        .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
+        .animation(nil, value: selected)
     }
 }
 
@@ -882,13 +873,13 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.primary : Color.secondary)
+                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.readablePrimary : Color.secondary)
                     .padding(7.5)
-                    .background(.ultraThinMaterial, in: PrismaticPanelShape(cut: 5))
-                    .overlay(
-                        PrismaticPanelShape(cut: 5)
-                            .stroke(Color.white.opacity(selected ? 0.34 : 0.14), lineWidth: 0.65)
-                    )
+                    .background(selected ? LimaColors.selectedFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous)
+                            .stroke(selected ? LimaColors.focusedBorder : LimaColors.border, lineWidth: LimaDesign.borderWidth)
+                    }
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url))
                     .resizable()
@@ -904,27 +895,24 @@ private struct LauncherIconView: View {
 private struct EmojiGridTile: View {
     let emoji: String
     let selected: Bool
+    let hovered: Bool
 
     var body: some View {
         Text(emoji)
-            .limaFont(.system(size: 27))
+            .limaFont(.system(size: 30))
             .minimumScaleFactor(0.72)
             .frame(maxWidth: .infinity)
-            .frame(height: 40)
-            .contentShape(PrismaticPanelShape(cut: 5))
-            .background {
-                PrismaticPanelShape(cut: 5)
-                    .fill(selected ? AnyShapeStyle(SettingsStore.shared.accentTheme.gradient.opacity(0.18)) : AnyShapeStyle(Color.white.opacity(0.035)))
-            }
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
+            .background(selected ? LimaColors.selectedFill : (hovered ? LimaColors.hoverFill : .clear), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
             .overlay {
-                PrismaticPanelShape(cut: 5)
-                    .strokeBorder(
-                        selected ? SettingsStore.shared.accentTheme.tertiary.opacity(0.78) : Color.white.opacity(0.10),
-                        lineWidth: selected ? 1.1 : 0.6
-                    )
+                if selected {
+                    RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                        .strokeBorder(LimaColors.accent, lineWidth: LimaDesign.focusWidth)
+                }
             }
-            .shadow(color: selected ? SettingsStore.shared.accentTheme.primary.opacity(0.12) : .clear, radius: 4, y: 2)
-            .scaleEffect(selected ? 1.02 : 1)
+            .animation(LimaMotion.quick, value: selected)
+            .animation(LimaMotion.quick, value: hovered)
     }
 }
 
@@ -951,7 +939,8 @@ private struct KeyHint: View {
                 .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(Color.primary.opacity(0.085), in: PrismaticPanelShape(cut: 4))
+                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
             Text(label).limaFont(.system(size: 10.5)).foregroundStyle(.secondary)
         }
     }
@@ -969,7 +958,7 @@ private struct StatusCapsule: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
             .background(color.opacity(0.11), in: PrismaticPanelShape(cut: 5))
-            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.24), lineWidth: 0.8))
+            .overlay(PrismaticPanelShape(cut: 5).stroke(color.opacity(0.24), lineWidth: LimaDesign.borderWidth))
     }
 }
 
@@ -1037,10 +1026,10 @@ private struct ActivityTimeline: View {
                         if index < activeStep {
                             Image(systemName: "checkmark")
                                 .limaFont(.system(size: 7, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(LimaColors.primaryText)
                         } else {
                             Circle()
-                                .fill(index == activeStep ? Color.white : Color.secondary.opacity(0.45))
+                                .fill(index == activeStep ? LimaColors.primaryText : Color.secondary.opacity(0.45))
                                 .frame(width: 4, height: 4)
                         }
                     }
@@ -1066,6 +1055,9 @@ private enum LimaLauncherPalette {
     static var indigo: Color { SettingsStore.shared.accentTheme.primary }
     static var violet: Color { SettingsStore.shared.accentTheme.secondary }
     static var cyan: Color { SettingsStore.shared.accentTheme.tertiary }
+    static var readableIndigo: Color { SettingsStore.shared.accentTheme.readablePrimary }
+    static var readableViolet: Color { SettingsStore.shared.accentTheme.readableSecondary }
+    static var readableCyan: Color { SettingsStore.shared.accentTheme.readableTertiary }
     static var heroGradient: LinearGradient { SettingsStore.shared.accentTheme.gradient }
     static let cardBackground = Color(nsColor: .controlBackgroundColor).opacity(0.78)
     static let selectionBackground = indigo.opacity(0.13)
@@ -1076,9 +1068,10 @@ private extension LauncherMode {
         switch self {
         case .root: return "root"
         case .files: return "files"
-        case .timezoneConverter: return "timezone"
-        case .forceQuitPicker: return "force-quit"
-        case .emojiPicker: return "emoji"
+        case .picker(.timezone): return "picker-timezone"
+        case .picker(.applications): return "picker-applications"
+        case .picker(.displays): return "picker-displays"
+        case .picker(.emoji): return "picker-emoji"
         case .clipboard: return "clipboard"
         case .history: return "history"
         case .terminal: return "terminal"

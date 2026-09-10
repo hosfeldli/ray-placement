@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 2,
+  "id": "local.extension-maintenance",
+  "name": "Extension Maintenance",
+  "version": "1.0.0",
+  "description": "Restore Lima's bundled extensions while preserving a reversible backup.",
+  "commands": [
+    {
+      "id": "repair-bundled",
+      "title": "Repair Bundled Extensions",
+      "subtitle": "Restore shipped extensions and back up existing copies",
+      "keywords": [
+        "extension",
+        "plugin",
+        "repair",
+        "restore",
+        "fix",
+        "backup"
+      ],
+      "icon": "wrench.and.screwdriver.fill",
+      "action": {
+        "type": "workspace",
+        "operation": "repairExtensions"
+      }
+    }
+  ],
+  "trust": "builtIn",
+  "capabilities": [],
+  "pack": "Extension Maintenance",
+  "category": "Maintenance",
+  "bundled": true,
+  "provenance": "bundled"
+}

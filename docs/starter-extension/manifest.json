@@ -1,26 +1,42 @@
 {
   "schemaVersion": 2,
-  "id": "local.example.line-tools",
-  "name": "Line Tools",
+  "id": "local.example.line-count",
+  "name": "Line Count",
   "version": "1.0.0",
-  "description": "A safe starting point for a Lima form extension",
+  "description": "A local-only example that counts lines in a selected file.",
+  "capabilities": [
+    "shell",
+    "filesystem",
+    "externalExecution"
+  ],
   "commands": [
     {
-      "id": "count-words",
-      "title": "Count Words",
-      "subtitle": "Count words in a file you choose",
-      "keywords": ["word", "count", "file"],
-      "icon": "text.word.spacing",
+      "id": "count-lines",
+      "title": "Count Lines",
+      "subtitle": "Count lines in a selected file",
+      "keywords": ["lines", "file", "text", "count"],
+      "icon": "text.alignleft",
       "action": {
         "type": "form",
         "value": "",
         "form": {
-          "title": "Count Words",
+          "title": "Count Lines",
           "submitLabel": "Count",
           "fields": [
-            {"id": "file", "label": "File", "type": "file", "required": true, "section": "Input"}
+            {
+              "id": "inputFile",
+              "label": "File",
+              "type": "file",
+              "required": true,
+              "section": "Input"
+            }
           ],
-          "execution": {"type": "shell", "executable": "/usr/bin/wc", "arguments": ["-w", "{{file}}"], "timeoutSeconds": 30}
+          "execution": {
+            "type": "shell",
+            "executable": "/usr/bin/wc",
+            "arguments": ["-l", "{{inputFile}}"],
+            "timeoutSeconds": 20
+          }
         }
       }
     }

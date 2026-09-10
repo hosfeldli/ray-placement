@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Combine
 import Foundation
 import QuartzCore
 import RayPlacementCore
@@ -21,14 +22,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
     private let notesWindow = NotesWindowController()
+    private lazy var extensionStoreWindow = ExtensionStoreWindowController { [weak self] in
+        self?.viewModel.reloadExtensions()
+    }
     private let terminalModel: DeveloperTerminalModel
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
     private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
     private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
-    private lazy var extensionStoreWindow = ExtensionStoreWindowController { [weak self] in
-        self?.viewModel.reloadExtensions()
-    }
     private lazy var formatterWindow = FormatterWindowController()
+    private lazy var workflowWindow = WorkflowWindowController { [weak self] workflow in
+        self?.executeWorkflow(workflow)
+    }
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -37,7 +41,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var writingTaskID: UUID?
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
+    private var modeSubscription: AnyCancellable?
     private let updateService: UpdateService
+    private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
+    private lazy var permissionWindow: NSWindowController = {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 430), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        LimaWindowChrome.configure(window, title: "Lima Permission Center", accessibilityLabel: "Lima Permission Center")
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: PermissionCenterView(center: .shared)))
+        return NSWindowController(window: window)
+    }()
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
@@ -46,7 +58,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     )
 
     init(updateService: UpdateService) {
-        let clipboard = ClipboardHistoryService()
+        let clipboard = ClipboardHistoryService.shared
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
         self.terminalModel = DeveloperTerminalModel()
@@ -57,6 +69,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         viewModel.delegate = self
         panel.delegate = self
         panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
+        modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
+            .map { mode, results, query in
+                LauncherPanelLayout.size(
+                    for: mode,
+                    density: SettingsStore.shared.interfaceDensity,
+                    resultCount: results.count,
+                    query: query
+                )
+            }
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.resizePanel(for: self.viewModel.mode, animated: true)
+            }
+        resizePanel(for: viewModel.mode, animated: false)
         rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }
@@ -91,6 +118,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.shutdown()
         terminalModel.shutdown()
         formatterWindow.shutdown()
+        workflowWindow.shutdown()
     }
 
     func showSettings() {
@@ -98,9 +126,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         settingsWindow.present()
     }
 
+    func showDeveloperGrammarSettings() {
+        hide()
+        developerGrammarSettingsWindow.present()
+    }
+
     func showNotes() {
         hide()
         notesWindow.toggleVisibility()
+    }
+
+    func showExtensionStore() {
+        hide()
+        extensionStoreWindow.present()
     }
 
     func showQuickNote() {
@@ -124,7 +162,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showDeveloperTerminal() {
-        guard SettingsStore.shared.developerTerminalEnabled else { return }
         viewModel.enter(.terminal)
         presentPanel()
         DispatchQueue.main.async { [weak self] in
@@ -133,16 +170,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
     func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
-
-    func refreshDeveloperTerminalAvailability() {
-        let wasTerminal = viewModel.mode == .terminal
-        viewModel.refreshForSettings()
-        guard !SettingsStore.shared.developerTerminalEnabled else { return }
-        terminalModel.shutdown()
-        if wasTerminal {
-            hide()
-        }
-    }
 
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
@@ -194,14 +221,27 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .checkSelectedText:
             performWritingCheck()
 
-        case .forceQuitApplication(let processIdentifier, let name):
-            confirmForceQuit(processIdentifier: processIdentifier, name: name)
+        case .applicationOperation(let operation, let processIdentifier, let name):
+            dispatchApplicationSelection(operation: operation, processIdentifier: processIdentifier, name: name)
+
+        case .displayOperation(let operation, let displayIdentifier, let name):
+            dispatchDisplaySelection(operation: operation, displayIdentifier: displayIdentifier, name: name)
 
         case .enterMode(let mode):
             viewModel.enter(mode)
 
         case .extensionCommand(let command):
             executeExtension(command)
+
+        case .universalSearch(let result):
+            routeUniversalSearchResult(result)
+
+        case .workflow(let id):
+            guard let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) else {
+                presentError(title: "Workflow", message: "That workflow no longer exists.")
+                return
+            }
+            executeWorkflow(workflow)
 
         case .window(let layout):
             applyWindowLayout(layout)
@@ -224,6 +264,42 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func windowDidResignKey(_ notification: Notification) {
         if panel.isVisible { hide() }
+    }
+
+    private func resizePanel(for mode: LauncherMode, animated: Bool) {
+        let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
+        let desiredSize = LauncherPanelLayout.size(
+            for: mode,
+            density: SettingsStore.shared.interfaceDensity,
+            resultCount: viewModel.results.count,
+            query: viewModel.query
+        )
+        let size: NSSize
+        if let visibleFrame = targetScreen?.visibleFrame {
+            size = NSSize(
+                width: min(desiredSize.width, max(320, visibleFrame.width - 80)),
+                height: min(desiredSize.height, max(240, visibleFrame.height - 100))
+            )
+        } else {
+            size = desiredSize
+        }
+
+        var frame = panel.frame
+        let center = NSPoint(x: frame.midX, y: frame.midY)
+        frame.size = size
+        frame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+
+        guard animated, panel.isVisible else {
+            panel.setFrame(frame, display: panel.isVisible)
+            return
+        }
+
+        let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = reduceMotion ? 0.01 : 0.18
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            panel.animator().setFrame(frame, display: true)
+        }
     }
 
     private func presentPanel() {
@@ -299,37 +375,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
 
-            // The terminal owns ordinary keystrokes—including Escape, Return,
-            // arrows, Control-C, and Vim/Nano commands. Only intercept the
-            // terminal's documented workspace shortcuts here.
+            // In terminal mode the PTY receives every ordinary keystroke.
+            // Escape is the only launcher-level action, allowing the user to
+            // leave the terminal without adding a second command surface.
             if viewModel.mode == .terminal {
                 if event.keyCode == 53 {
                     viewModel.enter(.root)
                     return nil
                 }
-                if event.keyCode == 122 { // F1
-                    terminalModel.toggleHelp()
-                    return nil
-                }
-                // The command field is the terminal search/composer. Let its
-                // normal text-editing events reach SwiftUI; the embedded
-                // terminal receives every other ordinary key unchanged.
-                if event.window?.firstResponder is NSTextView,
-                   event.window?.firstResponder !== terminalModel.terminalView,
-                   !flags.contains([.command, .shift]) {
-                    return event
-                }
-                guard flags.contains([.command, .shift]) else { return event }
-                switch characters {
-                case "h": terminalModel.toggleHelp()
-                case "e": terminalModel.toggleExplorer()
-                case "l": terminalModel.requestComposerFocus()
-                case "r": terminalModel.refreshExplorer()
-                case "[": terminalModel.adjustHelpWidth(by: -36)
-                case "]": terminalModel.adjustHelpWidth(by: 36)
-                default: return event
-                }
-                return nil
+                return event
             }
 
             if flags.contains(.command) {
@@ -356,22 +410,45 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
             let controlOnly = flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option)
-            if self.viewModel.mode == .emojiPicker {
-                if event.keyCode == 123 {
-                    self.viewModel.moveSelection(by: -1)
+            if self.viewModel.isEmojiPicker {
+                switch event.keyCode {
+                case 123: // Left arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 0, columnDelta: -1)
                     return nil
-                }
-                if event.keyCode == 124 {
-                    self.viewModel.moveSelection(by: 1)
+                case 124: // Right arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 0, columnDelta: 1)
                     return nil
+                case 125: // Down arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: 1, columnDelta: 0)
+                    return nil
+                case 126: // Up arrow
+                    self.viewModel.moveEmojiSelection(rowDelta: -1, columnDelta: 0)
+                    return nil
+                case 116: // Page Up
+                    self.viewModel.moveEmojiPage(by: -1)
+                    return nil
+                case 121: // Page Down
+                    self.viewModel.moveEmojiPage(by: 1)
+                    return nil
+                case 115: // Home
+                    self.viewModel.selectFirstEmoji()
+                    return nil
+                case 119: // End
+                    self.viewModel.selectLastEmoji()
+                    return nil
+                case 49: // Space executes without inserting a search space
+                    self.viewModel.executeSelected()
+                    return nil
+                default:
+                    break
                 }
             }
             if event.keyCode == 125 || (controlOnly && characters == "n") {
-                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? 12 : 1)
+                self.viewModel.moveSelection(by: self.viewModel.isEmojiPicker ? LauncherViewModel.emojiGridColumnCount : 1)
                 return nil
             }
             if event.keyCode == 126 || (controlOnly && characters == "p") {
-                self.viewModel.moveSelection(by: self.viewModel.mode == .emojiPicker ? -12 : -1)
+                self.viewModel.moveSelection(by: self.viewModel.isEmojiPicker ? -LauncherViewModel.emojiGridColumnCount : -1)
                 return nil
             }
             if event.keyCode == 36 || event.keyCode == 76 {
@@ -406,6 +483,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
             return
         }
+
         let isShell = command.command.action.type == .shell
         let runsInBackground = isShell && command.command.runInBackground == true
         if runsInBackground {
@@ -425,33 +503,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         extensionExecutor.execute(command, clipboard: clipboard) { [weak self] result in
             guard let self else { return }
             switch result {
-            case .success(let output):
-                if output == "__PASTE__" {
-                    self.pasteIntoPreviousApplication()
-                } else if output == "__CHECK_WRITING__" {
-                    self.performWritingCheck()
-                } else if output == "__OPEN_FOCUSED_FILE_LAUNCHER__" {
-                    self.focusedFileLauncherWindow.present()
-                } else if output == "__CONVERT_TIMEZONES__" {
-                    self.viewModel.enter(.timezoneConverter)
-                    if !self.panel.isVisible { self.presentPanel() }
-                } else if output == "__FORCE_QUIT_APPLICATIONS__" {
-                    self.viewModel.enter(.forceQuitPicker)
-                    if !self.panel.isVisible { self.presentPanel() }
-                } else if output == "__FORCE_QUIT_ALL_APPLICATIONS__" {
-                    self.confirmForceQuitAllApplications()
-                } else if output == "__OPEN_FORMATTER_WORKSPACE__" {
-                    self.formatterWindow.present()
-                } else if output == "__OPEN_EMOJI_PICKER__" {
-                    self.viewModel.enter(.emojiPicker)
-                    if !self.panel.isVisible { self.presentPanel() }
-                } else if output == "__OPEN_PASSWORD_GENERATOR__" {
-                    self.passwordGeneratorWindow.present()
-                } else if output == "__OPEN_EXTENSION_DEVELOPMENT__" {
-                    self.extensionDevelopmentWindow.present()
-                } else if output == "__UNINSTALL_APPLICATION__" {
-                    self.presentUninstaller()
-                } else if let output {
+            case .success(.completed(let output)):
+                if let output, !output.isEmpty {
                     if runsInBackground {
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
@@ -463,8 +516,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
                         self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
+                        if !self.panel.isVisible { self.presentPanel() }
                     }
                 }
+
+            case .success(.native(let action)):
+                self.dispatchNativeAction(action)
+
+            case .success(.nativeChain(let actions)):
+                self.dispatchNativeChain(actions)
+
             case .failure(let error):
                 if runsInBackground {
                     self.toast.show("\(command.command.title) failed · \(error.localizedDescription)", style: .error, duration: 5)
@@ -475,19 +536,418 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    /// Dispatches the stable, capability-oriented native API exposed to
+    /// extension manifests. Bundled commands use this same path as user
+    /// extensions; only the host implementation knows about native windows.
+    private func dispatchNativeAction(_ action: ExtensionAction, completion: @escaping () -> Void = {}) {
+        switch action.type {
+        case .clipboard:
+            switch action.operation ?? "copy" {
+            case "paste":
+                pasteTextIntoPreviousApplication(action.value, successMessage: "Pasted text", completion: completion)
+                return
+            case "pastePlainText":
+                // The executor has already normalized the clipboard. Use the
+                // clipboard-aware path so the focused source selection and the
+                // verified keyboard paste transaction are preserved.
+                pasteIntoPreviousApplication(completion: completion)
+                return
+            case "copy":
+                clipboard.copy(action.value)
+                toast.show("Copied to the clipboard")
+            default:
+                presentError(title: "Clipboard", message: "Unsupported clipboard operation: \(action.operation ?? "")")
+            }
+            completion()
+
+        case .picker:
+            let operation = action.operation ?? ""
+            let query = action.parameters?["query"] ?? action.arguments?.first
+            switch operation {
+            case "emoji":
+                viewModel.enter(.picker(.emoji), query: query ?? "")
+                presentPanel()
+            case "application":
+                viewModel.enterApplicationPicker(
+                    operation: action.parameters?["applicationOperation"] ?? "forceQuit",
+                    query: action.parameters?["query"] ?? action.parameters?["applicationQuery"] ?? ""
+                )
+                presentPanel()
+            case "display":
+                viewModel.enterDisplayPicker(operation: action.parameters?["windowOperation"] ?? "moveToDisplay")
+                presentPanel()
+            case "file":
+                focusedFileLauncherWindow.present()
+            case "timezone":
+                viewModel.enter(.picker(.timezone), query: query ?? "")
+                presentPanel()
+            case "password":
+                passwordGeneratorWindow.present()
+            default:
+                presentError(title: "Picker", message: "Unsupported picker operation: \(operation)")
+            }
+            completion()
+
+        case .workspace:
+            switch action.operation ?? "" {
+            case "writingReview":
+                performWritingCheck()
+            case "focusedFileLauncher":
+                focusedFileLauncherWindow.present()
+            case "formatter":
+                formatterWindow.present()
+            case "extensionDevelopment":
+                extensionDevelopmentWindow.present()
+            case "repairExtensions":
+                toast.show(viewModel.repairBundledExtensions())
+            case "uninstall":
+                presentUninstaller()
+            default:
+                presentError(title: "Workspace", message: "Unsupported workspace operation: \(action.operation ?? "")")
+            }
+            completion()
+
+        case .window:
+            let operation = action.operation ?? action.value
+            let target = previousApplication ?? lastExternalApplication
+            target?.activate(options: [.activateIgnoringOtherApps])
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+                guard let self else { return }
+                switch WindowManager.apply(operation, to: target?.processIdentifier) {
+                case .success:
+                    self.toast.show("Applied \(WindowLayout(rawValue: operation)?.title ?? operation)")
+                case .failure(let error):
+                    self.presentError(title: "Window Management", error: error)
+                }
+                completion()
+            }
+
+        case .application:
+            dispatchApplicationAction(action, completion: completion)
+
+        case .system:
+            dispatchSystemAction(action, completion: completion)
+
+        case .form, .shell, .url, .file:
+            // These action types are completed by ExtensionExecutor and should
+            // never arrive here. Keep the fallback explicit for safety.
+            completion()
+        }
+    }
+
+    private func dispatchNativeChain(
+        _ actions: [ExtensionAction],
+        index: Int = 0,
+        completion: @escaping () -> Void = {}
+    ) {
+        guard !actions.isEmpty else { completion(); return }
+        guard actions.count <= ExtensionAction.maximumNativeChainLength else {
+            presentError(title: "Extension Chain", message: "Action chains may contain at most eight actions.")
+            completion()
+            return
+        }
+        guard actions.indices.contains(index) else { completion(); return }
+        dispatchNativeAction(actions[index]) { [weak self] in
+            guard let self else { completion(); return }
+            guard index + 1 < actions.count else { completion(); return }
+            self.dispatchNativeChain(actions, index: index + 1, completion: completion)
+        }
+    }
+
+    private func dispatchDisplaySelection(
+        operation: String,
+        displayIdentifier: CGDirectDisplayID,
+        name: String,
+        completion: @escaping () -> Void = {}
+    ) {
+        let target = previousApplication ?? lastExternalApplication
+        target?.activate(options: [.activateIgnoringOtherApps])
+        hide()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.14) { [weak self] in
+            guard let self else { completion(); return }
+            switch WindowManager.apply(operation, to: target?.processIdentifier, displayIdentifier: displayIdentifier) {
+            case .success:
+                self.toast.show("Moved window to \(name)")
+            case .failure(let error):
+                self.presentError(title: "Display", error: error)
+            }
+            completion()
+        }
+    }
+
+    private func dispatchApplicationAction(_ action: ExtensionAction, completion: @escaping () -> Void) {
+        let operation = action.operation ?? ""
+        let target = action.target ?? "frontmost"
+        if operation == "forceQuitAll" || operation == "quitAll" {
+            if operation == "forceQuitAll" {
+                confirmForceQuitAllApplications(completion: completion)
+            } else {
+                quitAllApplications(completion: completion)
+            }
+            return
+        }
+        if target == "picker" {
+            viewModel.enterApplicationPicker(
+                operation: operation,
+                query: action.parameters?["query"] ?? action.parameters?["applicationQuery"] ?? ""
+            )
+            presentPanel()
+            completion()
+            return
+        }
+
+        let application: NSRunningApplication?
+        if let bundleIdentifier = action.parameters?["bundleIdentifier"], !bundleIdentifier.isEmpty {
+            application = NSWorkspace.shared.runningApplications.first { $0.bundleIdentifier == bundleIdentifier }
+        } else if target == "frontmost" || target == "previous" {
+            application = previousApplication ?? lastExternalApplication
+        } else {
+            application = previousApplication ?? lastExternalApplication
+        }
+        guard let application else {
+            presentError(title: operation.capitalized, message: "No target application is available.")
+            completion()
+            return
+        }
+        dispatchApplicationSelection(
+            operation: operation,
+            processIdentifier: application.processIdentifier,
+            name: application.localizedName ?? "Application",
+            completion: completion
+        )
+    }
+
+    private func dispatchApplicationSelection(
+        operation: String,
+        processIdentifier: Int32,
+        name: String,
+        completion: @escaping () -> Void = {}
+    ) {
+        guard let application = NSRunningApplication(processIdentifier: processIdentifier), !application.isTerminated else {
+            presentError(title: operation.capitalized, message: "\(name) is no longer running.")
+            completion()
+            return
+        }
+        switch operation {
+        case "forceQuit":
+            confirmForceQuit(processIdentifier: processIdentifier, name: name, completion: completion)
+        case "restart":
+            restartApplication(application, name: name, completion: completion)
+        case "quit":
+            hide()
+            if application.terminate() {
+                toast.show("Quit \(name)")
+            } else {
+                presentError(title: "Quit Application", message: "macOS did not allow \(name) to quit.")
+            }
+            completion()
+        case "activate":
+            application.activate(options: [.activateIgnoringOtherApps])
+            completion()
+        case "hide":
+            _ = application.hide()
+            completion()
+        case "unhide":
+            _ = application.unhide()
+            application.activate(options: [.activateIgnoringOtherApps])
+            completion()
+        default:
+            presentError(title: "Application", message: "Unsupported application operation: \(operation)")
+            completion()
+        }
+    }
+
+    private func restartApplication(
+        _ application: NSRunningApplication,
+        name: String,
+        completion: @escaping () -> Void = {}
+    ) {
+        guard let bundleURL = application.bundleURL else {
+            presentError(title: "Restart Application", message: "The application bundle for \(name) is unavailable.")
+            completion()
+            return
+        }
+        hide()
+        guard application.terminate() else {
+            presentError(title: "Restart Application", message: "macOS did not allow \(name) to quit gracefully.")
+            completion()
+            return
+        }
+        toast.show("Restarting \(name)…", style: .working, duration: 8)
+        waitForTermination(application, bundleURL: bundleURL, name: name, attemptsRemaining: 20, completion: completion)
+    }
+
+    private func waitForTermination(
+        _ application: NSRunningApplication,
+        bundleURL: URL,
+        name: String,
+        attemptsRemaining: Int,
+        completion: @escaping () -> Void
+    ) {
+        if application.isTerminated {
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.openApplication(at: bundleURL, configuration: configuration) { [weak self] _, error in
+                guard let self else { return }
+                if let error {
+                    self.presentError(title: "Restart Application", error: error)
+                } else {
+                    self.toast.show("Restarted \(name)")
+                }
+                completion()
+            }
+            return
+        }
+        guard attemptsRemaining > 0 else {
+            if application.forceTerminate() {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                    self?.waitForTermination(application, bundleURL: bundleURL, name: name, attemptsRemaining: 3, completion: completion)
+                }
+            } else {
+                presentError(title: "Restart Application", message: "\(name) did not terminate.")
+                completion()
+            }
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.waitForTermination(application, bundleURL: bundleURL, name: name, attemptsRemaining: attemptsRemaining - 1, completion: completion)
+        }
+    }
+
+    private func dispatchSystemAction(_ action: ExtensionAction, completion: @escaping () -> Void) {
+        let operation = action.operation ?? action.value
+        let destructive = action.confirmation == true || ["logout", "restart", "shutdown"].contains(operation)
+        if destructive && !confirmSystemOperation(operation) {
+            completion()
+            return
+        }
+        hide()
+        switch operation {
+        case "lock":
+            postSystemShortcut(keyCode: 12, flags: [.maskCommand, .maskControl])
+            completion()
+        case "sleep":
+            runSystemExecutable("/usr/bin/pmset", arguments: ["sleepnow"], title: "Sleep", completion: completion)
+        case "screenSaver":
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Library/CoreServices/ScreenSaverEngine.app"))
+            completion()
+        case "logout":
+            runSystemAppleScript("tell application \"System Events\" to log out", title: "Log Out", completion: completion)
+        case "restart":
+            runSystemExecutable("/sbin/shutdown", arguments: ["-r", "now"], title: "Restart Mac", completion: completion)
+        case "shutdown":
+            runSystemExecutable("/sbin/shutdown", arguments: ["-h", "now"], title: "Shut Down", completion: completion)
+        default:
+            presentError(title: "System", message: "Unsupported system operation: \(operation)")
+            completion()
+        }
+    }
+
+    private func confirmSystemOperation(_ operation: String) -> Bool {
+        let title: String
+        let detail: String
+        switch operation {
+        case "logout":
+            title = "Log Out of This Mac?"
+            detail = "Open applications may be closed and unsaved work could be lost."
+        case "restart":
+            title = "Restart This Mac?"
+            detail = "Open applications may be closed and unsaved work could be lost."
+        case "shutdown":
+            title = "Shut Down This Mac?"
+            detail = "Open applications may be closed and unsaved work could be lost."
+        default:
+            title = "Perform System Action?"
+            detail = "Continue with the requested system operation?"
+        }
+        return LimaConfirmationService.confirm(
+            title: title,
+            detail: detail,
+            confirmTitle: operation == "shutdown" ? "Shut Down" : operation == "restart" ? "Restart" : "Log Out",
+            deliberate: true
+        )
+    }
+
+    private func quitAllApplications(completion: @escaping () -> Void = {}) {
+        let currentBundleIdentifier = Bundle.main.bundleIdentifier
+        let applications = NSWorkspace.shared.runningApplications.filter {
+            !$0.isTerminated && $0.activationPolicy == .regular && $0.bundleIdentifier != currentBundleIdentifier
+        }
+        guard !applications.isEmpty else {
+            toast.show("No other applications are running")
+            completion()
+            return
+        }
+        let names = applications.compactMap(\.localizedName)
+        let detail = "Ask \(applications.count) normal user application\(applications.count == 1 ? "" : "s") to quit gracefully?\n\n\(names.prefix(8).joined(separator: ", "))"
+        guard LimaConfirmationService.confirm(
+            title: "Quit All Applications?",
+            detail: detail,
+            confirmTitle: "Quit All",
+            severity: .warning,
+            deliberate: true
+        ) else {
+            completion()
+            return
+        }
+        for application in applications { _ = application.terminate() }
+        hide()
+        toast.show("Asked \(applications.count) applications to quit")
+        completion()
+    }
+
+    private func runSystemAppleScript(_ source: String, title: String, completion: @escaping () -> Void = {}) {
+        guard let script = NSAppleScript(source: source) else {
+            presentError(title: title, message: "The native system request could not be created.")
+            completion()
+            return
+        }
+        var error: NSDictionary?
+        _ = script.executeAndReturnError(&error)
+        if let error {
+            presentError(title: title, message: error[NSAppleScript.errorMessage] as? String ?? "macOS rejected the request.")
+        }
+        completion()
+    }
+
     private func presentUninstaller() {
-        let alert = NSAlert()
-        alert.alertStyle = .warning
-        alert.messageText = "Move Lima to Trash?"
-        alert.informativeText = "Lima will close. Your notes, extensions, and settings stay on this Mac."
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn,
+        guard LimaConfirmationService.confirm(
+            title: "Move Lima to Trash?",
+            detail: "Lima will close. Your notes, extensions, and settings stay on this Mac.",
+            confirmTitle: "Move to Trash",
+            severity: .warning,
+            deliberate: true
+        ),
               let script = Bundle.main.url(forResource: "Uninstall Lima", withExtension: "command") else { return }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/zsh")
         process.arguments = [script.path, "--confirmed"]
         try? process.run()
+    }
+
+    func runStealthGrammar(from sourceApplication: NSRunningApplication? = nil) {
+        guard SettingsStore.shared.stealthGrammarEnabled else {
+            presentError(title: "Check and Correct Selected Text", message: "Enable the keyboard grammar command in Settings → Writing & Dictation.")
+            return
+        }
+        let candidate = sourceApplication
+            ?? NSWorkspace.shared.frontmostApplication
+            ?? lastExternalApplication
+            ?? previousApplication
+        guard let application = candidate,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              !application.isTerminated else {
+            presentError(title: "Check and Correct Selected Text", message: "Select text in another app, then press the grammar shortcut.")
+            return
+        }
+        guard WindowManager.trusted(prompt: true) else {
+            presentError(title: "Check and Correct Selected Text", message: "Enable Lima in System Settings → Privacy & Security → Accessibility, then try again.")
+            return
+        }
+        previousApplication = application
+        lastExternalApplication = application
+        hide()
+        captureWritingSelectionWithKeyboard(from: application, stealth: true)
     }
 
     private func performWritingCheck() {
@@ -506,11 +966,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         captureWritingSelectionWithKeyboard(from: previousApplication)
     }
 
-    private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication) {
+    private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication, stealth: Bool = false) {
         let retainedAccessibilityContext = selectedTextContext.flatMap { context in
             context.processIdentifier == application.processIdentifier ? context : nil
         }
-        toast.show("Reading the highlight with Copy…", style: .working, duration: 4)
+        if stealth {
+            toast.showStealth("Editing…")
+        } else {
+            toast.show("Reading the highlight with Copy…", style: .working, duration: 3_600)
+        }
         KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -523,7 +987,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     ? retainedAccessibilityContext
                     : nil
                 self.keyboardSelectionContext = capture
-                self.showWritingReview(for: capture.text)
+                if stealth {
+                    self.runStealthCorrection(for: capture.text)
+                } else {
+                    self.showWritingReview(for: capture.text)
+                }
             case .failure(let keyboardError):
                 do {
                     let target = try self.resolveSelectedTextTarget(preferred: application)
@@ -531,12 +999,26 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.lastExternalApplication = target.application
                     self.keyboardSelectionContext = nil
                     self.selectedTextContext = target.context
-                    self.showWritingReview(for: target.context.text)
+                    if stealth {
+                        self.runStealthCorrection(for: target.context.text)
+                    } else {
+                        self.showWritingReview(for: target.context.text)
+                    }
                 } catch {
-                    self.presentError(
-                        title: "Check Spelling & Grammar",
-                        message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
-                    )
+                    if stealth {
+                        self.selectedTextContext = nil
+                        self.keyboardSelectionContext = nil
+                        self.focusedTextContext = nil
+                        self.presentError(
+                            title: "Check and Correct Selected Text",
+                            message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                        )
+                    } else {
+                        self.presentError(
+                            title: "Check Spelling & Grammar",
+                            message: "Lima could not read the current highlight by Copy or Accessibility. \(keyboardError.localizedDescription)"
+                        )
+                    }
                 }
             }
         }
@@ -577,6 +1059,88 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func runStealthCorrection(for text: String) {
+        let taskID = UUID()
+        writingTaskID = taskID
+        toast.showStealth("Editing…")
+        // The keyboard command is privacy-preserving by default. The regular
+        // Writing review command remains the opt-in path for Enhanced Grammar.
+        writingChecker.checkLocal(text, progress: { [weak self] message in
+            guard let self, self.writingTaskID == taskID else { return }
+            self.toast.showStealth(message)
+        }) { [weak self] result in
+            guard let self, self.writingTaskID == taskID else { return }
+            self.writingTaskID = nil
+            switch result {
+            case .success(let review) where review.suggestedText == text:
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.showStealth("No changes needed", style: .success, duration: 1.6)
+            case .success(let review):
+                self.replaceStealthText(review.suggestedText)
+            case .failure(let error):
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.presentError(
+                    title: "Check and Correct Selected Text",
+                    message: "The local grammar check could not complete. \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
+    private func replaceStealthText(_ text: String) {
+        guard let application = previousApplication, !application.isTerminated else {
+            clipboard.copy(text)
+            toast.showStealth("Couldn’t replace selection · corrected text copied", style: .error, duration: 3.2)
+            return
+        }
+        application.unhide()
+        application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
+            guard let self else { return }
+            if self.selectedTextContext == nil,
+               self.keyboardSelectionContext?.processIdentifier == application.processIdentifier {
+                self.pasteStealthReplacement(text, into: application)
+                return
+            }
+            do {
+                let context = try self.replacementContext(in: application)
+                try SelectedTextService.replaceSelectedText(text, using: context)
+                self.finishDirectStealthReplacement(text, using: context, attempt: 0)
+            } catch SelectedTextService.SelectionError.replacementUnavailable {
+                self.pasteStealthReplacement(text, into: application)
+            } catch {
+                self.clipboard.copy(text)
+                self.toast.showStealth("Couldn’t replace selection · corrected text copied", style: .error, duration: 3.2)
+            }
+        }
+    }
+
+    private func pasteStealthReplacement(_ text: String, into application: NSRunningApplication) {
+        let originalText = keyboardSelectionContext?.text
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            originalText: originalText,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let receipt):
+                self.verifyKeyboardReplacement(receipt, attempt: 0, stealth: true)
+            case .failure(let error):
+                self.clipboard.copy(text)
+                self.presentError(
+                    title: "Check and Correct Selected Text",
+                    message: "Lima could not paste the correction. The corrected text is on the clipboard. \(error.localizedDescription)"
+                )
+            }
+        }
+    }
+
     private func showWritingReview(for text: String) {
         let taskID = UUID()
         writingTaskID = taskID
@@ -601,24 +1165,27 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func pasteIntoPreviousApplication() {
+    private func pasteIntoPreviousApplication(completion: @escaping () -> Void = {}) {
         hide()
         guard let text = NSPasteboard.general.string(forType: .string) else {
             presentError(title: "Paste", message: "The clipboard does not contain text to paste.")
+            completion()
             return
         }
         guard let previousApplication else {
             presentError(title: "Paste", message: "The app that should receive the text is no longer available.")
+            completion()
             return
         }
         guard WindowManager.trusted(prompt: true) else {
             presentError(title: "Paste", message: "Enable Lima in System Settings → Privacy & Security → Accessibility to paste automatically.")
+            completion()
             return
         }
         previousApplication.unhide()
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-            guard let self else { return }
+            guard let self else { completion(); return }
             do {
                 let context: SelectedTextService.SelectionContext
                 if let focusedTextContext = self.focusedTextContext,
@@ -630,33 +1197,46 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 self.focusedTextContext = nil
                 self.toast.show("Pasted as plain text")
+                completion()
             } catch SelectedTextService.SelectionError.selectionChanged {
                 self.presentError(
                     title: "Paste",
                     message: "The original insertion point changed. Put the cursor back where you want the text and try again."
                 )
+                completion()
             } catch {
-                self.postPasteShortcut(into: previousApplication, successMessage: "Pasted as plain text")
+                self.pasteTextWithKeyboard(
+                    text,
+                    into: previousApplication,
+                    successMessage: "Pasted as plain text",
+                    completion: completion
+                )
             }
         }
     }
 
-    private func pasteTextIntoPreviousApplication(_ text: String, successMessage: String) {
+    private func pasteTextIntoPreviousApplication(
+        _ text: String,
+        successMessage: String,
+        completion: @escaping () -> Void = {}
+    ) {
         hide()
         guard let previousApplication, !previousApplication.isTerminated else {
             clipboard.copy(text)
             presentError(title: "Paste", message: "The source app is no longer available. The text was copied instead.")
+            completion()
             return
         }
         guard WindowManager.trusted(prompt: true) else {
             clipboard.copy(text)
             presentError(title: "Paste", message: "Enable Lima in Accessibility to paste automatically. The text was copied instead.")
+            completion()
             return
         }
         previousApplication.unhide()
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-            guard let self else { return }
+            guard let self else { completion(); return }
             // Prefer the live Accessibility insertion range. This avoids a
             // clipboard/key-event race in native editors and is especially
             // important for multi-scalar emoji. Browser, Electron, Office,
@@ -672,11 +1252,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 self.focusedTextContext = nil
                 self.toast.show(successMessage)
+                completion()
             } catch {
                 self.pasteTextWithKeyboard(
                     text,
                     into: previousApplication,
-                    successMessage: successMessage
+                    successMessage: successMessage,
+                    completion: completion
                 )
             }
         }
@@ -685,33 +1267,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func pasteTextWithKeyboard(
         _ text: String,
         into application: NSRunningApplication,
-        successMessage: String
+        successMessage: String,
+        completion: @escaping () -> Void = {}
     ) {
-        KeyboardSelectionService.paste(text, into: application, clipboardHistory: clipboard) { [weak self] result in
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            originalText: keyboardSelectionContext?.text,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
             switch result {
-            case .success:
-                self?.toast.show(successMessage)
+            case .success(let receipt):
+                self?.verifyKeyboardReplacement(receipt, attempt: 0)
             case .failure(let error):
                 self?.clipboard.copy(text)
                 self?.presentError(title: "Paste", message: "Lima could not restore focus and paste. The text was copied instead. \(error.localizedDescription)")
             }
-        }
-    }
-
-    private func postPasteShortcut(
-        into application: NSRunningApplication,
-        successMessage: String?
-    ) {
-        KeyboardSelectionService.paste(into: application) { [weak self] result in
-            switch result {
-            case .success:
-                if let successMessage { self?.toast.show(successMessage) }
-            case .failure(let error):
-                self?.presentError(
-                    title: "Paste",
-                    message: "Lima could not return keyboard focus and paste. The text remains on the clipboard. \(error.localizedDescription)"
-                )
-            }
+            completion()
         }
     }
 
@@ -751,32 +1323,52 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func finishDirectStealthReplacement(
+        _ text: String,
+        using context: SelectedTextService.SelectionContext,
+        attempt: Int
+    ) {
+        switch SelectedTextService.observeReplacement(text, using: context) {
+        case .replaced:
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
+        case .originalStillPresent where attempt < 5:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.finishDirectStealthReplacement(text, using: context, attempt: attempt + 1)
+            }
+        case .originalStillPresent, .changed, .unavailable:
+            clipboard.copy(text)
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            presentError(
+                title: "Check and Correct Selected Text",
+                message: "Lima changed the target, but could not verify the final text. The corrected text is on the clipboard; review the target before pasting again."
+            )
+        }
+    }
+
     private func finishDirectReplacement(
         _ text: String,
         using context: SelectedTextService.SelectionContext,
         retryCount: Int
     ) {
         switch SelectedTextService.observeReplacement(text, using: context) {
-        case .replaced, .changed, .unavailable:
+        case .replaced:
             selectedTextContext = nil
             focusedTextContext = nil
             toast.show("Replaced the exact highlighted text")
-        case .originalStillPresent:
-            if retryCount == 0 {
-                toast.show("The editor delayed the change · retrying once…", style: .working, duration: 8)
-                do {
-                    let refreshed = try SelectedTextService.reconnectedContext(using: context)
-                    selectedTextContext = refreshed
-                    try SelectedTextService.replaceSelectedText(text, using: refreshed)
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in
-                        self?.finishDirectReplacement(text, using: refreshed, retryCount: 1)
-                    }
-                } catch {
-                    pasteReplacement(text, using: context)
-                }
-            } else {
-                pasteReplacement(text, using: context)
+        case .originalStillPresent where retryCount < 5:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.finishDirectReplacement(text, using: context, retryCount: retryCount + 1)
             }
+        case .originalStillPresent, .changed, .unavailable:
+            clipboard.copy(text)
+            selectedTextContext = nil
+            focusedTextContext = nil
+            presentError(title: "Replace Selected Text", message: "Lima could not verify the direct replacement. The replacement text is on the clipboard.")
         }
     }
 
@@ -799,26 +1391,59 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return
         }
         toast.show("Returning to the source selection…", style: .working, duration: 5)
+        let originalText = keyboardSelectionContext?.text
         KeyboardSelectionService.paste(
             text,
             into: application,
+            originalText: originalText,
             clipboardHistory: clipboard
         ) { [weak self] result in
             guard let self else { return }
-            guard case .success = result else {
-                let detail: String
-                if case .failure(let error) = result { detail = error.localizedDescription } else { detail = "Unknown error." }
+            switch result {
+            case .success(let receipt):
+                self.verifyKeyboardReplacement(receipt, attempt: 0)
+            case .failure(let error):
                 self.clipboard.copy(text)
                 self.presentError(
                     title: "Replace Selected Text",
-                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(detail)"
+                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(error.localizedDescription)"
                 )
-                return
             }
-            self.selectedTextContext = nil
-            self.keyboardSelectionContext = nil
-            self.focusedTextContext = nil
-            self.toast.show("Correction pasted into the highlight")
+        }
+    }
+
+    private func verifyKeyboardReplacement(
+        _ receipt: KeyboardSelectionService.PasteReceipt,
+        attempt: Int,
+        stealth: Bool = false
+    ) {
+        switch SelectedTextService.observeReplacementText(
+            receipt.text,
+            originalText: receipt.originalText,
+            in: receipt.processIdentifier
+        ) {
+        case .replaced:
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            if stealth {
+                toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
+            } else {
+                toast.show("Correction pasted and verified", style: .success, duration: 2.4)
+            }
+        case .pending where attempt < 6:
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
+                self?.verifyKeyboardReplacement(receipt, attempt: attempt + 1, stealth: stealth)
+            }
+        case .changed, .unavailable, .pending:
+            clipboard.copy(receipt.text)
+            selectedTextContext = nil
+            keyboardSelectionContext = nil
+            focusedTextContext = nil
+            presentError(
+                title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
+                message: "Lima sent the correction, but could not verify that the target accepted it. The corrected text is on the clipboard; review the target before pasting again."
+            )
         }
     }
 
@@ -838,12 +1463,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             KeyboardSelectionService.paste(
                 text,
                 into: application,
+                originalText: refreshed.text,
                 clipboardHistory: clipboard
             ) { [weak self] result in
                 guard let self else { return }
                 switch result {
-                case .success:
-                    self.finishPastedReplacement(text, using: refreshed, attempt: 0)
+                case .success(let receipt):
+                    self.verifyKeyboardReplacement(receipt, attempt: 0)
                 case .failure(let error):
                     self.clipboard.copy(text)
                     self.presentError(
@@ -857,31 +1483,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func finishPastedReplacement(
-        _ text: String,
-        using context: SelectedTextService.SelectionContext,
-        attempt: Int
-    ) {
-        switch SelectedTextService.observeReplacement(text, using: context) {
-        case .replaced, .changed, .unavailable:
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            toast.show("Replaced the exact highlighted text")
-        case .originalStillPresent where attempt < 5:
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.finishPastedReplacement(text, using: context, attempt: attempt + 1)
-            }
-        case .originalStillPresent:
-            // Command-V was accepted, but some web editors keep stale AX text
-            // for seconds. Avoid a false failure or a destructive second paste.
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            toast.show("Replacement sent to the highlighted text", style: .success, duration: 2.4)
-        }
-    }
-
     private func replacementContext(in application: NSRunningApplication) throws -> SelectedTextService.SelectionContext {
         if let captured = selectedTextContext,
            captured.processIdentifier == application.processIdentifier {
@@ -890,17 +1491,24 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         return try SelectedTextService.selectionContext(in: application.processIdentifier)
     }
 
-    private func confirmForceQuit(processIdentifier: Int32, name: String) {
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = "Force Quit \(name)?"
-        alert.informativeText = "The app will close immediately. Any unsaved work may be lost."
-        alert.addButton(withTitle: "Force Quit")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+    private func confirmForceQuit(
+        processIdentifier: Int32,
+        name: String,
+        completion: @escaping () -> Void = {}
+    ) {
+        guard LimaConfirmationService.confirm(
+            title: "Force Quit \(name)?",
+            detail: "The app will close immediately. Any unsaved work may be lost.",
+            confirmTitle: "Force Quit",
+            deliberate: true
+        ) else {
+            completion()
+            return
+        }
         guard let application = NSRunningApplication(processIdentifier: processIdentifier),
               !application.isTerminated else {
             presentError(title: "Force Quit", message: "\(name) is no longer running.")
+            completion()
             return
         }
         if application.forceTerminate() {
@@ -909,9 +1517,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         } else {
             presentError(title: "Force Quit", message: "macOS did not allow \(name) to be force quit.")
         }
+        completion()
     }
 
-    private func confirmForceQuitAllApplications() {
+    private func confirmForceQuitAllApplications(completion: @escaping () -> Void = {}) {
         let currentBundleIdentifier = Bundle.main.bundleIdentifier
         let applications = NSWorkspace.shared.runningApplications
             .filter {
@@ -924,6 +1533,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         guard !applications.isEmpty else {
             toast.show("No other applications are running")
+            completion()
             return
         }
 
@@ -933,14 +1543,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let list = remaining == 0 ? preview : "\(preview), and \(remaining) more"
 
         NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.alertStyle = .critical
-        alert.messageText = "Force Quit All \(applications.count) Applications?"
-        alert.informativeText = "Lima will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)"
-        alert.addButton(withTitle: "Force Quit All")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else {
+        guard LimaConfirmationService.confirm(
+            title: "Force Quit All \(applications.count) Applications?",
+            detail: "Lima will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)",
+            confirmTitle: "Force Quit All",
+            deliberate: true
+        ) else {
             if !panel.isVisible { presentPanel() }
+            completion()
             return
         }
 
@@ -955,12 +1565,110 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         hide()
         if failed.isEmpty {
-            toast.show("Force quit \(closed) applications — RayPlacement stayed open")
+            toast.show("Force quit \(closed) applications — Lima stayed open")
         } else {
             presentError(
                 title: "Force Quit All",
                 message: "Closed \(closed) applications. macOS did not allow: \(failed.joined(separator: ", "))."
             )
+        }
+        completion()
+    }
+
+    private func routeUniversalSearchResult(_ result: LimaSearchResult) {
+        switch result.kind {
+        case .note:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("note:".count))) else {
+                presentError(title: result.title, message: "The note identifier is invalid.")
+                return
+            }
+            notesWindow.selectNote(id)
+            hide()
+            notesWindow.present()
+
+        case .dictation:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("dictation:".count))) else {
+                presentError(title: result.title, message: "The dictation identifier is invalid.")
+                return
+            }
+            notesWindow.selectDictation(id)
+            hide()
+            notesWindow.present()
+
+        case .terminal:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("terminal:".count))) else {
+                presentError(title: result.title, message: "The terminal session identifier is invalid.")
+                return
+            }
+            TerminalSessionStore.shared.select(id)
+            terminalModel.selectSession(id)
+            viewModel.enter(.terminal)
+            presentPanel()
+            terminalModel.startIfNeeded()
+            terminalModel.focus()
+
+        case .command:
+            if result.id.hasPrefix("workflow:"),
+               let id = UUID(uuidString: String(result.id.dropFirst("workflow:".count))),
+               let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) {
+                executeWorkflow(workflow)
+            } else {
+                presentError(title: result.title, message: "This command cannot be opened from universal search.")
+            }
+
+        default:
+            presentError(title: result.title, message: "This result type is not routable yet.")
+        }
+    }
+
+    private func executeWorkflow(_ workflow: WorkflowDefinition) {
+        let alert = NSAlert()
+        alert.alertStyle = .informational
+        alert.messageText = "Run \(workflow.name)?"
+        alert.informativeText = "This workflow contains \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s"). Each step will be reported individually."
+        alert.addButton(withTitle: "Run Workflow")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        hide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let report = await WorkflowExecutor().execute(workflow, confirm: true) { [weak self] commandID in
+                try await self?.executeWorkflowCommand(commandID)
+            }
+            let failed = report.steps.filter { !$0.succeeded }
+            if failed.isEmpty {
+                self.toast.show("Workflow completed")
+            } else {
+                self.presentError(
+                    title: "Workflow completed with errors",
+                    message: failed.map { "\($0.commandID): \($0.message ?? "Failed")" }.joined(separator: "\n")
+                )
+            }
+        }
+    }
+
+    private func executeWorkflowCommand(_ commandID: String) async throws {
+        guard let command = viewModel.extensionCommands.first(where: {
+            "extension.\($0.extensionID).\($0.command.id)" == commandID || $0.command.id == commandID
+        }) else {
+            throw NSError(domain: "LimaWorkflow", code: 1, userInfo: [NSLocalizedDescriptionKey: "Command \(commandID) is unavailable."])
+        }
+        guard command.command.action.type != .form else {
+            throw NSError(domain: "LimaWorkflow", code: 2, userInfo: [NSLocalizedDescriptionKey: "Form commands require interactive input and cannot run unattended."])
+        }
+
+        let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
+        switch result {
+        case .completed:
+            return
+        case .native(let action):
+            await withCheckedContinuation { continuation in
+                dispatchNativeAction(action) { continuation.resume() }
+            }
+        case .nativeChain(let actions):
+            await withCheckedContinuation { continuation in
+                dispatchNativeChain(actions) { continuation.resume() }
+            }
         }
     }
 
@@ -982,7 +1690,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .lockScreen:
             hide()
             guard WindowManager.trusted(prompt: true) else {
-                presentError(title: "Lock Screen", message: "Enable RayPlacement in System Settings → Privacy & Security → Accessibility, then try again.")
+                presentError(title: "Lock Screen", message: "Enable Lima in System Settings → Privacy & Security → Accessibility, then try again.")
                 return
             }
             postSystemShortcut(keyCode: 12, flags: [.maskCommand, .maskControl])
@@ -1001,8 +1709,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.open(ApplicationPaths.extensions)
 
         case .openExtensionStore:
-            hide()
-            extensionStoreWindow.present()
+            showExtensionStore()
 
         case .reloadExtensions:
             viewModel.reloadExtensions()
@@ -1022,24 +1729,30 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openTerminal:
             showDeveloperTerminal()
 
-        case .openFocusedFileLauncher:
+        case .openPermissionCenter:
             hide()
-            focusedFileLauncherWindow.present()
+            PermissionCenter.shared.refresh()
+            permissionWindow.showWindow(nil)
+            permissionWindow.window?.center()
+            NSApp.activate(ignoringOtherApps: true)
 
-        case .openPasswordGenerator:
-            hide()
-            passwordGeneratorWindow.present()
+        case .exportDiagnostics:
+            do {
+                let url = try DiagnosticsService.shared.export()
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                presentError(title: "Diagnostics", message: error.localizedDescription)
+            }
 
-        case .openFormatter:
+        case .openWorkflows:
             hide()
-            formatterWindow.present()
-
-        case .openExtensionGuide:
-            hide()
-            extensionDevelopmentWindow.present()
+            workflowWindow.present()
 
         case .openSettings:
             showSettings()
+
+        case .openDeveloperGrammarSettings:
+            showDeveloperGrammarSettings()
 
         case .quit:
             NSApp.terminate(nil)
@@ -1056,18 +1769,28 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         up.post(tap: .cghidEventTap)
     }
 
-    private func runSystemExecutable(_ path: String, arguments: [String], title: String) {
+    private func runSystemExecutable(
+        _ path: String,
+        arguments: [String],
+        title: String,
+        completion: @escaping () -> Void = {}
+    ) {
         let task = Process()
         task.executableURL = URL(fileURLWithPath: path)
         task.arguments = arguments
         task.terminationHandler = { [weak self] process in
-            guard process.terminationStatus != 0 else { return }
             DispatchQueue.main.async {
-                self?.presentError(title: title, message: "The system command exited with status \(process.terminationStatus).")
+                if process.terminationStatus != 0 {
+                    self?.presentError(title: title, message: "The system command exited with status \(process.terminationStatus).")
+                }
+                completion()
             }
         }
         do { try task.run() }
-        catch { presentError(title: title, error: error) }
+        catch {
+            presentError(title: title, error: error)
+            completion()
+        }
     }
 
     private func presentError(title: String, error: Error) {

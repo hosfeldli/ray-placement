@@ -27,7 +27,7 @@ public enum TabularDataParser {
             normalized.components(separatedBy: "\n").map {
                 $0.components(separatedBy: "\t")
             }
-        ) { return table }
+        ), table.rows.count > 1 { return table }
 
         if case .table(let headers, _, let rows)? = MarkdownBlockParser.parse(normalized).first(where: {
             if case .table = $0 { return true }
@@ -44,6 +44,10 @@ public enum TabularDataParser {
     }
 
     private static func normalizedRows(_ rawRows: [[String]]) -> TabularData? {
+        // A table must have multiple rows and every row must expose multiple
+        // cells. This prevents ordinary prose such as "hello, world" or a
+        // single tabbed label from being converted into a native table.
+        guard rawRows.count > 1, rawRows.allSatisfy({ $0.count > 1 }) else { return nil }
         var rows = rawRows.map { row in
             row.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         }

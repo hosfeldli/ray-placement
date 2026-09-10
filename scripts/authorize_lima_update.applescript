@@ -6,5 +6,5 @@ on run argv
     repeat with argumentIndex from 2 to 7
         set commandText to commandText & " " & quoted form of (item argumentIndex of argv)
     end repeat
-    do shell script commandText with administrator privileges
+    do shell script commandText with administrator privileges with prompt "Lima needs administrator access to replace the installed app. Your current copy will remain unchanged if you cancel."
 end run

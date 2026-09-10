@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
@@ -30,11 +31,36 @@ require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
 require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"
 require "the protected-folder updater is missing" test -f "$RESOURCES/Updater/approved_lima_replacement.sh"
+require "the trusted updater is missing" test -x "$RESOURCES/Updater/apply_trusted_update.sh"
+require "the update verifier is missing" test -x "$RESOURCES/Updater/verify_update_app.sh"
+require "the trusted approval helper is missing" test -x "$RESOURCES/Updater/request_lima_update_approval.sh"
 require "the administrator approval dialog is missing" test -f "$RESOURCES/Updater/authorize_lima_update.applescript"
-require "the public Lima signing certificate is missing" test -f "$RESOURCES/Updater/RayPlacementLocalSigning.pem"
-[[ "$(/usr/bin/openssl x509 -in "$RESOURCES/Updater/RayPlacementLocalSigning.pem" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}')" == 7471c7ffb1ecdca0537776daee8eb37788a9e3e6fd9e494097c48cb5f3d9bb62 ]] || { echo 'Verification failed: the public Lima signing certificate is unexpected' >&2; exit 1; }
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
+
+EXPECTED_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedTeamIdentifier' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
+EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
+EXPECTED_CERTIFICATE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedCertificateSHA256' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
+SIGNING_MODE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateSigningMode' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || print developer-id)"
+if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+    [[ -n "$EXPECTED_IDENTITY" ]] || { echo 'Verification failed: expected signing identity policy is missing' >&2; exit 1; }
+    [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || { echo 'Verification failed: expected certificate fingerprint policy is missing' >&2; exit 1; }
+    if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
+        [[ "$EXPECTED_TEAM_ID" == 'not set' ]] || { echo 'Verification failed: self-signed local policy must use TeamIdentifier=not set' >&2; exit 1; }
+        [[ "$EXPECTED_IDENTITY" == "$LIMA_RELEASE_SIGNING_IDENTITY" ]] || { echo 'Verification failed: self-signed local identity is not pinned' >&2; exit 1; }
+    else
+        [[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || { echo 'Verification failed: a release Team ID policy is required' >&2; exit 1; }
+    fi
+    SIGNATURE_INFO="$(codesign -dvv "$APP_DIRECTORY" 2>&1)"
+    [[ "$SIGNATURE_INFO" != *'Signature=adhoc'* ]] || { echo 'Verification failed: release app is ad-hoc signed' >&2; exit 1; }
+    [[ "$SIGNATURE_INFO" == *"Authority=$EXPECTED_IDENTITY"* ]] || { echo 'Verification failed: signing identity does not match policy' >&2; exit 1; }
+    [[ "$SIGNATURE_INFO" == *"TeamIdentifier=$EXPECTED_TEAM_ID"* ]] || { echo 'Verification failed: Team ID does not match policy' >&2; exit 1; }
+    CERT_DIR="$(mktemp -d "${TMPDIR%/}/lima-package-cert.XXXXXX")"
+    trap 'rm -rf "$CERT_DIR"' EXIT
+    codesign -d --extract-certificates="$CERT_DIR/cert" "$APP_DIRECTORY" >/dev/null 2>&1
+    ACTUAL_CERTIFICATE="$(openssl x509 -in "$CERT_DIR/cert0" -outform der | shasum -a 256 | awk '{print toupper($1)}')"
+    [[ "${ACTUAL_CERTIFICATE:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || { echo 'Verification failed: signing certificate does not match policy' >&2; exit 1; }
+fi
 
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the display name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the executable name is not Lima" >&2; exit 1; }

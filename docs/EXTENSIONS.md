@@ -1,6 +1,6 @@
 # Build a Lima extension
 
-Lima extensions add searchable commands and compact native workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
+Lima extensions add searchable commands and compact local macOS workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
 
 Installed extensions live at:
 
@@ -8,35 +8,53 @@ Installed extensions live at:
 ~/Library/Application Support/Lima/Extensions/
 ```
 
-Open that folder from Lima, add or edit an extension, then run **Reload Extensions**. Commands appear in search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
+Open that folder from Lima, add or edit an extension, then run **Reload Extensions**. Commands appear in global search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
 
-## Choose the smallest tool
+## Design principles
 
-| Need | Use |
-| --- | --- |
-| Open a URL, file, folder, or app | A schema-v1 built-in action |
-| Copy or paste fixed text | `copy`, `paste`, or `pastePlainText` |
-| Ask for a few inputs and return output | A schema-v2 `form` |
-| Run trusted local logic | A form or command with `shell` execution |
-| Build a large persistent workspace | Add a reviewed native tool to Lima itself |
+* Prefer a generic native capability over a shell script.
+* Keep commands small, local, keyboard-first, and outcome-oriented.
+* Request only the manifest capabilities the command needs.
+* Use forms only when a command needs interactive input.
+* Use a bounded native action chain instead of an arbitrary workflow language.
+* Do not create daemons, login items, hidden watchers, or background services.
 
-Prefer built-in actions and forms. They inherit keyboard navigation, validation, safe argument handling, compact feedback, and the current prismatic interface automatically.
+## Manifest metadata
 
-## Five-minute extension
+A manifest may identify a built-in pack:
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "com.example.window-tools",
+  "name": "Window Tools",
+  "version": "1.0.0",
+  "pack": "Window Management",
+  "category": "Window Management",
+  "bundled": false,
+  "provenance": "userInstalled",
+  "commands": []
+}
+```
+
+Stable extension and command IDs are persistence keys. Do not change released IDs unless resetting shortcut and enablement preferences is intentional. Bundled manifests use `bundled: true`, `provenance: "bundled"`, and `trust: "bundled"`; user extensions should not impersonate that provenance.
+
+## Minimal extension
 
 Create `my-tools/manifest.json`:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "local.example.my-tools",
   "name": "My Tools",
-  "description": "Small shortcuts for my workflow",
+  "description": "Small shortcuts for a local workflow",
+  "capabilities": ["filesystem"],
   "commands": [
     {
       "id": "open-projects",
       "title": "Open Projects",
-      "subtitle": "Show my local project folder",
+      "subtitle": "Show the local project folder",
       "keywords": ["code", "folder", "work"],
       "icon": "folder.fill",
       "action": {
@@ -48,160 +66,153 @@ Create `my-tools/manifest.json`:
 }
 ```
 
-IDs are persistence keys. Use reverse-domain-style extension IDs and never change a released extension or command ID unless you intend to reset its shortcut and enablement preferences. `icon` is an SF Symbols name.
+## Commands and public actions
 
-## Command reference
+A command requires `id`, `title`, and `action`. Optional fields are `subtitle`, `keywords`, `icon`, `hotkey`, and `runInBackground`.
 
-A command requires `id`, `title`, and `action`.
+Hotkeys support `command`, `option`, `control`, and `shift`, followed by a letter, number, navigation key, or F1–F12. `command+command` is the double-Command gesture. Default hotkeys should be rare; users can record and independently enable each shortcut.
 
-| Field | Purpose |
-| --- | --- |
-| `subtitle` | One short outcome-oriented explanation |
-| `keywords` | Alternate words users will search |
-| `icon` | SF Symbols name |
-| `hotkey` | Optional default such as `command+shift+p` |
-| `runInBackground` | Keep the launcher free and report progress in a compact status box |
-
-Hotkeys support `command`, `option`, `control`, and `shift`, followed by a letter, number, navigation key, or F1–F12. `command+command` is the double-Command gesture. Default hotkeys should be rare; users can record and independently enable a shortcut for each command.
-
-### Built-in actions
-
-| Type | Behavior | `value` |
+| Type | Common operations | Purpose |
 | --- | --- | --- |
-| `url` | Open a web URL | Required URL |
-| `file` | Open a path | Absolute, `~`-relative, or extension-relative path |
-| `application` | Open an app | Path to `.app` |
-| `copy` | Copy fixed plain text | Text to copy |
-| `paste` | Paste fixed text into the prior app | Text to paste |
-| `pastePlainText` | Paste current clipboard without rich formatting | Empty |
-| `checkWriting` | Check and replace the exact selected text locally | Empty |
-| `openFocusedFileLauncher` | Choose a file/folder in Finder, then open it with an installed app | Empty |
-| `convertTimezones` | Open the offline timezone converter | Empty |
-| `forceQuitApplications` | Pick and confirm one app to force quit | Empty |
-| `forceQuitAllApplications` | Confirm and quit foreground apps except Lima | Empty |
-| `openFormatterWorkspace` | Open the EDI/JSON/XML workspace | Empty |
-| `openEmojiPicker` | Search the full Unicode emoji set and paste one | Empty |
-| `openPasswordGenerator` | Open the password generator | Empty |
-| `openExtensionDevelopment` | Open these maintained manuals | Empty |
-| `uninstallApplication` | Confirm and move Lima to Trash, preserving user data | Empty |
-| `shell` | Launch an executable directly | Executable path |
-| `form` | Present a native input/output workflow | See below |
+| `application` | `quit`, `forceQuit`, `restart`, `activate`, `hide`, `unhide`, `quitAll`, `forceQuitAll` | Manage a frontmost app, a selected app, or a safe set of user applications. |
+| `clipboard` | `copy`, `paste`, `pastePlainText` | Copy or paste local text using Lima’s focus and clipboard services. |
+| `file` | — | Open a file or folder relative to the extension or through a user path. |
+| `picker` | `emoji`, `application`, `file`, `timezone`, `password` | Request a reusable native picker or utility surface. |
+| `system` | `lock`, `sleep`, `screenSaver`, `logout`, `restart`, `shutdown` | Request a native macOS system operation. Destructive operations use shared confirmation. |
+| `window` | `leftHalf`, `rightHalf`, `topHalf`, `bottomHalf`, `maximize`, `center`, `leftThird`, `centerThird`, `rightThird`, `leftTwoThirds`, `rightTwoThirds`, `topLeftQuarter`, `topRightQuarter`, `bottomLeftQuarter`, `bottomRightQuarter`, `restorePrevious`, `nextDisplay`, `previousDisplay`, `mainDisplay` | Manage the focused window through the host Accessibility service. |
+| `workspace` | Feature-defined reviewed operations | Open a maintained Lima surface, such as writing review or extension repair. |
+| `url` | — | Open a URL with the system workspace. This is not a request executor. |
+| `shell` | — | Run one approved executable directly, without a command interpreter. |
+| `form` | Shell execution only | Collect native fields and invoke one approved executable with separate arguments. |
 
-## Dynamic forms
+Generic action fields include `operation`, `target`, `confirmation`, `parameters`, `arguments`, `workingDirectory`, `form`, and `chain`. Use an empty `value` when an operation does not need a value.
 
-Use `schemaVersion: 2` for forms. Lima lays out only the fields that currently matter, validates them before execution, and displays output in the shared workspace. A tool can remain in the main window or be popped out by the user.
-
-Available fields:
-
-| Type | Best for | Useful options |
-| --- | --- | --- |
-| `text` | Short values | `placeholder`, `defaultValue` |
-| `secure` | Passwords and tokens | Never persisted or logged |
-| `multiline` | Bodies, scripts, documents | `placeholder` |
-| `number` | Numeric input | `minimum`, `maximum` |
-| `toggle` | A binary choice | `defaultValue` |
-| `picker` | A fixed set of choices | `options` |
-| `file`, `directory` | Native path selection | `required` |
-| `date` | A date value | `defaultValue` |
-| `slider` | Bounded tuning | `minimum`, `maximum` |
-| `keyValue` | Headers, variables, metadata | Repeatable rows |
-
-All fields accept `id`, `label`, `section`, `helpText`, `required`, and `visibleWhen` where applicable. Keep help text short and use it only where the expected input is not obvious.
+Examples:
 
 ```json
 {
-  "schemaVersion": 2,
-  "id": "local.example.line-tools",
-  "name": "Line Tools",
-  "commands": [
-    {
-      "id": "count-words",
-      "title": "Count Words",
-      "icon": "text.word.spacing",
-      "action": {
-        "type": "form",
-        "value": "",
-        "form": {
-          "title": "Count Words",
-          "submitLabel": "Count",
-          "fields": [
-            {
-              "id": "file",
-              "label": "File",
-              "type": "file",
-              "required": true,
-              "section": "Input"
-            }
-          ],
-          "execution": {
-            "type": "shell",
-            "executable": "/usr/bin/wc",
-            "arguments": ["-w", "{{file}}"],
-            "timeoutSeconds": 30
-          }
-        }
+  "type": "window",
+  "operation": "leftHalf"
+}
+```
+
+```json
+{
+  "type": "application",
+  "operation": "forceQuit",
+  "target": "picker",
+  "confirmation": true
+}
+```
+
+```json
+{
+  "type": "system",
+  "operation": "restart",
+  "confirmation": true
+}
+```
+
+Bundled commands and user commands use the same public action dispatch path. Lima owns the native implementation of permissions, pickers, focus restoration, confirmations, and feedback.
+
+## Forms and direct executables
+
+Forms support these field types:
+
+`text`, `secure`, `multiline`, `number`, `toggle`, `picker`, `file`, `directory`, `date`, `slider`, and `keyValue`.
+
+All fields accept `id`, `label`, `section`, `helpText`, `required`, and `visibleWhen` where applicable. Required validation applies only while a field is visible.
+
+The only form execution type is `shell`:
+
+```json
+{
+  "type": "form",
+  "value": "",
+  "form": {
+    "title": "Count Lines",
+    "submitLabel": "Count",
+    "fields": [
+      {
+        "id": "inputFile",
+        "label": "File",
+        "type": "file",
+        "required": true,
+        "section": "Input"
       }
+    ],
+    "execution": {
+      "type": "shell",
+      "executable": "/usr/bin/wc",
+      "arguments": ["-l", "{{inputFile}}"],
+      "timeoutSeconds": 20
     }
+  }
+}
+```
+
+Pass every argument separately. Never use `eval`, `zsh -c`, `bash -c`, or a string-built command. Lima resolves executable and working-directory paths inside the extension boundary and caps captured output at 1 MB.
+
+## Native pickers and command arguments
+
+The host provides reusable application, display, file, and generic list/grid picker surfaces. An application result can include the name, bundle identifier, bundle URL, PID, and icon. Commands may receive launcher arguments through `parameters` or `arguments` where the host surface supports them:
+
+* `emoji fire` starts the emoji picker with `fire` as its query.
+* `restart chrome` can preselect a matching running application.
+* `move left` can resolve to the `leftHalf` window command.
+
+A picker must return focus to the prior application when the operation requires insertion. Escape cancels without changing the target application or clipboard.
+
+## Bounded action chains
+
+Use `chain` for a short sequence of approved native actions. Chains are limited to eight actions and cannot contain shell, form, URL, or file actions. They are not a scripting language.
+
+```json
+{
+  "type": "workspace",
+  "operation": "restart-development-tools",
+  "chain": [
+    {"type": "application", "operation": "quit", "target": "picker"},
+    {"type": "window", "operation": "nextDisplay"}
   ]
 }
 ```
 
-`visibleWhen` accepts `equals` or `notEquals`. Required validation applies only while the field is visible.
+## Capabilities and safety
 
-## Execution and templates
+Declare the smallest set of capabilities required by the manifest:
 
-A form execution is either:
+* `filesystem` for local file access.
+* `clipboard` for clipboard operations.
+* `accessibility` for focus, insertion, and window operations.
+* `processControl` for application operations and application pickers.
+* `systemControl` for system operations.
+* `shell` for direct executable invocation.
+* `externalExecution` only when an executable is outside the extension directory.
+* `selectedText` for selected-text workflows.
+* `network` only for a URL-opening command that genuinely needs it.
 
-- `shell`: `executable`, `arguments`, `workingDirectory`, and `timeoutSeconds`.
-
-Insert a form value with an exact placeholder such as `{{file}}`. Substitution happens independently inside each string. Lima does not concatenate or evaluate a shell command. Secure fields are never substituted into a shell execution because command arguments can be inspected by other local processes.
-
-For shell execution, pass every argument separately:
-
-```json
-"execution": {
-  "type": "shell",
-  "executable": "/usr/bin/wc",
-  "arguments": ["-w", "{{file}}"],
-  "timeoutSeconds": 20
-}
-```
-
-Never use `eval`, `zsh -c`, or another command interpreter to process user input. Output is capped at 1 MB. Put complex logic in a reviewed extension-relative executable with an explicit shebang and executable permission.
-
-## Feedback, performance, and privacy
-
-Use `runInBackground: true` for work that does not require the form to stay open. Lima shows a compact status indicator and leaves the launcher available. Commands receive cooperative resource settings on every run:
-
-| Variable | Meaning |
-| --- | --- |
-| `LIMA_PERFORMANCE_SCALE` | `eco`, `balanced`, `high`, `turbo`, `maximum`, or `unbounded` |
-| `LIMA_THREAD_LIMIT` | Requested worker ceiling |
-| `LIMA_TIMEOUT_SECONDS` | Wall-clock limit; `0` means explicitly unbounded |
-| `OMP_NUM_THREADS`, `OMP_THREAD_LIMIT`, `MKL_NUM_THREADS`, `VECLIB_MAXIMUM_THREADS` | Common native worker limits |
-| `TOKENIZERS_PARALLELISM` | `false` |
-
-Beta Dynamic Performance may lower the active level during Low Power Mode or thermal pressure. Read these values for each run. They are performance guidance, not a security sandbox.
+User extensions require approval when they request capabilities. Bundled packs are shipped and verified with Lima. Extensions run with the signed-in user’s permissions; install only code you trust.
 
 Rules for sensitive data:
 
-- Use `secure` for credentials and consume them only for the current run.
-- Never echo secrets, request authorization headers, selected writing, clipboard data, or dictated text.
-- State network access, filesystem writes, and destructive behavior in the command subtitle and confirmation flow.
-- Extensions run as the signed-in user. Install only code you trust.
+* Use `secure` for credentials and consume them only for the current run.
+* Never echo secrets, selected writing, clipboard data, or dictated text.
+* State filesystem writes and destructive behavior in the command subtitle and confirmation flow.
+* Use shared native confirmation for force quit, logout, restart, shutdown, and other destructive operations.
 
-## Validate and debug
+## Feedback and validation
 
-Use the [published manifest schema](https://www.liamhosfeld.com/docs/extension-manifest.schema.json) as the source of truth. Before sharing an extension:
+Instant actions should return a compact toast or activity capsule and let Lima disappear. Full workspaces are reserved for input, review, or output that requires sustained interaction.
 
-1. Confirm the manifest is valid JSON and conforms to the schema.
-2. Reload extensions and search by title and every important keyword.
-3. Test keyboard-only navigation, validation, cancellation, success, and failure.
+Before sharing an extension:
+
+1. Validate the manifest JSON against `docs/extension-manifest.schema.json`.
+2. Reload extensions and search by title and important keywords.
+3. Test keyboard-only navigation, validation, cancellation, success, and failure feedback.
 4. Record, disable, restore, and invoke the command shortcut.
 5. Confirm secure fields never appear in saved files or logs.
 6. Confirm a background command leaves the launcher responsive.
 7. Test the installed extension in Lima, not only its executable in Terminal.
 
-Start from the [copy-ready public manifest](https://www.liamhosfeld.com/docs/starter-extension/manifest.json). It is versioned with this guide and uses only supported public fields.
-
-For a strict implementation contract and a copyable prompt for coding agents, read the [AI authoring contract](https://www.liamhosfeld.com/docs/EXTENSION_AUTHORING_FOR_AI.md).
+See `docs/EXTENSION_AUTHORING_FOR_AI.md` for the implementation contract and `docs/starter-extension/manifest.json` for a copy-ready local example.

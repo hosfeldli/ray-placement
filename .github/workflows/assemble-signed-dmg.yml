@@ -13,8 +13,7 @@ on:
         description: Number of uploaded DMG parts (1–64)
         required: true
 
-permissions:
-  contents: write
+permissions: {}
 
 concurrency:
   group: signed-dmg-${{ inputs.release_tag }}
@@ -23,6 +22,8 @@ concurrency:
 jobs:
   assemble:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     timeout-minutes: 20
     env:
       GH_TOKEN: ${{ github.token }}
@@ -31,6 +32,20 @@ jobs:
       EXPECTED_SHA: ${{ inputs.sha256 }}
       PART_COUNT: ${{ inputs.part_count }}
     steps:
+      - name: Checkout immutable release source identity
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.release_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          lfs: true
+
+      - name: Assert exact release tag identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
+
       - name: Reassemble and verify the approved draft download
         shell: bash
         run: |
@@ -58,6 +73,7 @@ jobs:
           gh release upload "$RELEASE_TAG" Lima.dmg --clobber
           asset_url=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[] | select(.name == "Lima.dmg") | .apiUrl')
           [[ "$(gh api "$asset_url" --jq .digest)" == "sha256:$EXPECTED_SHA" ]]
+          assert_draft
           for part in "${parts[@]}"; do
             assert_draft
             gh release delete-asset "$RELEASE_TAG" "$part" --yes

@@ -11,11 +11,11 @@ final class LocalWhisperTranscriber {
         var errorDescription: String? {
             switch self {
             case .assetsMissing:
-                return "The bundled Local Whisper runtime is missing. Reinstall Lima to restore dictation transcription."
+                return "The on-device transcription engine is missing. Reinstall Lima to restore dictation."
             case .processFailed(let detail):
-                return detail.isEmpty ? "Local Whisper could not transcribe the dictation audio." : detail
+                return detail.isEmpty ? "The on-device transcription engine could not transcribe the recording." : detail
             case .emptyTranscript:
-                return "Local Whisper found no recognizable speech in the recording."
+                return "No recognizable speech was found in the recording."
             }
         }
     }
@@ -67,7 +67,7 @@ final class LocalWhisperTranscriber {
 
         func attempt(useGPU: Bool, allowFallback: Bool) {
             guard self.jobIdentifier == identifier else { return }
-            progress(useGPU ? "Whisper is transcribing with Metal…" : "Whisper is transcribing on the CPU…")
+            progress("Transcribing…")
             var arguments = [
                 "-m", resources.model.path,
                 "-f", normalizedAudio.path,
@@ -94,13 +94,13 @@ final class LocalWhisperTranscriber {
                 switch result {
                 case .failure(let error):
                     if allowFallback {
-                        progress("Metal was unavailable · retrying safely on the CPU…")
+                        progress("Retrying transcription…")
                         attempt(useGPU: false, allowFallback: false)
                     } else { self.finish(.failure(error), completion: completion) }
                 case .success(let processOutput):
                     guard processOutput.status == 0 else {
                         if allowFallback {
-                            progress("Metal was unavailable · retrying safely on the CPU…")
+                            progress("Retrying transcription…")
                             attempt(useGPU: false, allowFallback: false)
                         } else {
                             self.finish(.failure(TranscriptionError.processFailed(processOutput.stderr)), completion: completion)

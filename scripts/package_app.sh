@@ -14,6 +14,7 @@ APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 ICON_MASTER="$PROJECT_DIRECTORY/Packaging/AppIcon-master.png"
 ICON_FILE="$PROJECT_DIRECTORY/Packaging/RayPlacement.icns"
+source "$SCRIPT_DIRECTORY/release_config.sh"
 WHISPER_ASSEMBLER="$PROJECT_DIRECTORY/scripts/assemble_whisper_model.sh"
 WHISPER_RUNTIME="$PROJECT_DIRECTORY/Packaging/WhisperRuntime"
 WHISPER_MODEL="$PROJECT_DIRECTORY/Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin"
@@ -22,10 +23,15 @@ HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
 BUNDLED_EXTENSIONS_DIRECTORY="$PROJECT_DIRECTORY/Extensions"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
-LOCAL_SIGNING_DIRECTORY="$USER_HOME_DIRECTORY/Library/Application Support/RayPlacement/Signing"
-LOCAL_SIGNING_KEYCHAIN="$LOCAL_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-LOCAL_SIGNING_PASSWORD="$LOCAL_SIGNING_DIRECTORY/keychain-password"
-LOCAL_SIGNING_IDENTITY="RayPlacement Local Code Signing"
+LOCAL_SIGNING_DIRECTORY="$LIMA_RELEASE_LOCAL_SIGNING_DIRECTORY"
+LOCAL_SIGNING_KEYCHAIN="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
+LOCAL_SIGNING_PASSWORD="$LIMA_RELEASE_LOCAL_SIGNING_PASSWORD"
+LOCAL_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
+EXPECTED_TEAM_IDENTIFIER="$LIMA_RELEASE_TEAM_IDENTIFIER"
+EXPECTED_SIGNING_IDENTITY="$LIMA_RELEASE_SIGNING_IDENTITY"
+EXPECTED_CERTIFICATE_SHA256="$LIMA_RELEASE_CERTIFICATE_SHA256"
+SIGNING_MODE="$LIMA_RELEASE_SIGNING_MODE"
+lima_release_validate_signing_policy
 
 export CLANG_MODULE_CACHE_PATH="$MODULE_CACHE_DIRECTORY"
 export SWIFTPM_MODULECACHE_OVERRIDE="$MODULE_CACHE_DIRECTORY"
@@ -117,8 +123,29 @@ cp "$PROJECT_DIRECTORY/docs/starter-extension/manifest.json" "$CONTENTS_DIRECTOR
 cp "$PROJECT_DIRECTORY/docs/starter-extension/README.md" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/README.md"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Updater"
 cp "$PROJECT_DIRECTORY/scripts/approved_lima_replacement.sh" "$CONTENTS_DIRECTORY/Resources/Updater/approved_lima_replacement.sh"
+cp "$PROJECT_DIRECTORY/scripts/apply_trusted_update.sh" "$CONTENTS_DIRECTORY/Resources/Updater/apply_trusted_update.sh"
+cp "$PROJECT_DIRECTORY/scripts/verify_update_app.sh" "$CONTENTS_DIRECTORY/Resources/Updater/verify_update_app.sh"
+cp "$PROJECT_DIRECTORY/scripts/request_lima_update_approval.sh" "$CONTENTS_DIRECTORY/Resources/Updater/request_lima_update_approval.sh"
+chmod 755 "$CONTENTS_DIRECTORY/Resources/Updater"/*.sh
+# The installed app carries the immutable policy used to verify future update
+# candidates. Release builds must provide all three values; an ad-hoc build is
+# never eligible for protected updates.
+if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
+    [[ -n "$EXPECTED_SIGNING_IDENTITY" && -n "$EXPECTED_CERTIFICATE_SHA256" ]] || { echo "Release signing identity and certificate fingerprint are required." >&2; exit 1; }
+    [[ "$EXPECTED_CERTIFICATE_SHA256" =~ ^[[:xdigit:]]{64}$ ]] || { echo "Release certificate fingerprint must be SHA-256 hex." >&2; exit 1; }
+    if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
+        [[ "$EXPECTED_TEAM_IDENTIFIER" == "not set" ]] || { echo "Self-signed local releases must use TeamIdentifier=not set." >&2; exit 1; }
+        [[ "$EXPECTED_SIGNING_IDENTITY" == "$LOCAL_SIGNING_IDENTITY" ]] || { echo "Self-signed local releases must use the pinned local identity." >&2; exit 1; }
+    else
+        [[ -n "$EXPECTED_TEAM_IDENTIFIER" && "$EXPECTED_TEAM_IDENTIFIER" != "not set" ]] || { echo "A release Team ID is required." >&2; exit 1; }
+    fi
+fi
+/usr/libexec/PlistBuddy -c "Add :LimaUpdatePolicyVersion integer 1" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdatePolicyVersion 1" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateSigningMode string $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateSigningMode $SIGNING_MODE" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedTeamIdentifier string $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedTeamIdentifier $EXPECTED_TEAM_IDENTIFIER" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedSigningIdentity string $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedSigningIdentity $EXPECTED_SIGNING_IDENTITY" "$CONTENTS_DIRECTORY/Info.plist"
+/usr/libexec/PlistBuddy -c "Add :LimaUpdateExpectedCertificateSHA256 string $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist" 2>/dev/null || /usr/libexec/PlistBuddy -c "Set :LimaUpdateExpectedCertificateSHA256 $EXPECTED_CERTIFICATE_SHA256" "$CONTENTS_DIRECTORY/Info.plist"
 cp "$PROJECT_DIRECTORY/scripts/authorize_lima_update.applescript" "$CONTENTS_DIRECTORY/Resources/Updater/authorize_lima_update.applescript"
-cp "$PROJECT_DIRECTORY/Packaging/RayPlacementLocalSigning.pem" "$CONTENTS_DIRECTORY/Resources/Updater/RayPlacementLocalSigning.pem"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Emoji"
 cp "$PROJECT_DIRECTORY/Packaging/Emoji/emoji-test.txt" "$CONTENTS_DIRECTORY/Resources/Emoji/emoji-test.txt"
 if [[ ! -d "$BUNDLED_EXTENSIONS_DIRECTORY" ]]; then
@@ -128,7 +155,14 @@ fi
 ditto "$BUNDLED_EXTENSIONS_DIRECTORY" "$CONTENTS_DIRECTORY/Resources/BundledExtensions"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/Lima"
 plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
-if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
+if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+    # Developer ID builds select the identity explicitly. Self-signed local
+    # builds intentionally continue through the pinned private keychain path
+    # below, even when CI exposes a similarly named environment variable.
+    CODESIGN_IDENTITY="${RAYPLACEMENT_SIGNING_IDENTITY:-$EXPECTED_SIGNING_IDENTITY}"
+    codesign --force --deep --sign "$CODESIGN_IDENTITY" "$APP_DIRECTORY"
+    echo "Signed with the configured Developer ID identity."
+elif [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     codesign --force --deep --sign - "$APP_DIRECTORY"
     echo "Warning: local signing was disabled; this build is ad-hoc signed."
 elif [[ -f "$LOCAL_SIGNING_KEYCHAIN" && -f "$LOCAL_SIGNING_PASSWORD" ]]; then

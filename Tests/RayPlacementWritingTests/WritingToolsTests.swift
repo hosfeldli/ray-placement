@@ -73,3 +73,186 @@ private final class FakePasteboard: PlainTextPasteboard {
     #expect(review.suggestedText == "This is a bad sentence.")
     #expect(review.hasSuggestedChanges)
 }
+
+
+
+@Test func structuredGrammarEditsApplyValidUTF16Replacement() throws {
+    let source = "This are a café."
+    let start = (source as NSString).range(of: "are").location
+    let result = try StealthGrammarService.apply(
+        [StealthGrammarEdit(start: start, length: 3, replacement: "is")],
+        to: source
+    )
+
+    #expect(result == "This is a café.")
+}
+
+@Test func structuredGrammarEditsRejectOutOfRangeEdits() {
+    #expect(throws: StealthGrammarEditError.invalidRange) {
+        try StealthGrammarService.apply(
+            [StealthGrammarEdit(start: 100, length: 1, replacement: "x")],
+            to: "Short text"
+        )
+    }
+}
+
+@Test func structuredGrammarEditsRejectOverlappingEditsAndDuplicateInsertions() {
+    #expect(throws: StealthGrammarEditError.overlappingEdits) {
+        try StealthGrammarService.apply([
+            StealthGrammarEdit(start: 0, length: 4, replacement: "A"),
+            StealthGrammarEdit(start: 2, length: 2, replacement: "B")
+        ], to: "abcd")
+    }
+    #expect(throws: StealthGrammarEditError.overlappingEdits) {
+        try StealthGrammarService.apply([
+            StealthGrammarEdit(start: 1, length: 0, replacement: "A"),
+            StealthGrammarEdit(start: 1, length: 0, replacement: "B")
+        ], to: "abcd")
+    }
+}
+
+@Test func structuredGrammarEditsRejectProtectedTokenChanges() {
+    let protected = StealthGrammarService.protect(
+        "Keep https://example.com unchanged.",
+        ignoreList: ""
+    )
+    let tokenStart = (protected.maskedText as NSString).range(of: "\u{E000}LIMA_KEEP_").location
+
+    #expect(throws: StealthGrammarEditError.protectedTextChanged) {
+        try StealthGrammarService.apply(
+            [StealthGrammarEdit(start: tokenStart, length: 1, replacement: "X")],
+            to: protected.maskedText
+        )
+    }
+}
+
+@Test func structuredGrammarEditsSupportSafeInsertion() throws {
+    let source = "This is a sentence"
+    let result = try StealthGrammarService.apply(
+        [StealthGrammarEdit(start: (source as NSString).length, length: 0, replacement: ".")],
+        to: source
+    )
+
+    #expect(result == "This is a sentence.")
+}
+
+@Test func stealthProtectionPreservesRiskyTermsAndIgnoreListPhrases() {
+    let source = "  This are a grammer sentence about RayPlacement API at https://example.com/a?x=1, with /Users/liam/project and Lima editor.  "
+    let protected = StealthGrammarService.protect(
+        source,
+        ignoreList: "RayPlacement API\nLima editor"
+    )
+
+    #expect(protected.maskedText.contains("\u{E000}LIMA_KEEP_"))
+    #expect(!protected.maskedText.contains("https://example.com"))
+    #expect(!protected.maskedText.contains("RayPlacement"))
+    #expect(protected.restore(protected.maskedText) == source)
+}
+
+@Test func stealthProtectionRestoresEveryProtectedValueExactlyOnce() {
+    let source = "RayPlacement API https://example.com/a?x=1 /Users/liam/project v3.12.1"
+    let protected = StealthGrammarService.protect(source, ignoreList: "RayPlacement")
+
+    let restored = protected.restore(protected.maskedText)
+
+    #expect(restored == source)
+    #expect(protected.protectedValues.contains("RayPlacement"))
+    #expect(protected.protectedValues.contains("API"))
+    #expect(protected.protectedValues.contains("https://example.com/a?x=1"))
+    #expect(protected.protectedValues.contains("/Users/liam/project"))
+    #expect(protected.protectedValues.contains("v3.12.1"))
+}
+
+@Test func stealthProtectionRejectsMalformedOrDangerousReplacement() {
+    let source = "This is a sentence.\nAnother line."
+
+    #expect(StealthGrammarService.isSafeReplacement(source, "This was a sentence.\nAnother line."))
+    #expect(!StealthGrammarService.isSafeReplacement(source, ""))
+    #expect(!StealthGrammarService.isSafeReplacement(source, "```text\nThis was a sentence.\nAnother line.\n```"))
+    #expect(!StealthGrammarService.isSafeReplacement(source, "This was a sentence."))
+}
+
+@Test func stealthProtectionRestoresWhitespaceOnlyInputWithoutDuplication() {
+    let source = "  \n\t  "
+    let protected = StealthGrammarService.protect(source, ignoreList: "")
+
+    #expect(protected.restore(protected.maskedText) == source)
+}
+
+@Test func stealthProtectionUsesNonLinguisticCollisionSafeTokens() {
+    let source = "The literal \u{E000}LIMA_KEEP_0000_\u{E001} stays, while API and https://example.com remain protected."
+    let protected = StealthGrammarService.protect(source, ignoreList: "API")
+
+    #expect(protected.maskedText.contains("\u{E000}LIMA_KEEP_0001_\u{E001}"))
+    #expect(protected.restore(protected.maskedText) == source)
+}
+
+
+@Test func providerNormalizationRemovesOnlyTransportWrappers() {
+    let service = WritingCheckService()
+    #expect(service.normalizeRewrite("<CORRECTED>Hi; there</CORRECTED>") == "Hi, there")
+    #expect(service.normalizeRewrite("\"This is quoted prose.\"") == "This is quoted prose.")
+    #expect(service.normalizeRewrite("He said \"hello\".") == "He said \"hello\".")
+}
+
+@Test func technicalCorpusProtectsNamesAcronymsURLsPathsAndCode() {
+    let source = "Lima sends EDI/TMS data through https://example.com/api/v3, writes to /Users/liam/project/config.json, and preserves `swift test` plus Liam's APIKey."
+    let protected = StealthGrammarService.protect(
+        source,
+        ignoreList: "Lima EDI TMS APIKey"
+    )
+
+    #expect(protected.restore(protected.maskedText) == source)
+    #expect(!protected.maskedText.contains("https://example.com/api/v3"))
+    #expect(!protected.maskedText.contains("/Users/liam/project/config.json"))
+    #expect(!protected.maskedText.contains("swift test"))
+    #expect(protected.protectedValues.contains { $0.contains("EDI") && $0.contains("TMS") })
+    #expect(protected.protectedValues.contains("APIKey"))
+}
+
+@Test func technicalCorpusDoesNotTreatCorrectProseAsUnsafeRewrite() {
+    let source = "The local checker leaves already-correct prose unchanged."
+
+    #expect(StealthGrammarService.isSafeReplacement(source, source))
+    let chatty = "Here is the corrected text: The local checker leaves already-correct prose unchanged."
+    #expect(!StealthGrammarService.isSafeReplacement(source, chatty))
+    #expect(StealthGrammarService.isChattyResponse(chatty))
+}
+
+@Test func safeReplacementRejectsExpansionAndLargeEdits() {
+    let source = "Fix the typo."
+    let generated = "Fix the typo. Here is a lengthy explanation of the changes I made and why they are helpful."
+    let unrelated = "A completely different paragraph about another subject."
+
+    #expect(!StealthGrammarService.isSafeReplacement(source, generated))
+    #expect(!StealthGrammarService.isSafeReplacement(source, unrelated))
+}
+
+@Test func safeReplacementPreservesMarkdownAndCodeStructure() {
+    let source = "# Deploy Lima\n\nRun `swift test` before release.\n\n[Docs](https://example.com/docs)"
+    let valid = "# Deploy Lima\n\nRun `swift test` before release!\n\n[Docs](https://example.com/docs)"
+    let changedCode = "# Deploy Lima\n\nRun `swift build` before release!\n\n[Docs](https://example.com/docs)"
+    let changedLink = "# Deploy Lima\n\nRun `swift test` before release!\n\n[Docs](https://example.com/other)"
+
+    #expect(StealthGrammarService.isSafeReplacement(source, valid))
+    #expect(!StealthGrammarService.isSafeReplacement(source, changedCode))
+    #expect(!StealthGrammarService.isSafeReplacement(source, changedLink))
+}
+
+@Test func protectedTextRejectsTokenMutationAndReordering() {
+    let source = "keep Lima and https://example.com exactly unchanged."
+    let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
+    let tokens = protected.maskedText
+        .split(separator: " ")
+        .filter { $0.contains("LIMA_KEEP_") }
+        .map(String.init)
+    #expect(tokens.count == 2)
+
+    let mutated = protected.maskedText.replacingOccurrences(of: "LIMA_KEEP_", with: "LIMA_CHANGED_")
+    #expect(protected.restore(mutated) == nil)
+
+    let reversed = protected.maskedText.replacingOccurrences(of: tokens[0], with: "__TEMP__")
+        .replacingOccurrences(of: tokens[1], with: tokens[0])
+        .replacingOccurrences(of: "__TEMP__", with: tokens[1])
+    #expect(protected.restore(reversed) == nil)
+}

@@ -10,6 +10,17 @@ enum KeyboardSelectionService {
     struct Capture {
         let processIdentifier: pid_t
         let text: String
+        let clipboardChangeCount: Int
+    }
+
+    /// Receipt for a keyboard paste. Sending Command-V is not considered a
+    /// verified replacement; callers must use the target selection context to
+    /// confirm that the target consumed this transaction.
+    struct PasteReceipt {
+        let processIdentifier: pid_t
+        let originalText: String?
+        let text: String
+        let clipboardChangeCount: Int
     }
 
     enum CaptureError: LocalizedError {
@@ -25,7 +36,7 @@ enum KeyboardSelectionService {
             case .activationFailed:
                 return "The source app did not become ready for the keyboard command."
             case .copyUnavailable:
-                return "RayPlacement sent Copy, but the app did not place readable text on the clipboard."
+                return "Lima sent Copy, but the app did not place readable text on the clipboard."
             case .emptySelection:
                 return "The app copied no text. Highlight text in the source app and try again."
             }
@@ -98,32 +109,12 @@ enum KeyboardSelectionService {
                     }
                     completion(.success(Capture(
                         processIdentifier: application.processIdentifier,
-                        text: text
+                        text: text,
+                        clipboardChangeCount: copiedChangeCount
                     )))
                 case .failure(let error):
                     completion(.failure(error))
                 }
-            }
-        }
-    }
-
-    static func paste(
-        into application: NSRunningApplication,
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        activate(application) { ready in
-            guard ready else {
-                completion(.failure(CaptureError.activationFailed))
-                return
-            }
-            guard postCommandKey(keyCode: 9) else {
-                completion(.failure(CaptureError.copyUnavailable))
-                return
-            }
-            // Some Electron and Office editors consume the pasteboard on their
-            // next event-loop turn. Do not report completion before that turn.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) {
-                completion(.success(()))
             }
         }
     }
@@ -133,8 +124,9 @@ enum KeyboardSelectionService {
     static func paste(
         _ text: String,
         into application: NSRunningApplication,
+        originalText: String? = nil,
         clipboardHistory: ClipboardHistoryService,
-        completion: @escaping (Result<Void, Error>) -> Void
+        completion: @escaping (Result<PasteReceipt, Error>) -> Void
     ) {
         activate(application) { ready in
             guard ready else {
@@ -145,6 +137,8 @@ enum KeyboardSelectionService {
             let snapshot = PasteboardSnapshot(pasteboard)
             pasteboard.clearContents()
             guard pasteboard.setString(text, forType: .string) else {
+                snapshot.restore(to: pasteboard, ifUnchangedSince: pasteboard.changeCount)
+                clipboardHistory.synchronizePasteboardChangeCount()
                 completion(.failure(CaptureError.copyUnavailable))
                 return
             }
@@ -157,7 +151,12 @@ enum KeyboardSelectionService {
                 return
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
-                completion(.success(()))
+                completion(.success(PasteReceipt(
+                    processIdentifier: application.processIdentifier,
+                    originalText: originalText,
+                    text: text,
+                    clipboardChangeCount: replacementChangeCount
+                )))
             }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.90) {
                 snapshot.restore(to: pasteboard, ifUnchangedSince: replacementChangeCount)

@@ -9,7 +9,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
-    private lazy var updateProgressWindow = UpdateProgressWindowController(service: updateService)
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -20,6 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesDockLeftShortcut: ShortcutSpec?
     private var registeredNotesDockRightShortcut: ShortcutSpec?
     private var registeredTerminalShortcut: ShortcutSpec?
+    private var registeredStealthGrammarShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -43,7 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-        NSApp.appearance = NSAppearance(named: .darkAqua)
+        NSApp.appearance = SettingsStore.shared.appearance.nsAppearance
         NSApp.setActivationPolicy(SettingsStore.shared.showInDock ? .regular : .accessory)
         launcher = LauncherController(updateService: updateService)
         launcher.onExtensionsChanged = { [weak self] in self?.registerExtensionHotkeys() }
@@ -55,6 +55,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureAccessoryMouseBindings()
         registerExtensionHotkeys()
         installObservers()
+        NotificationCenter.default.addObserver(
+            forName: .rayPlacementAppearanceChanged,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Task { @MainActor in
+                NSApp.appearance = SettingsStore.shared.appearance.nsAppearance
+                NSApp.windows.forEach { $0.appearance = SettingsStore.shared.appearance.nsAppearance }
+            }
+        }
         let isShowingUpdateResult = configureUpdates()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
@@ -74,17 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         SettingsStore.shared.refreshLaunchAtLogin()
     }
 
-    func application(_ application: NSApplication, open urls: [URL]) {
-        // ASWebAuthenticationSession normally consumes its callback directly.
-        // Keep the app-level URL event handled so a future/manual callback does
-        // not reopen a blank document or get routed to another command.
-        guard urls.contains(where: { $0.scheme?.lowercased() == "rayplacement" }) else { return }
-        NSApp.activate(ignoringOtherApps: true)
-    }
-
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if updateService.isInstalling || updateService.completionResult != nil {
-            updateProgressWindow.present()
+            launcher.showSettings()
         } else {
             launcher.show()
         }
@@ -102,6 +104,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showExtensionStore() { launcher.showExtensionStore() }
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
     @objc func showTerminal() { launcher.showDeveloperTerminal() }
@@ -189,17 +192,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         registerActionHotkey(
             identifier: "builtin.terminal",
-            displayName: "Developer Terminal",
-            enabled: SettingsStore.shared.developerTerminalEnabled && SettingsStore.shared.terminalHotkeyEnabled,
+            displayName: "Terminal",
+            enabled: SettingsStore.shared.terminalHotkeyEnabled,
             rawShortcut: SettingsStore.shared.terminalShortcut,
             previous: &registeredTerminalShortcut,
             restore: SettingsStore.shared.restoreTerminalShortcut
         ) { [weak self] in self?.launcher.showDeveloperTerminal() }
+        registerActionHotkeyFromApplication(
+            identifier: "builtin.stealth-grammar",
+            displayName: "Check and Correct Selected Text",
+            enabled: SettingsStore.shared.stealthGrammarEnabled,
+            rawShortcut: SettingsStore.shared.stealthGrammarShortcut,
+            previous: &registeredStealthGrammarShortcut,
+            restore: SettingsStore.shared.restoreStealthGrammarShortcut
+        ) { [weak self] application in
+            self?.launcher.runStealthGrammar(from: application)
+        }
     }
 
     private func configureAccessoryMouseBindings() {
-        accessoryMouse.start(bindings: SettingsStore.shared.accessoryMouseBindings) { [weak self] action, application in
-            self?.performAccessoryMouseAction(action, sourceApplication: application)
+        accessoryMouse.start(bindings: SettingsStore.shared.accessoryMouseBindings) { [weak self] binding, application in
+            self?.performAccessoryMouseBinding(binding, sourceApplication: application)
+        }
+    }
+
+    private func performAccessoryMouseBinding(_ binding: AccessoryMouseBinding, sourceApplication: NSRunningApplication?) {
+        switch binding {
+        case .none:
+            break
+        case .action(let action):
+            performAccessoryMouseAction(action, sourceApplication: sourceApplication)
+        case .shortcut(let rawShortcut):
+            guard let shortcut = ShortcutSpec(string: rawShortcut) else { return }
+            postShortcut(shortcut)
         }
     }
 
@@ -230,6 +255,73 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         up.flags = flags
         down.post(tap: .cghidEventTap)
         up.post(tap: .cghidEventTap)
+    }
+
+    private func postShortcut(_ shortcut: ShortcutSpec) {
+        if shortcut.key == "command", shortcut.modifiers == [.command] {
+            postShortcut(keyCode: 55, flags: .maskCommand)
+            postShortcut(keyCode: 55, flags: .maskCommand)
+            return
+        }
+        guard let keyCode = ShortcutKeyCode.value(for: shortcut.key) else { return }
+        var flags = CGEventFlags()
+        if shortcut.modifiers.contains(.command) { flags.insert(.maskCommand) }
+        if shortcut.modifiers.contains(.option) { flags.insert(.maskAlternate) }
+        if shortcut.modifiers.contains(.control) { flags.insert(.maskControl) }
+        if shortcut.modifiers.contains(.shift) { flags.insert(.maskShift) }
+        postShortcut(keyCode: keyCode, flags: flags)
+    }
+
+    private enum ShortcutKeyCode {
+        static func value(for key: String) -> CGKeyCode? {
+            if let recorded = ShortcutSpec.recordedKeyCode(for: key) {
+                return CGKeyCode(recorded)
+            }
+            return standard[key]
+        }
+
+        private static let standard: [String: CGKeyCode] = [
+            "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7,
+            "c": 8, "v": 9, "b": 11, "q": 12, "w": 13, "e": 14, "r": 15,
+            "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22,
+            "5": 23, "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29,
+            "]": 30, "o": 31, "u": 32, "[": 33, "i": 34, "p": 35, "return": 36,
+            "enter": 36, "l": 37, "j": 38, "k": 40, ";": 41, "\\": 42, ",": 43,
+            "/": 44, "n": 45, "m": 46, ".": 47, "tab": 48, "space": 49,
+            "`": 50, "delete": 51, "escape": 53, "esc": 53,
+            "f1": 122, "f2": 120, "f3": 99, "f4": 118, "f5": 96, "f6": 97,
+            "f7": 98, "f8": 100, "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+            "left": 123, "right": 124, "down": 125, "up": 126
+        ]
+    }
+
+    private func registerActionHotkeyFromApplication(
+        identifier: String,
+        displayName: String,
+        enabled: Bool,
+        rawShortcut: String,
+        previous: inout ShortcutSpec?,
+        restore: (String) -> Void,
+        handler: @escaping (NSRunningApplication?) -> Void
+    ) {
+        guard enabled else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            return
+        }
+        guard let shortcut = ShortcutSpec(string: rawShortcut) else {
+            SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
+            if let previous { restore(previous.storageString) }
+            return
+        }
+        do {
+            try hotKeys.registerFromApplication(identifier: identifier, shortcut: shortcut, handler: handler)
+            previous = shortcut
+            SettingsStore.shared.lastError = nil
+        } catch {
+            SettingsStore.shared.lastError = error.localizedDescription
+            if let previous { restore(previous.storageString) }
+        }
     }
 
     private func registerActionHotkey(
@@ -265,7 +357,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeys.unregisterAll(prefix: "extension.")
         var issues: [ExtensionIssue] = []
         for loaded in launcher.viewModel.extensionCommands {
-            guard SettingsStore.shared.isHotkeyEnabled(loaded) else { continue }
+            let commandID = "extension.\(loaded.extensionID).\(loaded.command.id)"
+            guard SettingsStore.shared.isHotkeyEnabled(loaded), CommandManager.shared.isEnabled(commandID) else { continue }
             guard let raw = SettingsStore.shared.effectiveShortcut(for: loaded) else { continue }
             guard let shortcut = ShortcutSpec(string: raw) else {
                 issues.append(ExtensionIssue(
@@ -274,7 +367,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ))
                 continue
             }
-            let identifier = "extension.\(loaded.extensionID).\(loaded.command.id)"
+            let identifier = commandID
             do {
                 try hotKeys.registerFromApplication(identifier: identifier, shortcut: shortcut) { [weak self] application in
                     self?.launcher.executeExtensionFromHotkey(loaded, sourceApplication: application)
@@ -304,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.registerActionHotkeys()
-                self?.launcher.refreshDeveloperTerminalAvailability()
+                self?.launcher.viewModel.refreshForSettings()
                 self?.accessoryMouse.update(bindings: SettingsStore.shared.accessoryMouseBindings)
             }
         })
@@ -314,6 +407,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor in self?.launcher.viewModel.reloadExtensions() }
+        })
+        observers.append(NotificationCenter.default.addObserver(
+            forName: .rayPlacementCommandProfilesChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.launcher.viewModel.refreshForSettings()
+                self?.registerExtensionHotkeys()
+            }
         })
         observers.append(NotificationCenter.default.addObserver(
             forName: .rayPlacementExtensionShortcutsChanged,
@@ -350,6 +453,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         menu.addItem(dictate)
+        let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
+        store.target = self
+        menu.addItem(store)
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
@@ -383,6 +489,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         appMenu.addItem(dictate)
+        let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
+        store.target = self
+        appMenu.addItem(store)
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
         appMenu.addItem(updates)
@@ -419,12 +528,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.presentUpdateConfirmation(release)
         }
         updateService.onInstallStarted = { [weak self] in
-            self?.updateProgressWindow.present()
+            self?.launcher.showSettings()
         }
         if let result = updateService.consumePreviousUpdateResult() {
             updateService.showCompletion(succeeded: result.succeeded, message: result.message)
             DispatchQueue.main.async { [weak self] in
-                self?.updateProgressWindow.present()
+                self?.launcher.showSettings()
             }
             return true
         }

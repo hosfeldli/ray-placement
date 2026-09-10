@@ -43,6 +43,13 @@ enum SelectedTextService {
         case unavailable
     }
 
+    enum ReplacementTextObservation: Equatable {
+        case replaced
+        case pending
+        case changed
+        case unavailable
+    }
+
     static func selectionContext(in processIdentifier: pid_t) throws -> SelectionContext {
         guard AXIsProcessTrusted() else { throw SelectionError.accessibilityRequired }
 
@@ -133,6 +140,34 @@ enum SelectedTextService {
             return .originalStillPresent
         }
         return .changed
+    }
+
+    static func observeReplacementText(
+        _ replacement: String,
+        originalText: String? = nil,
+        in processIdentifier: pid_t
+    ) -> ReplacementTextObservation {
+        guard AXIsProcessTrusted() else { return .unavailable }
+        let candidates = focusedElementCandidates(in: processIdentifier)
+        guard !candidates.isEmpty else { return .unavailable }
+        var foundValue = false
+        var foundOriginal = false
+        for element in candidates {
+            guard let value = value(in: element) else { continue }
+            foundValue = true
+            if value.contains(replacement) {
+                if let originalText, originalText != replacement, value.contains(originalText) {
+                    foundOriginal = true
+                    continue
+                }
+                return .replaced
+            }
+            if let originalText, value.contains(originalText) {
+                foundOriginal = true
+            }
+        }
+        if foundOriginal { return .pending }
+        return foundValue ? .changed : .unavailable
     }
 
     /// Restores the exact captured selection without modifying it. Callers use

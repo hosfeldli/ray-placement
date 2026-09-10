@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "id": "local.writing-tools",
   "name": "Writing Tools",
   "version": "1.4.0",
@@ -9,25 +9,47 @@
       "id": "paste-plain-text",
       "title": "Paste as Plain Text",
       "subtitle": "Strip formatting from the current clipboard and paste",
-      "keywords": ["paste", "plain", "raw", "formatting", "clipboard"],
+      "keywords": [
+        "paste",
+        "plain",
+        "raw",
+        "formatting",
+        "clipboard"
+      ],
       "icon": "doc.plaintext",
       "hotkey": "control+option+v",
       "action": {
-        "type": "pastePlainText",
-        "value": ""
+        "type": "clipboard",
+        "operation": "pastePlainText"
       }
     },
     {
       "id": "check-writing",
       "title": "Check Spelling & Grammar",
       "subtitle": "Correct selected text with local Python and Harper rules",
-      "keywords": ["spell", "grammar", "writing", "proofread", "correct"],
+      "keywords": [
+        "spell",
+        "grammar",
+        "writing",
+        "proofread",
+        "correct"
+      ],
       "icon": "text.badge.checkmark",
       "hotkey": "control+option+g",
       "action": {
-        "type": "checkWriting",
-        "value": ""
+        "type": "workspace",
+        "operation": "writingReview"
       }
     }
-  ]
+  ],
+  "trust": "bundled",
+  "capabilities": [
+    "accessibility",
+    "clipboard",
+    "selectedText"
+  ],
+  "pack": "Writing Tools",
+  "category": "Writing",
+  "bundled": true,
+  "provenance": "bundled"
 }

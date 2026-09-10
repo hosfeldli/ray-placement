@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import RayPlacementCore
 
 enum UsageCategory: String, Codable, CaseIterable {
     case writing = "Writing"
@@ -48,13 +49,16 @@ final class UsageMonitor: ObservableObject {
 
     @Published private(set) var activeTasks: [ActiveUsageTask] = []
     @Published private(set) var events: [UsageEvent]
+    @Published private(set) var lastError: String?
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.usage-persistence", qos: .utility)
     private let persistenceGeneration = PersistenceGeneration()
     private var pendingSave: DispatchWorkItem?
 
     private init() {
-        events = Self.load()
+        let loaded = Self.load()
+        events = loaded.events
+        lastError = loaded.error
     }
 
     @discardableResult
@@ -155,10 +159,12 @@ final class UsageMonitor: ObservableObject {
         persistenceQueue.asyncAfter(deadline: .now() + 0.4, execute: work)
     }
 
-    private static func load() -> [UsageEvent] {
-        guard let data = try? Data(contentsOf: ApplicationPaths.usageLog),
-              let decoded = try? Self.decoder.decode([UsageEvent].self, from: data) else { return [] }
-        return Array(decoded.prefix(maximumEvents))
+    private static func load() -> (events: [UsageEvent], error: String?) {
+        let result = PrivateFileStore().loadJSON([UsageEvent].self, from: ApplicationPaths.usageLog, decoder: decoder)
+        guard let events = result.value else {
+            return ([], result.result.state == .missing ? nil : "Usage history could not be loaded safely; the original file was preserved.")
+        }
+        return (Array(events.prefix(maximumEvents)), nil)
     }
 
     private static var decoder: JSONDecoder {
@@ -173,6 +179,6 @@ final class UsageMonitor: ObservableObject {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         guard let data = try? encoder.encode(events) else { return }
-        try? data.write(to: ApplicationPaths.usageLog, options: .atomic)
+        try? PrivateFileStore().write(data: data, to: ApplicationPaths.usageLog)
     }
 }

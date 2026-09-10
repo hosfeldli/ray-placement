@@ -2,6 +2,12 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
 enum AppInterfaceDensity: String, CaseIterable, Identifiable {
     case compact
     case balanced
@@ -240,8 +246,11 @@ enum ApplicationPaths {
     static let updates = applicationSupport.appendingPathComponent("Updates", isDirectory: true)
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
     static let usageLog = usage.appendingPathComponent("usage-log.json")
+    static let workspaceProfiles = applicationSupport.appendingPathComponent("workspace-profiles.json")
 
     static func prepare() throws {
+        try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: applicationSupport.path)
         try FileManager.default.createDirectory(at: extensions, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: dictationScratch, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: failedDictations, withIntermediateDirectories: true)
@@ -268,12 +277,12 @@ final class SettingsStore: ObservableObject {
         static let notesDockLeftHotkeyEnabled = "notesDockLeftHotkeyEnabled"
         static let notesDockRightShortcut = "notesDockRightShortcut"
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
-        static let developerTerminalEnabled = "developerTerminalEnabled"
         static let terminalShortcut = "terminalShortcut"
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
+        static let appearance = "appearance"
         static let interfaceDensity = "interfaceDensity"
         static let notesVisualTheme = "notesVisualTheme"
         static let notesFontStyle = "notesFontStyle"
@@ -287,9 +296,18 @@ final class SettingsStore: ObservableObject {
         static let showInDock = "showInDock"
         static let extensionShortcutOverrides = "extensionShortcutOverrides"
         static let extensionEnabledOverrides = "extensionEnabledOverrides"
+        static let extensionPackEnabledOverrides = "extensionPackEnabledOverrides"
         static let extensionHotkeyEnabledOverrides = "extensionHotkeyEnabledOverrides"
         static let writingInstructions = "writingInstructions"
         static let writingPerformance = "writingPerformance"
+        static let stealthGrammarEnabled = "stealthGrammarEnabled"
+        static let stealthGrammarShortcut = "stealthGrammarShortcut"
+        static let developerGrammarEnabled = "developerGrammarEnabled"
+        static let developerGrammarProvider = "developerGrammarProvider"
+        static let developerGrammarModel = "developerGrammarModel"
+        static let developerGrammarBaseURL = "developerGrammarBaseURL"
+        static let grammarFallbackToLocal = "grammarFallbackToLocal"
+        static let inlineGrammarCheckingEnabled = "inlineGrammarCheckingEnabled"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
         static let dictationComputeMode = "dictationComputeMode"
@@ -301,7 +319,7 @@ final class SettingsStore: ObservableObject {
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
-    static let defaultWritingInstructions = "RayPlacement\nVS Code\nEDI"
+    static let defaultWritingInstructions = "Lima\nVS Code\nEDI"
 
     @Published var activationShortcut: String {
         didSet {
@@ -395,16 +413,6 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    @Published var developerTerminalEnabled: Bool {
-        didSet {
-            defaults.set(developerTerminalEnabled, forKey: Key.developerTerminalEnabled)
-            if !developerTerminalEnabled {
-                accessoryMouseBindings = accessoryMouseBindings.filter { $0.value != AccessoryMouseAction.terminal.rawValue }
-            }
-            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
-        }
-    }
-
     @Published var terminalShortcut: String {
         didSet { defaults.set(terminalShortcut, forKey: Key.terminalShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
     }
@@ -432,6 +440,10 @@ final class SettingsStore: ObservableObject {
             defaults.set(contrastMode.rawValue, forKey: Key.contrastMode)
             NotificationCenter.default.post(name: .rayPlacementAccentChanged, object: nil)
         }
+    }
+
+    @Published var appearance: AppAppearance {
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil) }
     }
 
     @Published var interfaceDensity: AppInterfaceDensity {
@@ -501,6 +513,115 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(writingPerformance.rawValue, forKey: Key.writingPerformance) }
     }
 
+    @Published var stealthGrammarEnabled: Bool {
+        didSet {
+            defaults.set(stealthGrammarEnabled, forKey: Key.stealthGrammarEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var stealthGrammarShortcut: String {
+        didSet {
+            defaults.set(stealthGrammarShortcut, forKey: Key.stealthGrammarShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var developerGrammarEnabled: Bool {
+        didSet { defaults.set(developerGrammarEnabled, forKey: Key.developerGrammarEnabled) }
+    }
+
+    @Published var developerGrammarProvider: DeveloperGrammarProvider {
+        didSet {
+            defaults.set(developerGrammarProvider.rawValue, forKey: Key.developerGrammarProvider)
+        }
+    }
+
+    @Published var developerGrammarModel: String {
+        didSet { defaults.set(developerGrammarModel, forKey: Key.developerGrammarModel) }
+    }
+
+    @Published var developerGrammarBaseURL: String {
+        didSet { defaults.set(developerGrammarBaseURL, forKey: Key.developerGrammarBaseURL) }
+    }
+
+    @Published var grammarFallbackToLocal: Bool {
+        didSet { defaults.set(grammarFallbackToLocal, forKey: Key.grammarFallbackToLocal) }
+    }
+
+    @Published var inlineGrammarCheckingEnabled: Bool {
+        didSet { defaults.set(inlineGrammarCheckingEnabled, forKey: Key.inlineGrammarCheckingEnabled) }
+    }
+
+    // User-facing aliases. The legacy developerGrammar names remain the
+    // persistence and migration boundary for existing installations.
+    var grammarEngineEnhanced: Bool {
+        get { developerGrammarEnabled }
+        set { developerGrammarEnabled = newValue }
+    }
+
+    var enhancedGrammarAPIKeyStored: Bool {
+        !developerGrammarAPIKey.isEmpty
+    }
+
+    func selectDeveloperGrammarProvider(_ provider: DeveloperGrammarProvider) {
+        let previousProvider = developerGrammarProvider
+        let previousModel = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let previousBaseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        developerGrammarProvider = provider
+
+        // Preserve custom values when the user deliberately entered them, but
+        // make provider switching immediately usable for preset selections.
+        let wasPreset = previousProvider.modelOptions.contains { $0.id == previousModel }
+        if previousModel.isEmpty || wasPreset {
+            developerGrammarModel = provider.defaultModel
+        }
+        if previousBaseURL.isEmpty || previousBaseURL == previousProvider.defaultBaseURL {
+            developerGrammarBaseURL = provider.defaultBaseURL
+        }
+    }
+
+    var developerGrammarAPIKey: String {
+        DeveloperGrammarKeychain.value(for: developerGrammarProvider)
+    }
+
+    var developerGrammarConfigurationForModelDiscovery: DeveloperGrammarConfiguration? {
+        let key = developerGrammarAPIKey
+        let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !baseURL.isEmpty else { return nil }
+        return DeveloperGrammarConfiguration(
+            provider: developerGrammarProvider,
+            apiKey: key,
+            model: developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines),
+            baseURL: baseURL
+        )
+    }
+
+    var developerGrammarConfigurationForTesting: DeveloperGrammarConfiguration? {
+        let key = developerGrammarAPIKey
+        let model = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !model.isEmpty, !baseURL.isEmpty else { return nil }
+        return DeveloperGrammarConfiguration(
+            provider: developerGrammarProvider,
+            apiKey: key,
+            model: model,
+            baseURL: baseURL
+        )
+    }
+
+    func saveDeveloperGrammarAPIKey(_ value: String) throws {
+        try DeveloperGrammarKeychain.set(value.trimmingCharacters(in: .whitespacesAndNewlines), for: developerGrammarProvider)
+        objectWillChange.send()
+    }
+
+    var developerGrammarConfiguration: DeveloperGrammarConfiguration? {
+        guard developerGrammarEnabled else { return nil }
+        return developerGrammarConfigurationForTesting
+    }
+
     @Published var dictationPerformance: PerformanceScale {
         didSet { defaults.set(dictationPerformance.rawValue, forKey: Key.dictationPerformance) }
     }
@@ -522,7 +643,10 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
+    /// Legacy extension-ID overrides remain readable so upgrades do not reset
+    /// user choices. New settings write stable pack keys instead.
     @Published private(set) var extensionEnabledOverrides: [String: Bool]
+    @Published private(set) var extensionPackEnabledOverrides: [String: Bool]
     @Published private(set) var extensionHotkeyEnabledOverrides: [String: Bool]
 
     @Published private(set) var launchAtLogin: Bool
@@ -541,12 +665,12 @@ final class SettingsStore: ObservableObject {
         notesDockLeftHotkeyEnabled = defaults.object(forKey: Key.notesDockLeftHotkeyEnabled) as? Bool ?? false
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
-        developerTerminalEnabled = defaults.object(forKey: Key.developerTerminalEnabled) as? Bool ?? true
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
+        appearance = AppAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
         notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system
@@ -565,6 +689,17 @@ final class SettingsStore: ObservableObject {
         showInDock = defaults.object(forKey: Key.showInDock) as? Bool ?? true
         writingInstructions = defaults.string(forKey: Key.writingInstructions) ?? Self.defaultWritingInstructions
         writingPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.writingPerformance) ?? "") ?? .eco
+        // The keyboard command is useful immediately after installation.
+        // Existing explicit user choices remain respected.
+        stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? true
+        stealthGrammarShortcut = defaults.string(forKey: Key.stealthGrammarShortcut) ?? "control+option+g"
+        developerGrammarEnabled = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
+        let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
+        developerGrammarProvider = storedDeveloperProvider
+        developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
+        developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
+        grammarFallbackToLocal = false
+        inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
@@ -572,6 +707,7 @@ final class SettingsStore: ObservableObject {
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
+        extensionPackEnabledOverrides = defaults.dictionary(forKey: Key.extensionPackEnabledOverrides) as? [String: Bool] ?? [:]
         extensionHotkeyEnabledOverrides = defaults.dictionary(forKey: Key.extensionHotkeyEnabledOverrides) as? [String: Bool] ?? [:]
         launchAtLogin = SMAppService.mainApp.status == .enabled
     }
@@ -692,14 +828,34 @@ final class SettingsStore: ObservableObject {
 
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
 
-    func accessoryMouseAction(for button: Int) -> AccessoryMouseAction {
-        accessoryMouseBindings[String(button)].flatMap(AccessoryMouseAction.init(rawValue:)) ?? .none
+    func restoreStealthGrammarShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        stealthGrammarShortcut = shortcut
+        isRestoringActionShortcut = false
     }
 
-    func setAccessoryMouseAction(_ action: AccessoryMouseAction, for button: Int) {
+    func accessoryMouseBinding(for button: Int) -> AccessoryMouseBinding {
+        guard (3...8).contains(button) else { return .none }
+        return AccessoryMouseBinding(storageValue: accessoryMouseBindings[String(button)])
+    }
+
+    func setAccessoryMouseBinding(_ binding: AccessoryMouseBinding, for button: Int) {
         guard (3...8).contains(button) else { return }
-        if action == .none { accessoryMouseBindings.removeValue(forKey: String(button)) }
-        else { accessoryMouseBindings[String(button)] = action.rawValue }
+        if let storageValue = binding.storageValue {
+            accessoryMouseBindings[String(button)] = storageValue
+        } else {
+            accessoryMouseBindings.removeValue(forKey: String(button))
+        }
+    }
+
+    func accessoryMouseShortcut(for button: Int) -> String {
+        guard case .shortcut(let shortcut) = accessoryMouseBinding(for: button) else { return "" }
+        return shortcut
+    }
+
+    func setAccessoryMouseShortcut(_ shortcut: String, for button: Int) {
+        guard (3...8).contains(button) else { return }
+        setAccessoryMouseBinding(.shortcut(shortcut), for: button)
     }
 
     func resetWritingInstructions() {
@@ -732,6 +888,19 @@ final class SettingsStore: ObservableObject {
         extensionEnabledOverrides[extensionID] ?? true
     }
 
+    func isPackEnabled(for loaded: LoadedExtensionCommand) -> Bool {
+        extensionPackEnabledOverrides[loaded.settingsPackKey]
+            ?? isExtensionEnabled(loaded.extensionID)
+    }
+
+    func setPackEnabled(_ enabled: Bool, for loaded: LoadedExtensionCommand) {
+        extensionPackEnabledOverrides[loaded.settingsPackKey] = enabled
+        defaults.set(extensionPackEnabledOverrides, forKey: Key.extensionPackEnabledOverrides)
+        notifyExtensionConfigurationChanged()
+    }
+
+    /// Retained for settings migrations and user extensions that predate pack
+    /// metadata. New UI writes the pack-level store through `setPackEnabled`.
     func setExtensionEnabled(_ enabled: Bool, extensionID: String) {
         extensionEnabledOverrides[extensionID] = enabled
         defaults.set(extensionEnabledOverrides, forKey: Key.extensionEnabledOverrides)
@@ -739,11 +908,11 @@ final class SettingsStore: ObservableObject {
     }
 
     func isCommandEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isExtensionEnabled(loaded.extensionID)
+        isPackEnabled(for: loaded) && isExtensionEnabled(loaded.extensionID)
     }
 
     func isHotkeyEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isExtensionEnabled(loaded.extensionID)
+        isCommandEnabled(loaded)
             && (extensionHotkeyEnabledOverrides[commandIdentifier(for: loaded)] ?? true)
     }
 
@@ -765,4 +934,107 @@ final class SettingsStore: ObservableObject {
     private func notifyExtensionConfigurationChanged() {
         NotificationCenter.default.post(name: .rayPlacementExtensionShortcutsChanged, object: nil)
     }
+
+    func importBackupValues(_ values: [String: LimaBackupValue]) throws {
+        let secretTerms = ["secret", "password", "token", "apikey", "api_key", "credential"]
+        for (key, value) in values {
+            let normalized = key.lowercased()
+            guard !secretTerms.contains(where: { normalized.contains($0) }) else { continue }
+            applyImportedValue(value, forKey: key)
+        }
+        NotificationCenter.default.post(name: .rayPlacementShortcutChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil)
+        NotificationCenter.default.post(name: .rayPlacementClipboardSettingsChanged, object: nil)
+    }
+
+    private func applyImportedValue(_ value: LimaBackupValue, forKey key: String) {
+        func string() -> String? { if case .string(let value) = value { return value }; return nil }
+        func bool() -> Bool? { if case .bool(let value) = value { return value }; return nil }
+        func int() -> Int? {
+            switch value {
+            case .integer(let value): return value
+            case .double(let value): return Int(value)
+            default: return nil
+            }
+        }
+        func double() -> Double? {
+            switch value {
+            case .double(let value): return value
+            case .integer(let value): return Double(value)
+            default: return nil
+            }
+        }
+
+        switch key {
+        case Key.activationShortcut: if let value = string() { activationShortcut = value }
+        case Key.activationHotkeyEnabled: if let value = bool() { activationHotkeyEnabled = value }
+        case Key.notesShortcut: if let value = string() { notesShortcut = value }
+        case Key.notesHotkeyEnabled: if let value = bool() { notesHotkeyEnabled = value }
+        case Key.quickNoteShortcut: if let value = string() { quickNoteShortcut = value }
+        case Key.quickNoteHotkeyEnabled: if let value = bool() { quickNoteHotkeyEnabled = value }
+        case Key.dictationShortcut: if let value = string() { dictationShortcut = value }
+        case Key.dictationHotkeyEnabled: if let value = bool() { dictationHotkeyEnabled = value }
+        case Key.notesDockLeftShortcut: if let value = string() { notesDockLeftShortcut = value }
+        case Key.notesDockLeftHotkeyEnabled: if let value = bool() { notesDockLeftHotkeyEnabled = value }
+        case Key.notesDockRightShortcut: if let value = string() { notesDockRightShortcut = value }
+        case Key.notesDockRightHotkeyEnabled: if let value = bool() { notesDockRightHotkeyEnabled = value }
+        case Key.terminalShortcut: if let value = string() { terminalShortcut = value }
+        case Key.terminalHotkeyEnabled: if let value = bool() { terminalHotkeyEnabled = value }
+        case Key.accentTheme:
+            if let value = string(), let parsed = AppAccentTheme(rawValue: value) { accentTheme = parsed }
+        case Key.contrastMode:
+            if let value = string(), let parsed = AppContrastMode(rawValue: value) { contrastMode = parsed }
+        case Key.appearance:
+            if let value = string(), let parsed = AppAppearance(rawValue: value) { appearance = parsed }
+        case Key.interfaceDensity:
+            if let value = string(), let parsed = AppInterfaceDensity(rawValue: value) { interfaceDensity = parsed }
+        case Key.notesVisualTheme:
+            if let value = string(), let parsed = NotesVisualTheme(rawValue: value) { notesVisualTheme = parsed }
+        case Key.notesFontStyle:
+            if let value = string(), let parsed = NotesFontStyle(rawValue: value) { notesFontStyle = parsed }
+        case Key.notesFontSize: if let value = double() { notesFontSize = value }
+        case Key.notesLineSpacing: if let value = double() { notesLineSpacing = value }
+        case Key.notesContentWidth:
+            if let value = string(), let parsed = NotesContentWidth(rawValue: value) { notesContentWidth = parsed }
+        case Key.notesShowMetadata: if let value = bool() { notesShowMetadata = value }
+        case Key.clipboardEnabled: if let value = bool() { clipboardEnabled = value }
+        case Key.clipboardLimit: if let value = int() { clipboardLimit = value }
+        case Key.showInDock: if let value = bool() { showInDock = value }
+        case Key.writingInstructions: if let value = string() { writingInstructions = value }
+        case Key.writingPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { writingPerformance = parsed }
+        case Key.stealthGrammarEnabled: if let value = bool() { stealthGrammarEnabled = value }
+        case Key.stealthGrammarShortcut: if let value = string() { stealthGrammarShortcut = value }
+        case Key.developerGrammarEnabled: if let value = bool() { developerGrammarEnabled = value }
+        case Key.developerGrammarProvider:
+            if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
+        case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
+        case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
+        case Key.grammarFallbackToLocal: if let value = bool() { grammarFallbackToLocal = value }
+        case Key.inlineGrammarCheckingEnabled: if let value = bool() { inlineGrammarCheckingEnabled = value }
+        case Key.dictationPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }
+        case Key.dictationEngine:
+            if let value = string(), let parsed = DictationEngine(rawValue: value) { dictationEngine = parsed }
+        case Key.dictationComputeMode:
+            if let value = string(), let parsed = DictationComputeMode(rawValue: value) { dictationComputeMode = parsed }
+        case Key.extensionPerformance:
+            if let value = string(), let parsed = PerformanceScale(rawValue: value) { extensionPerformance = parsed }
+        case Key.dynamicPerformance: if let value = bool() { dynamicPerformance = value }
+        default: break
+        }
+    }
+
+    func exportBackup(to destination: URL? = nil) throws -> URL {
+        let target = destination ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Settings-\(Int(Date().timeIntervalSince1970)).json")
+        let snapshot = defaults.dictionaryRepresentation().filter { key, value in
+            !key.lowercased().contains("key") && !key.lowercased().contains("secret") && !(value is Data)
+        }
+        let data = try JSONSerialization.data(withJSONObject: snapshot, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: target, options: [.atomic])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+        return target
+    }
+
 }

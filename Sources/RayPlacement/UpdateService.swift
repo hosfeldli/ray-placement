@@ -6,6 +6,7 @@ import RayPlacementCore
 private let rayPlacementUpdateAssetMaximumBytes = 100 * 1_024 * 1_024
 private let rayPlacementUpdateMetadataTimeout: TimeInterval = 20
 private let rayPlacementUpdateDownloadTimeout: TimeInterval = 15 * 60
+private let rayPlacementUpdateTrustPolicyVersion = 1
 
 @MainActor
 final class UpdateService: ObservableObject {
@@ -72,6 +73,7 @@ final class UpdateService: ObservableObject {
         case extractionFailed(String)
         case invalidPackage
         case helperFailed(String)
+        case metadataUnavailable(stage: String, detail: String)
 
         var errorDescription: String? {
             switch self {
@@ -83,6 +85,8 @@ final class UpdateService: ObservableObject {
             case .extractionFailed(let message): return message.isEmpty ? "The update kit could not be opened." : message
             case .invalidPackage: return "The update kit is incomplete or its version does not match the GitHub Release."
             case .helperFailed(let message): return message
+            case .metadataUnavailable(let stage, let detail):
+                return "Update check failed during \(stage): \(detail)"
             }
         }
     }
@@ -131,6 +135,14 @@ final class UpdateService: ObservableObject {
         return "\(formatter.string(fromByteCount: downloadedBytes)) of \(formatter.string(fromByteCount: totalDownloadBytes))"
     }
 
+    /// The updater must use one canonical identity for the running bundle.
+    /// LaunchServices may start Lima through a symlink, alias, or a stale Dock
+    /// reference; passing those spellings between Swift and the shell updater
+    /// made a valid installation look like an invalid path.
+    private nonisolated var canonicalBundleURL: URL {
+        Bundle.main.bundleURL.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     var currentVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
     }
@@ -142,8 +154,8 @@ final class UpdateService: ObservableObject {
         guard let status = lines.first else { return nil }
         let message = lines.count > 1 ? String(lines[1]) : ""
         if status == "success", lines.count >= 5 {
-            let expectedPath = URL(fileURLWithPath: String(lines[4])).resolvingSymlinksInPath().path
-            let runningPath = Bundle.main.bundleURL.resolvingSymlinksInPath().path
+            let expectedPath = URL(fileURLWithPath: String(lines[4])).standardizedFileURL.resolvingSymlinksInPath().path
+            let runningPath = canonicalBundleURL.path
             let runningBuild = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
             guard String(lines[2]) == currentVersion, String(lines[3]) == runningBuild, expectedPath == runningPath else {
                 return (false, "The update was installed at \(expectedPath), but this is Lima \(currentVersion) at \(runningPath). Quit this copy and open the updated app from Finder; replace any Dock shortcut pointing at the old copy.")
@@ -167,57 +179,114 @@ final class UpdateService: ObservableObject {
         guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking for Lima updates…"
+        fetchReleaseMetadata(manual: manual, candidates: Self.metadataCandidates())
+    }
 
-        let usingSiteMetadata = Self.siteMetadataURL != nil
-        var request = URLRequest(url: Self.siteMetadataURL ?? Self.latestReleaseURL)
+    private static func metadataCandidates() -> [(url: URL, isSite: Bool)] {
+        var candidates: [(url: URL, isSite: Bool)] = []
+        if let siteMetadataURL {
+            candidates.append((siteMetadataURL, true))
+        }
+        candidates.append((latestReleaseURL, false))
+        return candidates
+    }
+
+    private func fetchReleaseMetadata(
+        manual: Bool,
+        candidates: [(url: URL, isSite: Bool)],
+        index: Int = 0,
+        failures: [String] = []
+    ) {
+        guard index < candidates.count else {
+            isBusy = false
+            let detail = failures.isEmpty
+                ? "Neither the configured update feed nor GitHub returned a usable release."
+                : failures.joined(separator: "; ")
+            let error = UpdateError.metadataUnavailable(
+                stage: "metadata",
+                detail: detail
+            )
+            statusText = manual ? error.localizedDescription : "Updates are checked from the Lima site and GitHub when Lima starts."
+            return
+        }
+
+        let candidate = candidates[index]
+        var request = URLRequest(url: candidate.url)
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = rayPlacementUpdateMetadataTimeout
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("2022-11-28", forHTTPHeaderField: "X-GitHub-Api-Version")
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+
         URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
             Task { @MainActor in
                 guard let self else { return }
-                self.isBusy = false
+                let sourceName = candidate.isSite ? "site metadata" : "GitHub metadata"
                 if let error {
-                    self.statusText = manual ? "Update check failed: \(error.localizedDescription)" : "Updates are checked from the Lima site when Lima starts."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): \(error.localizedDescription)"]
+                    )
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
-                    return
-                }
-                if http.statusCode == 404 {
-                    self.statusText = manual ? UpdateError.noRelease.localizedDescription : "No published update is available."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): invalid HTTP response"]
+                    )
                     return
                 }
                 guard (200..<300).contains(http.statusCode), let data else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): HTTP \(http.statusCode)"]
+                    )
                     return
                 }
+
                 let release: Release?
-                if usingSiteMetadata {
+                if candidate.isSite {
                     let decoder = JSONDecoder()
                     decoder.dateDecodingStrategy = .iso8601
                     release = try? decoder.decode(SiteRelease.self, from: data).asRelease()
                 } else {
                     release = try? JSONDecoder().decode(Release.self, from: data)
                 }
-                guard let release,
-                      let remoteVersion = SemanticVersion(release.versionText),
-                      let installedVersion = SemanticVersion(self.currentVersion) else {
-                    self.statusText = manual ? UpdateError.invalidResponse.localizedDescription : "Updates are checked from the Lima site when Lima starts."
+                guard let release else {
+                    self.fetchReleaseMetadata(
+                        manual: manual,
+                        candidates: candidates,
+                        index: index + 1,
+                        failures: failures + ["\(sourceName): invalid release metadata"]
+                    )
                     return
                 }
-                self.latestVersion = release.versionText
-                guard installedVersion < remoteVersion else {
-                    self.statusText = "Lima \(self.currentVersion) is up to date."
-                    return
-                }
-                self.statusText = "Lima \(release.versionText) is available."
-                self.onReleaseAvailable?(release)
+                self.finishUpdateCheck(release, manual: manual)
             }
         }.resume()
+    }
+
+    private func finishUpdateCheck(_ release: Release, manual: Bool) {
+        isBusy = false
+        guard let remoteVersion = SemanticVersion(release.versionText),
+              let installedVersion = SemanticVersion(currentVersion) else {
+            let error = UpdateError.metadataUnavailable(stage: "version validation", detail: "The release version is not semantic.")
+            statusText = manual ? error.localizedDescription : "Updates are checked from the Lima site and GitHub when Lima starts."
+            return
+        }
+        latestVersion = release.versionText
+        guard installedVersion < remoteVersion else {
+            statusText = "Lima \(currentVersion) is up to date."
+            return
+        }
+        statusText = "Lima \(release.versionText) is available."
+        onReleaseAvailable?(release)
     }
 
     func install(_ release: Release) {
@@ -231,8 +300,11 @@ final class UpdateService: ObservableObject {
             rejectInstall(UpdateError.oversizedAsset, release: release)
             return
         }
-        guard asset.browserDownloadURL.scheme == "https",
-              asset.browserDownloadURL.host?.lowercased() == "github.com" else {
+        guard asset.browserDownloadURL.scheme?.lowercased() == "https",
+              let host = asset.browserDownloadURL.host,
+              !host.isEmpty,
+              asset.browserDownloadURL.user == nil,
+              asset.browserDownloadURL.password == nil else {
             rejectInstall(UpdateError.invalidResponse, release: release)
             return
         }
@@ -257,6 +329,7 @@ final class UpdateService: ObservableObject {
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.timeoutInterval = rayPlacementUpdateDownloadTimeout
         request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        let installedVersion = currentVersion
         let configuration = URLSessionConfiguration.default
         configuration.waitsForConnectivity = true
         configuration.timeoutIntervalForRequest = rayPlacementUpdateDownloadTimeout
@@ -298,7 +371,8 @@ final class UpdateService: ObservableObject {
                     let sourceRoot = try self.prepareUpdate(
                         downloadedArchive: retainedDownload,
                         expectedHash: expectedHash,
-                        expectedVersion: release.versionText
+                        expectedVersion: release.versionText,
+                        installedVersion: installedVersion
                     )
                     Task { @MainActor in
                         self.installationProgress = 0.3
@@ -354,7 +428,8 @@ final class UpdateService: ObservableObject {
     private nonisolated func prepareUpdate(
         downloadedArchive: URL,
         expectedHash: String,
-        expectedVersion: String
+        expectedVersion: String,
+        installedVersion: String
     ) throws -> URL {
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: ApplicationPaths.updates, withIntermediateDirectories: true)
@@ -368,6 +443,10 @@ final class UpdateService: ObservableObject {
         guard size > 0, size <= rayPlacementUpdateAssetMaximumBytes else { throw UpdateError.oversizedAsset }
         let actualHash = try sha256(of: archive)
         guard actualHash == expectedHash else { throw UpdateError.invalidDigest }
+        // Apply the pure policy before any archive extraction. The process-level
+        // checks below remain necessary because zipinfo is the source of type
+        // information for macOS archives.
+        try validateArchive(archive)
 
         let extraction = working.appendingPathComponent("extracted", isDirectory: true)
         try fileManager.createDirectory(at: extraction, withIntermediateDirectories: true)
@@ -382,26 +461,92 @@ final class UpdateService: ObservableObject {
         guard process.terminationStatus == 0 else {
             throw UpdateError.extractionFailed(String(decoding: errorData.prefix(8_000), as: UTF8.self))
         }
+        try validateExtractedTree(extraction)
 
         let sourceRoot = extraction.appendingPathComponent("LimaUpdate", isDirectory: true)
-        let required = [
-            "Package.swift", "Uninstall Lima.command", "Packaging/Info.plist",
-            "scripts/package_liamflow_app.sh", "scripts/apply_downloaded_update.sh",
-            "scripts/replace_lima_bundle.sh", "scripts/request_lima_update_approval.sh",
-            "Prebuilt/Lima.app/Contents/MacOS/Lima"
-        ]
-        guard required.allSatisfy({ fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) }),
-              let packagedVersion = try? plistValue("CFBundleShortVersionString", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")),
-              SemanticVersion(packagedVersion) == SemanticVersion(expectedVersion) else {
-            throw UpdateError.invalidPackage
-        }
+        let required = ["Prebuilt/Lima.app/Contents/MacOS/Lima", "Prebuilt/Lima.app/Contents/Info.plist"]
+        let extractedFiles = Set(required.filter { fileManager.fileExists(atPath: sourceRoot.appendingPathComponent($0).path) })
+        do { try UpdateVerificationPolicy.validateRequiredFiles(extractedFiles, required: required) }
+        catch { throw UpdateError.invalidPackage }
         let prebuiltInfo = sourceRoot.appendingPathComponent("Prebuilt/Lima.app/Contents/Info.plist")
         guard try plistValue("CFBundleIdentifier", in: prebuiltInfo) == "dev.liam.lima",
-              try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion,
-              try plistValue("CFBundleVersion", in: prebuiltInfo) == plistValue("CFBundleVersion", in: sourceRoot.appendingPathComponent("Packaging/Info.plist")) else {
+              try plistValue("CFBundleShortVersionString", in: prebuiltInfo) == expectedVersion else {
             throw UpdateError.invalidPackage
         }
+        do { try UpdateVerificationPolicy.validateNewerVersion(expectedVersion, than: installedVersion) }
+        catch { throw UpdateError.invalidPackage }
+        let expectedBuild = try plistValue("CFBundleVersion", in: prebuiltInfo)
+        try runTrustedVerification(sourceRoot.appendingPathComponent("Prebuilt/Lima.app"), expectedVersion: expectedVersion, expectedBuild: expectedBuild)
         return sourceRoot
+    }
+
+    private nonisolated func validateArchive(_ archive: URL) throws {
+        let list = try runProcess("/usr/bin/zipinfo", arguments: ["-1", archive.path])
+        let entries = list.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        do { try UpdateVerificationPolicy.validateArchiveEntries(entries) }
+        catch { throw UpdateError.invalidPackage }
+
+        let longListing = try runProcess("/usr/bin/zipinfo", arguments: ["-l", archive.path])
+        var types: [(path: String, type: UpdateArchiveEntryType)] = []
+        for line in longListing.split(separator: "\n", omittingEmptySubsequences: true).map(String.init) {
+            let fields = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            guard let permissions = fields.first, permissions.count >= 1,
+                  let path = fields.last.map(String.init), path != "name" else { continue }
+            let type: UpdateArchiveEntryType
+            switch permissions.first {
+            case "d": type = .directory
+            case "-": type = .regularFile
+            case "l": type = .symbolicLink
+            case "h": type = .hardLink
+            case "p": type = .fifo
+            default: type = .socket
+            }
+            types.append((path, type))
+        }
+        do { try UpdateVerificationPolicy.validateArchiveTypes(types) }
+        catch { throw UpdateError.invalidPackage }
+
+        let details = try runProcess("/usr/bin/zipinfo", arguments: ["-Z", "-v", archive.path]).lowercased()
+        guard !details.contains("symbolic link"), !details.contains("hard link"), !details.contains("fifo"), !details.contains("character device"), !details.contains("block device") else { throw UpdateError.invalidPackage }
+    }
+
+    private nonisolated func validateExtractedTree(_ root: URL) throws {
+        let fm = FileManager.default
+        var count = 0
+        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey], options: []) else { throw UpdateError.invalidPackage }
+        for case let url as URL in enumerator {
+            count += 1
+            guard count <= 100_000 else { throw UpdateError.invalidPackage }
+            let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isRegularFileKey])
+            guard values.isSymbolicLink != true, values.isDirectory == true || values.isRegularFile == true else { throw UpdateError.invalidPackage }
+        }
+    }
+
+    private nonisolated func runTrustedVerification(_ app: URL, expectedVersion: String, expectedBuild: String) throws {
+        let verifier = canonicalBundleURL.appendingPathComponent("Contents/Resources/Updater/verify_update_app.sh")
+        guard FileManager.default.isExecutableFile(atPath: verifier.path) else { throw UpdateError.invalidPackage }
+        let policy = Bundle.main.infoDictionary ?? [:]
+        guard (policy["LimaUpdatePolicyVersion"] as? Int ?? 0) == rayPlacementUpdateTrustPolicyVersion,
+              let team = policy["LimaUpdateExpectedTeamIdentifier"] as? String,
+              let identity = policy["LimaUpdateExpectedSigningIdentity"] as? String,
+              let certificate = policy["LimaUpdateExpectedCertificateSHA256"] as? String,
+              !team.isEmpty, !identity.isEmpty, !certificate.isEmpty else { throw UpdateError.invalidPackage }
+        _ = try runProcess("/bin/zsh", arguments: [verifier.path, app.path, expectedVersion, expectedBuild, team, identity, certificate, canonicalBundleURL.path])
+    }
+
+    private nonisolated func runProcess(_ executable: String, arguments: [String]) throws -> String {
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: executable)
+        process.arguments = arguments
+        process.standardOutput = output
+        process.standardError = output
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        let text = String(decoding: data.prefix(32_000), as: UTF8.self)
+        guard process.terminationStatus == 0 else { throw UpdateError.extractionFailed(text) }
+        return text
     }
 
     private nonisolated func sha256(of file: URL) throws -> String {
@@ -425,7 +570,7 @@ final class UpdateService: ObservableObject {
 
     private func launchInstaller(sourceRoot: URL, version: String) {
         statusText = "Preparing the verified Lima update…"
-        let helper = sourceRoot.appendingPathComponent("scripts/apply_downloaded_update.sh")
+        let helper = canonicalBundleURL.appendingPathComponent("Contents/Resources/Updater/apply_trusted_update.sh")
         let log = ApplicationPaths.updates.appendingPathComponent("update.log")
         try? FileManager.default.removeItem(at: progressFile)
         FileManager.default.createFile(atPath: log.path, contents: Data())
@@ -436,11 +581,12 @@ final class UpdateService: ObservableObject {
             process.arguments = [
                 helper.path,
                 String(ProcessInfo.processInfo.processIdentifier),
-                Bundle.main.bundleURL.path,
-                sourceRoot.path,
+                canonicalBundleURL.path,
+                sourceRoot.standardizedFileURL.path,
                 version,
                 resultFile.path,
-                progressFile.path
+                progressFile.path,
+                canonicalBundleURL.path
             ]
             process.standardOutput = handle
             process.standardError = handle

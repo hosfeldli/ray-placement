@@ -28,11 +28,13 @@ public struct WritingReview: Equatable, Sendable {
     public let sourceText: String
     public let suggestedText: String
     public let issues: [WritingIssue]
+    public let status: String?
 
-    public init(sourceText: String, suggestedText: String, issues: [WritingIssue]) {
+    public init(sourceText: String, suggestedText: String, issues: [WritingIssue], status: String? = nil) {
         self.sourceText = sourceText
         self.suggestedText = suggestedText
         self.issues = issues
+        self.status = status
     }
 
     public var hasSuggestedChanges: Bool { suggestedText != sourceText }
@@ -111,8 +113,8 @@ public final class WritingCheckService {
         guard !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw CheckError.emptyText
         }
-        let rewritten = rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rewritten.isEmpty else { throw CheckError.invalidProviderResponse }
+        let rewritten = rewrittenText
+        guard !rewritten.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw CheckError.invalidProviderResponse }
         guard sourceText != rewritten else {
             return WritingReview(sourceText: sourceText, suggestedText: sourceText, issues: [])
         }
@@ -137,6 +139,17 @@ public final class WritingCheckService {
         }
         if result.hasPrefix("Corrected text:") {
             result.removeFirst("Corrected text:".count)
+            result = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // A few OpenAI-compatible providers wrap a plain response in a pair
+        // of quotation marks despite the system prompt. Strip only a complete
+        // outer pair; never touch quotes inside the corrected prose.
+        if result.count >= 2,
+           result.first == "\"",
+           result.last == "\"",
+           !result.dropFirst().dropLast().contains("\n") {
+            result.removeFirst()
+            result.removeLast()
             result = result.trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
@@ -308,7 +321,11 @@ public enum PlainTextPasteboardService {
 
     @discardableResult
     static func rewriteAsPlainText(_ pasteboard: any PlainTextPasteboard) throws -> String {
-        guard let text = pasteboard.string(forType: .string) else { throw PasteboardError.noText }
+        guard let rawText = pasteboard.string(forType: .string),
+              !rawText.isEmpty else { throw PasteboardError.noText }
+        let text = rawText
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
         _ = pasteboard.clearContents()
         guard pasteboard.setString(text, forType: .string) else { throw PasteboardError.noText }
         return text

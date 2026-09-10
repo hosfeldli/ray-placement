@@ -6,12 +6,12 @@ ROOT="${0:A:h:h}"
 FIXTURE="$(mktemp -d /private/tmp/lima-approval-test.XXXXXX)"
 trap '/bin/rm -rf "$FIXTURE"' EXIT
 PROGRAM="$ROOT/scripts/approved_lima_replacement.sh"
-for script in "$PROGRAM" "$ROOT/scripts/request_lima_update_approval.sh" "$ROOT/scripts/apply_downloaded_update.sh"; do
+for script in "$PROGRAM" "$ROOT/scripts/request_lima_update_approval.sh" "$ROOT/scripts/verify_update_app.sh"; do
     /bin/zsh -n "$script"
 done
 /usr/bin/osacompile -o "$FIXTURE/approval.scpt" "$ROOT/scripts/authorize_lima_update.applescript"
 # Verify the real AppleScript argument quoting without requesting privileges.
-/usr/bin/sed 's/ with administrator privileges//' "$ROOT/scripts/authorize_lima_update.applescript" > "$FIXTURE/quoting.applescript"
+/usr/bin/sed -E 's/ with administrator privileges with prompt ".*"//' "$ROOT/scripts/authorize_lima_update.applescript" > "$FIXTURE/quoting.applescript"
 QUOTED_OUTPUT="$(/usr/bin/osascript "$FIXTURE/quoting.applescript" 'printf "%s\\n" "$@"' "$FIXTURE/a path.app" "O'Brien" '\$(must_not_execute)' 'x; exit 99' '' last | /usr/bin/tr '\r' '\n')"
 EXPECTED_OUTPUT="$(printf '%s\n' "$FIXTURE/a path.app" "O'Brien" '\$(must_not_execute)' 'x; exit 99' '' last)"
 [[ "$QUOTED_OUTPUT" == "$EXPECTED_OUTPUT" ]]
