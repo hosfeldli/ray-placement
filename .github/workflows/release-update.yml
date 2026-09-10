@@ -29,16 +29,6 @@ jobs:
           fetch-tags: true
           lfs: true
 
-      - name: Apply CI-only release verifier fixes
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Build from the immutable release tag, but use the current branch's
-          # tested DER certificate verifier. Application source remains exactly
-          # the tagged commit and is checked below before packaging.
-          git show "${GITHUB_SHA}:scripts/verify_liamflow_app.sh" > scripts/verify_liamflow_app.sh
-          chmod 755 scripts/verify_liamflow_app.sh
-
       - name: Configure ephemeral signing directory
         shell: bash
         env:
@@ -122,6 +112,16 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
           ./scripts/release_assert_tag_identity.sh --tag "$RELEASE_TAG"
           ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
+
+      - name: Apply CI-only release verifier fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build from the immutable release tag, but use the current branch's
+          # tested DER certificate verifier. Application source remains exactly
+          # the tagged commit and is checked below before packaging.
+          git show "${GITHUB_SHA}:scripts/verify_liamflow_app.sh" > scripts/verify_liamflow_app.sh
+          chmod 755 scripts/verify_liamflow_app.sh
 
       - name: Build local artifacts without Git mutation
         shell: zsh {0}
