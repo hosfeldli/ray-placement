@@ -26,7 +26,6 @@ jobs:
       RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER: ${{ secrets.LIMA_TEAM_IDENTIFIER }}
       RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
       RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256: ${{ secrets.LIMA_CERTIFICATE_SHA256 }}
-      RAYPLACEMENT_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
       LIMA_RELEASE_EXPECTED_REF: refs/tags/${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -36,6 +35,14 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           lfs: true
+
+      - name: Configure ephemeral signing directory
+        shell: bash
+        env:
+          SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+        run: |
+          set -euo pipefail
+          printf 'RAYPLACEMENT_SIGNING_DIRECTORY=%s\n' "$SIGNING_DIRECTORY" >> "$GITHUB_ENV"
 
       - name: Import CI signing keychain
         shell: bash
