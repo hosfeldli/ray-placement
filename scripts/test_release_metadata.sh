@@ -45,7 +45,7 @@ cat > "$TEMP_DIRECTORY/Lima-release.json" <<JSON
   "commit": "0123456789012345678901234567890123456789",
   "signingMode": "self-signed-local",
   "signingIdentity": "RayPlacement Local Code Signing",
-  "certificateSHA256": "ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da",
+  "certificateSHA256": "20802e48a45cf483c1394cf57f319bce2b764289ff35e049a17ae60aeb62e8ca",
   "releaseUrl": "https://github.com/hosfeldli/ray-placement/releases/tag/v3.12.9",
   "updateUrl": "https://github.com/hosfeldli/ray-placement/releases/download/v3.12.9/Lima-Update.zip",
   "sparkleUpdateUrl": "https://github.com/hosfeldli/ray-placement/releases/download/v3.12.9/Lima-Sparkle.zip",
