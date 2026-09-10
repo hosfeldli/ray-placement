@@ -52,12 +52,11 @@ elif [[ "${GITHUB_ACTIONS:-0}" == true || "${CI:-0}" == true ]]; then
     [[ "$remote_ref" == refs/tags/* || "$remote_ref" == refs/remotes/origin/* ]] || {
         print -u2 "Unsupported CI expected ref: $remote_ref"; exit 1;
     }
-    # Annotated tags resolve to a tag object with rev-parse; compare the
-    # checkout against the peeled commit instead.
-    remote_commit="$(git -C "$PROJECT_DIRECTORY" rev-list -n1 "$TAG" 2>/dev/null || true)"
-    [[ -n "$remote_commit" && "$remote_commit" == "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" ]] || {
-        print -u2 "CI HEAD is not the pushed commit for $remote_ref; refusing release."; exit 1
-    }
+    # release_assert_exact_tag_identity above already proves that HEAD is the
+    # peeled commit for the requested immutable tag. Do not resolve the
+    # annotated ref a second time here: actions/checkout may omit the synthetic
+    # refs/tags namespace even while the tag name is locally verifiable.
+    remote_commit="$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)"
     branch="${GITHUB_REF_NAME:-detached-ci}"
     upstream="$remote_ref"
 else
