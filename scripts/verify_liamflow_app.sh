@@ -58,7 +58,7 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     CERT_DIR="$(mktemp -d "${TMPDIR%/}/lima-package-cert.XXXXXX")"
     trap 'rm -rf "$CERT_DIR"' EXIT
     codesign -d --extract-certificates="$CERT_DIR/cert" "$APP_DIRECTORY" >/dev/null 2>&1
-    ACTUAL_CERTIFICATE="$(openssl x509 -in "$CERT_DIR/cert0" -outform der | shasum -a 256 | awk '{print toupper($1)}')"
+    ACTUAL_CERTIFICATE="$(openssl x509 -inform der -in "$CERT_DIR/cert0" -outform der | shasum -a 256 | awk '{print toupper($1)}')"
     [[ "${ACTUAL_CERTIFICATE:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || { echo 'Verification failed: signing certificate does not match policy' >&2; exit 1; }
 fi
 
