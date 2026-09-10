@@ -54,13 +54,34 @@ jobs:
           security create-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
+          printf 'Decoded P12 bytes: '
+          stat -f '%z' "$P12_PATH"
+          printf 'Decoded P12 SHA-256: '
+          shasum -a 256 "$P12_PATH" | awk '{print $1}'
+          set +e
           security import "$P12_PATH" -f pkcs12 -k "$KEYCHAIN_PATH" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
+          import_status=$?
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
             -k "$SIGNING_PASSWORD" \
             "$KEYCHAIN_PATH" >/dev/null
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH" | grep -F '"RayPlacement Local Code Signing"'
+          partition_status=$?
+          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+          identity_status=$?
+          set -e
+          printf 'security import exit: %s\n' "$import_status"
+          printf 'partition-list exit: %s\n' "$partition_status"
+          printf 'find-identity exit: %s\n' "$identity_status"
+          identity_output="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>/dev/null || true)"
+          printf '%s\n' "$identity_output" | grep -F '"RayPlacement Local Code Signing"' >/dev/null || {
+            echo 'Imported keychain does not contain the pinned RayPlacement Local Code Signing identity.' >&2
+            exit 1
+          }
+          [[ "$import_status" == 0 && "$partition_status" == 0 && "$identity_status" == 0 ]] || {
+            echo 'CI signing keychain setup failed.' >&2
+            exit 1
+          }
           chmod 600 "$RAYPLACEMENT_SIGNING_DIRECTORY"/*
 
       - name: Verify source tag and signing policy
