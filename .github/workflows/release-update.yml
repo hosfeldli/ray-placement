@@ -62,8 +62,11 @@ jobs:
           security import "$P12_PATH" -f pkcs12 -k "$KEYCHAIN_PATH" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
           import_status=$?
           security find-certificate -a -p -c 'RayPlacement Local Code Signing' "$KEYCHAIN_PATH" > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
-          security add-trusted-cert -r trustRoot -k "$KEYCHAIN_PATH" "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
-          trust_status=$?
+          # Do not call security add-trusted-cert here. On GitHub-hosted macOS,
+          # trusting a self-signed certificate can invoke SecurityAgent and wait
+          # forever for an interactive authorization dialog. codesign only needs
+          # the imported private key and partition-list authorization.
+          trust_status=0
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
