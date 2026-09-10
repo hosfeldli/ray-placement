@@ -11,6 +11,8 @@ struct LauncherView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hoveredEmojiID: String?
     @State private var hoveredResultID: String?
+    @State private var acceptedWritingIssueIDs: Set<String> = []
+    @State private var rejectedWritingIssueIDs: Set<String> = []
 
     init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
         self.viewModel = viewModel
@@ -66,6 +68,12 @@ struct LauncherView: View {
         }
         .onChange(of: viewModel.focusGeneration) { _ in
             if viewModel.mode != .terminal { focusSearch() }
+        }
+        .onChange(of: viewModel.mode.visualIdentity) { _ in
+            if case .writingReview(let review) = viewModel.mode {
+                acceptedWritingIssueIDs = Set(review.issues.map(\.id))
+                rejectedWritingIssueIDs = []
+            }
         }
         .onChange(of: viewModel.mode.visualIdentity) { _ in
             if viewModel.mode == .terminal {
@@ -521,7 +529,8 @@ struct LauncherView: View {
     }
 
     private func writingReviewView(_ review: WritingReview) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let effectiveReview = review.applying(acceptedWritingIssueIDs, rejecting: rejectedWritingIssueIDs)
+        return VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle().fill((review.issues.isEmpty ? Color.green : LimaLauncherPalette.violet).opacity(0.14))
@@ -543,13 +552,13 @@ struct LauncherView: View {
                     }
                 }
                 Spacer()
-                Button("Copy \(review.hasSuggestedChanges ? "Suggested" : "Text")") {
-                    viewModel.copyWritingResult(review)
+                Button("Copy \(effectiveReview.hasSuggestedChanges ? "Suggested" : "Text")") {
+                    viewModel.copyWritingResult(effectiveReview)
                 }
                 .limaButton()
                 .accessibilityHint("Copies the reviewed text")
-                Button("Replace \(review.hasSuggestedChanges ? "Selection" : "Selected Text")") {
-                    viewModel.pasteWritingResult(review)
+                Button("Replace \(effectiveReview.hasSuggestedChanges ? "Selection" : "Selected Text")") {
+                    viewModel.pasteWritingResult(effectiveReview)
                 }
                 .limaButton(prominent: true)
                 .tint(LimaLauncherPalette.readableIndigo)
@@ -567,15 +576,34 @@ struct LauncherView: View {
                             symbol: "text.quote"
                         )
                         writingComparisonPanel(
-                            title: review.hasSuggestedChanges ? "CORRECTED TEXT" : "CHECKED TEXT",
-                            text: review.hasSuggestedChanges ? review.suggestedText : review.sourceText,
-                            color: review.hasSuggestedChanges ? LimaLauncherPalette.violet : .green,
-                            symbol: review.hasSuggestedChanges ? "wand.and.stars" : "checkmark.circle.fill"
+                            title: effectiveReview.hasSuggestedChanges ? "CORRECTED TEXT" : "CHECKED TEXT",
+                            text: effectiveReview.hasSuggestedChanges ? effectiveReview.suggestedText : effectiveReview.sourceText,
+                            color: effectiveReview.hasSuggestedChanges ? LimaLauncherPalette.violet : .green,
+                            symbol: effectiveReview.hasSuggestedChanges ? "wand.and.stars" : "checkmark.circle.fill"
                         )
                     }
 
-                    if let issue = review.issues.first {
-                        WritingIssueRow(issue: issue)
+                    if !review.issues.isEmpty {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("REVIEW EACH CHANGE")
+                                .limaFont(.system(size: 9, weight: .bold))
+                                .tracking(1.0)
+                                .foregroundStyle(.secondary)
+                            ForEach(review.issues) { issue in
+                                WritingIssueDecisionRow(
+                                    issue: issue,
+                                    accepted: acceptedWritingIssueIDs.contains(issue.id) && !rejectedWritingIssueIDs.contains(issue.id),
+                                    onAccept: {
+                                        acceptedWritingIssueIDs.insert(issue.id)
+                                        rejectedWritingIssueIDs.remove(issue.id)
+                                    },
+                                    onReject: {
+                                        acceptedWritingIssueIDs.remove(issue.id)
+                                        rejectedWritingIssueIDs.insert(issue.id)
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -808,6 +836,41 @@ private struct WritingIssueRow: View {
         .liquidGlass(cornerRadius: 12, depth: .recessed, accentOpacity: 0.010)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(issue.kind.rawValue): \(issue.original). \(issue.message)")
+    }
+}
+
+private struct WritingIssueDecisionRow: View {
+    let issue: WritingIssue
+    let accepted: Bool
+    let onAccept: () -> Void
+    let onReject: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: accepted ? "checkmark.circle.fill" : "xmark.circle")
+                .foregroundStyle(accepted ? .green : .secondary)
+                .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(issue.original).limaFont(.system(size: 12.5, weight: .semibold))
+                    Text("→")
+                    Text(issue.suggestions.first ?? "No replacement")
+                        .limaFont(.system(size: 12.5, weight: .medium))
+                        .foregroundStyle(accepted ? .green : .secondary)
+                }
+                Text(issue.message).limaFont(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 4)
+            Button("Keep") { onAccept() }
+                .buttonStyle(.borderless)
+                .foregroundStyle(accepted ? .green : .secondary)
+            Button("Reject") { onReject() }
+                .buttonStyle(.borderless)
+                .foregroundStyle(!accepted ? .orange : .secondary)
+        }
+        .padding(9)
+        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
     }
 }
 

@@ -53,6 +53,11 @@ public struct StealthProtectedText: Equatable, Sendable {
         return leadingWhitespace + correctedBody + trailingWhitespace
     }
 
+    public func apply(_ changes: [StealthGrammarAnchoredChange]) throws -> String {
+        let correctedBody = try StealthGrammarService.apply(changes, segments: editableSegments(), to: sourceBody)
+        return leadingWhitespace + correctedBody + trailingWhitespace
+    }
+
 
     /// Returns editable spans in original UTF-16 coordinates. Protected values
     /// are omitted entirely; the model never receives sentinel tokens or ranges.
@@ -96,6 +101,25 @@ public struct StealthGrammarSegmentCorrection: Codable, Equatable, Sendable {
     public let id: String
     public let corrected: String
     public init(id: String, corrected: String) { self.id = id; self.corrected = corrected }
+}
+
+/// A small, anchored proofread change. The provider chooses only the text to
+/// replace; Lima locates it in the original segment and preserves everything
+/// else byte-for-byte.
+public struct StealthGrammarAnchoredChange: Codable, Equatable, Sendable {
+    public let segmentID: String
+    public let find: String
+    public let replacement: String
+    public let before: String?
+    public let after: String?
+
+    public init(segmentID: String, find: String, replacement: String, before: String? = nil, after: String? = nil) {
+        self.segmentID = segmentID
+        self.find = find
+        self.replacement = replacement
+        self.before = before
+        self.after = after
+    }
 }
 
 public struct StealthGrammarEdit: Codable, Equatable, Sendable {
@@ -261,6 +285,65 @@ public enum StealthGrammarService {
     /// Validates and applies provider edits to the exact text sent to the
     /// provider. Protected tokens are rejected before any replacement is made;
     /// the caller can then restore the protected values byte-for-byte.
+    public static func apply(_ changes: [StealthGrammarAnchoredChange], segments: [StealthEditableSegment], to source: String) throws -> String {
+        let byID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
+        var edits: [StealthGrammarEdit] = []
+        var usedLocations = Set<String>()
+        for change in changes {
+            guard !change.find.isEmpty, let segment = byID[change.segmentID] else {
+                throw StealthGrammarEditError.invalidRange
+            }
+            let segmentText = segment.text as NSString
+            var searchStart = 0
+            var matches: [NSRange] = []
+            while searchStart <= segmentText.length {
+                let range = segmentText.range(of: change.find, options: [], range: NSRange(location: searchStart, length: segmentText.length - searchStart))
+                if range.location == NSNotFound { break }
+                matches.append(range)
+                searchStart = max(range.location + max(range.length, 1), searchStart + 1)
+            }
+            if let before = change.before {
+                matches = matches.filter { range in
+                    let start = max(0, range.location - (before as NSString).length)
+                    return segmentText.substring(with: NSRange(location: start, length: range.location - start)) == before
+                }
+            }
+            if let after = change.after {
+                matches = matches.filter { range in
+                    let end = min(segmentText.length, NSMaxRange(range) + (after as NSString).length)
+                    return segmentText.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range))) == after
+                }
+            }
+            guard matches.count == 1, let match = matches.first else {
+                throw StealthGrammarEditError.invalidRange
+            }
+            let absolute = NSRange(location: segment.start + match.location, length: match.length)
+            let key = "\(absolute.location):\(absolute.length)"
+            guard usedLocations.insert(key).inserted else { throw StealthGrammarEditError.overlappingEdits }
+            guard isSafeAnchoredReplacement(change.find, change.replacement) else {
+                throw StealthGrammarEditError.unsafeReplacement
+            }
+            edits.append(StealthGrammarEdit(start: absolute.location, length: absolute.length, replacement: change.replacement))
+        }
+        return try apply(edits, to: source)
+    }
+
+    private static func isSafeAnchoredReplacement(_ source: String, _ replacement: String) -> Bool {
+        guard !source.isEmpty, !replacement.isEmpty,
+              !replacement.contains("\n\n\n"),
+              !isChattyResponse(replacement) else { return false }
+        // An anchored change may alter the selected word or punctuation, but it
+        // may not silently consume a boundary space. Explicitly anchored space
+        // changes remain possible because `find` includes that exact space.
+        let sourceLeading = source.prefix { $0.isWhitespace }
+        let sourceTrailing = source.reversed().prefix { $0.isWhitespace }
+        let replacementLeading = replacement.prefix { $0.isWhitespace }
+        let replacementTrailing = replacement.reversed().prefix { $0.isWhitespace }
+        guard sourceLeading.count == replacementLeading.count,
+              sourceTrailing.count == replacementTrailing.count else { return false }
+        return replacement.utf8.count <= max(128, source.utf8.count + 32)
+    }
+
     public static func apply(_ corrections: [StealthGrammarSegmentCorrection], segments: [StealthEditableSegment], to source: String) throws -> String {
         let byID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
         var edits: [StealthGrammarEdit] = []

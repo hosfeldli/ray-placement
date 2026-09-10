@@ -2,6 +2,20 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
+enum GrammarCorrectionMode: String, CaseIterable, Identifiable {
+    case proofread
+    case polish
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var detail: String {
+        switch self {
+        case .proofread: return "Correct spelling, grammar, and punctuation while preserving your voice."
+        case .polish: return "Make conservative clarity and flow improvements in addition to proofreading."
+        }
+    }
+}
+
 enum GrammarEngineMode: String, CaseIterable, Identifiable {
     case local
     case externalAPI
@@ -298,6 +312,10 @@ final class SettingsStore: ObservableObject {
         static let notesLineSpacing = "notesLineSpacing"
         static let notesContentWidth = "notesContentWidth"
         static let notesShowMetadata = "notesShowMetadata"
+        static let quickNoteOpacity = "quickNoteOpacity"
+        static let quickNoteAutoHide = "quickNoteAutoHide"
+        static let quickNotePerSpaceMemory = "quickNotePerSpaceMemory"
+        static let quickNoteDisplayLocked = "quickNoteDisplayLocked"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
@@ -312,6 +330,7 @@ final class SettingsStore: ObservableObject {
         static let stealthGrammarShortcut = "stealthGrammarShortcut"
         static let developerGrammarEnabled = "developerGrammarEnabled"
         static let grammarEngineMode = "grammarEngineMode"
+        static let grammarCorrectionMode = "grammarCorrectionMode"
         static let developerGrammarProvider = "developerGrammarProvider"
         static let developerGrammarModel = "developerGrammarModel"
         static let developerGrammarBaseURL = "developerGrammarBaseURL"
@@ -489,6 +508,25 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(notesShowMetadata, forKey: Key.notesShowMetadata) }
     }
 
+    @Published var quickNoteOpacity: Double {
+        didSet {
+            quickNoteOpacity = min(max(quickNoteOpacity, 0.35), 1)
+            defaults.set(quickNoteOpacity, forKey: Key.quickNoteOpacity)
+        }
+    }
+
+    @Published var quickNoteAutoHide: Bool {
+        didSet { defaults.set(quickNoteAutoHide, forKey: Key.quickNoteAutoHide) }
+    }
+
+    @Published var quickNotePerSpaceMemory: Bool {
+        didSet { defaults.set(quickNotePerSpaceMemory, forKey: Key.quickNotePerSpaceMemory) }
+    }
+
+    @Published var quickNoteDisplayLocked: Bool {
+        didSet { defaults.set(quickNoteDisplayLocked, forKey: Key.quickNoteDisplayLocked) }
+    }
+
     @Published var clipboardEnabled: Bool {
         didSet {
             defaults.set(clipboardEnabled, forKey: Key.clipboardEnabled)
@@ -536,6 +574,10 @@ final class SettingsStore: ObservableObject {
                 NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
             }
         }
+    }
+
+    @Published var grammarCorrectionMode: GrammarCorrectionMode {
+        didSet { defaults.set(grammarCorrectionMode.rawValue, forKey: Key.grammarCorrectionMode) }
     }
 
     @Published var grammarEngineMode: GrammarEngineMode {
@@ -702,6 +744,11 @@ final class SettingsStore: ObservableObject {
         notesLineSpacing = storedNotesLineSpacing == 0 ? 3.5 : storedNotesLineSpacing
         notesContentWidth = NotesContentWidth(rawValue: defaults.string(forKey: Key.notesContentWidth) ?? "") ?? .wide
         notesShowMetadata = defaults.object(forKey: Key.notesShowMetadata) as? Bool ?? true
+        let storedQuickNoteOpacity = defaults.double(forKey: Key.quickNoteOpacity)
+        quickNoteOpacity = storedQuickNoteOpacity == 0 ? 0.96 : storedQuickNoteOpacity
+        quickNoteAutoHide = defaults.object(forKey: Key.quickNoteAutoHide) as? Bool ?? false
+        quickNotePerSpaceMemory = defaults.object(forKey: Key.quickNotePerSpaceMemory) as? Bool ?? true
+        quickNoteDisplayLocked = defaults.object(forKey: Key.quickNoteDisplayLocked) as? Bool ?? false
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
@@ -719,6 +766,9 @@ final class SettingsStore: ObservableObject {
         grammarEngineMode = GrammarEngineMode(
             rawValue: defaults.string(forKey: Key.grammarEngineMode) ?? ""
         ) ?? (legacyExternalGrammar ? .externalAPI : .local)
+        grammarCorrectionMode = GrammarCorrectionMode(
+            rawValue: defaults.string(forKey: Key.grammarCorrectionMode) ?? ""
+        ) ?? .proofread
         let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
@@ -1023,6 +1073,10 @@ final class SettingsStore: ObservableObject {
         case Key.notesContentWidth:
             if let value = string(), let parsed = NotesContentWidth(rawValue: value) { notesContentWidth = parsed }
         case Key.notesShowMetadata: if let value = bool() { notesShowMetadata = value }
+        case Key.quickNoteOpacity: if let value = double() { quickNoteOpacity = value }
+        case Key.quickNoteAutoHide: if let value = bool() { quickNoteAutoHide = value }
+        case Key.quickNotePerSpaceMemory: if let value = bool() { quickNotePerSpaceMemory = value }
+        case Key.quickNoteDisplayLocked: if let value = bool() { quickNoteDisplayLocked = value }
         case Key.clipboardEnabled: if let value = bool() { clipboardEnabled = value }
         case Key.clipboardLimit: if let value = int() { clipboardLimit = value }
         case Key.showInDock: if let value = bool() { showInDock = value }
@@ -1032,6 +1086,8 @@ final class SettingsStore: ObservableObject {
         case Key.stealthGrammarEnabled: if let value = bool() { stealthGrammarEnabled = value }
         case Key.stealthGrammarShortcut: if let value = string() { stealthGrammarShortcut = value }
         case Key.developerGrammarEnabled: if let value = bool() { grammarEngineMode = value ? .externalAPI : .local }
+        case Key.grammarCorrectionMode:
+            if let value = string(), let parsed = GrammarCorrectionMode(rawValue: value) { grammarCorrectionMode = parsed }
         case Key.developerGrammarProvider:
             if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }

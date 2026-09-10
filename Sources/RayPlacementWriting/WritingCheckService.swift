@@ -38,6 +38,20 @@ public struct WritingReview: Equatable, Sendable {
     }
 
     public var hasSuggestedChanges: Bool { suggestedText != sourceText }
+
+    public func replacingSuggestion(with text: String, issues: [WritingIssue]? = nil) -> WritingReview {
+        WritingReview(sourceText: sourceText, suggestedText: text, issues: issues ?? self.issues, status: status)
+    }
+
+    public func applying(_ accepted: Set<String>, rejecting rejected: Set<String> = []) -> WritingReview {
+        let mutable = NSMutableString(string: sourceText)
+        for issue in issues.reversed() where accepted.contains(issue.id) && !rejected.contains(issue.id) {
+            guard let suggestion = issue.suggestions.first,
+                  NSMaxRange(issue.range) <= mutable.length else { continue }
+            mutable.replaceCharacters(in: issue.range, with: suggestion)
+        }
+        return replacingSuggestion(with: mutable as String)
+    }
 }
 
 public final class WritingCheckService {

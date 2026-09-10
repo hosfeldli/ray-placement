@@ -7,6 +7,11 @@ import RayPlacementCore
 import RayPlacementWriting
 import SwiftUI
 
+private enum PasteTargetPolicy {
+    case exactCapturedSelection
+    case currentInsertionPoint
+}
+
 @MainActor
 final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDelegate {
     let clipboard: ClipboardHistoryService
@@ -1178,7 +1183,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             completion()
             return
         }
-        guard let previousApplication else {
+        guard let previousApplication, !previousApplication.isTerminated else {
             presentError(title: "Paste", message: "The app that should receive the text is no longer available.")
             completion()
             return
@@ -1192,38 +1197,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
             guard let self else { completion(); return }
-            do {
-                let context: SelectedTextService.SelectionContext
-                if let focusedTextContext = self.focusedTextContext,
-                   focusedTextContext.processIdentifier == previousApplication.processIdentifier {
-                    context = focusedTextContext
-                } else {
-                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
-                }
-                try SelectedTextService.replaceSelectedText(text, using: context)
-                self.focusedTextContext = nil
-                self.toast.show("Pasted as plain text")
-                completion()
-            } catch SelectedTextService.SelectionError.selectionChanged {
-                self.presentError(
-                    title: "Paste",
-                    message: "The original insertion point changed. Put the cursor back where you want the text and try again."
-                )
-                completion()
-            } catch {
-                self.pasteTextWithKeyboard(
-                    text,
-                    into: previousApplication,
-                    successMessage: "Pasted as plain text",
-                    completion: completion
-                )
-            }
+            // Plain-text paste intentionally never restores a historical
+            // Accessibility selection. Cmd-V targets the insertion point that
+            // is current after the destination application becomes active.
+            self.pasteTextWithKeyboard(
+                text,
+                into: previousApplication,
+                successMessage: "Pasted as plain text",
+                completion: completion
+            )
         }
     }
 
     private func pasteTextIntoPreviousApplication(
         _ text: String,
         successMessage: String,
+        targetPolicy: PasteTargetPolicy = .currentInsertionPoint,
         completion: @escaping () -> Void = {}
     ) {
         hide()
@@ -1249,13 +1238,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             // terminal, and protected fields fall back to an atomic Cmd-V.
             do {
                 let context: SelectedTextService.SelectionContext
-                if let focused = self.focusedTextContext,
+                if targetPolicy == .exactCapturedSelection,
+                   let focused = self.focusedTextContext,
                    focused.processIdentifier == previousApplication.processIdentifier {
                     context = focused
+                    try SelectedTextService.replaceSelectedText(text, using: context)
                 } else {
-                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
+                    throw SelectedTextService.SelectionError.selectionChanged
                 }
-                try SelectedTextService.replaceSelectedText(text, using: context)
                 self.focusedTextContext = nil
                 self.toast.show(successMessage)
                 completion()

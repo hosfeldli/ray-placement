@@ -14,6 +14,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     var lineSpacing: Double = 3.5
     var theme: NotesVisualTheme = .prism
     var inlineGrammarCheckingEnabled: Bool = true
+    var editable: Bool = true
+    var wikiLinkCandidates: [MarkdownNote] = []
 
     init(
         text: Binding<String>,
@@ -23,7 +25,9 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         fontSize: Double = 15.5,
         lineSpacing: Double = 3.5,
         theme: NotesVisualTheme = .prism,
-        inlineGrammarCheckingEnabled: Bool = true
+        inlineGrammarCheckingEnabled: Bool = true,
+        editable: Bool = true,
+        wikiLinkCandidates: [MarkdownNote] = []
     ) {
         _text = text
         self.compact = compact
@@ -33,10 +37,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         self.lineSpacing = lineSpacing
         self.theme = theme
         self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        self.editable = editable
+        self.wikiLinkCandidates = wikiLinkCandidates
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled, editable: editable, wikiLinkCandidates: wikiLinkCandidates)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -49,7 +55,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
 
         let textView = MarkdownTextView()
         textView.delegate = context.coordinator
-        textView.isEditable = true
+        textView.isEditable = editable
         textView.isSelectable = true
         textView.isRichText = true
         textView.importsGraphics = false
@@ -63,6 +69,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
         textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        textView.wikiLinkCandidates = wikiLinkCandidates
+        textView.isEditable = editable
         scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.insertionPointColor = NotesEditorPalette(theme: theme).accent
@@ -105,6 +113,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.richContentRenderHandler = { [weak coordinator = context.coordinator] in
             coordinator?.rerenderCurrentDocument()
         }
+        textView.wikiLinkCandidates = wikiLinkCandidates
+        textView.registerForDraggedTypes([.fileURL, .string, .tiff, .png])
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
@@ -129,6 +139,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.theme = theme
         let inlineGrammarSettingChanged = context.coordinator.inlineGrammarCheckingEnabled != inlineGrammarCheckingEnabled
         context.coordinator.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        context.coordinator.editable = editable
+        context.coordinator.wikiLinkCandidates = wikiLinkCandidates
         textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
         if inlineGrammarSettingChanged {
             if inlineGrammarCheckingEnabled {
@@ -173,12 +185,14 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var lineSpacing: Double
         var theme: NotesVisualTheme
         var inlineGrammarCheckingEnabled: Bool
+        var editable: Bool
+        var wikiLinkCandidates: [MarkdownNote]
         private var stylingWorkItem: DispatchWorkItem?
         private var grammarWorkItem: DispatchWorkItem?
         private var grammarGeneration = 0
         private var grammarChecker: RuleBasedWritingChecker?
 
-        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool, editable: Bool, wikiLinkCandidates: [MarkdownNote]) {
             self.text = text
             self.scrollOffset = .constant(0)
             self.fontStyle = fontStyle
@@ -186,6 +200,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             self.lineSpacing = lineSpacing
             self.theme = theme
             self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+            self.editable = editable
+            self.wikiLinkCandidates = wikiLinkCandidates
             self.grammarChecker = RuleBasedWritingChecker()
         }
 
@@ -386,6 +402,8 @@ enum MarkdownEditorActions {
     static func checklist() { withEditor { $0.applyListPrefix("- [ ] ") } }
     static func bullets() { withEditor { $0.applyListPrefix("- ") } }
     static func insert(_ markdown: String) { withEditor { $0.insertMarkdownBlock(markdown) } }
+    static func scrollToLine(_ line: Int) { withEditor { $0.scrollToLine(line) } }
+    static func slashCommand(_ command: MarkdownNoteSlashCommand) { withEditor { $0.insertSlashCommand(command) } }
 }
 
 final class MarkdownTextView: NSTextView {
@@ -395,6 +413,8 @@ final class MarkdownTextView: NSTextView {
     var richContentRenderHandler: (() -> Void)?
     private var tableOverlays: [ObjectIdentifier: MarkdownNativeTableView] = [:]
     var inlineGrammarCheckingEnabled = true
+    var wikiLinkCandidates: [MarkdownNote] = []
+    private var popupMenu: NSMenu?
 
     func clearGrammarAnnotations() {
         guard let layoutManager, let textStorage else { return }
@@ -472,6 +492,117 @@ final class MarkdownTextView: NSTextView {
             view.removeFromSuperview()
             tableOverlays.removeValue(forKey: identifier)
         }
+    }
+
+    func scrollToLine(_ line: Int) {
+        let lines = string.components(separatedBy: .newlines)
+        let clamped = min(max(0, line), max(0, lines.count - 1))
+        let location = lines.prefix(clamped).reduce(0) { $0 + $1.utf16.count + 1 }
+        setSelectedRange(NSRange(location: min(location, (string as NSString).length), length: 0))
+        scrollRangeToVisible(selectedRange())
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        super.insertText(insertString, replacementRange: replacementRange)
+        guard isEditable else { return }
+        DispatchQueue.main.async { [weak self] in self?.offerInlineCommandIfNeeded() }
+    }
+
+    private func offerInlineCommandIfNeeded() {
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let lineRange = source.lineRange(for: NSRange(location: cursor, length: 0))
+        let line = source.substring(with: lineRange)
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("/") && !trimmed.contains(" ") && !trimmed.contains("\t") {
+            let prefix = String(trimmed.dropFirst()).lowercased()
+            let commands = MarkdownNoteSlashCommand.allCases.filter { prefix.isEmpty || $0.rawValue.hasPrefix(prefix) }
+            guard !commands.isEmpty else { return }
+            let menu = NSMenu(title: "Slash Commands")
+            for command in commands {
+                let item = NSMenuItem(title: "/\(command.rawValue)", action: #selector(performSlashCommand(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = command.rawValue
+                item.toolTip = command.detail
+                menu.addItem(item)
+            }
+            popupMenu = menu
+            let rect = firstRect(forCharacterRange: NSRange(location: cursor, length: 0), actualRange: nil)
+            menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.minY), in: self)
+            return
+        }
+
+        guard !wikiLinkCandidates.isEmpty else { return }
+        let before = source.substring(to: cursor)
+        guard let opening = before.range(of: "[[", options: .backwards) else { return }
+        let start = before.utf16.distance(from: before.startIndex, to: opening.lowerBound)
+        let prefix = before.substring(from: opening.upperBound)
+        guard !prefix.contains("]") else { return }
+        let candidates = MarkdownNoteAnalysis.wikiLinkSuggestions(in: string, prefix: prefix, candidates: wikiLinkCandidates)
+        guard !candidates.isEmpty else { return }
+        let menu = NSMenu(title: "Wiki Links")
+        for note in candidates {
+            let item = NSMenuItem(title: note.displayTitle, action: #selector(performWikiLink(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = note.displayTitle
+            menu.addItem(item)
+        }
+        popupMenu = menu
+        let rect = firstRect(forCharacterRange: NSRange(location: cursor, length: 0), actualRange: nil)
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.minY), in: self)
+    }
+
+    @objc private func performSlashCommand(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let command = MarkdownNoteSlashCommand(rawValue: raw) else { return }
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let lineRange = source.lineRange(for: NSRange(location: cursor, length: 0))
+        let line = source.substring(with: lineRange)
+        guard let slash = line.firstIndex(of: "/") else { return }
+        let offset = line.utf16.distance(from: line.startIndex, to: slash)
+        replaceAndSelect(range: NSRange(location: lineRange.location + offset, length: cursor - lineRange.location - offset), replacement: command.markdown, selectionOffset: 0, selectionLength: command.markdown.utf16.count)
+        popupMenu = nil
+    }
+
+    @objc private func performWikiLink(_ sender: NSMenuItem) {
+        guard let title = sender.representedObject as? String else { return }
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let before = source.substring(to: cursor)
+        guard let opening = before.range(of: "[[", options: .backwards) else { return }
+        let start = before.utf16.distance(from: before.startIndex, to: opening.lowerBound)
+        replaceAndSelect(range: NSRange(location: start, length: cursor - start), replacement: "[[\(title)]]", selectionOffset: title.utf16.count + 4, selectionLength: 0)
+        popupMenu = nil
+    }
+
+    func insertSlashCommand(_ command: MarkdownNoteSlashCommand) {
+        let insertion = command.markdown
+        replaceAndSelect(range: selectedRange(), replacement: insertion, selectionOffset: 0, selectionLength: insertion.utf16.count)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isEditable ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isEditable else { return false }
+        let pasteboard = sender.draggingPasteboard
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            let markdown = urls.map { url in
+                if let image = NSImage(contentsOf: url), let reference = MarkdownNoteAssetStore.importImage(image) {
+                    return "![\(url.deletingPathExtension().lastPathComponent)](\(reference))"
+                }
+                return "[\(url.lastPathComponent)](\(url.absoluteString))"
+            }.joined(separator: "\n")
+            insertMarkdownBlock(markdown)
+            return true
+        }
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            insertPlainText(text)
+            return true
+        }
+        return false
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

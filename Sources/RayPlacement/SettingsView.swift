@@ -448,6 +448,16 @@ struct SettingsView: View {
 
     private var grammarEngineSection: some View {
         Section("Grammar Engine") {
+            Picker("Writing mode", selection: $settings.grammarCorrectionMode) {
+                ForEach(GrammarCorrectionMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            Text(settings.grammarCorrectionMode.detail)
+                .limaFont(.caption)
+                .foregroundStyle(.secondary)
+
             Picker("Correction engine", selection: $settings.grammarEngineMode) {
                 Text("Local").tag(GrammarEngineMode.local)
                 Text("External API").tag(GrammarEngineMode.externalAPI)

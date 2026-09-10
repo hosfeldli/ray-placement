@@ -167,6 +167,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private var gridScrollView: NSScrollView?
     private var fields: [MarkdownTableField] = []
     private var cellAppearances: [(view: NSView, header: Bool)] = []
+    private var checkboxCells: Set<String> = []
     private weak var toolbarIcon: NSImageView?
     private weak var titleField: NSTextField?
     private var isSizingColumns = false
@@ -179,7 +180,13 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     var onSizeChange: (() -> Void)?
 
     var preferredHeight: CGFloat {
-        44 + CGFloat(1 + table.rows.count) * 35
+        44 + (0...table.rows.count).reduce(CGFloat.zero) { total, row in total + rowHeight(row) }
+    }
+
+    private func rowHeight(_ row: Int) -> CGFloat {
+        let values = row == 0 ? table.headers : table.rows[row - 1]
+        let wrappedLines = values.map { max(1, Int(ceil(Double($0.count) / 28.0))) }.max() ?? 1
+        return max(34, min(108, CGFloat(wrappedLines) * 17 + 17))
     }
 
     init(table: MarkdownTableData) {
@@ -375,7 +382,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         grid.xPlacement = .fill
         grid.yPlacement = .fill
         grid.wantsLayer = true
-        for row in 0..<grid.numberOfRows { grid.row(at: row).height = 34 }
+        for row in 0..<grid.numberOfRows { grid.row(at: row).height = rowHeight(row) }
         for column in 0..<grid.numberOfColumns { grid.column(at: column).xPlacement = .fill }
 
         let scrollView = NSScrollView()
@@ -419,6 +426,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
         let field = MarkdownTableField(string: value)
         field.coordinate = coordinate
+        let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !header, trimmedValue.hasPrefix("[ ] ") || trimmedValue.hasPrefix("[x] ") {
+            checkboxCells.insert(coordinate.key)
+        }
         field.delegate = self
         field.translatesAutoresizingMaskIntoConstraints = false
         field.isBordered = false
@@ -442,6 +453,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             }
         }
         field.setAccessibilityLabel(coordinate.accessibilityLabel)
+        field.usesSingleLineMode = false
+        field.lineBreakMode = .byWordWrapping
+        field.maximumNumberOfLines = 0
+        field.cell?.wraps = true
+        field.menu = cellMenu(for: coordinate)
         field.onPasteTable = { [weak self, weak field] data in
             guard let self, let field else { return false }
             return self.paste(data, startingAt: field.coordinate)
@@ -456,6 +472,33 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         fields.append(field)
         cellAppearances.append((container, header))
         return container
+    }
+
+    private func cellMenu(for coordinate: CellCoordinate) -> NSMenu {
+        let menu = NSMenu(title: "Cell Actions")
+        let checkbox = NSMenuItem(title: checkboxCells.contains(coordinate.key) ? "Remove Checkbox" : "Add Checkbox", action: #selector(toggleCheckbox(_:)), keyEquivalent: "")
+        checkbox.target = self
+        checkbox.representedObject = coordinate
+        menu.addItem(checkbox)
+        let clear = NSMenuItem(title: "Clear Cell", action: #selector(clearCell(_:)), keyEquivalent: "")
+        clear.target = self
+        clear.representedObject = coordinate
+        menu.addItem(clear)
+        return menu
+    }
+
+    private func value(at coordinate: CellCoordinate) -> String {
+        switch coordinate {
+        case .header(let column): return table.headers[column]
+        case .body(let row, let column): return table.rows[row][column]
+        }
+    }
+
+    private func setValue(_ value: String, at coordinate: CellCoordinate) {
+        switch coordinate {
+        case .header(let column): table.headers[column] = value
+        case .body(let row, let column): table.rows[row][column] = value
+        }
     }
 
     private func paste(_ data: TabularData, startingAt coordinate: CellCoordinate) -> Bool {
@@ -502,9 +545,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         for item in cellAppearances {
             let color: NSColor
             if let cell = item.view as? MarkdownTableCellView, cell.isHovered {
-                color = LimaAppKitDesign.tableHover
+                color = palette.tableHover
             } else if item.header {
-                color = LimaAppKitDesign.tableHeaderBackground
+                color = palette.tableHeader
             } else {
                 color = palette.background
             }
@@ -601,6 +644,29 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         }
     }
 
+    @objc private func toggleCheckbox(_ sender: NSMenuItem) {
+        guard let coordinate = sender.representedObject as? CellCoordinate else { return }
+        let current = value(at: coordinate)
+        let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if checkboxCells.contains(coordinate.key) {
+            checkboxCells.remove(coordinate.key)
+            setValue(trimmed.replacingOccurrences(of: "[ ] ", with: "", options: [.caseInsensitive]).replacingOccurrences(of: "[x] ", with: "", options: [.caseInsensitive]), at: coordinate)
+        } else {
+            checkboxCells.insert(coordinate.key)
+            setValue("[ ] \(trimmed)", at: coordinate)
+        }
+        rebuildGrid(focus: coordinate)
+        onChange?()
+    }
+
+    @objc private func clearCell(_ sender: NSMenuItem) {
+        guard let coordinate = sender.representedObject as? CellCoordinate else { return }
+        checkboxCells.remove(coordinate.key)
+        setValue("", at: coordinate)
+        rebuildGrid(focus: coordinate)
+        onChange?()
+    }
+
     @objc private func addRow() {
         table.addRow()
         rebuildGrid(focus: .body(table.rows.count - 1, 0))
@@ -687,6 +753,13 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 private enum CellCoordinate: Equatable {
     case header(Int)
     case body(Int, Int)
+
+    var key: String {
+        switch self {
+        case .header(let column): return "h:\(column)"
+        case .body(let row, let column): return "b:\(row):\(column)"
+        }
+    }
 
     var column: Int {
         switch self {

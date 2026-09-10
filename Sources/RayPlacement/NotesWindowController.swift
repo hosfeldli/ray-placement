@@ -26,15 +26,37 @@ private enum NotesSection {
     case dictation
 }
 
+enum QuickNoteInteractionMode: String, CaseIterable, Identifiable {
+    case reference
+    case edit
+
+    var id: String { rawValue }
+    var title: String { self == .reference ? "Reference" : "Edit" }
+    var symbol: String { self == .reference ? "eye" : "pencil" }
+}
+
 @MainActor
 private final class NotesPresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
     @Published var section: NotesSection = .notes
     @Published var focusDictationEditor = false
+    @Published var quickNoteInteractionMode: QuickNoteInteractionMode = .edit
+    @Published var notesFocusMode = false
+    @Published var pinnedReferenceIDs: [UUID] = []
 
     init(mode: NotesWindowMode) {
         self.mode = mode
+        if let data = UserDefaults.standard.data(forKey: "quickNotePinnedReferenceIDs"),
+           let ids = try? JSONDecoder().decode([UUID].self, from: data) {
+            pinnedReferenceIDs = ids
+        }
+    }
+
+    func persistPinnedReferences() {
+        if let data = try? JSONEncoder().encode(pinnedReferenceIDs) {
+            UserDefaults.standard.set(data, forKey: "quickNotePinnedReferenceIDs")
+        }
     }
 
     func setMode(_ mode: NotesWindowMode) {
@@ -56,11 +78,14 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     private let presentation: NotesPresentationModel
     private var window: NSWindow?
+    private var quickNotePanel: NSPanel?
     private var dictationHUD: DictationHUDController!
     private var workspaceFrame: NSRect?
     private var modeBeforeFullScreen: NotesWindowMode = .workspace
     private var sidebarBeforeFullScreen = true
     private var isApplyingFrame = false
+    private var applicationDeactivateObserver: NSObjectProtocol?
+    private var spaceChangeObserver: NSObjectProtocol?
 
     override init() {
         let store = NotesStore.shared
@@ -90,6 +115,18 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
         super.init()
+        self.applicationDeactivateObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard SettingsStore.shared.quickNoteAutoHide else { return }
+            self?.quickNotePanel?.orderOut(nil)
+        }
+        self.spaceChangeObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main
+        ) { [weak self] notification in
+            guard let panel = notification.object as? NSPanel, panel === self?.quickNotePanel else { return }
+            self?.rememberQuickNoteFrame(panel)
+        }
         self.dictationHUD = DictationHUDController(
             dictation: dictation,
             conversations: conversations,
@@ -131,11 +168,31 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     func presentQuickNote() {
         selectQuickNoteTarget()
         let preferredMode: NotesWindowMode = presentation.mode == .dockedLeft ? .dockedLeft : .dockedRight
-        let window = ensureWindow()
-        applyPresentationMode(preferredMode, to: window, animated: true)
+        let panel = ensureQuickNotePanel()
+        applyPresentationMode(preferredMode, to: panel, animated: true)
+        configureQuickNotePanel(panel)
         markQuickNoteTarget()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if quickNotePanel?.isVisible == true {
+            quickNotePanel?.orderOut(nil)
+            return
+        }
+        if presentation.quickNoteInteractionMode == .edit {
+            panel.makeKeyAndOrderFront(nil)
+        } else {
+            panel.orderFrontRegardless()
+        }
+    }
+
+    func toggleQuickNoteInteractionMode() {
+        presentation.quickNoteInteractionMode = presentation.quickNoteInteractionMode == .edit ? .reference : .edit
+        if let panel = quickNotePanel {
+            configureQuickNotePanel(panel)
+            if presentation.quickNoteInteractionMode == .edit {
+                panel.makeKeyAndOrderFront(nil)
+            } else {
+                panel.orderFrontRegardless()
+            }
+        }
     }
 
     func presentDockedLeft() {
@@ -198,6 +255,40 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         UserDefaults.standard.set(id.uuidString, forKey: Self.quickNoteTargetIDKey)
     }
 
+    func togglePinnedReference(_ id: UUID) {
+        guard store.notes.contains(where: { $0.id == id }) else { return }
+        if let index = presentation.pinnedReferenceIDs.firstIndex(of: id) {
+            presentation.pinnedReferenceIDs.remove(at: index)
+        } else {
+            presentation.pinnedReferenceIDs.append(id)
+        }
+        presentation.persistPinnedReferences()
+    }
+
+    func selectPinnedReference(_ id: UUID) {
+        selectNote(id)
+        presentation.quickNoteInteractionMode = .reference
+        if let panel = quickNotePanel {
+            configureQuickNotePanel(panel)
+            panel.orderFrontRegardless()
+        }
+    }
+
+    func toggleNotesFocusMode() {
+        presentation.notesFocusMode.toggle()
+        presentation.sidebarVisible = !presentation.notesFocusMode
+    }
+
+    private func quickNoteFrameKey(for panel: NSPanel) -> String {
+        let screenName = panel.screen?.localizedName ?? "default"
+        return "quickNoteFrame.\(screenName)"
+    }
+
+    private func rememberQuickNoteFrame(_ panel: NSPanel) {
+        guard SettingsStore.shared.quickNotePerSpaceMemory else { return }
+        UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: quickNoteFrameKey(for: panel))
+    }
+
     func selectNote(_ id: UUID) {
         guard store.notes.contains(where: { $0.id == id }) else { return }
         store.selectNote(id)
@@ -238,6 +329,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         dictation.cancel()
         store.flush()
         conversations.flush()
+        quickNotePanel?.orderOut(nil)
+        if let applicationDeactivateObserver { NotificationCenter.default.removeObserver(applicationDeactivateObserver) }
+        if let spaceChangeObserver { NotificationCenter.default.removeObserver(spaceChangeObserver) }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -278,6 +372,71 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         guard let window else { return }
         let returnMode = modeBeforeFullScreen == .fullScreen ? .workspace : modeBeforeFullScreen
         applyPresentationMode(returnMode, to: window, animated: true)
+    }
+
+    private func ensureQuickNotePanel() -> NSPanel {
+        if let quickNotePanel { return quickNotePanel }
+        let panel = makeQuickNotePanel()
+        quickNotePanel = panel
+        return panel
+    }
+
+    private func makeQuickNotePanel() -> NSPanel {
+        let screen = NSScreen.main ?? NSScreen.screens.first
+        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+        let defaultFrame = NSRect(x: visible.maxX - 430, y: visible.minY + 28, width: 420, height: visible.height - 56)
+        let savedFrame = UserDefaults.standard.string(forKey: "quickNoteFrame.\(screen?.localizedName ?? "default")").map(NSRectFromString) ?? defaultFrame
+        let panel = NSPanel(
+            contentRect: savedFrame,
+            styleMask: [.nonactivatingPanel, .titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        LimaWindowChrome.configure(
+            panel,
+            title: "Quick Note",
+            accessibilityLabel: "Quick Note",
+            movableByBackground: false
+        )
+        panel.isReleasedWhenClosed = false
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = SettingsStore.shared.quickNoteAutoHide
+        panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
+        panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
+        if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
+        else { panel.styleMask.insert(.resizable) }
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        if #available(macOS 13.0, *) { panel.collectionBehavior.insert(.canJoinAllApplications) }
+        panel.delegate = self
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: NotesView(
+            store: store,
+            conversations: conversations,
+            dictation: dictation,
+            presentation: presentation,
+            dockLeft: { [weak self] in self?.dock(.left) },
+            dockRight: { [weak self] in self?.dock(.right) },
+            restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
+            toggleFullScreen: { [weak self] in self?.toggleFullScreen() },
+            setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
+            setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
+            quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote },
+            toggleQuickNoteMode: { [weak self] in self?.toggleQuickNoteInteractionMode() },
+            togglePinnedReference: { [weak self] id in self?.togglePinnedReference(id) },
+            selectPinnedReference: { [weak self] id in self?.selectPinnedReference(id) },
+            toggleNotesFocusMode: { [weak self] in self?.toggleNotesFocusMode() }
+        )))
+        return panel
+    }
+
+    private func configureQuickNotePanel(_ panel: NSPanel) {
+        panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
+        panel.level = presentation.mode == .fullScreen ? .screenSaver : .floating
+        panel.hidesOnDeactivate = SettingsStore.shared.quickNoteAutoHide
+        panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
+        if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
+        panel.alphaValue = CGFloat(min(max(SettingsStore.shared.quickNoteOpacity, 0.35), 1))
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        if #available(macOS 13.0, *) { panel.collectionBehavior.insert(.canJoinAllApplications) }
     }
 
     private func ensureWindow() -> NSWindow {
@@ -328,7 +487,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             toggleFullScreen: { [weak self] in self?.toggleFullScreen() },
             setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
             setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
-            quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote }
+            quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote },
+            toggleQuickNoteMode: { [weak self] in self?.toggleQuickNoteInteractionMode() },
+            togglePinnedReference: { [weak self] id in self?.togglePinnedReference(id) },
+            selectPinnedReference: { [weak self] id in self?.selectPinnedReference(id) },
+            toggleNotesFocusMode: { [weak self] in self?.toggleNotesFocusMode() }
         )))
         return window
     }
@@ -475,6 +638,10 @@ private struct NotesView: View {
     let setQuickNoteTarget: (UUID) -> Void
     let setQuickNoteTargetMode: (QuickNoteTargetMode) -> Void
     let quickNoteTargetMode: () -> QuickNoteTargetMode
+    let toggleQuickNoteMode: () -> Void
+    let togglePinnedReference: (UUID) -> Void
+    let selectPinnedReference: (UUID) -> Void
+    let toggleNotesFocusMode: () -> Void
 
     @State private var searchQuery = ""
     @State private var isSearchPresented = false
@@ -486,6 +653,12 @@ private struct NotesView: View {
     @State private var showAppearance = false
     @State private var showTags = false
     @State private var showRevisions = false
+    @State private var showOutline = false
+    @State private var showTasks = false
+    @State private var showNoteSwitcher = false
+    @State private var showTemplateEditor = false
+    @State private var editingTemplate: MarkdownUserTemplate?
+    @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FocusState private var dictationEditorFocused: Bool
@@ -508,7 +681,7 @@ private struct NotesView: View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: LimaDesign.panelGap) {
-                if !presentation.mode.isDocked {
+                if !presentation.mode.isDocked && !presentation.notesFocusMode {
                     windowChrome
                         .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 }
@@ -598,6 +771,34 @@ private struct NotesView: View {
                 showRevisions = false
             }
         }
+        .sheet(isPresented: $showOutline) {
+            HeadingOutlineSheet(note: store.selectedNote) { line in
+                showOutline = false
+                MarkdownEditorActions.scrollToLine(line)
+            }
+        }
+        .sheet(isPresented: $showTasks) {
+            TaskDashboardSheet(tasks: store.taskDashboard) { id in
+                store.selectNote(id)
+                showTasks = false
+            }
+        }
+        .sheet(isPresented: $showNoteSwitcher) {
+            NoteSwitcherSheet(notes: store.notes, selectedID: store.selectedNoteID) { id in
+                store.selectNote(id)
+                showNoteSwitcher = false
+            }
+        }
+        .sheet(isPresented: $showTemplateEditor) {
+            TemplateEditorSheet(template: editingTemplate) { title, content, id in
+                store.saveUserTemplate(title: title, content: content, id: id)
+                showTemplateEditor = false
+                editingTemplate = nil
+            }
+        }
+        .sheet(item: $compareRevision) { revision in
+            RevisionDiffSheet(current: store.selectedNote?.content ?? "", revision: revision)
+        }
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.sidebarVisible)
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.mode)
         .limaAnimation(.easeInOut(duration: 0.24), value: settings.notesVisualTheme)
@@ -616,6 +817,17 @@ private struct NotesView: View {
             Spacer(minLength: presentation.mode.isDocked ? 4 : 8)
 
             if presentation.mode.isDocked {
+                Picker("Quick Note mode", selection: Binding(
+                    get: { presentation.quickNoteInteractionMode },
+                    set: { presentation.quickNoteInteractionMode = $0; toggleQuickNoteMode() }
+                )) {
+                    ForEach(QuickNoteInteractionMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.symbol).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 132)
+                .controlSize(.small)
                 Menu {
                     Button {
                         presentation.section = .notes
@@ -643,6 +855,8 @@ private struct NotesView: View {
 
                 Menu {
                     Button("Customize Notes") { showAppearance = true }
+                    Button(presentation.quickNoteInteractionMode == .reference ? "Switch to Edit Mode" : "Switch to Reference Mode", action: toggleQuickNoteMode)
+                    Button(presentation.notesFocusMode ? "Exit Notes Focus Mode" : "Enter Notes Focus Mode", action: toggleNotesFocusMode)
                     Divider()
                     Button("Return to Workspace", action: restoreWorkspace)
                     Button(
@@ -791,8 +1005,32 @@ private struct NotesView: View {
             .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.panel, border: LimaColors.border)
     }
 
+    private var pinnedReferenceBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                ForEach(presentation.pinnedReferenceIDs, id: \.self) { id in
+                    if let pinned = store.notes.first(where: { $0.id == id }) {
+                        Button { selectPinnedReference(id) } label: {
+                            Label(pinned.displayTitle, systemImage: store.selectedNoteID == id ? "pin.fill" : "pin")
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.borderless)
+                        .padding(.horizontal, 6)
+                        .frame(height: 24)
+                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    }
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.top, 5)
+        }
+    }
+
     private func noteBrowser(compact: Bool) -> some View {
         VStack(spacing: 0) {
+            if compact && !presentation.pinnedReferenceIDs.isEmpty {
+                pinnedReferenceBar
+            }
             HStack(spacing: 8) {
                 if compact && !isSearchPresented {
                     HStack(spacing: 5) {
@@ -864,6 +1102,21 @@ private struct NotesView: View {
                                     Image(systemName: template == .blank ? "square.and.pencil" : "doc.text.fill")
                                 }
                             }
+                        }
+                        if !store.userTemplates.isEmpty {
+                            Divider()
+                            Section("My Templates") {
+                                ForEach(store.userTemplates) { template in
+                                    Button { store.createNote(template: template) } label: {
+                                        Label(template.title, systemImage: "doc.badge.plus")
+                                    }
+                                }
+                            }
+                        }
+                        Divider()
+                        Button("Save Current Note as Template…") {
+                            editingTemplate = store.selectedNote.map { MarkdownUserTemplate(title: $0.displayTitle, content: $0.content) }
+                            showTemplateEditor = true
                         }
                     }
                 } label: {
@@ -1465,9 +1718,17 @@ private struct NotesView: View {
                 Divider()
                 Button("Duplicate Note") { store.duplicateSelectedNote() }
                 Button("Set as Quick Note") { setQuickNoteTarget(note.id) }
+                Button(presentation.pinnedReferenceIDs.contains(note.id) ? "Unpin Reference Tab" : "Pin Reference Tab") { togglePinnedReference(note.id) }
                 Button("Edit Tags…") { showTags = true }
                 Button("Revision History…") { showRevisions = true }
+                Button("Show Outline…") { showOutline = true }
+                Button("Task Dashboard…") { showTasks = true }
+                Button("Append Clipboard") { appendClipboard() }
+                Button("Append Current Selection") { appendSelection() }
                 Divider()
+                Button("Switch Note…") { showNoteSwitcher = true }
+                    .keyboardShortcut("p", modifiers: .command)
+                Button(presentation.notesFocusMode ? "Exit Notes Focus Mode" : "Enter Notes Focus Mode", action: toggleNotesFocusMode)
                 Button("Delete Note…", role: .destructive) { confirmDelete = true }
                     .keyboardShortcut(.delete, modifiers: .command)
             } label: {
@@ -1502,7 +1763,9 @@ private struct NotesView: View {
             fontSize: settings.notesFontSize,
             lineSpacing: settings.notesLineSpacing,
             theme: settings.notesVisualTheme,
-            inlineGrammarCheckingEnabled: settings.inlineGrammarCheckingEnabled
+            inlineGrammarCheckingEnabled: settings.inlineGrammarCheckingEnabled,
+            editable: !presentation.mode.isDocked || presentation.quickNoteInteractionMode == .edit,
+            wikiLinkCandidates: store.notes.filter { $0.id != note.id }
         )
         .accessibilityLabel("Inline formatted Markdown editor")
 
@@ -1532,6 +1795,13 @@ private struct NotesView: View {
                 Menu {
                     Button("Import Markdown…", action: importMarkdown)
                     Button("Export All Markdown…", action: exportMarkdown)
+                    Divider()
+                    Button("Append Clipboard", action: appendClipboard)
+                    Button("Append Current Selection", action: appendSelection)
+                    if let conversation = conversations.selectedConversation {
+                        Button("Append Dictation Transcript") { store.appendDictation(conversation, to: note.id) }
+                        Button("Create Note from Dictation") { createNoteFromDictation(conversation) }
+                    }
                 } label: {
                     Image(systemName: "folder")
                         .frame(width: 25, height: 24)
@@ -1575,6 +1845,13 @@ private struct NotesView: View {
 
                 Spacer(minLength: 5)
 
+                Button("Outline", systemImage: "list.bullet.indent") { showOutline = true }
+                    .buttonStyle(.borderless)
+                    .help("Show heading outline")
+                Button("Tasks", systemImage: "checklist") { showTasks = true }
+                    .buttonStyle(.borderless)
+                    .help("Show global task dashboard")
+
                 if !store.referencedNotes().isEmpty || !store.backlinks().isEmpty {
                     Menu {
                         if !store.referencedNotes().isEmpty {
@@ -1616,6 +1893,28 @@ private struct NotesView: View {
             .padding(.vertical, 8)
         }
         .background(LimaColors.recessedSurface)
+    }
+
+    private func appendClipboard() {
+        guard let id = store.selectedNoteID else { return }
+        store.appendClipboard(to: id)
+    }
+
+    private func appendSelection() {
+        guard let editor = MarkdownEditorFocus.shared.editor,
+              editor.selectedRange().length > 0 else { return }
+        let range = editor.selectedRange()
+        let text = (editor.string as NSString).substring(with: range)
+        guard let id = store.selectedNoteID else { return }
+        store.appendMarkdown(text, to: id)
+    }
+
+    private func createNoteFromDictation(_ conversation: DictationConversation) {
+        store.createNote()
+        guard let id = store.selectedNoteID else { return }
+        store.updateContent(conversation.transcript)
+        store.updateTitle(conversation.title)
+        store.selectNote(id, recordHistory: false)
     }
 
     private func importMarkdown() {
@@ -1677,7 +1976,7 @@ private struct NotesView: View {
         Button {
             selectNote(note.id)
         } label: {
-            NoteListRow(note: note, selected: store.selectedNoteID == note.id)
+            NoteListRow(note: note, selected: store.selectedNoteID == note.id, excerpt: searchQuery.isEmpty ? nil : MarkdownNoteAnalysis.excerpt(in: note.content, matching: searchQuery))
         }
             .buttonStyle(.plain)
             .accessibilityLabel("\(note.displayTitle), \(note.preview)")
@@ -1730,6 +2029,14 @@ private struct NotesAppearancePanel: View {
                 }
                 .buttonStyle(.borderless)
                 .controlSize(.small)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("QUICK NOTE").notesAppearanceLabel()
+                NotesAppearanceSlider(title: "Opacity", value: $settings.quickNoteOpacity, range: 0.35...1, valueLabel: "\(Int(settings.quickNoteOpacity * 100))%")
+                Toggle("Auto-hide when Lima deactivates", isOn: $settings.quickNoteAutoHide).controlSize(.small)
+                Toggle("Lock position and size", isOn: $settings.quickNoteDisplayLocked).controlSize(.small)
+                Toggle("Remember position per display", isOn: $settings.quickNotePerSpaceMemory).controlSize(.small)
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -1807,6 +2114,68 @@ private extension NotesVisualTheme {
         case .ink: colors = [.orange, Color(red: 0.20, green: 0.12, blue: 0.09)]
         }
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+private struct HeadingOutlineSheet: View {
+    let note: MarkdownNote?
+    let onSelect: (Int) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Heading Outline").limaFont(.title3.bold())
+            if let note, !MarkdownNoteAnalysis.headings(in: note.content).isEmpty {
+                List(MarkdownNoteAnalysis.headings(in: note.content)) { heading in
+                    Button { onSelect(heading.line); dismiss() } label: {
+                        HStack(spacing: 8) {
+                            Text(String(repeating: "  ", count: max(0, heading.level - 1)))
+                            Image(systemName: "text.alignleft")
+                            Text(heading.title).lineLimit(1)
+                            Spacer()
+                            Text("L\(heading.line + 1)").foregroundStyle(.tertiary)
+                        }
+                    }.buttonStyle(.plain)
+                }
+            } else {
+                Text("Add Markdown headings to build an outline.").foregroundStyle(.secondary)
+            }
+            HStack { Spacer(); Button("Close") { dismiss() } }
+        }
+        .padding(18)
+        .frame(width: 430, height: 390)
+    }
+}
+
+private struct TaskDashboardSheet: View {
+    let tasks: [NotesStore.TaskSummary]
+    let onSelect: (UUID) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack { Text("Task Dashboard").limaFont(.title3.bold()); Spacer(); Text("\(tasks.filter(\.checked).count)/\(tasks.count)").foregroundStyle(.secondary) }
+            if tasks.isEmpty {
+                Text("Checklist items from all notes will appear here.").foregroundStyle(.secondary)
+            } else {
+                List(tasks) { task in
+                    Button { onSelect(task.noteID); dismiss() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: task.checked ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(task.checked ? .green : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.text).lineLimit(2)
+                                Text(task.noteTitle).limaFont(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                        }
+                    }.buttonStyle(.plain)
+                }
+            }
+            HStack { Spacer(); Button("Close") { dismiss() } }
+        }
+        .padding(18)
+        .frame(width: 500, height: 440)
     }
 }
 
@@ -1917,6 +2286,133 @@ private struct RevisionHistorySheet: View {
     }
 }
 
+private struct NoteSwitcherSheet: View {
+    let notes: [MarkdownNote]
+    let selectedID: UUID?
+    let onSelect: (UUID) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var results: [MarkdownNote] {
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !clean.isEmpty else { return notes }
+        return notes.filter { $0.displayTitle.lowercased().contains(clean) || $0.content.lowercased().contains(clean) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Switch Note").limaFont(.title3.bold())
+                Spacer()
+                Text("⌘P").limaFont(.caption).foregroundStyle(.secondary)
+            }
+            TextField("Search notes", text: $query)
+                .limaInputSurface()
+            List(results) { note in
+                Button {
+                    onSelect(note.id)
+                    dismiss()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: note.id == selectedID ? "checkmark.circle.fill" : "note.text")
+                            .foregroundStyle(note.id == selectedID ? SettingsStore.shared.accentTheme.readablePrimary : .secondary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(note.displayTitle).lineLimit(1)
+                            Text(note.preview).limaFont(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+            HStack { Spacer(); Button("Close") { dismiss() } }
+        }
+        .padding(18)
+        .frame(width: 500, height: 500)
+        .onAppear { NSApp.keyWindow?.makeFirstResponder(nil) }
+    }
+}
+
+private struct TemplateEditorSheet: View {
+    let template: MarkdownUserTemplate?
+    let onSave: (String, String, UUID?) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var title: String
+    @State private var content: String
+
+    init(template: MarkdownUserTemplate?, onSave: @escaping (String, String, UUID?) -> Void) {
+        self.template = template
+        self.onSave = onSave
+        _title = State(initialValue: template?.title ?? "My Template")
+        _content = State(initialValue: template?.content ?? "# New Note\n\n")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(template == nil ? "New Template" : "Edit Template").limaFont(.title3.bold())
+            TextField("Template name", text: $title).limaInputSurface()
+            TextEditor(text: $content)
+                .font(.system(.body, design: .monospaced))
+                .padding(7)
+                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    onSave(title, content, template?.id)
+                }
+                .limaButton(prominent: true)
+                .disabled(title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 580, height: 430)
+    }
+}
+
+private struct RevisionDiffSheet: View {
+    let current: String
+    let revision: NoteRevision
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Revision Diff").limaFont(.title3.bold())
+                    Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened)).limaFont(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Close") { dismiss() }
+            }
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 2) {
+                    ForEach(MarkdownNoteDiff.lines(from: revision.content, to: current)) { line in
+                        Text("\(String(line.prefix)) \(line.text.isEmpty ? " " : line.text)")
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(diffColor(line.prefix))
+                    }
+                }
+                .padding(6)
+            }
+            .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+        }
+        .padding(18)
+        .frame(width: 720, height: 540)
+    }
+
+    private func diffColor(_ prefix: Character) -> Color {
+        switch prefix {
+        case "+": return .green.opacity(0.12)
+        case "-": return .red.opacity(0.12)
+        default: return .clear
+        }
+    }
+}
+
 private struct NotesChromeButton: View {
     let symbol: String
     let label: String
@@ -1937,6 +2433,7 @@ private struct NotesChromeButton: View {
 private struct NoteListRow: View {
     let note: MarkdownNote
     let selected: Bool
+    let excerpt: String?
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -1958,7 +2455,7 @@ private struct NoteListRow: View {
                             .accessibilityHidden(true)
                     }
                 }
-                Text(note.preview)
+                Text(excerpt ?? note.preview)
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

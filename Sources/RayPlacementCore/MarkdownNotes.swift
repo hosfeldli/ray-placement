@@ -14,6 +14,18 @@ public struct NoteRevision: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+public struct MarkdownUserTemplate: Codable, Identifiable, Hashable, Sendable {
+    public let id: UUID
+    public var title: String
+    public var content: String
+
+    public init(id: UUID = UUID(), title: String, content: String) {
+        self.id = id
+        self.title = title
+        self.content = content
+    }
+}
+
 public enum MarkdownNoteTemplate: String, CaseIterable, Identifiable, Sendable {
     case blank
     case meetingNotes
@@ -137,6 +149,135 @@ public enum MarkdownNoteLinks {
             }
         }
         return Array(result.prefix(20))
+    }
+}
+
+
+public struct MarkdownNoteHeading: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let level: Int
+    public let title: String
+    public let line: Int
+
+    public init(level: Int, title: String, line: Int) {
+        self.level = min(max(level, 1), 6)
+        self.title = title
+        self.line = line
+        self.id = "\(line):\(self.level):\(title)"
+    }
+}
+
+public struct MarkdownNoteSearchMatch: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let range: Range<String.Index>
+    public let excerpt: String
+
+    public init(id: String, range: Range<String.Index>, excerpt: String) {
+        self.id = id
+        self.range = range
+        self.excerpt = excerpt
+    }
+}
+
+public enum MarkdownNoteAnalysis {
+    public static func headings(in markdown: String) -> [MarkdownNoteHeading] {
+        markdown.components(separatedBy: .newlines).enumerated().compactMap { index, line in
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            let hashes = trimmed.prefix { $0 == "#" }
+            guard !hashes.isEmpty, hashes.count <= 6,
+                  trimmed.dropFirst(hashes.count).first == " " else { return nil }
+            let title = String(trimmed.dropFirst(hashes.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { return nil }
+            return MarkdownNoteHeading(level: hashes.count, title: title, line: index)
+        }
+    }
+
+    public static func excerpt(in markdown: String, matching query: String, radius: Int = 58) -> String? {
+        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return nil }
+        let lower = markdown.lowercased()
+        guard let range = lower.range(of: clean.lowercased()) else { return nil }
+        let start = lower.index(range.lowerBound, offsetBy: -min(radius, lower.distance(from: lower.startIndex, to: range.lowerBound)), limitedBy: lower.startIndex) ?? lower.startIndex
+        let end = lower.index(range.upperBound, offsetBy: min(radius, lower.distance(from: range.upperBound, to: lower.endIndex)), limitedBy: lower.endIndex) ?? lower.endIndex
+        let result = String(markdown[start..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return (start != markdown.startIndex ? "…" : "") + result + (end != markdown.endIndex ? "…" : "")
+    }
+
+    public static func wikiLinkSuggestions(in markdown: String, prefix: String, candidates: [MarkdownNote]) -> [MarkdownNote] {
+        let clean = prefix.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return candidates.filter { clean.isEmpty || $0.displayTitle.lowercased().hasPrefix(clean) }.prefix(8).map { $0 }
+    }
+}
+
+public struct MarkdownNoteDiffLine: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let prefix: Character
+    public let text: String
+    public init(index: Int, prefix: Character, text: String) {
+        self.id = "\(index):\(prefix):\(text)"
+        self.prefix = prefix
+        self.text = text
+    }
+}
+
+public enum MarkdownNoteDiff {
+    public static func lines(from old: String, to new: String) -> [MarkdownNoteDiffLine] {
+        let oldLines = old.components(separatedBy: .newlines)
+        let newLines = new.components(separatedBy: .newlines)
+        var result: [MarkdownNoteDiffLine] = []
+        var oldIndex = 0
+        var newIndex = 0
+        var outputIndex = 0
+        while oldIndex < oldLines.count || newIndex < newLines.count {
+            if oldIndex < oldLines.count, newIndex < newLines.count, oldLines[oldIndex] == newLines[newIndex] {
+                result.append(MarkdownNoteDiffLine(index: outputIndex, prefix: " ", text: oldLines[oldIndex]))
+                oldIndex += 1; newIndex += 1
+            } else if oldIndex < oldLines.count, (newIndex >= newLines.count || !newLines.dropFirst(newIndex + 1).contains(oldLines[oldIndex])) {
+                result.append(MarkdownNoteDiffLine(index: outputIndex, prefix: "-", text: oldLines[oldIndex]))
+                oldIndex += 1
+            } else if newIndex < newLines.count {
+                result.append(MarkdownNoteDiffLine(index: outputIndex, prefix: "+", text: newLines[newIndex]))
+                newIndex += 1
+            }
+            outputIndex += 1
+        }
+        return result
+    }
+}
+
+public enum MarkdownNoteSlashCommand: String, CaseIterable, Identifiable {
+    case heading = "heading"
+    case checklist = "checklist"
+    case table = "table"
+    case quote = "quote"
+    case divider = "divider"
+    case code = "code"
+    case link = "link"
+
+    public var id: String { rawValue }
+    public var title: String { rawValue.capitalized }
+    public var markdown: String {
+        switch self {
+        case .heading: return "# Heading"
+        case .checklist: return "- [ ] Task"
+        case .table: return "| Column 1 | Column 2 |\n| :--- | :--- |\n|  |  |"
+        case .quote: return "> Quote"
+        case .divider: return "---"
+        case .code: return "```\ncode\n```"
+        case .link: return "[[Note]]"
+        }
+    }
+
+    public var detail: String {
+        switch self {
+        case .heading: return "Insert a heading"
+        case .checklist: return "Insert a task checkbox"
+        case .table: return "Insert an editable table"
+        case .quote: return "Insert a quote block"
+        case .divider: return "Insert a divider"
+        case .code: return "Insert a code block"
+        case .link: return "Insert a wiki link"
+        }
     }
 }
 

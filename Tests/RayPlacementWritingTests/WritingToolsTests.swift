@@ -279,3 +279,36 @@ private final class FakePasteboard: PlainTextPasteboard {
         _ = try protected.apply([StealthGrammarSegmentCorrection(id: "unknown", corrected: "changed")])
     }
 }
+
+
+@Test func anchoredGrammarEditsRejectAmbiguousMatchesAndHonorContext() throws {
+    let segments = [StealthEditableSegment(id: "s0", text: "This is a test. This is another test.", start: 0, length: 37)]
+    #expect(throws: StealthGrammarEditError.invalidRange) {
+        try StealthGrammarService.apply([
+            StealthGrammarAnchoredChange(segmentID: "s0", find: "test", replacement: "check")
+        ], segments: segments, to: segments[0].text)
+    }
+    let result = try StealthGrammarService.apply([
+        StealthGrammarAnchoredChange(segmentID: "s0", find: "test", replacement: "check", before: "a ", after: ".")
+    ], segments: segments, to: segments[0].text)
+    #expect(result == "This is a check. This is another test.")
+}
+
+@Test func anchoredGrammarEditsPreserveWhitespaceBoundaries() {
+    let segments = [StealthEditableSegment(id: "s0", text: "Fix teh typo", start: 0, length: 12)]
+    #expect(throws: StealthGrammarEditError.unsafeReplacement) {
+        try StealthGrammarService.apply([
+            StealthGrammarAnchoredChange(segmentID: "s0", find: "teh", replacement: " teh ")
+        ], segments: segments, to: segments[0].text)
+    }
+}
+
+@Test func writingReviewCanRejectOneOfSeveralChanges() {
+    let source = "teh eror"
+    let issues = [
+        WritingIssue(kind: .spelling, range: NSRange(location: 0, length: 3), original: "teh", message: "", suggestions: ["the"]),
+        WritingIssue(kind: .spelling, range: NSRange(location: 4, length: 4), original: "eror", message: "", suggestions: ["error"])
+    ]
+    let review = WritingReview(sourceText: source, suggestedText: "the error", issues: issues)
+    #expect(review.applying([issues[0].id], rejecting: [issues[1].id]).suggestedText == "the eror")
+}
