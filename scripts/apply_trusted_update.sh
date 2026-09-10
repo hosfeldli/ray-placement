@@ -31,12 +31,11 @@ TRUSTED_RESOURCES="$TRUSTED_APP/Contents/Resources/Updater"
 TRUSTED_INFO="$TRUSTED_APP/Contents/Info.plist"
 POLICY_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdatePolicyVersion' "$TRUSTED_INFO")" || fail 'The installed app has no update trust policy version.'
 [[ "$POLICY_VERSION" == 1 ]] || fail "The installed app uses unsupported update trust policy version: $POLICY_VERSION"
-EXPECTED_TEAM_ID="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedTeamIdentifier' "$TRUSTED_INFO")" || fail 'The installed app has no expected Team ID policy.'
 EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$TRUSTED_INFO")" || fail 'The installed app has no expected signing identity policy.'
 EXPECTED_CERTIFICATE="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedCertificateSHA256' "$TRUSTED_INFO")" || fail 'The installed app has no certificate policy.'
 BUILD="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$READY_APP/Contents/Info.plist")"
 write "$PROGRESS_FILE" working 0.42 "Verifying the complete signed Lima app…"
-"$TRUSTED_RESOURCES/verify_update_app.sh" "$READY_APP" "$VERSION" "$BUILD" "$EXPECTED_TEAM_ID" "$EXPECTED_IDENTITY" "$EXPECTED_CERTIFICATE" "$TRUSTED_APP" || fail 'The incoming app failed trusted verification.'
+"$TRUSTED_RESOURCES/verify_update_app.sh" "$READY_APP" "$VERSION" "$BUILD" "$EXPECTED_IDENTITY" "$EXPECTED_CERTIFICATE" "$TRUSTED_APP" || fail 'The incoming app failed trusted verification.'
 write "$PROGRESS_FILE" working 0.60 "Preparing the verified replacement…"
 TRANSACTION="${CURRENT_APP:h}/.lima-install.$(/usr/bin/uuidgen)" || fail 'Could not create an installation transaction.'
 [[ ! -e "$TRANSACTION" && ! -L "$TRANSACTION" ]] || fail 'The installation transaction path is already in use.'

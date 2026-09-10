@@ -35,15 +35,15 @@ if /usr/bin/zipinfo -t "$FIXTURE/Corrupted.zip" >/dev/null 2>&1; then
     exit 1
 fi
 # The verifier rejects ad-hoc signatures before any update installation path is touched.
-expect_failure "$APP" 3.12.5 3125 TEAM "RayPlacement Local Code Signing" "$(printf '0%.0s' {1..64})"
+expect_failure "$APP" 3.12.5 3125 "RayPlacement Local Code Signing" "$(printf '0%.0s' {1..64})"
 # Structural and metadata fault injection remains rejected even with a bad signature.
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier com.example.wrong' "$APP/Contents/Info.plist"
-expect_failure "$APP" 3.12.5 3125 TEAM Identity "$(printf '0%.0s' {1..64})"
+expect_failure "$APP" 3.12.5 3125 Identity "$(printf '0%.0s' {1..64})"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleIdentifier dev.liam.lima' "$APP/Contents/Info.plist"
 /usr/libexec/PlistBuddy -c 'Set :CFBundleShortVersionString 3.12.4' "$APP/Contents/Info.plist"
-expect_failure "$APP" 3.12.4 3124 TEAM Identity "$(printf '0%.0s' {1..64})"
+expect_failure "$APP" 3.12.4 3124 Identity "$(printf '0%.0s' {1..64})"
 rm "$APP/Contents/MacOS/Lima"
-expect_failure "$APP" 3.12.5 3125 TEAM Identity "$(printf '0%.0s' {1..64})"
+expect_failure "$APP" 3.12.5 3125 Identity "$(printf '0%.0s' {1..64})"
 # A missing candidate is treated as invalid data and cannot reach replacement.
-expect_failure "$FIXTURE/Missing.app" 3.12.5 3125 TEAM Identity "$(printf '0%.0s' {1..64})"
+expect_failure "$FIXTURE/Missing.app" 3.12.5 3125 Identity "$(printf '0%.0s' {1..64})"
 echo 'PASS: invalid signature, wrong certificate policy, wrong bundle ID, non-newer version, and missing files rejected.'

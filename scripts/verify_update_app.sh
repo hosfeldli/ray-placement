@@ -4,17 +4,16 @@ set -euo pipefail
 # This verifier is shipped inside the installed Lima bundle and is invoked by
 # the installed app. The candidate app is data; this script never runs code
 # from the candidate bundle.
-APP="${1:?Usage: verify_update_app.sh <app> <expected-version> <expected-build> <team-id> <identity> <certificate-sha256> [policy-app]}"
+APP="${1:?Usage: verify_update_app.sh <app> <expected-version> <expected-build> <identity> <certificate-sha256> [policy-app]}"
 EXPECTED_VERSION="${2:-}"
 EXPECTED_BUILD="${3:-}"
-EXPECTED_TEAM_ID="${4:-}"
-EXPECTED_IDENTITY="${5:-}"
-EXPECTED_CERTIFICATE="${6:-}"
-POLICY_APP="${7:-$APP}"
+EXPECTED_IDENTITY="${4:-}"
+EXPECTED_CERTIFICATE="${5:-}"
+POLICY_APP="${6:-$APP}"
 PLIST="$APP/Contents/Info.plist"
 POLICY_PLIST="$POLICY_APP/Contents/Info.plist"
 value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1"; }
-SIGNING_MODE="$(value "$POLICY_PLIST" LimaUpdateSigningMode 2>/dev/null || print developer-id)"
+SIGNING_MODE="$(value "$POLICY_PLIST" LimaUpdateSigningMode 2>/dev/null || print self-signed-local)"
 POLICY_VERSION="$(value "$POLICY_PLIST" LimaUpdatePolicyVersion 2>/dev/null || print 0)"
 fail() { echo "Update verification failed: $1" >&2; exit 1; }
 
@@ -25,24 +24,17 @@ fail() { echo "Update verification failed: $1" >&2; exit 1; }
 [[ "$(value "$PLIST" CFBundleIdentifier)" == dev.liam.lima ]] || fail 'bundle identifier is not Lima'
 [[ "$(value "$PLIST" CFBundleExecutable)" == Lima ]] || fail 'bundle executable is not Lima'
 [[ -x "$APP/Contents/MacOS/Lima" ]] || fail 'Lima executable is missing'
-[[ "$SIGNING_MODE" == "developer-id" || "$SIGNING_MODE" == "self-signed-local" ]] || fail 'the signing mode is not recognized'
+[[ "$SIGNING_MODE" == "self-signed-local" ]] || fail 'only the self-signed-local policy is supported'
 [[ "$POLICY_VERSION" == 1 ]] || fail 'the update trust policy version is unsupported'
 [[ -n "$EXPECTED_IDENTITY" ]] || fail 'expected signing identity is not configured'
 [[ "$EXPECTED_CERTIFICATE" =~ ^[[:xdigit:]]{64}$ ]] || fail 'expected certificate fingerprint is not configured'
-if [[ "$SIGNING_MODE" == "self-signed-local" ]]; then
-    [[ "$EXPECTED_TEAM_ID" == 'not set' ]] || fail 'self-signed local policy has an unexpected Team ID'
-    [[ "$EXPECTED_IDENTITY" == 'RayPlacement Local Code Signing' ]] || fail 'self-signed local identity is not pinned'
-else
-    [[ -n "$EXPECTED_TEAM_ID" && "$EXPECTED_TEAM_ID" != 'not set' ]] || fail 'a release Team ID is required'
-fi
+[[ "$EXPECTED_IDENTITY" == 'RayPlacement Local Code Signing' ]] || fail 'self-signed local identity is not pinned'
 
 /usr/bin/codesign --verify --deep --strict "$APP" || fail 'code signature is invalid'
 SIGNATURE_INFO="$(/usr/bin/codesign -dvv "$APP" 2>&1)"
 [[ "$SIGNATURE_INFO" != *'Signature=adhoc'* ]] || fail 'ad-hoc signatures are not accepted'
 IDENTITY="$(printf '%s\n' "$SIGNATURE_INFO" | /usr/bin/sed -n 's/^Authority=//p' | /usr/bin/head -n 1)"
-TEAM_ID="$(printf '%s\n' "$SIGNATURE_INFO" | /usr/bin/sed -n 's/^TeamIdentifier=//p' | /usr/bin/head -n 1)"
 [[ "$IDENTITY" == "$EXPECTED_IDENTITY" ]] || fail "signing identity mismatch (got '$IDENTITY')"
-[[ "$TEAM_ID" == "$EXPECTED_TEAM_ID" ]] || fail "Team ID mismatch (got '$TEAM_ID')"
 
 CERTIFICATE_DIRECTORY="$(/usr/bin/mktemp -d "${TMPDIR%/}/lima-update-cert.XXXXXX")"
 trap '/bin/rm -rf "$CERTIFICATE_DIRECTORY"' EXIT
