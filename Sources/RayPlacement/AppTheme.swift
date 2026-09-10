@@ -57,8 +57,8 @@ struct NotesAppearancePalette {
     let chartGrid: NSColor
     let chartText: NSColor
 
-    init(theme: NotesVisualTheme = .prism) {
-        let appearance = SettingsStore.shared.appearance.nsAppearance ?? NSApp?.effectiveAppearance
+    init(theme: NotesVisualTheme = .prism, appearance suppliedAppearance: NSAppearance? = nil) {
+        let appearance = suppliedAppearance ?? NSApp?.effectiveAppearance ?? SettingsStore.shared.appearance.nsAppearance
         isDark = appearance?.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
 
         background = NSColor.textBackgroundColor
@@ -98,6 +98,12 @@ struct NotesAppearancePalette {
         chartBackground = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.26 : 0.06)
         chartGrid = separator.withAlphaComponent(isDark ? 0.72 : 0.52)
         chartText = textPrimary
+    }
+
+    static func resolved(_ color: NSColor, appearance: NSAppearance) -> NSColor {
+        var resolved = color
+        appearance.performAsCurrentDrawingAppearance { resolved = color.usingColorSpace(.deviceRGB) ?? color }
+        return resolved
     }
 
     private static func blend(_ color: NSColor, with other: NSColor, fraction: CGFloat) -> NSColor {

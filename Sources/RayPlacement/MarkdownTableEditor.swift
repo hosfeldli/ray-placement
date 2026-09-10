@@ -171,6 +171,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private weak var titleField: NSTextField?
     private var isSizingColumns = false
     private var accentObserver: NSObjectProtocol?
+    private var notesAppearanceObserver: NSObjectProtocol?
     private var typographySubscription: AnyCancellable?
 
     var onChange: (() -> Void)?
@@ -196,6 +197,9 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         configureToolbar()
         rebuildGrid()
         updateAppearance()
+        notesAppearanceObserver = NotificationCenter.default.addObserver(
+            forName: .rayPlacementNotesAppearanceChanged, object: nil, queue: .main
+        ) { [weak self] _ in Task { @MainActor in self?.updateAppearance() } }
         accentObserver = NotificationCenter.default.addObserver(
             forName: .rayPlacementAccentChanged,
             object: nil,
@@ -215,11 +219,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             for case let button as NSButton in self.toolbar.arrangedSubviews {
                 button.font = .systemFont(ofSize: 11 * scale, weight: .medium)
             }
-            self.titleField?.layer?.borderColor = LimaAppKitDesign.separator.cgColor
-            self.fields.forEach {
-                $0.layer?.borderColor = LimaAppKitDesign.separator.cgColor
-                $0.layer?.borderWidth = LimaDesign.borderWidth
-            }
+            let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: self.effectiveAppearance)
+            self.titleField?.layer?.borderColor = NotesAppearancePalette.resolved(palette.separator, appearance: self.effectiveAppearance).cgColor
         }
     }
 
@@ -227,6 +228,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
     deinit {
         if let accentObserver { NotificationCenter.default.removeObserver(accentObserver) }
+        if let notesAppearanceObserver { NotificationCenter.default.removeObserver(notesAppearanceObserver) }
     }
 
     override func viewDidChangeEffectiveAppearance() {
@@ -414,9 +416,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let container = MarkdownTableCellView()
         container.onHoverChanged = { [weak self] in self?.updateAppearance() }
         container.wantsLayer = true
-        container.layer?.backgroundColor = header
-            ? LimaAppKitDesign.accentSoft.cgColor
-            : (alternate ? LimaAppKitDesign.editorBackground : LimaAppKitDesign.recessedBackground).cgColor
+        container.layer?.backgroundColor = NSColor.clear.cgColor
 
         let field = MarkdownTableField(string: value)
         field.coordinate = coordinate
@@ -426,9 +426,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.drawsBackground = false
         field.focusRingType = .none
         field.wantsLayer = true
-        field.layer?.cornerRadius = 4
-        field.layer?.borderWidth = LimaDesign.borderWidth
-        field.layer?.borderColor = LimaAppKitDesign.tableGrid.cgColor
+        field.layer?.cornerRadius = 0
+        field.layer?.borderWidth = 0
         field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
@@ -491,12 +490,14 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
-        let background = LimaAppKitDesign.editorBackground
-        let border = LimaAppKitDesign.tableOuterBorder
+        let appearance = effectiveAppearance
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: appearance)
+        let background = NotesAppearancePalette.resolved(palette.background, appearance: appearance)
+        let border = NotesAppearancePalette.resolved(palette.tableOuterBorder, appearance: appearance)
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
         layer?.borderWidth = 1.0
-        gridView?.layer?.backgroundColor = LimaAppKitDesign.tableGrid.cgColor
+        gridView?.layer?.backgroundColor = NotesAppearancePalette.resolved(palette.tableGrid, appearance: appearance).cgColor
         toolbarIcon?.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
 
         for item in cellAppearances {
@@ -508,14 +509,14 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             } else if item.alternate {
                 color = LimaAppKitDesign.tableAlternateBackground
             } else {
-                color = LimaAppKitDesign.editorBackground
+                color = palette.background
             }
-            item.view.layer?.backgroundColor = color.cgColor
+            item.view.layer?.backgroundColor = NotesAppearancePalette.resolved(color, appearance: appearance).cgColor
         }
         for field in fields {
             let isFocused = window?.firstResponder === field || field.currentEditor() != nil && window?.firstResponder === field.currentEditor()
-            field.layer?.borderColor = isFocused ? LimaAppKitDesign.focus.cgColor : LimaAppKitDesign.tableGrid.cgColor
-            field.layer?.backgroundColor = isFocused ? LimaAppKitDesign.selection.cgColor : .clear
+            field.layer?.borderColor = isFocused ? NotesAppearancePalette.resolved(palette.focusRing, appearance: appearance).cgColor : NSColor.clear.cgColor
+            field.layer?.backgroundColor = isFocused ? NotesAppearancePalette.resolved(palette.tableSelectedCell, appearance: appearance).cgColor : NSColor.clear.cgColor
         }
     }
 
@@ -741,9 +742,10 @@ private final class MarkdownTableField: NSTextField {
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
         if accepted {
+            let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance)
             layer?.borderWidth = LimaDesign.focusWidth
-            layer?.borderColor = LimaAppKitDesign.focus.cgColor
-            layer?.backgroundColor = LimaAppKitDesign.selection.cgColor
+            layer?.borderColor = NotesAppearancePalette.resolved(palette.focusRing, appearance: effectiveAppearance).cgColor
+            layer?.backgroundColor = NotesAppearancePalette.resolved(palette.tableSelectedCell, appearance: effectiveAppearance).cgColor
             (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }
         return accepted
@@ -752,8 +754,8 @@ private final class MarkdownTableField: NSTextField {
     override func resignFirstResponder() -> Bool {
         let resigned = super.resignFirstResponder()
         if resigned {
-            layer?.borderWidth = LimaDesign.borderWidth
-            layer?.borderColor = LimaAppKitDesign.tableGrid.cgColor
+            layer?.borderWidth = 0
+            layer?.borderColor = NSColor.clear.cgColor
             layer?.backgroundColor = .clear
             (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }

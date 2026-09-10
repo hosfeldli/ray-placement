@@ -8,12 +8,16 @@ public struct StealthProtectedText: Equatable, Sendable {
     public let leadingWhitespace: String
     public let trailingWhitespace: String
     private let replacements: [String: String]
+    private let sourceBody: String
+    private let protectedRanges: [NSRange]
 
-    init(maskedText: String, leadingWhitespace: String, trailingWhitespace: String, replacements: [String: String]) {
+    init(maskedText: String, leadingWhitespace: String, trailingWhitespace: String, replacements: [String: String], sourceBody: String = "", protectedRanges: [NSRange] = []) {
         self.maskedText = maskedText
         self.leadingWhitespace = leadingWhitespace
         self.trailingWhitespace = trailingWhitespace
         self.replacements = replacements
+        self.sourceBody = sourceBody
+        self.protectedRanges = protectedRanges
     }
 
     public func restore(_ corrected: String) -> String? {
@@ -43,11 +47,57 @@ public struct StealthProtectedText: Equatable, Sendable {
     }
 
     public var protectedValues: [String] { Array(replacements.values) }
+
+    public func apply(_ corrections: [StealthGrammarSegmentCorrection]) throws -> String {
+        let correctedBody = try StealthGrammarService.apply(corrections, segments: editableSegments(), to: sourceBody)
+        return leadingWhitespace + correctedBody + trailingWhitespace
+    }
+
+
+    /// Returns editable spans in original UTF-16 coordinates. Protected values
+    /// are omitted entirely; the model never receives sentinel tokens or ranges.
+    public func editableSegments() -> [StealthEditableSegment] {
+        guard !sourceBody.isEmpty else { return [] }
+        let protected = protectedRanges.sorted { $0.location < $1.location }
+        var result: [StealthEditableSegment] = []
+        var cursor = 0
+        var index = 0
+        for range in protected {
+            guard range.location >= cursor else { continue }
+            let length = range.location - cursor
+            if length > 0 {
+                result.append(StealthEditableSegment(id: "s\(index)", text: (sourceBody as NSString).substring(with: NSRange(location: cursor, length: length)), start: cursor, length: length))
+                index += 1
+            }
+            cursor = NSMaxRange(range)
+        }
+        if cursor < (sourceBody as NSString).length {
+            let length = (sourceBody as NSString).length - cursor
+            result.append(StealthEditableSegment(id: "s\(index)", text: (sourceBody as NSString).substring(with: NSRange(location: cursor, length: length)), start: cursor, length: length))
+        }
+        return result
+    }
 }
 
 
 /// A provider edit is expressed in UTF-16 offsets so it maps directly to the
 /// ranges used by Foundation and by the provider transport contract.
+public struct StealthEditableSegment: Codable, Equatable, Sendable {
+    public let id: String
+    public let text: String
+    public let start: Int
+    public let length: Int
+    public init(id: String, text: String, start: Int, length: Int) {
+        self.id = id; self.text = text; self.start = start; self.length = length
+    }
+}
+
+public struct StealthGrammarSegmentCorrection: Codable, Equatable, Sendable {
+    public let id: String
+    public let corrected: String
+    public init(id: String, corrected: String) { self.id = id; self.corrected = corrected }
+}
+
 public struct StealthGrammarEdit: Codable, Equatable, Sendable {
     public let start: Int
     public let length: Int
@@ -201,7 +251,9 @@ public enum StealthGrammarService {
             maskedText: output,
             leadingWhitespace: leading,
             trailingWhitespace: trailing,
-            replacements: replacements
+            replacements: replacements,
+            sourceBody: body,
+            protectedRanges: merged
         )
     }
 
@@ -209,6 +261,17 @@ public enum StealthGrammarService {
     /// Validates and applies provider edits to the exact text sent to the
     /// provider. Protected tokens are rejected before any replacement is made;
     /// the caller can then restore the protected values byte-for-byte.
+    public static func apply(_ corrections: [StealthGrammarSegmentCorrection], segments: [StealthEditableSegment], to source: String) throws -> String {
+        let byID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
+        var edits: [StealthGrammarEdit] = []
+        for correction in corrections {
+            guard let segment = byID[correction.id] else { throw StealthGrammarEditError.invalidRange }
+            guard isSafeReplacement(segment.text, correction.corrected) else { throw StealthGrammarEditError.unsafeReplacement }
+            edits.append(StealthGrammarEdit(start: segment.start, length: segment.length, replacement: correction.corrected))
+        }
+        return try apply(edits, to: source)
+    }
+
     public static func apply(_ edits: [StealthGrammarEdit], to source: String) throws -> String {
         let sourceLength = (source as NSString).length
         let tokenRanges = protectedTokenRanges(in: source)

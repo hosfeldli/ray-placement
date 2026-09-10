@@ -232,6 +232,7 @@ extension Notification.Name {
     static let rayPlacementActionShortcutsChanged = Notification.Name("RayPlacementActionShortcutsChanged")
     static let rayPlacementAccentChanged = Notification.Name("RayPlacementAccentChanged")
     static let rayPlacementAppearanceChanged = Notification.Name("RayPlacementAppearanceChanged")
+    static let rayPlacementNotesAppearanceChanged = Notification.Name("RayPlacementNotesAppearanceChanged")
     static let rayPlacementClipboardSettingsChanged = Notification.Name("RayPlacementClipboardSettingsChanged")
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")

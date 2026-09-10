@@ -38,17 +38,14 @@ final class StealthGrammarRemoteClient {
 
     static let systemPrompt = """
     You are a high-confidence copy editor. Return only a JSON object with this exact shape:
-    {"edits":[{"start":0,"length":0,"replacement":"text"}]}
+    {"segments":[{"id":"s0","corrected":"text"}]}
 
-    Offsets are UTF-16 offsets into the input. Make only high-confidence grammar,
-    spelling, punctuation, capitalization, and subject-verb agreement corrections.
-    If uncertain, return no edit. Preserve meaning, tone, paragraph breaks, line
-    breaks, formatting, and voice. Never rewrite the whole document.
-
-    Never alter URLs, email addresses, file paths, code, shell commands,
-    identifiers, version strings, acronyms, product names, application names,
-    people names, company names, proper nouns, technical terms, or opaque
-    protected tokens. Never change a protected token or an edit that touches one.
+    Correct only the supplied editable segments. IDs are opaque and must be copied
+    exactly. Return only segments that need correction; do not return offsets.
+    Make high-confidence grammar, spelling, punctuation, capitalization, and
+    subject-verb agreement corrections. If uncertain, return no correction.
+    Preserve meaning, tone, paragraph breaks, line breaks, formatting, and voice.
+    The application maps segment IDs to source ranges and protects all other text.
     """
 
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
@@ -123,21 +120,28 @@ final class StealthGrammarRemoteClient {
         return perform(request: request, provider: configuration.provider, completion: completion)
     }
 
+    private static func segmentRequestText(_ segments: [StealthEditableSegment]) -> String? {
+        let publicSegments = segments.map { ["id": $0.id, "text": $0.text] }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["segments": publicSegments]) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     @discardableResult
-    func correctEdits(
-        _ text: String,
+    func correctSegments(
+        _ segments: [StealthEditableSegment],
         configuration: DeveloperGrammarConfiguration,
-        completion: @escaping (Result<[StealthGrammarEdit], Error>) -> Void
+        completion: @escaping (Result<[StealthGrammarSegmentCorrection], Error>) -> Void
     ) -> URLSessionDataTask? {
         guard !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let request = makeRequest(text: text, configuration: configuration, systemPrompt: Self.systemPrompt) else {
+              let requestText = Self.segmentRequestText(segments),
+              let request = makeRequest(text: requestText, configuration: configuration, systemPrompt: Self.systemPrompt) else {
             completion(.failure(ClientError.invalidConfiguration))
             return nil
         }
         return perform(request: request, provider: configuration.provider) { result in
             completion(result.flatMap { value in
-                do { return .success(try Self.extractEdits(from: value)) }
+                do { return .success(try Self.extractSegmentCorrections(from: value)) }
                 catch { return .failure(error) }
             })
         }
@@ -381,37 +385,19 @@ final class StealthGrammarRemoteClient {
         return first["text"] as? String
     }
 
-    private struct EditEnvelope: Decodable {
-        let edits: [StealthGrammarEdit]
+    private struct SegmentEnvelope: Decodable {
+        let segments: [StealthGrammarSegmentCorrection]
     }
 
-    private static func extractEdits(from value: String) throws -> [StealthGrammarEdit] {
+    private static func extractSegmentCorrections(from value: String) throws -> [StealthGrammarSegmentCorrection] {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         var candidates = [trimmed]
-
-        // Some providers ignore the “JSON only” instruction and add a Markdown
-        // fence or a short preamble. Accept only the smallest JSON object we can
-        // isolate; all range, overlap, and safety checks still happen later.
-        if trimmed.hasPrefix("```") {
-            var fenced = trimmed
-            if let newline = fenced.firstIndex(of: "\n") {
-                fenced = String(fenced[fenced.index(after: newline)...])
-            }
-            if fenced.hasSuffix("```") {
-                fenced.removeLast(3)
-            }
-            candidates.append(fenced.trimmingCharacters(in: .whitespacesAndNewlines))
+        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
+            candidates.append(String(trimmed[first...last]))
         }
-        if let firstBrace = trimmed.firstIndex(of: "{"),
-           let lastBrace = trimmed.lastIndex(of: "}"),
-           firstBrace < lastBrace {
-            candidates.append(String(trimmed[firstBrace...lastBrace]))
-        }
-
-        for candidate in candidates {
-            guard let data = candidate.data(using: .utf8) else { continue }
-            if let envelope = try? JSONDecoder().decode(EditEnvelope.self, from: data) {
-                return envelope.edits
+        for candidate in candidates where candidate.data(using: .utf8) != nil {
+            if let data = candidate.data(using: .utf8), let envelope = try? JSONDecoder().decode(SegmentEnvelope.self, from: data) {
+                return envelope.segments
             }
         }
         throw ClientError.invalidJSON

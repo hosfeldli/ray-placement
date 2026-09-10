@@ -9,9 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
-    // Keep Sparkle alive for bridge rehearsals without changing the default
-    // signed-custom updater path. UpdateService routes to it only when the
-    // explicit LIMA_UPDATE_BACKEND=sparkle test switch is supplied.
+    // Keep Sparkle alive for production updates. UpdateService routes to the
+    // legacy signed-custom updater only when explicitly requested.
     private let sparkleUpdateService = SparkleUpdateService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?

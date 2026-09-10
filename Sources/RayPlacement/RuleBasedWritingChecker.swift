@@ -160,8 +160,8 @@ final class RuleBasedWritingChecker {
         }
 
         progress("Applying Enhanced Grammar…")
-        remoteTask = remoteClient.correctEdits(
-            protected.maskedText,
+        remoteTask = remoteClient.correctSegments(
+            protected.editableSegments(),
             configuration: configuration
         ) { [weak self] result in
             guard let self, self.operationID == operationID else { return }
@@ -169,9 +169,8 @@ final class RuleBasedWritingChecker {
             switch result {
             case .success(let edits):
                 do {
-                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
-                    guard let enhanced = protected.restore(correctedMasked),
-                          StealthGrammarService.isSafeReplacement(source, enhanced) else {
+                    let enhanced = try protected.apply(edits)
+                    guard StealthGrammarService.isSafeReplacement(source, enhanced) else {
                         throw StealthGrammarRemoteClient.ClientError.safetyRejected
                     }
                     let review = try self.reviewer.review(
@@ -344,8 +343,8 @@ final class RuleBasedWritingChecker {
                 return
             }
             progress("Checking with Enhanced Grammar…")
-            remoteTask = remoteClient.correctEdits(
-                protected.maskedText,
+            remoteTask = remoteClient.correctSegments(
+                protected.editableSegments(),
                 configuration: configuration
             ) { [weak self] result in
                 guard let self, self.operationID == operationID else { return }
@@ -353,9 +352,8 @@ final class RuleBasedWritingChecker {
                 switch result {
                 case .success(let edits):
                     do {
-                        let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
-                        guard let corrected = protected.restore(correctedMasked),
-                              StealthGrammarService.isSafeReplacement(source, corrected) else {
+                        let corrected = try protected.apply(edits)
+                        guard StealthGrammarService.isSafeReplacement(source, corrected) else {
                             throw StealthGrammarRemoteClient.ClientError.safetyRejected
                         }
                         self.finish(success: true, output: corrected.count)

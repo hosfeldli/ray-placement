@@ -256,3 +256,26 @@ private final class FakePasteboard: PlainTextPasteboard {
         .replacingOccurrences(of: "__TEMP__", with: tokens[1])
     #expect(protected.restore(reversed) == nil)
 }
+
+
+@Test func editableGrammarSegmentsExcludeProtectedValuesAndMapByID() throws {
+    let source = "This are a grammer sentence with Lima and https://example.com."
+    let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
+    let segments = protected.editableSegments()
+
+    #expect(segments.count == 2)
+    #expect(segments.allSatisfy { !$0.text.contains("Lima") && !$0.text.contains("https://") })
+    #expect(segments.map(\.id) == ["s0", "s1"])
+
+    let corrected = try protected.apply([
+        StealthGrammarSegmentCorrection(id: "s0", corrected: "This is a grammar sentence with ")
+    ])
+    #expect(corrected == "This is a grammar sentence with Lima and https://example.com.")
+}
+
+@Test func editableGrammarSegmentsRejectUnknownIDs() {
+    let protected = StealthGrammarService.protect("This is text.", ignoreList: "")
+    #expect(throws: StealthGrammarEditError.invalidRange) {
+        _ = try protected.apply([StealthGrammarSegmentCorrection(id: "unknown", corrected: "changed")])
+    }
+}

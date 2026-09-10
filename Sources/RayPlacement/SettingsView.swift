@@ -578,7 +578,7 @@ struct SettingsView: View {
         let started = Date()
         let source = "This are a grammer sentence with Lima and https://example.com."
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
-        StealthGrammarRemoteClient().correctEdits(protected.maskedText, configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctSegments(protected.editableSegments(), configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingGrammarCompatibility = false
             switch result {
@@ -587,10 +587,9 @@ struct SettingsView: View {
                     guard !edits.isEmpty else {
                         throw StealthGrammarRemoteClient.ClientError.compatibilityFailed
                     }
-                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
-                    guard let corrected = protected.restore(correctedMasked),
-                          corrected != source,
-                          StealthGrammarService.isSafeReplacement(source, corrected) else {
+                    let corrected = try protected.apply(edits)
+                    guard StealthGrammarService.isSafeReplacement(source, corrected),
+                          corrected != source else {
                         throw StealthGrammarRemoteClient.ClientError.safetyRejected
                     }
                     grammarCompatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"

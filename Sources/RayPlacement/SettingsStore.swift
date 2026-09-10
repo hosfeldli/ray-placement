@@ -443,7 +443,7 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published var appearance: AppAppearance {
-        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil) }
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil); NotificationCenter.default.post(name: .rayPlacementNotesAppearanceChanged, object: nil) }
     }
 
     @Published var interfaceDensity: AppInterfaceDensity {
@@ -451,7 +451,7 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published var notesVisualTheme: NotesVisualTheme {
-        didSet { defaults.set(notesVisualTheme.rawValue, forKey: Key.notesVisualTheme) }
+        didSet { defaults.set(notesVisualTheme.rawValue, forKey: Key.notesVisualTheme); NotificationCenter.default.post(name: .rayPlacementNotesAppearanceChanged, object: nil) }
     }
 
     @Published var notesFontStyle: NotesFontStyle {
