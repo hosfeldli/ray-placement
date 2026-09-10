@@ -11,7 +11,7 @@
 # policy, not credentials; only the private key material must be provisioned.
 LIMA_RELEASE_SIGNING_MODE="self-signed-local"
 LIMA_RELEASE_SIGNING_IDENTITY="RayPlacement Local Code Signing"
-LIMA_RELEASE_CERTIFICATE_SHA256="20802e48a45cf483c1394cf57f319bce2b764289ff35e049a17ae60aeb62e8ca"
+LIMA_RELEASE_CERTIFICATE_SHA256="3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12"
 # Existing installations may still trust the preceding certificate; this is a deliberate trust-anchor rotation.
 LIMA_RELEASE_DMG_PART_SIZE="${RAYPLACEMENT_DMG_PART_SIZE:-24m}"
 LIMA_RELEASE_DMG_PART_SUFFIX_LENGTH="${RAYPLACEMENT_DMG_PART_SUFFIX_LENGTH:-2}"

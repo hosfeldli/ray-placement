@@ -56,7 +56,7 @@ self-signed local defaults are:
 |---|---|
 | Signing mode | `self-signed-local` |
 | Identity | `RayPlacement Local Code Signing` |
-| Certificate SHA-256 | `20802e48a45cf483c1394cf57f319bce2b764289ff35e049a17ae60aeb62e8ca` |
+| Certificate SHA-256 | `3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12` |
 | DMG part size | `24m` |
 | DMG part suffix length | `2` |
 | Minimum free space | `5242880` KiB |
@@ -110,7 +110,7 @@ app, used by the local verifier, and recorded in `dist/Lima-release.json`.
 ### Signing trust-anchor rotation
 
 On 2026-09-10 the signing certificate was intentionally rotated. The previous
-SHA-256 fingerprint was `ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da`; the active fingerprint is `20802e48a45cf483c1394cf57f319bce2b764289ff35e049a17ae60aeb62e8ca`.
+SHA-256 fingerprint was `ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da`; the active fingerprint is `3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12`.
 Existing installations signed with the previous certificate may not accept a
 newly signed application through the legacy updater. Treat the first release
 after this rotation as a migration release: validate a manual installation
