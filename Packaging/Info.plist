@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.12.15</string>
+	<string>3.12.16</string>
 	<key>CFBundleVersion</key>
-	<string>31215</string>
+	<string>31216</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -49,6 +49,6 @@
 	<key>SUFeedURL</key>
 	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>Lt/Wlxc0rmkpNrz0YQ4hBpgeO51ynD+yALaUtE45f0c=</string>
+	<string>fyOhQjqcI/f18TiRvtKyCSD5PM8RHUZtitjnZKLs+08=</string>
 </dict>
 </plist>
