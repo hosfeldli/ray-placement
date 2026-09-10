@@ -9,6 +9,7 @@ Usage: release.sh <command> [options]
 
 Commands:
   prepare    Change version metadata; use --bump patch|minor|major and optionally --commit --push.
+  tag        Create and optionally push the immutable annotated release tag.
   preflight  Run read-only release gates.
   build      Run tests and build local signed artifacts.
   stage      Resume/create a draft and upload verified assets.
@@ -19,6 +20,7 @@ Commands:
 
 Examples:
   ./scripts/release.sh prepare --bump patch --commit --push
+  ./scripts/release.sh tag --version 3.13.0 --push
   ./scripts/release.sh build --tag v3.12.6
   ./scripts/release.sh stage --tag v3.12.6
   ./scripts/release.sh publish --tag v3.12.6 --yes
@@ -28,6 +30,7 @@ command="${1:-help}"
 [[ $# -gt 0 ]] && shift || true
 case "$command" in
     prepare) exec "$SCRIPT_DIRECTORY/release_prepare.sh" "$@";;
+    tag) exec "$SCRIPT_DIRECTORY/release_tag.sh" "$@";;
     preflight) exec "$SCRIPT_DIRECTORY/release_preflight.sh" "$@";;
     build) exec "$SCRIPT_DIRECTORY/release_build.sh" "$@";;
     stage) exec "$SCRIPT_DIRECTORY/release_stage.sh" "$@";;

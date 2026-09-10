@@ -44,17 +44,14 @@ if [[ -n "$upstream" ]]; then
     counts=(${(z)$(git -C "$PROJECT_DIRECTORY" rev-list --left-right --count "$upstream...HEAD")})
     [[ "${counts[1]}" == 0 && "${counts[2]}" == 0 ]] || { print -u2 "Local branch and $upstream are not identical; refusing release."; exit 1; }
 elif [[ "${GITHUB_ACTIONS:-0}" == true || "${CI:-0}" == true ]]; then
-    # actions/checkout commonly leaves a detached HEAD. Compare that exact
-    # commit with the fetched remote ref instead of weakening the pushed-HEAD
-    # gate. A tag checkout is checked against refs/tags/$TAG; a branch checkout
-    # is checked against origin/$GITHUB_REF_NAME.
-    remote_ref=""
-    if [[ "${GITHUB_REF_TYPE:-}" == tag ]]; then
-        remote_ref="refs/tags/$TAG"
-    elif [[ -n "${GITHUB_REF_NAME:-}" ]]; then
-        remote_ref="refs/remotes/origin/$GITHUB_REF_NAME"
-    fi
-    [[ -n "$remote_ref" ]] || { print -u2 'CI checkout has no identifiable pushed ref.'; exit 1; }
+    # actions/checkout commonly leaves a detached HEAD. The release workflow
+    # explicitly checks out the requested immutable tag, so never infer the
+    # expected ref from GITHUB_REF_NAME: that value describes the workflow
+    # dispatch event and may still point at main or another branch.
+    remote_ref="${LIMA_RELEASE_EXPECTED_REF:-refs/tags/$TAG}"
+    [[ "$remote_ref" == refs/tags/* || "$remote_ref" == refs/remotes/origin/* ]] || {
+        print -u2 "Unsupported CI expected ref: $remote_ref"; exit 1;
+    }
     remote_commit="$(git -C "$PROJECT_DIRECTORY" rev-parse "$remote_ref" 2>/dev/null || true)"
     [[ -n "$remote_commit" && "$remote_commit" == "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" ]] || {
         print -u2 "CI HEAD is not the pushed commit for $remote_ref; refusing release."; exit 1

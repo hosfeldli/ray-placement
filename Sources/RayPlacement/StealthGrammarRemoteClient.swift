@@ -10,6 +10,7 @@ final class StealthGrammarRemoteClient {
         case modelUnavailable(statusCode: Int, detail: String? = nil)
         case invalidJSON
         case safetyRejected
+        case compatibilityFailed
         case invalidResponse
         case responseTooLarge
         case noModelsFound
@@ -27,6 +28,7 @@ final class StealthGrammarRemoteClient {
                 return "Enhanced Grammar model is unavailable (HTTP \(statusCode))" + (detail.map { ": \($0)" } ?? ". Check the selected model.")
             case .invalidJSON: return "Enhanced Grammar returned invalid JSON instead of structured edits."
             case .safetyRejected: return "Enhanced Grammar returned an edit that failed Lima’s safety checks."
+            case .compatibilityFailed: return "Enhanced Grammar returned no effective grammar correction for the compatibility sample."
             case .invalidResponse: return "The Enhanced Grammar provider returned an unreadable correction."
             case .responseTooLarge: return "The Enhanced Grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."

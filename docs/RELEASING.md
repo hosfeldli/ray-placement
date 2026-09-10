@@ -13,7 +13,8 @@ only as an explicit, fully configured alternate signing policy.
 
 * `release_prepare.sh` is the only release script that changes version metadata.
 * Build, stage, verify, and publish scripts do not commit, push, tag, or rewrite
-    source files.
+    source files. Tagging is an explicit operation handled only by
+    `release_tag.sh`.
 * `release_stage.sh` creates or resumes **draft** releases only.
 * Published releases are never overwritten by the release scripts.
 * `release_publish.sh` is the only publication step and requires `--yes`.
@@ -112,6 +113,21 @@ Or set the version explicitly:
 ./scripts/release_prepare.sh --version 3.13.0 --commit --push
 ```
 
+### 2. Create and push the immutable tag
+
+Preparation pushes the release commit but deliberately does not create a tag.
+After reviewing the commit and confirming CI is green, create the annotated tag
+and push it as a separate, auditable phase:
+
+```sh
+./scripts/release_tag.sh --version 3.13.0 --push
+# or: ./scripts/release.sh tag --tag v3.13.0 --push
+```
+
+The tag command requires a clean branch whose upstream exactly matches `HEAD`,
+checks the plist version/build, and refuses to create or overwrite a conflicting
+local or remote tag.
+
 To inspect the calculated version without changing anything:
 
 ```sh
@@ -121,7 +137,7 @@ To inspect the calculated version without changing anything:
 The default is `--no-commit --no-push`. Use `--allow-dirty` only when the
 unrelated changes are intentional and will not be included in the release.
 
-### 2. Run the read-only preflight
+### 3. Run the read-only preflight
 
 ```sh
 ./scripts/release_preflight.sh --tag v3.12.6
@@ -131,7 +147,7 @@ Preflight requires a clean worktree and a branch whose upstream has the exact
 same commit. It refuses an existing published release. An existing draft for the
 same tag is resumable.
 
-### 3. Build locally
+### 4. Build locally
 
 ```sh
 LIMA_RELEASE_SKIP_PREFLIGHT=1 ./scripts/release_build.sh --tag v3.12.6
@@ -169,7 +185,7 @@ phase:
 `--reuse` still runs local artifact verification but does not silently accept a
 missing, differently tagged, or checksum-mismatched build.
 
-### 4. Stage a draft
+### 5. Stage a draft
 
 ```sh
 ./scripts/release_stage.sh --tag v3.12.6
@@ -207,7 +223,7 @@ A dry-run shows the intended upload strategy without contacting GitHub:
 ./scripts/release_stage.sh --tag v3.12.6 --dry-run
 ```
 
-### 5. Verify before publishing
+### 6. Verify before publishing
 
 ```sh
 ./scripts/release_verify.sh --tag v3.12.6
@@ -228,7 +244,7 @@ A remote-only check is useful after a workflow finishes or from another machine:
 Published releases may be verified read-only, but no release script will mutate
 them.
 
-### 6. Publish only after review
+### 7. Publish only after review
 
 The final action is intentionally explicit:
 
@@ -374,6 +390,7 @@ it, but still leave the GitHub release as a draft or do not stage it at all.
 | `release_config.sh` | Shared signing, artifact, and size policy | No | No |
 | `release_common.sh` | Shared metadata, digest, and draft helpers | No | Read/write helpers only when called |
 | `release_prepare.sh` | Explicit version preparation | Source only; commit/push only when requested | Push only when requested |
+| `release_tag.sh` | Immutable annotated tag creation | Git tag only; push only when requested | Push only when requested |
 | `release_preflight.sh` | Read-only release gate | No | Read only |
 | `release_build.sh` | Tests, signed artifacts, local metadata | No | Read only through preflight |
 | `release_stage.sh` | Draft creation, idempotent upload, multipart assembly | No | Draft/assets/workflow only |

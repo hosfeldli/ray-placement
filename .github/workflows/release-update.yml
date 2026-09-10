@@ -7,15 +7,6 @@ on:
         description: Existing draft tag to build and stage (for example v3.12.6)
         required: true
         type: string
-      signing_mode:
-        description: Explicit signing policy configured in repository secrets
-        required: true
-        default: self-signed-local
-        type: choice
-        options:
-          - self-signed-local
-          - developer-id
-
 permissions: {}
 
 jobs:
@@ -27,12 +18,16 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
-      RAYPLACEMENT_SIGNING_MODE: ${{ inputs.signing_mode }}
+      # The ephemeral hosted runner only provisions the pinned local signing
+      # keychain below. Developer ID remains a separately configured local
+      # policy and is intentionally not offered by this workflow.
+      RAYPLACEMENT_SIGNING_MODE: self-signed-local
       RAYPLACEMENT_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
       RAYPLACEMENT_EXPECTED_TEAM_IDENTIFIER: ${{ secrets.LIMA_TEAM_IDENTIFIER }}
       RAYPLACEMENT_EXPECTED_SIGNING_IDENTITY: ${{ secrets.LIMA_SIGNING_IDENTITY }}
       RAYPLACEMENT_EXPECTED_CERTIFICATE_SHA256: ${{ secrets.LIMA_CERTIFICATE_SHA256 }}
       RAYPLACEMENT_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+      LIMA_RELEASE_EXPECTED_REF: refs/tags/${{ inputs.release_tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -43,7 +38,6 @@ jobs:
           lfs: true
 
       - name: Import CI signing keychain
-        if: ${{ inputs.signing_mode == 'self-signed-local' }}
         shell: bash
         env:
           SIGNING_KEYCHAIN_B64: ${{ secrets.LIMA_SIGNING_KEYCHAIN_B64 }}

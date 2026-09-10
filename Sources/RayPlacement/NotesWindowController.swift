@@ -423,6 +423,7 @@ private struct NotesView: View {
 
     @State private var searchQuery = ""
     @State private var isSearchPresented = false
+    @State private var isDockBrowserExpanded = false
     @State private var confirmDelete = false
     @State private var confirmDeleteDictation = false
     @State private var pendingDictationDeleteID: UUID?
@@ -456,8 +457,13 @@ private struct NotesView: View {
                     .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
                 if presentation.mode.isDocked {
                     VStack(spacing: 0) {
-                        noteBrowser(compact: true)
-                            .frame(minHeight: 132, maxHeight: 224)
+                        if isDockBrowserExpanded {
+                            noteBrowser(compact: true)
+                                .frame(minHeight: 132, maxHeight: 224)
+                        } else {
+                            dockedNoteHeader
+                                .frame(height: 46)
+                        }
                         GlassHairline()
                         editor
                     }
@@ -541,7 +547,7 @@ private struct NotesView: View {
     }
 
     private var windowChrome: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: presentation.mode.isDocked ? 6 : 10) {
             LimaToolbarTitle(
                 symbol: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus",
                 title: presentation.mode.isDocked ? "Quick Note" : "Notes",
@@ -550,60 +556,130 @@ private struct NotesView: View {
             .frame(maxWidth: presentation.mode.isDocked ? 150 : 270, alignment: .leading)
             .layoutPriority(1)
 
-            Spacer(minLength: 8)
-
-            Picker("Notes section", selection: $presentation.section) {
-                Label("Notes", systemImage: "note.text").tag(NotesSection.notes)
-                Label("Dictation", systemImage: "waveform").tag(NotesSection.dictation)
-            }
-            .pickerStyle(.segmented)
-            .frame(width: 170)
-            .controlSize(.small)
-
-            NotesChromeButton(symbol: "slider.horizontal.3", label: "Customize Notes") {
-                showAppearance.toggle()
-            }
-            .popover(isPresented: $showAppearance, arrowEdge: .bottom) {
-                NotesAppearancePanel(settings: settings)
-            }
-
-            if presentation.mode == .workspace {
-                NotesChromeButton(
-                    symbol: presentation.sidebarVisible ? "sidebar.left" : "rectangle.righthalf.inset.filled",
-                    label: presentation.sidebarVisible ? "Hide Notes Sidebar" : "Show Notes Sidebar",
-                    action: { presentation.sidebarVisible.toggle() }
-                )
-            }
+            Spacer(minLength: presentation.mode.isDocked ? 4 : 8)
 
             if presentation.mode.isDocked {
-                NotesChromeButton(symbol: "macwindow", label: "Return to Workspace", action: restoreWorkspace)
-                    .keyboardShortcut("0", modifiers: [.command, .option])
-                NotesChromeButton(
-                    symbol: presentation.mode == .dockedLeft
-                        ? "rectangle.righthalf.inset.filled"
-                        : "rectangle.lefthalf.inset.filled",
-                    label: presentation.mode == .dockedLeft ? "Move Quick Note Right" : "Move Quick Note Left",
-                    action: presentation.mode == .dockedLeft ? dockRight : dockLeft
-                )
-            } else if presentation.mode != .fullScreen {
-                NotesChromeButton(symbol: "rectangle.lefthalf.inset.filled", label: "Dock Quick Note Left", action: dockLeft)
-                    .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                NotesChromeButton(symbol: "rectangle.righthalf.inset.filled", label: "Dock Quick Note Right", action: dockRight)
-                    .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                Menu {
+                    Button {
+                        presentation.section = .notes
+                    } label: {
+                        Label("Notes", systemImage: "note.text")
+                    }
+                    Button {
+                        presentation.section = .dictation
+                    } label: {
+                        Label("Dictation", systemImage: "waveform")
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: presentation.section == .notes ? "note.text" : "waveform")
+                        Text(presentation.section == .notes ? "Notes" : "Dictation")
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .limaFont(.caption2)
+                    }
+                    .frame(minWidth: 92, maxWidth: 120, minHeight: 28)
+                }
+                .menuStyle(.borderlessButton)
+                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .help("Choose Quick Note section")
+
+                Menu {
+                    Button("Customize Notes") { showAppearance = true }
+                    Divider()
+                    Button("Return to Workspace", action: restoreWorkspace)
+                    Button(
+                        presentation.mode == .dockedLeft ? "Move Quick Note Right" : "Move Quick Note Left",
+                        action: presentation.mode == .dockedLeft ? dockRight : dockLeft
+                    )
+                    Divider()
+                    Button("Enter Full Screen", action: toggleFullScreen)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 30, height: 28)
+                }
+                .menuStyle(.borderlessButton)
+                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .help("Quick Note actions")
+                .accessibilityLabel("Quick Note actions")
+            } else {
+                Picker("Notes section", selection: $presentation.section) {
+                    Label("Notes", systemImage: "note.text").tag(NotesSection.notes)
+                    Label("Dictation", systemImage: "waveform").tag(NotesSection.dictation)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 170)
+                .controlSize(.small)
+
+                NotesChromeButton(symbol: "slider.horizontal.3", label: "Customize Notes") {
+                    showAppearance.toggle()
+                }
+
+                if presentation.mode == .workspace {
+                    NotesChromeButton(
+                        symbol: presentation.sidebarVisible ? "sidebar.left" : "rectangle.righthalf.inset.filled",
+                        label: presentation.sidebarVisible ? "Hide Notes Sidebar" : "Show Notes Sidebar",
+                        action: { presentation.sidebarVisible.toggle() }
+                    )
+                }
+
+                if presentation.mode != .fullScreen {
+                    NotesChromeButton(symbol: "rectangle.lefthalf.inset.filled", label: "Dock Quick Note Left", action: dockLeft)
+                        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+                    NotesChromeButton(symbol: "rectangle.righthalf.inset.filled", label: "Dock Quick Note Right", action: dockRight)
+                        .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+                }
             }
 
-            NotesChromeButton(
-                symbol: presentation.mode == .fullScreen
-                    ? "arrow.down.right.and.arrow.up.left"
-                    : "arrow.up.left.and.arrow.down.right",
-                label: presentation.mode == .fullScreen ? "Exit Full Screen" : "Enter Full Screen",
-                action: toggleFullScreen
-            )
-            .keyboardShortcut("f", modifiers: [.command, .control])
+            if !presentation.mode.isDocked {
+                NotesChromeButton(
+                    symbol: presentation.mode == .fullScreen
+                        ? "arrow.down.right.and.arrow.up.left"
+                        : "arrow.up.left.and.arrow.down.right",
+                    label: presentation.mode == .fullScreen ? "Exit Full Screen" : "Enter Full Screen",
+                    action: toggleFullScreen
+                )
+                .keyboardShortcut("f", modifiers: [.command, .control])
+            }
         }
-        .padding(.leading, presentation.mode == .fullScreen ? 18 : 78)
+        .padding(.leading, presentation.mode == .fullScreen ? 18 : (presentation.mode.isDocked ? 10 : 78))
         .padding(.trailing, 10)
         .frame(height: LimaDesign.toolbarHeight)
+        .popover(isPresented: $showAppearance, arrowEdge: .bottom) {
+            NotesAppearancePanel(settings: settings)
+        }
+    }
+
+    private var dockedNoteHeader: some View {
+        HStack(spacing: 7) {
+            Button {
+                isDockBrowserExpanded = true
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "note.text")
+                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                    Text(store.selectedNote?.displayTitle ?? "Choose a note")
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    Image(systemName: "chevron.down")
+                        .limaFont(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .buttonStyle(.plain)
+            .help("Choose a note")
+            .accessibilityLabel("Choose a note")
+
+            NotesChromeButton(symbol: "magnifyingglass", label: "Find a note") {
+                isDockBrowserExpanded = true
+                isSearchPresented = true
+            }
+            NotesChromeButton(symbol: "plus", label: "New Note") {
+                store.createNote()
+            }
+        }
+        .padding(.horizontal, 8)
     }
 
     private var sidebar: some View {
@@ -644,6 +720,14 @@ private struct NotesView: View {
                     .frame(height: 30)
                     .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
                     .frame(maxWidth: .infinity)
+                }
+
+                if compact && isDockBrowserExpanded {
+                    NotesChromeButton(symbol: "chevron.up", label: "Collapse note browser") {
+                        searchQuery = ""
+                        isSearchPresented = false
+                        isDockBrowserExpanded = false
+                    }
                 }
 
                 if compact {
@@ -1461,6 +1545,11 @@ private struct NotesView: View {
     private func selectNote(_ identifier: UUID) {
         withAnimation(reduceMotion ? .easeInOut(duration: 0.12) : LimaDesign.spring(0.28)) {
             store.selectNote(identifier)
+            if presentation.mode.isDocked {
+                searchQuery = ""
+                isSearchPresented = false
+                isDockBrowserExpanded = false
+            }
         }
     }
 

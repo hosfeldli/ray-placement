@@ -255,8 +255,12 @@ struct DeveloperGrammarSettingsView: View {
             switch result {
             case .success(let edits):
                 do {
+                    guard !edits.isEmpty else {
+                        throw StealthGrammarRemoteClient.ClientError.compatibilityFailed
+                    }
                     let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
                     guard let corrected = protected.restore(correctedMasked),
+                          corrected != source,
                           StealthGrammarService.isSafeReplacement(source, corrected) else {
                         throw StealthGrammarRemoteClient.ClientError.safetyRejected
                     }
