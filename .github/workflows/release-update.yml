@@ -19,7 +19,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
       RAYPLACEMENT_SIGNING_MODE: self-signed-local
-      LIMA_RELEASE_EXPECTED_REF: refs/tags/${{ inputs.release_tag }}
+      LIMA_RELEASE_EXPECTED_REF: refs/remotes/origin/ci-immutable-release
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
@@ -104,6 +104,11 @@ jobs:
         run: |
           set -euo pipefail
           ./scripts/check_release_consistency.sh
+          # The checked-out release is an annotated tag. Provide the tagged
+          # preflight helper with a temporary remote-style commit ref so its
+          # legacy CI gate compares commit-to-commit without dereferencing the
+          # annotated tag object.
+          git update-ref refs/remotes/origin/ci-immutable-release "$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
           ./scripts/release_assert_tag_identity.sh --tag "$RELEASE_TAG"
           ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
