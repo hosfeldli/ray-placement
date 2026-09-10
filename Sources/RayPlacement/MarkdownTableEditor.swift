@@ -188,7 +188,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         layer?.cornerRadius = LimaDesign.standardCorner
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1
+        layer?.borderWidth = 1.0
         layer?.masksToBounds = true
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
@@ -411,7 +411,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         header: Bool,
         alternate: Bool
     ) -> NSView {
-        let container = NSView()
+        let container = MarkdownTableCellView()
+        container.onHoverChanged = { [weak self] in self?.updateAppearance() }
         container.wantsLayer = true
         container.layer?.backgroundColor = header
             ? LimaAppKitDesign.accentSoft.cgColor
@@ -427,7 +428,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.wantsLayer = true
         field.layer?.cornerRadius = 4
         field.layer?.borderWidth = LimaDesign.borderWidth
-        field.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+        field.layer?.borderColor = LimaAppKitDesign.tableGrid.cgColor
         field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
         field.textColor = .labelColor
         field.placeholderString = header ? "Column" : "Add value"
@@ -491,16 +492,18 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private func updateAppearance() {
         guard isViewLoadedForStyling else { return }
         let background = LimaAppKitDesign.editorBackground
-        let border = LimaAppKitDesign.strongSeparator
-        let separator = LimaAppKitDesign.separator.withAlphaComponent(0.24)
+        let border = LimaAppKitDesign.tableOuterBorder
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
-        gridView?.layer?.backgroundColor = separator.cgColor
+        layer?.borderWidth = 1.0
+        gridView?.layer?.backgroundColor = LimaAppKitDesign.tableGrid.cgColor
         toolbarIcon?.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
 
         for item in cellAppearances {
             let color: NSColor
-            if item.header {
+            if let cell = item.view as? MarkdownTableCellView, cell.isHovered {
+                color = LimaAppKitDesign.tableHover
+            } else if item.header {
                 color = LimaAppKitDesign.tableHeaderBackground
             } else if item.alternate {
                 color = LimaAppKitDesign.tableAlternateBackground
@@ -508,6 +511,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
                 color = LimaAppKitDesign.editorBackground
             }
             item.view.layer?.backgroundColor = color.cgColor
+        }
+        for field in fields {
+            let isFocused = window?.firstResponder === field || field.currentEditor() != nil && window?.firstResponder === field.currentEditor()
+            field.layer?.borderColor = isFocused ? LimaAppKitDesign.focus.cgColor : LimaAppKitDesign.tableGrid.cgColor
+            field.layer?.backgroundColor = isFocused ? LimaAppKitDesign.selection.cgColor : .clear
         }
     }
 
@@ -697,6 +705,35 @@ private enum CellCoordinate: Equatable {
     }
 }
 
+private final class MarkdownTableCellView: NSView {
+    var isHovered = false
+    var onHoverChanged: (() -> Void)?
+    private var trackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let area = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self,
+            userInfo: nil
+        )
+        addTrackingArea(area)
+        trackingArea = area
+        super.updateTrackingAreas()
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        onHoverChanged?()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        onHoverChanged?()
+    }
+}
+
 private final class MarkdownTableField: NSTextField {
     var coordinate: CellCoordinate = .header(0)
     var onPasteTable: ((TabularData) -> Bool)?
@@ -706,7 +743,8 @@ private final class MarkdownTableField: NSTextField {
         if accepted {
             layer?.borderWidth = LimaDesign.focusWidth
             layer?.borderColor = LimaAppKitDesign.focus.cgColor
-            layer?.backgroundColor = LimaAppKitDesign.selection.withAlphaComponent(0.16).cgColor
+            layer?.backgroundColor = LimaAppKitDesign.selection.cgColor
+            (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }
         return accepted
     }
@@ -715,8 +753,9 @@ private final class MarkdownTableField: NSTextField {
         let resigned = super.resignFirstResponder()
         if resigned {
             layer?.borderWidth = LimaDesign.borderWidth
-            layer?.borderColor = LimaAppKitDesign.separator.cgColor
-            layer?.backgroundColor = nil
+            layer?.borderColor = LimaAppKitDesign.tableGrid.cgColor
+            layer?.backgroundColor = .clear
+            (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }
         return resigned
     }

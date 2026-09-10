@@ -656,3 +656,53 @@ private func packageRoot() -> URL {
     #expect(decoded.terminalSessionID == state.terminalSessionID)
     #expect(decoded.windowFrames.count == 2)
 }
+
+@Test func quickNoteTargetPrefersLastShownNoteOverWorkspaceSelection() {
+    let first = MarkdownNote(title: "First", modifiedAt: Date(timeIntervalSince1970: 10))
+    let second = MarkdownNote(title: "Second", modifiedAt: Date(timeIntervalSince1970: 20))
+    let resolved = QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: first.id,
+        selectedNoteID: second.id,
+        notes: [second, first]
+    )
+    #expect(resolved == first.id)
+}
+
+@Test func quickNoteTargetSupportsInboxAndMostRecentModes() {
+    let inbox = MarkdownNote(title: "Inbox", modifiedAt: Date(timeIntervalSince1970: 10))
+    let recent = MarkdownNote(title: "Recent", modifiedAt: Date(timeIntervalSince1970: 20))
+    #expect(QuickNoteTargetResolver.resolve(mode: .inbox, savedTargetID: nil, selectedNoteID: recent.id, notes: [recent, inbox]) == inbox.id)
+    #expect(QuickNoteTargetResolver.resolve(mode: .mostRecent, savedTargetID: nil, selectedNoteID: inbox.id, notes: [inbox, recent]) == recent.id)
+}
+
+
+@Test func quickNoteTargetFallsBackFromInvalidSavedTarget() {
+    let selected = MarkdownNote(title: "Selected", modifiedAt: Date(timeIntervalSince1970: 10))
+    let recent = MarkdownNote(title: "Recent", modifiedAt: Date(timeIntervalSince1970: 20))
+    #expect(QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: UUID(),
+        selectedNoteID: selected.id,
+        notes: [recent, selected]
+    ) == selected.id)
+
+    #expect(QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: UUID(),
+        selectedNoteID: nil,
+        notes: [selected, recent]
+    ) == recent.id)
+}
+
+@Test func quickNoteTargetKeepsInboxModeWhenInboxIsMissing() {
+    let last = MarkdownNote(title: "Last Quick Note", modifiedAt: Date(timeIntervalSince1970: 10))
+    let selected = MarkdownNote(title: "Workspace Selection", modifiedAt: Date(timeIntervalSince1970: 20))
+    let resolved = QuickNoteTargetResolver.resolve(
+        mode: .inbox,
+        savedTargetID: last.id,
+        selectedNoteID: selected.id,
+        notes: [selected, last]
+    )
+    #expect(resolved == last.id)
+}

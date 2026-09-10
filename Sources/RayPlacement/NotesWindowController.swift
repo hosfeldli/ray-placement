@@ -51,6 +51,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private static let windowModeKey = "notesWindowMode"
     private static let dockWidthKey = "notesDockWidth"
     private static let workspaceFrameKey = "notesWorkspaceFrame"
+    private static let quickNoteTargetIDKey = "quickNoteTargetID"
+    private static let quickNoteTargetModeKey = "quickNoteTargetMode"
 
     private let presentation: NotesPresentationModel
     private var window: NSWindow?
@@ -127,10 +129,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func presentQuickNote() {
-        store.selectMostRecentNote()
+        selectQuickNoteTarget()
         let preferredMode: NotesWindowMode = presentation.mode == .dockedLeft ? .dockedLeft : .dockedRight
         let window = ensureWindow()
         applyPresentationMode(preferredMode, to: window, animated: true)
+        markQuickNoteTarget()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -144,10 +147,55 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     private func presentDocked(_ edge: NotesDockEdge) {
-        store.selectMostRecentNote()
+        selectQuickNoteTarget()
         if let window { WorkspaceWindowCoordinator.shared.popOut(window) }
         dock(edge)
+        markQuickNoteTarget()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    fileprivate var quickNoteTargetMode: QuickNoteTargetMode {
+        get {
+            UserDefaults.standard.string(forKey: Self.quickNoteTargetModeKey)
+                .flatMap(QuickNoteTargetMode.init(rawValue:)) ?? .lastQuickNote
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: Self.quickNoteTargetModeKey)
+        }
+    }
+
+    func setQuickNoteTarget(_ id: UUID) {
+        guard store.notes.contains(where: { $0.id == id }) else { return }
+        UserDefaults.standard.set(id.uuidString, forKey: Self.quickNoteTargetIDKey)
+        quickNoteTargetMode = .lastQuickNote
+    }
+
+    fileprivate func setQuickNoteTargetMode(_ mode: QuickNoteTargetMode) {
+        quickNoteTargetMode = mode
+    }
+
+    private func selectQuickNoteTarget() {
+        let savedTargetID = UserDefaults.standard.string(forKey: Self.quickNoteTargetIDKey)
+            .flatMap(UUID.init(uuidString:))
+        let targetID = QuickNoteTargetResolver.resolve(
+            mode: quickNoteTargetMode,
+            savedTargetID: savedTargetID,
+            selectedNoteID: store.selectedNoteID,
+            notes: store.notes
+        )
+
+        if let targetID {
+            store.selectNote(targetID, recordHistory: false)
+        } else {
+            // Preserve the existing empty-state behavior, including creating a
+            // blank note when Quick Note is opened before any note exists.
+            store.selectMostRecentNote()
+        }
+    }
+
+    private func markQuickNoteTarget() {
+        guard presentation.mode.isDocked, let id = store.selectedNoteID else { return }
+        UserDefaults.standard.set(id.uuidString, forKey: Self.quickNoteTargetIDKey)
     }
 
     func selectNote(_ id: UUID) {
@@ -277,7 +325,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             dockLeft: { [weak self] in self?.dock(.left) },
             dockRight: { [weak self] in self?.dock(.right) },
             restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
-            toggleFullScreen: { [weak self] in self?.toggleFullScreen() }
+            toggleFullScreen: { [weak self] in self?.toggleFullScreen() },
+            setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
+            setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
+            quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote }
         )))
         return window
     }
@@ -287,8 +338,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if presentation.mode == .workspace {
             rememberWorkspaceFrame(window.frame)
         }
-        if store.selectedNote == nil { store.selectMostRecentNote() }
+        if store.selectedNote == nil { selectQuickNoteTarget() }
         applyPresentationMode(edge == .left ? .dockedLeft : .dockedRight, to: window, animated: true)
+        markQuickNoteTarget()
         window.makeKeyAndOrderFront(nil)
     }
 
@@ -420,6 +472,9 @@ private struct NotesView: View {
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
     let toggleFullScreen: () -> Void
+    let setQuickNoteTarget: (UUID) -> Void
+    let setQuickNoteTargetMode: (QuickNoteTargetMode) -> Void
+    let quickNoteTargetMode: () -> QuickNoteTargetMode
 
     @State private var searchQuery = ""
     @State private var isSearchPresented = false
@@ -453,8 +508,10 @@ private struct NotesView: View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: LimaDesign.panelGap) {
-                windowChrome
-                    .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+                if !presentation.mode.isDocked {
+                    windowChrome
+                        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+                }
                 if presentation.mode.isDocked {
                     VStack(spacing: 0) {
                         if isDockBrowserExpanded {
@@ -675,9 +732,56 @@ private struct NotesView: View {
                 isDockBrowserExpanded = true
                 isSearchPresented = true
             }
-            NotesChromeButton(symbol: "plus", label: "New Note") {
-                store.createNote()
+            Menu {
+                Section("Quick Note target") {
+                    ForEach(QuickNoteTargetMode.allCases) { mode in
+                        Button {
+                            setQuickNoteTargetMode(mode)
+                        } label: {
+                            Label(mode.title, systemImage: quickNoteTargetMode() == mode ? "checkmark" : "circle")
+                        }
+                    }
+                }
+                Divider()
+                Button {
+                    store.createNote()
+                } label: {
+                    Label("New Note", systemImage: "plus")
+                }
+                Button {
+                    presentation.section = .notes
+                } label: {
+                    Label("Notes", systemImage: "note.text")
+                }
+                Button {
+                    presentation.section = .dictation
+                } label: {
+                    Label("Dictation", systemImage: "waveform")
+                }
+                Divider()
+                if let note = store.selectedNote {
+                    Button(note.isPinned ? "Unpin Note" : "Pin Note", action: store.togglePin)
+                    Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
+                    Button("Set as Quick Note") { setQuickNoteTarget(note.id) }
+                    Button("Edit Tags…") { showTags = true }
+                    Button("Revision History…") { showRevisions = true }
+                }
+                Divider()
+                Button("Customize Notes") { showAppearance = true }
+                Button("Return to Workspace", action: restoreWorkspace)
+                Button(
+                    presentation.mode == .dockedLeft ? "Move Quick Note Right" : "Move Quick Note Left",
+                    action: presentation.mode == .dockedLeft ? dockRight : dockLeft
+                )
+                Button("Enter Full Screen", action: toggleFullScreen)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 30, height: 28)
             }
+            .menuStyle(.borderlessButton)
+            .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+            .help("Quick Note actions")
+            .accessibilityLabel("Quick Note actions")
         }
         .padding(.horizontal, 8)
     }
@@ -1360,6 +1464,7 @@ private struct NotesView: View {
                 Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
                 Divider()
                 Button("Duplicate Note") { store.duplicateSelectedNote() }
+                Button("Set as Quick Note") { setQuickNoteTarget(note.id) }
                 Button("Edit Tags…") { showTags = true }
                 Button("Revision History…") { showRevisions = true }
                 Divider()
@@ -1545,6 +1650,9 @@ private struct NotesView: View {
     private func selectNote(_ identifier: UUID) {
         withAnimation(reduceMotion ? .easeInOut(duration: 0.12) : LimaDesign.spring(0.28)) {
             store.selectNote(identifier)
+            if presentation.mode.isDocked {
+                setQuickNoteTarget(identifier)
+            }
             if presentation.mode.isDocked {
                 searchQuery = ""
                 isSearchPresented = false

@@ -858,7 +858,7 @@ private enum MarkdownInlineStyler {
             if task.checked, textRange.length > 0 {
                 storage.addAttributes([
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: palette.secondaryText
+                    .foregroundColor: palette.taskCompletedText
                 ], range: textRange)
             }
         }
@@ -942,16 +942,20 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"(?m)^(\s*)- \[([ xX])\]\s+(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let checked = source.substring(with: match.range(at: 2)).lowercased() == "x"
-            storage.addAttribute(.foregroundColor, value: checked ? NSColor.systemGreen : palette.accent, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
+            storage.addAttribute(.foregroundColor, value: checked ? palette.taskChecked : palette.accent, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
             if checked {
-                storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 3))
+                storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: palette.taskCompletedText], range: match.range(at: 3))
             }
         }
         apply(pattern: #"(?m)^(\s*>\s?)(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range(at: 1))
             let italic = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
-            storage.addAttributes([.font: italic, .foregroundColor: palette.secondaryText], range: match.range(at: 2))
+            storage.addAttributes([
+                .font: italic,
+                .foregroundColor: palette.secondaryText,
+                .backgroundColor: palette.quoteBackground
+            ], range: match.range(at: 2))
         }
         apply(pattern: #"(?m)^(---|\*\*\*|___)[ \t]*$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
@@ -1034,6 +1038,7 @@ private enum MarkdownInlineStyler {
 
 }
 
+@MainActor
 private struct NotesEditorPalette {
     let background: NSColor
     let text: NSColor
@@ -1041,6 +1046,9 @@ private struct NotesEditorPalette {
     let separator: NSColor
     let accent: NSColor
     let codeBackground: NSColor
+    let quoteBackground: NSColor
+    let taskChecked: NSColor
+    let taskCompletedText: NSColor
 
     var selectionAttributes: [NSAttributedString.Key: Any] {
         [
@@ -1050,26 +1058,16 @@ private struct NotesEditorPalette {
     }
 
     init(theme: NotesVisualTheme) {
-        background = NSColor.textBackgroundColor
-        text = NSColor.textColor
-        secondaryText = NSColor.secondaryLabelColor
-        separator = NSColor.separatorColor.withAlphaComponent(1)
-        switch theme {
-        case .prism:
-            accent = NSColor(calibratedRed: 0.48, green: 0.28, blue: 0.84, alpha: 1)
-        case .graphite:
-            accent = NSColor.secondaryLabelColor
-        case .midnight:
-            accent = NSColor(calibratedRed: 0.08, green: 0.38, blue: 0.82, alpha: 1)
-        case .aurora:
-            accent = NSColor(calibratedRed: 0.02, green: 0.55, blue: 0.42, alpha: 1)
-        case .ink:
-            accent = NSColor(calibratedRed: 0.78, green: 0.30, blue: 0.05, alpha: 1)
-        }
-        // Blend semantic surfaces instead of hard-coding a dark palette. This
-        // keeps code blocks and inline code legible when Notes is in Light mode.
-        let control = NSColor.controlBackgroundColor
-        codeBackground = background.blended(withFraction: 0.28, of: control) ?? control
+        let palette = NotesAppearancePalette(theme: theme)
+        background = palette.background
+        text = palette.textPrimary
+        secondaryText = palette.textSecondary
+        separator = palette.separator
+        accent = palette.accent
+        codeBackground = palette.codeBackground
+        quoteBackground = palette.quoteBackground
+        taskChecked = palette.taskChecked
+        taskCompletedText = palette.taskCompletedText
     }
 }
 

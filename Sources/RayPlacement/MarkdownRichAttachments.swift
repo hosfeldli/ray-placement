@@ -31,8 +31,12 @@ final class MarkdownTaskAttachment: NSTextAttachment, MarkdownPersistedAttachmen
     }
 
     private func refreshImage() {
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme)
         let symbol = checked ? "checkmark.square.fill" : "square"
-        let configuration = NSImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        let color = checked ? palette.taskChecked : palette.taskUnchecked
+        let sizeConfiguration = NSImage.SymbolConfiguration(pointSize: 17, weight: .semibold)
+        let colorConfiguration = NSImage.SymbolConfiguration(paletteColors: [color])
+        let configuration = sizeConfiguration.applying(colorConfiguration)
         image = NSImage(systemSymbolName: symbol, accessibilityDescription: checked ? "Completed task" : "Open task")?
             .withSymbolConfiguration(configuration)
     }
@@ -43,7 +47,9 @@ final class MarkdownTaskAttachment: NSTextAttachment, MarkdownPersistedAttachmen
         glyphPosition position: NSPoint,
         characterIndex charIndex: Int
     ) -> NSRect {
-        NSRect(x: 0, y: -3, width: 18, height: 18)
+        // Keep a 26pt hit region around the visible 18pt control so compact
+        // Quick Note remains comfortable without changing Markdown storage.
+        NSRect(x: 0, y: -4, width: 26, height: 22)
     }
 }
 
@@ -205,12 +211,13 @@ private enum MarkdownChartRenderer {
         let image = NSImage(size: size)
         image.lockFocus()
         defer { image.unlockFocus() }
-        NSColor(calibratedWhite: 0.08, alpha: 0.94).setFill()
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme)
+        palette.chartBackground.setFill()
         NSBezierPath(roundedRect: NSRect(origin: .zero, size: size), xRadius: 12, yRadius: 12).fill()
-        let titleAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 18, weight: .semibold), .foregroundColor: NSColor.white]
+        let titleAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 18, weight: .semibold), .foregroundColor: palette.chartText]
         title.draw(at: NSPoint(x: 22, y: 238), withAttributes: titleAttributes)
         let chartRect = NSRect(x: 42, y: 42, width: 548, height: 175)
-        NSColor.white.withAlphaComponent(0.12).setStroke()
+        palette.chartGrid.setStroke()
         let axis = NSBezierPath(); axis.move(to: chartRect.origin); axis.line(to: NSPoint(x: chartRect.minX, y: chartRect.maxY)); axis.move(to: chartRect.origin); axis.line(to: NSPoint(x: chartRect.maxX, y: chartRect.minY)); axis.stroke()
         let maxValue = max(points.map { abs($0.value) }.max() ?? 1, 1)
         let color = LimaAppKitDesign.accent
@@ -230,7 +237,7 @@ private enum MarkdownChartRenderer {
                 color.withAlphaComponent(0.82).setFill(); NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4).fill()
             }
         }
-        let labelAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor]
+        let labelAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 10, weight: .medium), .foregroundColor: palette.textSecondary]
         for (index, point) in points.enumerated() {
             let slot = chartRect.width / CGFloat(points.count)
             String(point.label.prefix(14)).draw(at: NSPoint(x: chartRect.minX + CGFloat(index) * slot + 4, y: 18), withAttributes: labelAttributes)
