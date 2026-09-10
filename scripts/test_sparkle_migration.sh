@@ -27,7 +27,7 @@ fi
 
 PLIST="$PROJECT_DIRECTORY/Packaging/Info.plist"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$PLIST")" == "https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml" ]]
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST")" == "Lt/Wlxc0rmkpNrz0YQ4hBpgeO51ynD+yALaUtE45f0c=" ]]
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$PLIST")" == "fyOhQjqcI/f18TiRvtKyCSD5PM8RHUZtitjnZKLs+08=" ]]
 
 grep -q 'activeBackend' "$PROJECT_DIRECTORY/Sources/RayPlacement/SparkleMigrationBoundary.swift"
 grep -q 'SPUStandardUpdaterController' "$PROJECT_DIRECTORY/Sources/RayPlacement/SparkleMigrationBoundary.swift"
