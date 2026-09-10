@@ -54,6 +54,11 @@ jobs:
           security create-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
           security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
+          # Make the ephemeral keychain the active search source for codesign.
+          # GitHub-hosted runners do not necessarily search newly-created
+          # keychains, even when the import itself succeeds.
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+          security default-keychain -s "$KEYCHAIN_PATH"
           printf 'Decoded P12 bytes: '
           stat -f '%z' "$P12_PATH"
           printf 'Decoded P12 SHA-256: '
