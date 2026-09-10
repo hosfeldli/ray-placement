@@ -61,6 +61,9 @@ jobs:
           set +e
           security import "$P12_PATH" -f pkcs12 -k "$KEYCHAIN_PATH" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
           import_status=$?
+          security find-certificate -a -p -c 'RayPlacement Local Code Signing' "$KEYCHAIN_PATH" > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+          security add-trusted-cert -r trustRoot -k "$KEYCHAIN_PATH" "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
+          trust_status=$?
           security set-key-partition-list \
             -S apple-tool:,apple:,codesign: \
             -s \
@@ -71,6 +74,7 @@ jobs:
           identity_status=$?
           set -e
           printf 'security import exit: %s\n' "$import_status"
+          printf 'certificate trust exit: %s\n' "$trust_status"
           printf 'partition-list exit: %s\n' "$partition_status"
           printf 'find-identity exit: %s\n' "$identity_status"
           identity_output="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>/dev/null || true)"
@@ -78,7 +82,7 @@ jobs:
             echo 'Imported keychain does not contain the pinned RayPlacement Local Code Signing identity.' >&2
             exit 1
           }
-          [[ "$import_status" == 0 && "$partition_status" == 0 && "$identity_status" == 0 ]] || {
+          [[ "$import_status" == 0 && "$trust_status" == 0 && "$partition_status" == 0 && "$identity_status" == 0 ]] || {
             echo 'CI signing keychain setup failed.' >&2
             exit 1
           }
