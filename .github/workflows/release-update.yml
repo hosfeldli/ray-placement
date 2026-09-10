@@ -29,6 +29,16 @@ jobs:
           fetch-tags: true
           lfs: true
 
+      - name: Apply CI-only release verifier fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Build from the immutable release tag, but use the current branch's
+          # tested DER certificate verifier. Application source remains exactly
+          # the tagged commit and is checked below before packaging.
+          git show "${GITHUB_SHA}:scripts/verify_liamflow_app.sh" > scripts/verify_liamflow_app.sh
+          chmod 755 scripts/verify_liamflow_app.sh
+
       - name: Configure ephemeral signing directory
         shell: bash
         env:
