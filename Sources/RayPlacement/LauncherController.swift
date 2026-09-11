@@ -215,10 +215,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 if let error { DispatchQueue.main.async { self?.presentError(title: item.title, error: error) } }
             }
 
-        case .openFile(let url), .openURL(let url):
+        case .openFile(let url):
+            ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
             hide()
             if !NSWorkspace.shared.open(url) {
-                presentError(title: item.title, message: "macOS could not open \(url.isFileURL ? url.path : url.absoluteString).")
+                presentError(title: item.title, message: "macOS could not open \(url.path).")
+            }
+
+        case .openURL(let url):
+            ContextShelfIntegration.addURL(url, sourceApplication: NSRunningApplication.current.localizedName)
+            hide()
+            if !NSWorkspace.shared.open(url) {
+                presentError(title: item.title, message: "macOS could not open \(url.absoluteString).")
             }
 
         case .revealFile(let url):
@@ -226,6 +234,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.activateFileViewerSelecting([url])
 
         case .copyText(let text):
+            ContextShelfIntegration.addClipboard(text, sourceApplication: previousApplication?.localizedName)
             clipboard.copy(text)
             hide()
             toast.show("Copied to the clipboard")

@@ -115,7 +115,14 @@ final class ExtensionFormViewModel: ObservableObject {
             guard let self else { return }
             self.phase = .finished
             switch result {
-            case .success(let output): self.result = output
+            case .success(let output):
+                self.result = output
+                ContextShelfIntegration.addExtensionOutput(
+                    output.output,
+                    extensionID: self.command.extensionID,
+                    commandID: self.command.command.id,
+                    title: self.command.command.title
+                )
             case .failure(let error): self.error = error.localizedDescription
             }
         }

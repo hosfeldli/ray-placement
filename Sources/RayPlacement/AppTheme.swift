@@ -46,8 +46,6 @@ struct NotesAppearancePalette {
     let tableHeader: NSColor
     let tableGrid: NSColor
     let tableOuterBorder: NSColor
-    let tableHover: NSColor
-    let tableSelectedCell: NSColor
     let codeBackground: NSColor
     let codeText: NSColor
     let quoteBackground: NSColor
@@ -67,12 +65,25 @@ struct NotesAppearancePalette {
         // an explicitly light table inherit dark-mode colors in screenshots.
         // Resolve every system-derived palette input under the same appearance
         // that will be used for the table renderer.
-        background = Self.resolved(NSColor.textBackgroundColor, appearance: resolvedAppearance)
-        elevatedSurface = Self.resolved(NSColor.controlBackgroundColor, appearance: resolvedAppearance)
-        recessedSurface = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.16 : 0.08)
-        textPrimary = Self.resolved(NSColor.textColor, appearance: resolvedAppearance)
-        textSecondary = Self.resolved(NSColor.secondaryLabelColor, appearance: resolvedAppearance)
-        textTertiary = Self.resolved(NSColor.tertiaryLabelColor, appearance: resolvedAppearance)
+        if isDark {
+            // Resolve the table's dark surfaces explicitly instead of relying
+            // on AppKit control colors, which can be near-black and can also
+            // vary with the active material. The editor fields use this same
+            // primary text role, so this prevents black text on dark gray cells.
+            background = NSColor(calibratedWhite: 0.115, alpha: 1)
+            elevatedSurface = NSColor(calibratedWhite: 0.185, alpha: 1)
+            recessedSurface = NSColor(calibratedWhite: 0.085, alpha: 1)
+            textPrimary = NSColor(calibratedWhite: 0.94, alpha: 1)
+            textSecondary = NSColor(calibratedWhite: 0.76, alpha: 1)
+            textTertiary = NSColor(calibratedWhite: 0.62, alpha: 1)
+        } else {
+            background = Self.resolved(NSColor.textBackgroundColor, appearance: resolvedAppearance)
+            elevatedSurface = Self.resolved(NSColor.controlBackgroundColor, appearance: resolvedAppearance)
+            recessedSurface = Self.blend(background, with: elevatedSurface, fraction: 0.08)
+            textPrimary = Self.resolved(NSColor.textColor, appearance: resolvedAppearance)
+            textSecondary = Self.resolved(NSColor.secondaryLabelColor, appearance: resolvedAppearance)
+            textTertiary = Self.resolved(NSColor.tertiaryLabelColor, appearance: resolvedAppearance)
+        }
 
         let baseAccent = Self.themeAccent(theme, dark: isDark)
         accent = baseAccent
@@ -91,11 +102,15 @@ struct NotesAppearancePalette {
         // Dark mode uses deliberately stronger blends than Light mode. The
         // values are semantic, not calibrated RGBs, so native appearance and
         // accessibility settings remain the source of truth.
-        tableHeader = Self.blend(background, with: baseAccent, fraction: isDark ? 0.13 : 0.035)
-        tableGrid = separator.withAlphaComponent(isDark ? 0.78 : 0.58)
-        tableOuterBorder = Self.blend(separator, with: textPrimary, fraction: isDark ? 0.58 : 0.42)
-        tableHover = Self.blend(background, with: baseAccent, fraction: isDark ? 0.20 : 0.025)
-        tableSelectedCell = baseAccent.withAlphaComponent(isDark ? 0.16 : 0.06)
+        tableHeader = isDark
+            ? NSColor(calibratedWhite: 0.205, alpha: 1)
+            : Self.blend(background, with: baseAccent, fraction: 0.035)
+        tableGrid = isDark
+            ? NSColor(calibratedWhite: 0.36, alpha: 1)
+            : separator.withAlphaComponent(0.58)
+        tableOuterBorder = isDark
+            ? NSColor(calibratedWhite: 0.56, alpha: 1)
+            : Self.blend(separator, with: textPrimary, fraction: 0.42)
 
         codeBackground = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.28 : 0.12)
         codeText = textPrimary
@@ -145,12 +160,10 @@ enum LimaAppKitDesign {
     static var accent: NSColor { notesPalette.accent }
     static var accentSoft: NSColor { notesPalette.accentSoft }
     static var focus: NSColor { notesPalette.focusRing }
-    static var selection: NSColor { notesPalette.tableSelectedCell }
     static var taskHover: NSColor { notesPalette.taskHover }
     static var tableHeaderBackground: NSColor { notesPalette.tableHeader }
     static var tableGrid: NSColor { notesPalette.tableGrid }
     static var tableOuterBorder: NSColor { notesPalette.tableOuterBorder }
-    static var tableHover: NSColor { notesPalette.tableHover }
     static var taskUnchecked: NSColor { notesPalette.taskUnchecked }
     static var taskChecked: NSColor { notesPalette.taskChecked }
     static var taskCompletedText: NSColor { notesPalette.taskCompletedText }

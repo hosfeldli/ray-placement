@@ -51,6 +51,28 @@ final class StealthGrammarRemoteClient {
     explanations.
     """
 
+    /// The live correction path intentionally uses a plain-text response. The
+    /// model must not spend its response budget producing an edit protocol when
+    /// the caller only needs the corrected sentence/text.
+    static let plainTextSystemPrompt = """
+    You are a meticulous grammar and spelling corrector. Correct the supplied
+    sentence or text as accurately as possible.
+
+    Your entire response must be ONLY the corrected sentence or text itself.
+    Return the corrected text and absolutely nothing else. Do not explain any
+    correction. Do not describe what you changed. Do not add an introduction,
+    conclusion, label, heading, commentary, apology, or summary. Do not return
+    JSON, XML, Markdown, a list, quotation marks around the answer, or code
+    fences. Do not say "Here is the corrected text" or anything similar.
+
+    Preserve the author's meaning, voice, formatting, paragraph breaks,
+    punctuation, Markdown structure, and whitespace wherever it is not necessary
+    to correct an error. Never invent content and never rewrite correct text. If
+    the supplied sentence/text is already correct, return it unchanged. Treat
+    ordinary placeholders such as [NAME_0] and [URL_0] as immutable text and
+    reproduce them exactly.
+    """
+
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
 
     static let openAIStructuredOutputFormat: [String: Any] = [
@@ -153,6 +175,64 @@ final class StealthGrammarRemoteClient {
         let publicSegments = segments.map { ["id": $0.id, "text": $0.text] }
         guard let data = try? JSONSerialization.data(withJSONObject: ["segments": publicSegments]) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    func correctText(
+        _ text: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String = StealthGrammarRemoteClient.plainTextSystemPrompt,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !text.isEmpty,
+              let request = makeRequest(
+                text: text,
+                configuration: configuration,
+                systemPrompt: systemPrompt,
+                plainTextResponse: true
+              ) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider, completion: completion)
+    }
+
+    /// Candidate forms make the client tolerant of a model that disobeys the
+    /// no-wrapper instruction once, without accepting explanations or changing
+    /// the caller's protected-text validation rules.
+    static func plainTextCandidates(from value: String) -> [String] {
+        let raw = value
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var candidates = [raw]
+        if trimmed != raw { candidates.append(trimmed) }
+
+        if trimmed.hasPrefix("```") && trimmed.hasSuffix("```") {
+            var body = trimmed
+            body.removeFirst(3)
+            body.removeLast(3)
+            if let newline = body.firstIndex(of: "\n") {
+                let language = body[..<newline].trimmingCharacters(in: .whitespacesAndNewlines)
+                if language.isEmpty || language.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) {
+                    body = String(body[body.index(after: newline)...])
+                }
+            }
+            candidates.append(body.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        if trimmed.count >= 2 {
+            let pairs: [(Character, Character)] = [("\"", "\""), ("'", "'"), ("“", "”"), ("‘", "’")]
+            for (opening, closing) in pairs where trimmed.first == opening && trimmed.last == closing {
+                candidates.append(String(trimmed.dropFirst().dropLast()))
+            }
+        }
+
+        var unique: [String] = []
+        for candidate in candidates where !unique.contains(candidate) {
+            unique.append(candidate)
+        }
+        return unique
     }
 
     @discardableResult
@@ -293,7 +373,12 @@ final class StealthGrammarRemoteClient {
         return request
     }
 
-    private func makeRequest(text: String, configuration: DeveloperGrammarConfiguration, systemPrompt: String) -> URLRequest? {
+    private func makeRequest(
+        text: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String,
+        plainTextResponse: Bool = false
+    ) -> URLRequest? {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
         let url: URL?
         switch configuration.provider {
@@ -317,14 +402,17 @@ final class StealthGrammarRemoteClient {
         switch configuration.provider {
         case .openAI:
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
-            request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            var payload: [String: Any] = [
                 "model": configuration.model,
                 "input": [
                     ["role": "system", "content": [["type": "input_text", "text": systemPrompt]]],
                     ["role": "user", "content": [["type": "input_text", "text": text]]]
-                ],
-                "text": ["format": Self.openAIStructuredOutputFormat]
-            ])
+                ]
+            ]
+            if !plainTextResponse {
+                payload["text"] = ["format": Self.openAIStructuredOutputFormat]
+            }
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [

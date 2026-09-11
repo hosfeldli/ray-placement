@@ -29,7 +29,7 @@ final class RuleBasedWritingChecker {
         let modeInstruction: String = mode == .polish
             ? "In addition to proofreading, make only small, clearly beneficial clarity or flow improvements. Preserve the author's voice."
             : "Only correct high-confidence spelling, grammar, capitalization, and punctuation. Do not polish or rephrase."
-        return StealthGrammarRemoteClient.systemPrompt + "\n" + modeInstruction
+        return StealthGrammarRemoteClient.plainTextSystemPrompt + "\n" + modeInstruction
     }
     private var activeProcess: Process?
     private var remoteTask: URLSessionDataTask?
@@ -151,34 +151,39 @@ final class RuleBasedWritingChecker {
         }
 
         progress("Applying External Grammar…")
-        remoteTask = remoteClient.correctDocument(
+        remoteTask = remoteClient.correctText(
             protected.contextText,
             configuration: configuration,
             systemPrompt: self.externalSystemPrompt
         ) { [weak self] result in
             guard let self, self.operationID == operationID else { return }
             self.remoteTask = nil
-            switch result {
-            case .success(let edits):
-                do {
-                    let review = try self.externalReview(source: source, protected: protected, edits: edits)
-                    self.finish(success: true, output: review.suggestedText.count)
-                    completion(.success(review))
-                } catch {
-                    self.retryExternalReview(
-                        source: source,
-                        protected: protected,
-                        configuration: configuration,
-                        operationID: operationID,
-                        violation: error.localizedDescription,
-                        progress: progress,
-                        completion: completion
-                    )
-                }
-            case .failure(let error):
+            do {
+                let corrected = try self.externalPlainReplacement(
+                    source: source,
+                    protected: protected,
+                    response: try result.get()
+                )
+                let review = try self.reviewer.review(sourceText: source, rewrittenText: corrected, engineTitle: "External API")
+                self.finish(success: true, output: review.suggestedText.count)
+                completion(.success(review))
+            } catch {
                 self.finishExternalFailure(error, completion: completion)
             }
         }
+    }
+
+    private func externalPlainReplacement(
+        source: String,
+        protected: StealthProtectedText,
+        response: String
+    ) throws -> String {
+        for candidate in StealthGrammarRemoteClient.plainTextCandidates(from: response) {
+            guard let corrected = protected.restoreContext(candidate),
+                  StealthGrammarService.isSafeReplacement(source, corrected) else { continue }
+            return corrected
+        }
+        throw StealthGrammarRemoteClient.ClientError.invalidResponse
     }
 
     private func externalReview(
@@ -343,31 +348,22 @@ final class RuleBasedWritingChecker {
                 return
             }
             progress("Checking with External Grammar…")
-            remoteTask = remoteClient.correctDocument(
+            remoteTask = remoteClient.correctText(
                 protected.contextText,
                 configuration: configuration,
                 systemPrompt: self.externalSystemPrompt
             ) { [weak self] result in
                 guard let self, self.operationID == operationID else { return }
                 self.remoteTask = nil
-                switch result {
-                case .success(let edits):
-                    do {
-                        let corrected = try self.externalStealthReplacement(source: source, protected: protected, edits: edits)
-                        self.finish(success: true, output: corrected.count)
-                        completion(.success(corrected))
-                    } catch {
-                        self.retryExternalStealthReview(
-                            source: source,
-                            protected: protected,
-                            configuration: configuration,
-                            operationID: operationID,
-                            violation: error.localizedDescription,
-                            progress: progress,
-                            completion: completion
-                        )
-                    }
-                case .failure(let error):
+                do {
+                    let corrected = try self.externalPlainReplacement(
+                        source: source,
+                        protected: protected,
+                        response: try result.get()
+                    )
+                    self.finish(success: true, output: corrected.count)
+                    completion(.success(corrected))
+                } catch {
                     self.finish(success: false, detail: error.localizedDescription)
                     completion(.failure(error))
                 }

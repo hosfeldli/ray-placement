@@ -4,23 +4,44 @@ import Foundation
 import SwiftTerm
 import SwiftUI
 
+fileprivate final class ShelfCapturingTerminalView: LocalProcessTerminalView {
+    var onOutput: ((ArraySlice<UInt8>) -> Void)?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        onOutput?(slice)
+        super.dataReceived(slice: slice)
+    }
+}
+
 @MainActor
 final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency LocalProcessTerminalViewDelegate {
     @Published private(set) var isLive = false
 
-    let terminalView = LocalProcessTerminalView(frame: .zero)
+    fileprivate let terminalView = ShelfCapturingTerminalView(frame: .zero)
     private var shuttingDown = false
     private var activeSessionID: UUID?
     private var typographySubscription: AnyCancellable?
+    private var terminalOutput = ""
+    private var lastShelfCaptureAt = Date.distantPast
 
     override init() {
         super.init()
         terminalView.processDelegate = self
+        terminalView.onOutput = { [weak self] slice in
+            let text = String(decoding: slice, as: UTF8.self)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.terminalOutput.append(text)
+                if self.terminalOutput.count > 100_000 {
+                    self.terminalOutput = String(self.terminalOutput.suffix(100_000))
+                }
+            }
+        }
         terminalView.optionAsMetaKey = true
         terminalView.allowMouseReporting = true
         terminalView.nativeForegroundColor = NSColor(calibratedWhite: 0.91, alpha: 1)
         terminalView.nativeBackgroundColor = NSColor(calibratedRed: 0.026, green: 0.035, blue: 0.055, alpha: 1)
-        terminalView.selectedTextBackgroundColor = LimaAppKitDesign.selection
+        terminalView.selectedTextBackgroundColor = LimaAppKitDesign.accentSoft
         terminalView.caretColor = LimaAppKitDesign.focus
         terminalView.font = NSFont.monospacedSystemFont(ofSize: AppTypography.size(13), weight: .regular)
         terminalView.wantsLayer = true
@@ -61,6 +82,7 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
         environment["COLORTERM"] = "truecolor"
         environment["TERM_PROGRAM"] = "Lima"
         environment["TERM_PROGRAM_VERSION"] = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "dev"
+        terminalOutput = ""
         terminalView.startProcess(
             executable: executable,
             args: [],
@@ -79,6 +101,16 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
         }
     }
 
+    func captureOutputToShelf() {
+        let captured = terminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !captured.isEmpty else { return }
+        ContextShelfIntegration.addTerminalOutput(
+            captured,
+            sessionName: TerminalSessionStore.shared.selectedSession?.name
+        )
+        lastShelfCaptureAt = Date()
+    }
+
     func focus() {
         terminalView.window?.makeFirstResponder(terminalView)
     }
@@ -94,6 +126,11 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 
     func processTerminated(source: TerminalView, exitCode: Int32?) {
         isLive = false
+        let captured = terminalOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !captured.isEmpty, Date().timeIntervalSince(lastShelfCaptureAt) > 0.5 {
+            lastShelfCaptureAt = Date()
+            ContextShelfIntegration.addTerminalOutput(captured, sessionName: TerminalSessionStore.shared.selectedSession?.name)
+        }
         guard !shuttingDown else { return }
         DispatchQueue.main.async { [weak self] in
             self?.startIfNeeded()
@@ -104,11 +141,11 @@ final class DeveloperTerminalModel: NSObject, ObservableObject, @preconcurrency 
 private struct TerminalSurface: NSViewRepresentable {
     @ObservedObject var model: DeveloperTerminalModel
 
-    func makeNSView(context: Context) -> LocalProcessTerminalView {
+    func makeNSView(context: Context) -> ShelfCapturingTerminalView {
         model.terminalView
     }
 
-    func updateNSView(_ nsView: LocalProcessTerminalView, context: Context) {}
+    func updateNSView(_ nsView: ShelfCapturingTerminalView, context: Context) {}
 }
 
 struct DeveloperTerminalView: View {
@@ -137,6 +174,13 @@ struct DeveloperTerminalView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Create terminal session")
+                Button {
+                    model.captureOutputToShelf()
+                } label: {
+                    Image(systemName: "tray.and.arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .help("Add terminal output to Context Shelf")
                 Spacer()
                 if let error = sessions.lastError {
                     Text(error).limaFont(.caption2).foregroundStyle(.orange).lineLimit(1)

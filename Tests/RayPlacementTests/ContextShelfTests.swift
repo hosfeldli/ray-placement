@@ -84,3 +84,61 @@ import Testing
         #expect(try decoder.decode(ContextShelfPayload.self, from: data) == payload)
     }
 }
+
+
+@MainActor
+@Test func contextShelfFormatterAndRegistryExposeSharedActions() throws {
+    let item = ContextShelfItem(
+        id: UUID(),
+        kind: .selectedText,
+        title: "Selection",
+        preview: "A paragraph",
+        payload: .text("A paragraph"),
+        source: .application(name: "Safari", bundleIdentifier: "com.apple.Safari"),
+        createdAt: Date(),
+        isPinned: false
+    )
+
+    #expect(ContextShelfMarkdownFormatter.format(item) == "> Selected from Safari\n\nA paragraph")
+    #expect(ContextShelfMarkdownFormatter.plainText(item) == "A paragraph")
+    let actions = ContextShelfActionRegistry(registerDefaults: true).actions(for: [item])
+    #expect(actions.contains { $0.id == "copy" })
+    #expect(actions.contains { $0.id == "copy-markdown" })
+    #expect(actions.contains { $0.id == "append-quick-note" })
+    #expect(actions.contains { $0.id == "send-to-note" })
+}
+
+
+@MainActor
+@Test func contextShelfUndoRestoresRemovedAndClearedItems() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("context-shelf-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let store = ContextShelfStore(storageURL: directory.appendingPathComponent("shelf.json"), loadPersisted: false)
+    let source = ContextShelfSource(type: .lima, capturedAt: Date())
+    let first = store.addText("first", title: "First", kind: .plainText, source: source)
+    let second = store.addText("second", title: "Second", kind: .plainText, source: source)
+
+    _ = store.remove(id: first)
+    #expect(!store.items.contains { $0.id == first })
+    #expect(store.lastRemoved.count == 1)
+    store.undoLastRemove()
+    #expect(store.items.contains { $0.id == first })
+    #expect(store.lastRemoved.isEmpty)
+
+    store.togglePinned(id: second)
+    _ = store.clear()
+    #expect(!store.items.contains { $0.id == first })
+    #expect(store.items.contains { $0.id == second })
+    store.undoClear()
+    #expect(store.items.contains { $0.id == first })
+    #expect(store.items.contains { $0.id == second && $0.isPinned == true })
+}
+
+@MainActor
+@Test func contextShelfExtensionEnvironmentUsesVersionedContract() throws {
+    let environment = ContextShelfExtensionContext.environment()
+    #expect(environment["LIMA_CONTEXT_SHELF_VERSION"] == "1")
+    #expect(environment["LIMA_CONTEXT_SHELF_JSON"]?.contains("\"version\":1") == true)
+    #expect(environment["LIMA_CONTEXT_SHELF_MARKDOWN"] != nil)
+}

@@ -180,7 +180,7 @@ struct LauncherView: View {
         case .terminal:
             DeveloperTerminalView(model: terminalModel)
         case .contextShelf:
-            ContextShelfPlaceholderView(store: .shared)
+            ContextShelfView(store: .shared)
         case .picker(.emoji):
             emojiGrid
         case .picker(.applications):

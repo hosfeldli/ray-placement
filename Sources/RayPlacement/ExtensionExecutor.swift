@@ -76,6 +76,7 @@ final class ExtensionExecutor {
                 return
             }
             if NSWorkspace.shared.open(url) {
+                ContextShelfIntegration.addURL(url, sourceApplication: NSRunningApplication.current.localizedName)
                 completion(.success(.completed(nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.absoluteString)))
@@ -94,6 +95,7 @@ final class ExtensionExecutor {
                 return
             }
             if NSWorkspace.shared.open(url) {
+                ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
                 completion(.success(.completed(nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.path)))
@@ -147,7 +149,17 @@ final class ExtensionExecutor {
             completion(.success(.native(action)))
 
         case .shell:
-            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation, completion: completion)
+            run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation) { result in
+                if case .success(.completed(let output)) = result, let output, !output.isEmpty {
+                    ContextShelfIntegration.addExtensionOutput(
+                        output,
+                        extensionID: loaded.extensionID,
+                        commandID: loaded.command.id,
+                        title: loaded.command.title
+                    )
+                }
+                completion(result)
+            }
         }
     }
 
@@ -246,6 +258,9 @@ final class ExtensionExecutor {
             "RAYPLACEMENT_THREAD_LIMIT": String(performance.threadLimit),
             "RAYPLACEMENT_TIMEOUT_SECONDS": String(Int(performance.extensionTimeout))
         ]
+        if capabilities.contains(.contextShelf) {
+            task.environment?.merge(ContextShelfExtensionContext.environment()) { _, new in new }
+        }
         if let workingDirectory = action.workingDirectory {
             do {
                 task.currentDirectoryURL = try ExtensionSecurityPolicy.resolvePath(workingDirectory, relativeTo: directory, capabilities: capabilities, executable: false)

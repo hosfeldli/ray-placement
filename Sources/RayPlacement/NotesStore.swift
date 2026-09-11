@@ -330,6 +330,49 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    func appendShelfItems(_ items: [ContextShelfItem], to identifier: UUID? = nil) {
+        let markdown = ContextShelfMarkdownFormatter.format(items)
+        guard !markdown.isEmpty else { return }
+        if let identifier {
+            appendMarkdown(markdown, to: identifier)
+        } else {
+            appendMarkdown(markdown)
+        }
+    }
+
+    /// Appends Shelf content to the note that Quick Note would currently target.
+    /// This deliberately uses the same persisted mode and target ID as the
+    /// Quick Note controller, so Shelf actions do not silently depend on the
+    /// workspace's incidental selection.
+    func appendShelfItemsToQuickNote(_ items: [ContextShelfItem]) -> UUID? {
+        let savedTargetID = UserDefaults.standard.string(forKey: "quickNoteTargetID")
+            .flatMap(UUID.init(uuidString:))
+        let mode = UserDefaults.standard.string(forKey: "quickNoteTargetMode")
+            .flatMap(QuickNoteTargetMode.init(rawValue:)) ?? .lastQuickNote
+        let targetID = QuickNoteTargetResolver.resolve(
+            mode: mode,
+            savedTargetID: savedTargetID,
+            selectedNoteID: selectedNoteID,
+            notes: notes
+        )
+        guard let targetID else { return nil }
+        appendShelfItems(items, to: targetID)
+        UserDefaults.standard.set(targetID.uuidString, forKey: "quickNoteTargetID")
+        return targetID
+    }
+
+    func createNoteFromShelf(_ items: [ContextShelfItem]) {
+        let markdown = ContextShelfMarkdownFormatter.format(items)
+        guard !markdown.isEmpty, notes.count < Self.maximumNotes else { return }
+        let note = MarkdownNote(
+            title: "Shelf · \(Date().formatted(date: .abbreviated, time: .shortened))",
+            content: MarkdownNote.normalizedContent(markdown)
+        )
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        scheduleSave()
+    }
+
     func togglePin() {
         updateSelected { note in note.isPinned.toggle() }
         sortNotes()

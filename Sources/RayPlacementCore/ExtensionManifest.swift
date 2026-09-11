@@ -19,6 +19,8 @@ public struct ExtensionManifest: Codable, Sendable {
         case processControl
         case systemControl
         case externalExecution
+        /// Grants read-only access to the current Context Shelf through the host contract.
+        case contextShelf
     }
 
     public var schemaVersion: Int

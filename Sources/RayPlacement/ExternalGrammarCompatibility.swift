@@ -9,14 +9,10 @@ enum ExternalGrammarCompatibility {
     static func validate(
         source: String,
         protected: StealthProtectedText,
-        edits: [StealthGrammarDocumentChange]
+        corrected: String
     ) -> Bool {
-        let report = protected.applyingDocumentChanges(edits)
-        let corrected = report.text
         let url = "https://example.com/a?x=1"
-
-        guard report.appliedCount >= 2,
-              corrected.contains("This is wrong."),
+        guard corrected.contains("This is wrong."),
               corrected.contains("I don't know."),
               corrected.contains("Hello world."),
               corrected.contains("Hello  world."),
@@ -25,7 +21,8 @@ enum ExternalGrammarCompatibility {
               corrected.components(separatedBy: url).count == 2,
               !corrected.contains("[NAME_"),
               !corrected.contains("[URL_"),
-              StealthGrammarService.isSafeReplacement(source, corrected) else {
+              StealthGrammarService.isSafeReplacement(source, corrected),
+              protected.restoreContext(corrected) != nil else {
             return false
         }
         return true

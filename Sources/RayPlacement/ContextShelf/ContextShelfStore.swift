@@ -8,6 +8,8 @@ final class ContextShelfStore: ObservableObject {
 
     @Published private(set) var items: [ContextShelfItem] = []
     @Published var selectedIDs: Set<UUID> = []
+    @Published private(set) var lastRemoved: [ContextShelfItem] = []
+    @Published private(set) var lastCleared: [ContextShelfItem] = []
 
     private let storageURL: URL
     private let fileStore = PrivateFileStore()
@@ -66,22 +68,71 @@ final class ContextShelfStore: ObservableObject {
         return add(item)
     }
 
-    func remove(id: UUID) {
+    @discardableResult
+    func remove(id: UUID) -> ContextShelfItem? {
+        guard let item = items.first(where: { $0.id == id }) else { return nil }
         items.removeAll { $0.id == id }
         selectedIDs.remove(id)
+        lastRemoved = [item]
+        lastCleared.removeAll()
         persistPinnedItems()
+        return item
     }
 
-    func removeSelected() {
+    @discardableResult
+    func remove(items requested: [ContextShelfItem]) -> [ContextShelfItem] {
+        let ids = Set(requested.map(\.id))
+        let removed = items.filter { ids.contains($0.id) }
+        items.removeAll { ids.contains($0.id) }
+        selectedIDs.subtract(ids)
+        lastRemoved = removed
+        lastCleared.removeAll()
+        persistPinnedItems()
+        return removed
+    }
+
+    @discardableResult
+    func removeSelected() -> [ContextShelfItem] {
         let ids = selectedIDs
+        let removed = items.filter { ids.contains($0.id) }
         items.removeAll { ids.contains($0.id) }
         selectedIDs.removeAll()
+        lastRemoved = removed
+        lastCleared.removeAll()
+        persistPinnedItems()
+        return removed
+    }
+
+    @discardableResult
+    func clear() -> [ContextShelfItem] {
+        let removed = items.filter { !$0.isPinned }
+        items.removeAll { !$0.isPinned }
+        selectedIDs = selectedIDs.filter { id in items.contains { $0.id == id } }
+        lastCleared = removed
+        lastRemoved.removeAll()
+        persistPinnedItems()
+        return removed
+    }
+
+    func undoLastRemove() {
+        let restored = lastRemoved
+        guard !restored.isEmpty else { return }
+        lastRemoved.removeAll()
+        for item in restored.reversed() where !items.contains(where: { $0.id == item.id }) {
+            items.insert(item, at: 0)
+        }
+        enforceUnpinnedLimit()
         persistPinnedItems()
     }
 
-    func clear() {
-        items.removeAll { !$0.isPinned }
-        selectedIDs = selectedIDs.filter { id in items.contains { $0.id == id } }
+    func undoClear() {
+        let restored = lastCleared
+        guard !restored.isEmpty else { return }
+        lastCleared.removeAll()
+        for item in restored.reversed() where !items.contains(where: { $0.id == item.id }) {
+            items.append(item)
+        }
+        enforceUnpinnedLimit()
         persistPinnedItems()
     }
 
@@ -195,55 +246,5 @@ enum ContextShelfTextFormatting {
         let preview = lines.prefix(3).joined(separator: "\n")
         if preview.count <= 360 { return preview }
         return String(preview.prefix(357)).trimmingCharacters(in: .whitespacesAndNewlines) + "…"
-    }
-}
-
-import SwiftUI
-
-struct ContextShelfPlaceholderView: View {
-    @ObservedObject var store: ContextShelfStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Context Shelf", systemImage: "tray.full")
-                    .font(.headline)
-                Spacer()
-                Text("\(store.count) items")
-                    .foregroundStyle(.secondary)
-            }
-            if store.items.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "tray").font(.title2).foregroundStyle(.secondary)
-                    Text("Shelf is empty").font(.headline)
-                    Text("Capture highlighted text from another app or add a result here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 180)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(store.items) { item in
-                            VStack(alignment: .leading, spacing: 3) {
-                                HStack {
-                                    Image(systemName: item.kind == .selectedText ? "text.quote" : "doc.text")
-                                    Text(item.title).font(.subheadline.weight(.medium))
-                                    Spacer()
-                                    if item.isPinned { Image(systemName: "pin.fill") }
-                                }
-                                Text(item.preview)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(3)
-                            }
-                            .padding(9)
-                            .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
-                            .onTapGesture { store.toggleSelection(id: item.id) }
-                        }
-                    }
-                }
-            }
-        }
-        .padding(16)
     }
 }

@@ -104,6 +104,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             },
             onSessionFinished: { [weak conversations] in
                 conversations?.finishConversation()
+                if let conversation = conversations?.selectedConversation {
+                    ContextShelfIntegration.addDictation(conversation.transcript, conversationID: conversation.id)
+                }
             },
             onSessionFailed: { [weak conversations] in
                 conversations?.failConversationForRetry()
@@ -631,6 +634,7 @@ private struct NotesView: View {
     @ObservedObject var dictation: NoteDictationService
     @ObservedObject var presentation: NotesPresentationModel
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var contextShelf = ContextShelfStore.shared
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
@@ -657,6 +661,7 @@ private struct NotesView: View {
     @State private var showTasks = false
     @State private var showNoteSwitcher = false
     @State private var showTemplateEditor = false
+    @State private var showContextShelf = false
     @State private var editingTemplate: MarkdownUserTemplate?
     @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
@@ -852,6 +857,27 @@ private struct NotesView: View {
                 .menuStyle(.borderlessButton)
                 .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
                 .help("Choose Quick Note section")
+
+                Button {
+                    showContextShelf = true
+                } label: {
+                    Label("Shelf \(contextShelf.count)", systemImage: contextShelf.count > 0 ? "tray.full.fill" : "tray")
+                        .lineLimit(1)
+                }
+                .buttonStyle(.borderless)
+                .padding(.horizontal, 7)
+                .frame(minHeight: 28)
+                .limaNativeSurface(
+                    fill: contextShelf.count > 0 ? LimaColors.accentSoft : LimaColors.recessedSurface,
+                    radius: LimaRadius.control,
+                    border: LimaColors.border
+                )
+                .help("Open Context Shelf")
+                .accessibilityLabel("Context Shelf, \(contextShelf.count) items")
+                .popover(isPresented: $showContextShelf, arrowEdge: .bottom) {
+                    ContextShelfView(store: contextShelf)
+                        .frame(minWidth: 430, idealWidth: 480, minHeight: 360, idealHeight: 520)
+                }
 
                 Menu {
                     Button("Customize Notes") { showAppearance = true }

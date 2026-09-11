@@ -114,7 +114,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             coordinator?.rerenderCurrentDocument()
         }
         textView.wikiLinkCandidates = wikiLinkCandidates
-        textView.registerForDraggedTypes([.fileURL, .string, .tiff, .png])
+        textView.registerForDraggedTypes([.fileURL, .string, .tiff, .png, NSPasteboard.PasteboardType(ContextShelfIntegration.itemUTType.identifier)])
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
@@ -588,6 +588,14 @@ final class MarkdownTextView: NSTextView {
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard isEditable else { return false }
         let pasteboard = sender.draggingPasteboard
+        let shelfType = NSPasteboard.PasteboardType(ContextShelfIntegration.itemUTType.identifier)
+        if let data = pasteboard.data(forType: shelfType),
+           let rawID = String(data: data, encoding: .utf8),
+           let id = UUID(uuidString: rawID),
+           let item = ContextShelfStore.shared.items.first(where: { $0.id == id }) {
+            insertMarkdownBlock(ContextShelfMarkdownFormatter.format(item))
+            return true
+        }
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
             let markdown = urls.map { url in
                 if let image = NSImage(contentsOf: url), let reference = MarkdownNoteAssetStore.importImage(image) {

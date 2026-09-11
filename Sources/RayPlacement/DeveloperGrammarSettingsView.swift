@@ -251,22 +251,15 @@ struct DeveloperGrammarSettingsView: View {
         let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
         let started = Date()
-        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctText(protected.contextText, configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingCompatibility = false
             switch result {
-            case .success(let edits):
-                do {
-                    guard ExternalGrammarCompatibility.validate(
-                        source: source,
-                        protected: protected,
-                        edits: edits
-                    ) else {
-                        throw StealthGrammarRemoteClient.ClientError.compatibilityFailed
-                    }
-                    compatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"
-                } catch {
-                    compatibilityMessage = "Failed: \(error.localizedDescription)"
+            case .success(let corrected):
+                if ExternalGrammarCompatibility.validate(source: source, protected: protected, corrected: corrected) {
+                    compatibilityMessage = "Compatible · plain corrected text and protected text passed · \(latency) ms"
+                } else {
+                    compatibilityMessage = "Failed · the provider did not return a safe corrected text response"
                 }
             case .failure(let error):
                 compatibilityMessage = "Failed: \(error.localizedDescription)"
