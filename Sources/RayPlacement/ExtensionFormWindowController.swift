@@ -37,7 +37,7 @@ final class ExtensionFormWindowController: NSWindowController {
 }
 
 @MainActor
-private final class ExtensionFormViewModel: ObservableObject {
+final class ExtensionFormViewModel: ObservableObject {
     enum Phase { case ready, running, finished }
 
     let command: LoadedExtensionCommand
@@ -128,16 +128,18 @@ private final class ExtensionFormViewModel: ObservableObject {
     }
 }
 
-private struct ExtensionFormView: View {
+struct ExtensionFormView: View {
     @ObservedObject var model: ExtensionFormViewModel
-    @Environment(\.dismiss) private var dismiss
+    var showsHeader = true
 
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: LimaDesign.panelGap) {
-                header
-                GlassHairline()
+                if showsHeader {
+                    header
+                    GlassHairline()
+                }
                 HSplitView {
                     form
                         .frame(minWidth: 280, idealWidth: 330, maxWidth: 390)

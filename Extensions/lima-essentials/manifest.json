@@ -9,6 +9,7 @@
   "bundled": true,
   "provenance": "bundled",
   "trust": "bundled",
+  "presentation": "inline",
   "capabilities": [
     "clipboard",
     "accessibility",
@@ -87,8 +88,13 @@
       ],
       "icon": "key.fill",
       "action": {
-        "type": "picker",
-        "operation": "password"
+        "type": "generator"
+      },
+      "surface": {
+        "kind": "generator",
+        "preferredHeight": 430,
+        "remembersState": true,
+        "canPopOut": false
       }
     }
   ]

@@ -1,6 +1,12 @@
 import Foundation
 
 public struct ExtensionManifest: Codable, Sendable {
+    public enum Presentation: String, Codable, Sendable {
+        case inline
+        case workspace
+        case background
+    }
+
     public enum Trust: String, Codable, Sendable { case bundled, builtIn, userInstalled, unsigned }
     public enum Provenance: String, Codable, Sendable { case bundled, userInstalled, unsigned }
     public enum Capability: String, Codable, CaseIterable, Sendable {
@@ -27,9 +33,12 @@ public struct ExtensionManifest: Codable, Sendable {
     public var commands: [ExtensionCommand]
     public var capabilities: Set<Capability>
     public var trust: Trust
+    /// Where commands from this manifest should present by default. Explicit
+    /// workspace actions still retain their workspace semantics.
+    public var presentation: Presentation
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, name, version, description, pack, category, bundled, provenance, commands, capabilities, trust
+        case schemaVersion, id, name, version, description, pack, category, bundled, provenance, commands, capabilities, trust, presentation
     }
 
     public init(
@@ -44,7 +53,8 @@ public struct ExtensionManifest: Codable, Sendable {
         provenance: Provenance = .unsigned,
         commands: [ExtensionCommand],
         capabilities: Set<Capability> = [],
-        trust: Trust = .unsigned
+        trust: Trust = .unsigned,
+        presentation: Presentation = .inline
     ) {
         self.schemaVersion = schemaVersion
         self.id = id
@@ -58,6 +68,7 @@ public struct ExtensionManifest: Codable, Sendable {
         self.commands = commands
         self.capabilities = capabilities
         self.trust = trust
+        self.presentation = presentation
     }
 
     public init(from decoder: Decoder) throws {
@@ -76,6 +87,7 @@ public struct ExtensionManifest: Codable, Sendable {
         capabilities = try container.decodeIfPresent(Set<Capability>.self, forKey: .capabilities) ?? []
         trust = try container.decodeIfPresent(Trust.self, forKey: .trust)
             ?? (bundled ? .bundled : .unsigned)
+        presentation = try container.decodeIfPresent(Presentation.self, forKey: .presentation) ?? .inline
     }
 }
 
@@ -121,6 +133,33 @@ public enum ExtensionApprovalStore {
     }
 }
 
+public struct ExtensionSurfaceDescriptor: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable {
+        case form
+        case generator
+        case picker
+        case textTool
+        case liveOutput
+    }
+
+    public var kind: Kind
+    public var preferredHeight: Double?
+    public var remembersState: Bool?
+    public var canPopOut: Bool?
+
+    public init(
+        kind: Kind,
+        preferredHeight: Double? = nil,
+        remembersState: Bool? = nil,
+        canPopOut: Bool? = nil
+    ) {
+        self.kind = kind
+        self.preferredHeight = preferredHeight
+        self.remembersState = remembersState
+        self.canPopOut = canPopOut
+    }
+}
+
 public struct ExtensionCommand: Codable, Identifiable, Sendable {
     public var id: String
     public var title: String
@@ -129,9 +168,13 @@ public struct ExtensionCommand: Codable, Identifiable, Sendable {
     public var icon: String?
     public var hotkey: String?
     public var runInBackground: Bool?
+    /// Optional generic launcher surface metadata. Commands without this field
+    /// retain the legacy action routing and receive host defaults inferred from
+    /// their action type.
+    public var surface: ExtensionSurfaceDescriptor?
     public var action: ExtensionAction
 
-    public init(id: String, title: String, subtitle: String? = nil, keywords: [String]? = nil, icon: String? = nil, hotkey: String? = nil, runInBackground: Bool? = nil, action: ExtensionAction) {
+    public init(id: String, title: String, subtitle: String? = nil, keywords: [String]? = nil, icon: String? = nil, hotkey: String? = nil, runInBackground: Bool? = nil, surface: ExtensionSurfaceDescriptor? = nil, action: ExtensionAction) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
@@ -139,6 +182,7 @@ public struct ExtensionCommand: Codable, Identifiable, Sendable {
         self.icon = icon
         self.hotkey = hotkey
         self.runInBackground = runInBackground
+        self.surface = surface
         self.action = action
     }
 }
@@ -155,6 +199,7 @@ public struct ExtensionAction: Codable, Sendable {
         case url
         case window
         case workspace
+        case generator
     }
 
     public var type: ActionType
@@ -243,6 +288,8 @@ public struct ExtensionAction: Codable, Sendable {
             }
         case .form:
             capabilities = [.shell, .filesystem]
+        case .generator:
+            capabilities = []
         }
         for nested in chain ?? [] {
             capabilities.formUnion(nested.inferredCapabilities)
@@ -263,14 +310,14 @@ public struct ExtensionAction: Codable, Sendable {
             guard action.chain == nil else {
                 throw ChainValidationError.unsupportedAction(action.type)
             }
-            guard ![.shell, .form, .url, .file, .picker, .workspace].contains(action.type) else {
+            guard ![.shell, .form, .url, .file, .picker, .workspace, .generator].contains(action.type) else {
                 throw ChainValidationError.unsupportedAction(action.type)
             }
         }
     }
 }
 
-public struct ExtensionFormDefinition: Codable, Sendable {
+public struct ExtensionFormDefinition: Codable, Equatable, Sendable {
     public var title: String?
     public var submitLabel: String?
     public var fields: [ExtensionFormField]
@@ -284,7 +331,7 @@ public struct ExtensionFormDefinition: Codable, Sendable {
     }
 }
 
-public struct ExtensionFormField: Codable, Identifiable, Sendable {
+public struct ExtensionFormField: Codable, Equatable, Identifiable, Sendable {
     public enum FieldType: String, Codable, Sendable {
         case text, secure, multiline, number, toggle, picker, file, directory, date, slider, keyValue
     }
@@ -318,7 +365,7 @@ public struct ExtensionFormField: Codable, Identifiable, Sendable {
     }
 }
 
-public struct ExtensionFieldVisibility: Codable, Sendable {
+public struct ExtensionFieldVisibility: Codable, Equatable, Sendable {
     public var field: String
     public var equals: String?
     public var notEquals: String?
@@ -330,7 +377,7 @@ public struct ExtensionFieldVisibility: Codable, Sendable {
     }
 }
 
-public struct ExtensionFormExecution: Codable, Sendable {
+public struct ExtensionFormExecution: Codable, Equatable, Sendable {
     public enum ExecutionType: String, Codable, Sendable { case shell }
 
     public var type: ExecutionType
@@ -388,8 +435,9 @@ public struct LoadedExtensionCommand: Sendable {
     public var category: String?
     public var bundled: Bool
     public var version: String?
+    public var presentation: ExtensionManifest.Presentation
 
-    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand, capabilities: Set<ExtensionManifest.Capability> = [], trust: ExtensionManifest.Trust = .unsigned, pack: String? = nil, category: String? = nil, bundled: Bool = false, version: String? = nil) {
+    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand, capabilities: Set<ExtensionManifest.Capability> = [], trust: ExtensionManifest.Trust = .unsigned, pack: String? = nil, category: String? = nil, bundled: Bool = false, version: String? = nil, presentation: ExtensionManifest.Presentation = .inline) {
         self.extensionID = extensionID
         self.extensionName = extensionName
         self.directory = directory
@@ -400,6 +448,7 @@ public struct LoadedExtensionCommand: Sendable {
         self.category = category
         self.bundled = bundled
         self.version = version
+        self.presentation = presentation
     }
 
     /// Stable preferences identity for a pack. User extensions without pack

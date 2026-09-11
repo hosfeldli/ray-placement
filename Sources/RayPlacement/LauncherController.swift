@@ -21,6 +21,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private let panel: LauncherPanel
     private let toast = ActionToastController()
+    private let contextShelfCapture = ContextShelfCaptureService()
     private let extensionExecutor = ExtensionExecutor()
     private lazy var extensionFormWindow = ExtensionFormWindowController()
     private let writingChecker = RuleBasedWritingChecker()
@@ -32,7 +33,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
     private let terminalModel: DeveloperTerminalModel
     private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
-    private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
+    private let passwordGeneratorModel: PasswordGeneratorModel
+    private let inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
     private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
     private lazy var formatterWindow = FormatterWindowController()
     private lazy var workflowWindow = WorkflowWindowController { [weak self] workflow in
@@ -67,13 +69,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
         self.terminalModel = DeveloperTerminalModel()
+        self.passwordGeneratorModel = PasswordGeneratorModel()
+        self.inlineExtensionSurfaceModel = InlineExtensionSurfaceModel()
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
 
         viewModel.delegate = self
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(
+                viewModel: viewModel,
+                terminalModel: terminalModel,
+                passwordGeneratorModel: passwordGeneratorModel,
+                inlineExtensionSurfaceModel: inlineExtensionSurfaceModel
+            )))
         modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
             .map { mode, results, query in
                 LauncherPanelLayout.size(
@@ -175,6 +184,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
     func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
+
+    func captureSelectionToShelf(from sourceApplication: NSRunningApplication?) {
+        contextShelfCapture.capture(from: sourceApplication) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.toast.show("Added selection to Shelf")
+            case .failure(let error):
+                self.toast.show(error.localizedDescription, style: .error, duration: 3.2)
+            }
+        }
+    }
 
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
@@ -461,7 +482,45 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.viewModel.pasteWritingResult(review)
                     return nil
                 }
+                if case .extensionSurface(let session) = self.viewModel.mode {
+                    if self.isPasswordGeneratorSession(session) {
+                        passwordGeneratorModel.copy()
+                        if !flags.contains(.command) { self.viewModel.enter(.root) }
+                    } else if session.kind == .form {
+                        inlineExtensionSurfaceModel.run()
+                    }
+                    return nil
+                }
                 self.viewModel.executeSelected()
+                return nil
+            }
+            if flags.contains(.command), characters == "r",
+               case .extensionSurface(let session) = self.viewModel.mode {
+                if self.isPasswordGeneratorSession(session) {
+                    passwordGeneratorModel.generate()
+                } else if session.kind == .form {
+                    inlineExtensionSurfaceModel.run()
+                }
+                return nil
+            }
+            if flags.contains(.command), characters == "c",
+               case .extensionSurface(let session) = self.viewModel.mode {
+                if self.isPasswordGeneratorSession(session) {
+                    passwordGeneratorModel.copy()
+                } else if session.kind == .form {
+                    inlineExtensionSurfaceModel.copyOutput()
+                }
+                return nil
+            }
+            if flags.contains(.command), characters == "o",
+               case .extensionSurface(let session) = self.viewModel.mode,
+               session.kind == .form,
+               session.canPopOut,
+               let command = inlineExtensionSurfaceModel.command {
+                hide()
+                extensionFormWindow.present(command: command) { [weak self] values, completion in
+                    self?.extensionExecutor.executeForm(command, values: values, completion: completion)
+                }
                 return nil
             }
             if event.keyCode == 53 {
@@ -480,29 +539,111 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func executeExtension(_ command: LoadedExtensionCommand) {
-        if command.command.action.type == .form {
-            hide()
-            extensionFormWindow.present(command: command) { [weak self] values, completion in
+    private func isPasswordGeneratorCommand(_ command: LoadedExtensionCommand) -> Bool {
+        command.command.action.type == .generator
+            && (command.command.id == "password-generator" || command.command.id.hasSuffix(".password-generator"))
+    }
+
+    private func isPasswordGeneratorSession(_ session: ExtensionSurfaceSession) -> Bool {
+        session.kind == .generator
+            && (session.id == "password-generator" || session.id.hasSuffix(".password-generator"))
+    }
+
+    private func sessionMode(_ session: ExtensionSurfaceSession) -> LauncherMode {
+        .extensionSurface(session)
+    }
+
+    private func surfaceKind(for command: LoadedExtensionCommand) -> ExtensionSurfaceKind? {
+        if let kind = command.command.surface?.kind {
+            switch kind {
+            case .form: return .form
+            case .generator: return .generator
+            case .picker: return .picker
+            case .textTool: return .textTool
+            case .liveOutput: return .liveOutput
+            }
+        }
+        switch command.command.action.type {
+        case .form: return .form
+        case .generator: return .generator
+        default: return nil
+        }
+    }
+
+    private func presentInlineSurface(for command: LoadedExtensionCommand, kind: ExtensionSurfaceKind) {
+        guard command.presentation != .background else {
+            presentError(
+                title: command.command.title,
+                message: "Interactive extension surfaces need inline or workspace presentation; background surfaces cannot collect input."
+            )
+            return
+        }
+        let descriptor = command.command.surface
+        let remembersState = descriptor?.remembersState ?? true
+        let preferredHeight = CGFloat(min(max(descriptor?.preferredHeight ?? (kind == .generator ? 430 : 600), 300), 900))
+        let canPopOut = descriptor?.canPopOut ?? (kind == .form)
+        let session = ExtensionSurfaceSession(
+            id: command.extensionID + "." + command.command.id,
+            title: command.command.title,
+            kind: kind,
+            preferredHeight: preferredHeight,
+            canPopOut: canPopOut,
+            remembersState: remembersState
+        )
+
+        if kind == .form {
+            guard command.command.action.form != nil else {
+                presentError(title: command.command.title, message: "The inline form definition is missing.")
+                return
+            }
+            inlineExtensionSurfaceModel.configure(command: command, remembersState: remembersState) { [weak self] values, completion in
                 self?.extensionExecutor.executeForm(command, values: values, completion: completion)
             }
+        } else if kind == .generator && isPasswordGeneratorCommand(command) {
+            // Preferences survive launches, but generated credentials do not.
+            // Generate a fresh value whenever the surface is opened.
+            passwordGeneratorModel.generate()
+        }
+        viewModel.enter(sessionMode(session))
+        presentPanel()
+    }
+
+    private func executeExtension(_ command: LoadedExtensionCommand) {
+        if let kind = surfaceKind(for: command) {
+            if command.presentation == .workspace {
+                if kind == .form {
+                    hide()
+                    extensionFormWindow.present(command: command) { [weak self] values, completion in
+                        self?.extensionExecutor.executeForm(command, values: values, completion: completion)
+                    }
+                } else {
+                    presentError(title: command.command.title, message: "This extension surface does not provide a workspace presentation.")
+                }
+                return
+            }
+            presentInlineSurface(for: command, kind: kind)
             return
         }
 
         let isShell = command.command.action.type == .shell
         let runsInBackground = isShell && command.command.runInBackground == true
-        if runsInBackground {
+        let suppressPersistentUI = command.presentation == .background || runsInBackground
+        if suppressPersistentUI {
             hide()
-            toast.show("\(command.command.title) is running", style: .working, duration: 3_600)
-        } else if isShell {
+            if isShell { toast.show("\(command.command.title) is running", style: .working, duration: 3_600) }
+        } else if isShell && command.presentation != .workspace {
             viewModel.showOutput(
                 title: command.command.title,
                 text: "Running extension with the configured performance budget…",
                 state: .running(canCancel: true)
             )
             if !panel.isVisible { presentPanel() }
-        } else {
+        } else if command.presentation == .workspace {
             hide()
+        } else {
+            // Native picker/action commands already dispatch their own launcher
+            // surface after execution. Keep the launcher present for the inline
+            // default so the command/search surface remains the product shell.
         }
 
         extensionExecutor.execute(command, clipboard: clipboard) { [weak self] result in
@@ -510,14 +651,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             switch result {
             case .success(.completed(let output)):
                 if let output, !output.isEmpty {
-                    if runsInBackground {
+                    if suppressPersistentUI {
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
                         self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                         if !self.panel.isVisible { self.presentPanel() }
                     }
                 } else if isShell {
-                    if runsInBackground {
+                    if suppressPersistentUI {
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
                         self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
@@ -532,7 +673,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.dispatchNativeChain(actions)
 
             case .failure(let error):
-                if runsInBackground {
+                if suppressPersistentUI {
                     self.toast.show("\(command.command.title) failed · \(error.localizedDescription)", style: .error, duration: 5)
                 } else {
                     self.presentError(title: command.command.title, error: error)
@@ -587,7 +728,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 viewModel.enter(.picker(.timezone), query: query ?? "")
                 presentPanel()
             case "password":
-                passwordGeneratorWindow.present()
+                passwordGeneratorModel.generate()
+                viewModel.enter(.extensionSurface(ExtensionSurfaceSession(
+                    id: "password-generator",
+                    title: "Password Generator",
+                    kind: .generator,
+                    preferredHeight: 430,
+                    canPopOut: false
+                )))
+                presentPanel()
             default:
                 presentError(title: "Picker", message: "Unsupported picker operation: \(operation)")
             }
@@ -633,7 +782,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .system:
             dispatchSystemAction(action, completion: completion)
 
-        case .form, .shell, .url, .file:
+        case .form, .generator, .shell, .url, .file:
             // These action types are completed by ExtensionExecutor and should
             // never arrive here. Keep the fallback explicit for safety.
             completion()
@@ -1752,6 +1901,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openTerminal:
             showDeveloperTerminal()
+
+        case .openContextShelf:
+            viewModel.enter(.contextShelf)
+
+        case .addSelectionToShelf:
+            captureSelectionToShelf(from: previousApplication ?? lastExternalApplication)
 
         case .openPermissionCenter:
             hide()

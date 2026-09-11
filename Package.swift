@@ -39,6 +39,10 @@ let package = Package(
         .testTarget(
             name: "RayPlacementWritingTests",
             dependencies: ["RayPlacementWriting"]
+        ),
+        .testTarget(
+            name: "RayPlacementTests",
+            dependencies: ["RayPlacement"]
         )
     ],
     swiftLanguageModes: [.v5]

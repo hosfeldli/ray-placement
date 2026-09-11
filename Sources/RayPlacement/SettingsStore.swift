@@ -269,6 +269,7 @@ enum ApplicationPaths {
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
     static let usageLog = usage.appendingPathComponent("usage-log.json")
     static let workspaceProfiles = applicationSupport.appendingPathComponent("workspace-profiles.json")
+    static let contextShelf = applicationSupport.appendingPathComponent("context-shelf.json")
 
     static func prepare() throws {
         try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
@@ -301,6 +302,8 @@ final class SettingsStore: ObservableObject {
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
         static let terminalShortcut = "terminalShortcut"
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
+        static let contextShelfCaptureShortcut = "contextShelfCaptureShortcut"
+        static let contextShelfCaptureHotkeyEnabled = "contextShelfCaptureHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
@@ -443,6 +446,22 @@ final class SettingsStore: ObservableObject {
 
     @Published var terminalShortcut: String {
         didSet { defaults.set(terminalShortcut, forKey: Key.terminalShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
+    }
+
+    @Published var contextShelfCaptureShortcut: String {
+        didSet {
+            defaults.set(contextShelfCaptureShortcut, forKey: Key.contextShelfCaptureShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var contextShelfCaptureHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(contextShelfCaptureHotkeyEnabled, forKey: Key.contextShelfCaptureHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
     }
 
     @Published var terminalHotkeyEnabled: Bool {
@@ -730,6 +749,8 @@ final class SettingsStore: ObservableObject {
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
+        contextShelfCaptureShortcut = defaults.string(forKey: Key.contextShelfCaptureShortcut) ?? "control+option+s"
+        contextShelfCaptureHotkeyEnabled = defaults.object(forKey: Key.contextShelfCaptureHotkeyEnabled) as? Bool ?? false
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
@@ -901,6 +922,12 @@ final class SettingsStore: ObservableObject {
         isRestoringActionShortcut = false
     }
 
+    func restoreContextShelfCaptureShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        contextShelfCaptureShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
 
     func restoreStealthGrammarShortcut(_ shortcut: String) {
@@ -1056,6 +1083,8 @@ final class SettingsStore: ObservableObject {
         case Key.notesDockRightHotkeyEnabled: if let value = bool() { notesDockRightHotkeyEnabled = value }
         case Key.terminalShortcut: if let value = string() { terminalShortcut = value }
         case Key.terminalHotkeyEnabled: if let value = bool() { terminalHotkeyEnabled = value }
+        case Key.contextShelfCaptureShortcut: if let value = string() { contextShelfCaptureShortcut = value }
+        case Key.contextShelfCaptureHotkeyEnabled: if let value = bool() { contextShelfCaptureHotkeyEnabled = value }
         case Key.accentTheme:
             if let value = string(), let parsed = AppAccentTheme(rawValue: value) { accentTheme = parsed }
         case Key.contrastMode:

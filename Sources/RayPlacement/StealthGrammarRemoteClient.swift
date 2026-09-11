@@ -37,14 +37,18 @@ final class StealthGrammarRemoteClient {
     }
 
     static let systemPrompt = """
-    You are a high-confidence copy editor. Return only a JSON object with this exact shape:
-    {"changes":[{"segment_id":"s0","find":"This are","replacement":"This is","before":null,"after":null}]}
+    You are a high-confidence copy editor. You receive one complete sanitized
+    document with ordinary placeholders such as [NAME_0] and [URL_0]. Return only
+    a JSON object with this exact shape:
+    {"changes":[{"find":"This are","replacement":"This is","before":null,"after":null}]}
 
-    Return only small anchored replacements. `find` must be copied exactly from one
-    supplied segment. If a phrase occurs more than once, include before and/or after
-    context; otherwise omit the change. Preserve all untouched whitespace, paragraph
-    breaks, punctuation, formatting, technical terms, and voice. Never rewrite an
-    entire segment and never return explanations.
+    Return only small atomic replacements against the supplied document. `find`
+    must be copied exactly from that document. If a phrase occurs more than once,
+    include before and/or after context; otherwise omit the change. Never include
+    a placeholder in find or replacement. Preserve all untouched whitespace,
+    paragraph breaks, punctuation, Markdown structure, URLs, names, technical
+    terms, and voice. Never rewrite a sentence or document and never return
+    explanations.
     """
 
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
@@ -55,10 +59,10 @@ final class StealthGrammarRemoteClient {
             "type": "object", "properties": [
                 "changes": ["type": "array", "items": [
                     "type": "object", "properties": [
-                        "segment_id": ["type": "string"], "find": ["type": "string"],
+                        "find": ["type": "string"],
                         "replacement": ["type": "string"], "before": ["type": ["string", "null"]],
                         "after": ["type": ["string", "null"]]
-                    ], "required": ["segment_id", "find", "replacement", "before", "after"],
+                    ], "required": ["find", "replacement", "before", "after"],
                     "additionalProperties": false
                 ]]
             ], "required": ["changes"], "additionalProperties": false
@@ -123,7 +127,7 @@ final class StealthGrammarRemoteClient {
                 text: configuration.provider == .openAI ? "{\"changes\":[]}" : "Reply with the single word OK.",
                 configuration: configuration,
                 systemPrompt: configuration.provider == .openAI
-                    ? "Return an empty segments array to confirm the structured correction contract."
+                    ? "Return an empty changes array to confirm the atomic document correction contract."
                     : Self.connectionSystemPrompt
               ) else {
             completion(.failure(ClientError.invalidConfiguration))
@@ -136,7 +140,7 @@ final class StealthGrammarRemoteClient {
             }
             completion(result.flatMap { value in
                 do {
-                    _ = try Self.extractAnchoredChanges(from: value)
+                    _ = try Self.extractDocumentChanges(from: value)
                     return .success("OK")
                 } catch {
                     return .failure(error)
@@ -149,6 +153,28 @@ final class StealthGrammarRemoteClient {
         let publicSegments = segments.map { ["id": $0.id, "text": $0.text] }
         guard let data = try? JSONSerialization.data(withJSONObject: ["segments": publicSegments]) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    @discardableResult
+    func correctDocument(
+        _ contextText: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String = StealthGrammarRemoteClient.systemPrompt,
+        completion: @escaping (Result<[StealthGrammarDocumentChange], Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !contextText.isEmpty,
+              let request = makeRequest(text: contextText, configuration: configuration, systemPrompt: systemPrompt) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider) { result in
+            completion(result.flatMap { value in
+                do { return .success(try Self.extractDocumentChanges(from: value)) }
+                catch { return .failure(error) }
+            })
+        }
     }
 
     @discardableResult
@@ -408,6 +434,25 @@ final class StealthGrammarRemoteClient {
 
     private struct ChangeEnvelope: Decodable {
         let changes: [StealthGrammarAnchoredChange]
+    }
+
+    private struct DocumentChangeEnvelope: Decodable {
+        let changes: [StealthGrammarDocumentChange]
+    }
+
+    private static func extractDocumentChanges(from value: String) throws -> [StealthGrammarDocumentChange] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var candidates = [trimmed]
+        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
+            candidates.append(String(trimmed[first...last]))
+        }
+        for candidate in candidates {
+            guard let data = candidate.data(using: .utf8) else { continue }
+            if let envelope = try? JSONDecoder().decode(DocumentChangeEnvelope.self, from: data) {
+                return envelope.changes
+            }
+        }
+        throw ClientError.invalidJSON
     }
 
     private static func extractAnchoredChanges(from value: String) throws -> [StealthGrammarAnchoredChange] {

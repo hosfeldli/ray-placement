@@ -33,6 +33,8 @@ enum DeveloperGrammarProvider: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .openAI:
             return [
+                .init(id: "gpt-5.6-luna", title: "GPT-5.6 Luna · Fast"),
+                .init(id: "gpt-5.6-terra", title: "GPT-5.6 Terra · Quality"),
                 .init(id: "gpt-4o-mini", title: "GPT-4o mini"),
                 .init(id: "gpt-4.1-mini", title: "GPT-4.1 mini"),
                 .init(id: "gpt-4.1", title: "GPT-4.1"),

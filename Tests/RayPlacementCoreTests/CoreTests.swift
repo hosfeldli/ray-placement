@@ -209,7 +209,7 @@ private func packageRoot() -> URL {
         "picker:emoji",
         "picker:file",
         "picker:timezone",
-        "picker:password"
+        "generator:"
     ])
 
     let windows = try JSONDecoder().decode(
@@ -705,4 +705,30 @@ private func packageRoot() -> URL {
         notes: [selected, last]
     )
     #expect(resolved == last.id)
+}
+
+
+@Test func extensionPresentationDefaultsInlineAndSurfaceMetadataDecodes() throws {
+    let data = #"""
+    {
+      "id": "dev.surface",
+      "name": "Surface",
+      "commands": [
+        {
+          "id": "generate",
+          "title": "Generate",
+          "action": { "type": "generator" },
+          "surface": { "kind": "generator", "preferredHeight": 430, "remembersState": true, "canPopOut": false }
+        }
+      ]
+    }
+    """#.data(using: .utf8)!
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.presentation == .inline)
+    let command = try #require(manifest.commands.first)
+    #expect(command.action.type == .generator)
+    #expect(command.surface?.kind == .generator)
+    #expect(command.surface?.preferredHeight == 430)
+    #expect(command.surface?.remembersState == true)
+    #expect(command.surface?.canPopOut == false)
 }

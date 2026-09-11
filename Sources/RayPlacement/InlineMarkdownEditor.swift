@@ -712,6 +712,77 @@ final class MarkdownTextView: NSTextView {
         let lineRange = source.lineRange(for: NSRange(location: selection.location, length: 0))
         let line = source.substring(with: lineRange).trimmingCharacters(in: .newlines)
 
+        // `line` has already had its paragraph terminator removed. Derive the
+        // terminator from the original storage instead of checking the
+        // trimmed value; otherwise the semantic path can mistake the caret
+        // before CRLF/LF for a mid-line caret and skip continuation entirely.
+        let lineEnd = NSMaxRange(lineRange)
+        let lineTerminator: String
+        if lineRange.length >= 2,
+           source.substring(with: NSRange(location: lineEnd - 2, length: 2)) == "\r\n" {
+            lineTerminator = "\r\n"
+        } else if lineRange.length >= 1,
+                  source.character(at: lineEnd - 1) == 10 {
+            lineTerminator = "\n"
+        } else if lineRange.length >= 1,
+                  source.character(at: lineEnd - 1) == 13 {
+            lineTerminator = "\r"
+        } else {
+            lineTerminator = ""
+        }
+        let lineContentEnd = lineEnd - lineTerminator.utf16.count
+
+        // Rich Markdown stores the checkbox as one attachment character. Use
+        // that semantic state first; the textual matcher below is only for
+        // raw Markdown that has not yet been enriched. Continuation is an
+        // end-of-line gesture; pressing Return in the middle of a task must
+        // remain an ordinary newline operation.
+        if selection.length == 0,
+           selection.location == lineContentEnd,
+           let task = semanticTaskOnCurrentLine(lineRange: lineRange) {
+            let attachmentRange = task.range
+            let linePrefix = source.substring(with: NSRange(location: lineRange.location, length: max(0, attachmentRange.location - lineRange.location)))
+            let bodyStart = NSMaxRange(attachmentRange)
+            let body = source.substring(with: NSRange(location: bodyStart, length: max(0, NSMaxRange(lineRange) - bodyStart)))
+                .trimmingCharacters(in: .newlines)
+                .trimmingCharacters(in: .whitespaces)
+            if body.isEmpty {
+                // An empty task is an exit gesture: remove the rendered task
+                // marker while retaining the paragraph break, leaving a plain
+                // empty line instead of creating an endless checklist.
+                var contentLength = lineRange.length
+                while contentLength > 0 {
+                    let character = source.character(at: lineRange.location + contentLength - 1)
+                    if character == 10 || character == 13 { contentLength -= 1 } else { break }
+                }
+                replaceRichText(
+                    range: NSRange(location: lineRange.location, length: contentLength),
+                    with: NSAttributedString(string: "")
+                )
+            } else {
+                let insertionTerminator = lineTerminator.isEmpty ? "\n" : lineTerminator
+                let insertion = NSMutableAttributedString(string: "\(insertionTerminator)\(linePrefix)")
+                let fresh = MarkdownTaskAttachment(checked: false)
+                fresh.onChange = { [weak self] in self?.attachmentChangeHandler?() }
+                insertion.append(NSAttributedString(attachment: fresh))
+                insertion.append(NSAttributedString(string: " "))
+                // `lineRange` includes the paragraph terminator, while the
+                // insertion point at the end of a line is immediately before
+                // it. Consume that existing terminator so Return creates one
+                // continuation line rather than an unintended blank line.
+                var replacementRange = selection
+                if selection.location < source.length {
+                    if source.substring(with: NSRange(location: selection.location, length: min(2, source.length - selection.location))) == "\r\n" {
+                        replacementRange.length = 2
+                    } else if source.character(at: selection.location) == 10 || source.character(at: selection.location) == 13 {
+                        replacementRange.length = 1
+                    }
+                }
+                replaceRichText(range: replacementRange, with: insertion)
+            }
+            return
+        }
+
         let continuation: String?
         if let match = line.firstMatch(pattern: #"^(\s*)- (?:\[[ xX]\]|\u{FFFC}) (.*)$"#) {
             continuation = match[2].isEmpty ? nil : "\n\(match[1])- [ ] "
@@ -731,6 +802,64 @@ final class MarkdownTextView: NSTextView {
             return
         }
         insertText(continuation, replacementRange: selection)
+    }
+
+    private func semanticTaskOnCurrentLine(lineRange: NSRange) -> (task: MarkdownTaskAttachment, range: NSRange)? {
+        guard let attributed = textStorage else { return nil }
+        var found: (MarkdownTaskAttachment, NSRange)?
+        attributed.enumerateAttribute(.attachment, in: lineRange) { value, range, stop in
+            if let task = value as? MarkdownTaskAttachment {
+                found = (task, range)
+                stop.pointee = true
+            }
+        }
+        return found.map { (task: $0.0, range: $0.1) }
+    }
+
+    private func replaceRichText(range: NSRange, with replacement: NSAttributedString) {
+        guard shouldChangeText(in: range, replacementString: replacement.string) else { return }
+        textStorage?.replaceCharacters(in: range, with: replacement)
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location + replacement.length, length: 0))
+    }
+
+    override func insertTab(_ sender: Any?) {
+        guard let task = semanticTaskOnCurrentLine(lineRange: (string as NSString).lineRange(for: selectedRange())) else {
+            super.insertTab(sender)
+            return
+        }
+        indentChecklistLine(task.range, outdent: false)
+    }
+
+    private func indentChecklistLine(_ taskRange: NSRange, outdent: Bool) {
+        let source = string as NSString
+        let lineRange = source.lineRange(for: taskRange)
+        let line = source.substring(with: lineRange)
+        let indentation = String(line.prefix { $0 == " " || $0 == "\t" })
+        if outdent {
+            guard !indentation.isEmpty else { return }
+            let removeCount = indentation.hasPrefix("\t") ? 1 : min(4, indentation.count)
+            replaceAndSelect(range: NSRange(location: lineRange.location, length: removeCount), replacement: "", selectionOffset: max(0, selectedRange().location - lineRange.location - removeCount), selectionLength: selectedRange().length)
+        } else {
+            replaceAndSelect(range: NSRange(location: lineRange.location, length: 0), replacement: "    ", selectionOffset: selectedRange().location - lineRange.location + 4, selectionLength: selectedRange().length)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 36, flags.contains(.shift) {
+            super.insertNewline(nil)
+            return
+        }
+        if event.keyCode == 48, flags.contains(.shift) {
+            guard let task = semanticTaskOnCurrentLine(lineRange: (string as NSString).lineRange(for: selectedRange())) else {
+                super.keyDown(with: event)
+                return
+            }
+            indentChecklistLine(task.range, outdent: true)
+            return
+        }
+        super.keyDown(with: event)
     }
 
     func toggleBold() {

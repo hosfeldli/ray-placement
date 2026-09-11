@@ -58,21 +58,29 @@ struct NotesAppearancePalette {
 
     init(theme: NotesVisualTheme = .prism, appearance suppliedAppearance: NSAppearance? = nil) {
         let appearance = suppliedAppearance ?? NSApp?.effectiveAppearance ?? SettingsStore.shared.appearance.nsAppearance
-        isDark = appearance?.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        let resolvedAppearance = appearance ?? NSAppearance(named: .aqua)!
+        isDark = resolvedAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
 
-        background = NSColor.textBackgroundColor
-        elevatedSurface = NSColor.controlBackgroundColor
+        // AppKit's semantic colors are dynamic. Creating them outside the
+        // supplied appearance can resolve them against the process/window
+        // appearance before `resolved(...)` gets a chance to run, which made
+        // an explicitly light table inherit dark-mode colors in screenshots.
+        // Resolve every system-derived palette input under the same appearance
+        // that will be used for the table renderer.
+        background = Self.resolved(NSColor.textBackgroundColor, appearance: resolvedAppearance)
+        elevatedSurface = Self.resolved(NSColor.controlBackgroundColor, appearance: resolvedAppearance)
         recessedSurface = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.16 : 0.08)
-        textPrimary = NSColor.textColor
-        textSecondary = NSColor.secondaryLabelColor
-        textTertiary = NSColor.tertiaryLabelColor
+        textPrimary = Self.resolved(NSColor.textColor, appearance: resolvedAppearance)
+        textSecondary = Self.resolved(NSColor.secondaryLabelColor, appearance: resolvedAppearance)
+        textTertiary = Self.resolved(NSColor.tertiaryLabelColor, appearance: resolvedAppearance)
 
         let baseAccent = Self.themeAccent(theme, dark: isDark)
         accent = baseAccent
         accentHover = Self.blend(baseAccent, with: isDark ? .white : .black, fraction: isDark ? 0.12 : 0.08)
         accentSoft = baseAccent.withAlphaComponent(isDark ? 0.16 : 0.10)
         focusRing = baseAccent.withAlphaComponent(isDark ? 0.96 : 0.84)
-        separator = NSColor.separatorColor.withAlphaComponent(isDark ? 0.76 : 0.62)
+        separator = Self.resolved(NSColor.separatorColor, appearance: resolvedAppearance)
+            .withAlphaComponent(isDark ? 0.76 : 0.62)
         strongSeparator = Self.blend(separator, with: textPrimary, fraction: isDark ? 0.42 : 0.30)
 
         taskUnchecked = Self.blend(separator, with: textPrimary, fraction: isDark ? 0.18 : 0.10)
@@ -83,11 +91,11 @@ struct NotesAppearancePalette {
         // Dark mode uses deliberately stronger blends than Light mode. The
         // values are semantic, not calibrated RGBs, so native appearance and
         // accessibility settings remain the source of truth.
-        tableHeader = Self.blend(background, with: baseAccent, fraction: isDark ? 0.13 : 0.085)
+        tableHeader = Self.blend(background, with: baseAccent, fraction: isDark ? 0.13 : 0.035)
         tableGrid = separator.withAlphaComponent(isDark ? 0.78 : 0.58)
         tableOuterBorder = Self.blend(separator, with: textPrimary, fraction: isDark ? 0.58 : 0.42)
-        tableHover = Self.blend(tableHeader, with: baseAccent, fraction: isDark ? 0.20 : 0.12)
-        tableSelectedCell = accentSoft
+        tableHover = Self.blend(background, with: baseAccent, fraction: isDark ? 0.20 : 0.025)
+        tableSelectedCell = baseAccent.withAlphaComponent(isDark ? 0.16 : 0.06)
 
         codeBackground = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.28 : 0.12)
         codeText = textPrimary

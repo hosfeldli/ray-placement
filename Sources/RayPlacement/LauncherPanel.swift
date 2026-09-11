@@ -15,6 +15,7 @@ enum LauncherPanelLayout {
 
         let width = density.launcherWidth
         let standardHeight = density.launcherHeight
+        if mode == .contextShelf { return NSSize(width: width, height: min(640, max(standardHeight, 520))) }
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
 
         switch mode {
@@ -27,6 +28,8 @@ enum LauncherPanelLayout {
             return NSSize(width: width, height: min(standardHeight, max(286, idleHeight)))
         case .output, .writingReview:
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))
+        case .extensionSurface(let session):
+            return NSSize(width: width, height: min(640, max(standardHeight, session.preferredHeight)))
         case .picker(.emoji), .picker(.applications), .picker(.displays), .picker(.timezone), .files, .clipboard, .history:
             return NSSize(width: width, height: standardHeight)
         default:

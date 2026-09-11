@@ -151,8 +151,8 @@ final class RuleBasedWritingChecker {
         }
 
         progress("Applying External Grammar…")
-        remoteTask = remoteClient.correctSegments(
-            protected.editableSegments(),
+        remoteTask = remoteClient.correctDocument(
+            protected.contextText,
             configuration: configuration,
             systemPrompt: self.externalSystemPrompt
         ) { [weak self] result in
@@ -184,9 +184,10 @@ final class RuleBasedWritingChecker {
     private func externalReview(
         source: String,
         protected: StealthProtectedText,
-        edits: [StealthGrammarAnchoredChange]
+        edits: [StealthGrammarDocumentChange]
     ) throws -> WritingReview {
-        let enhanced = try protected.apply(edits)
+        let report = protected.applyingDocumentChanges(edits)
+        let enhanced = report.text
         guard StealthGrammarService.isSafeReplacement(source, enhanced) else {
             throw StealthGrammarRemoteClient.ClientError.safetyRejected
         }
@@ -205,8 +206,8 @@ final class RuleBasedWritingChecker {
         guard self.operationID == operationID else { return }
         progress("Validating External Grammar response… retrying once")
         let retryPrompt = externalSystemPrompt + "\nThe previous response violated a local invariant: " + violation + ". Return a smaller anchored change or an empty changes array."
-        remoteTask = remoteClient.correctSegments(
-            protected.editableSegments(),
+        remoteTask = remoteClient.correctDocument(
+            protected.contextText,
             configuration: configuration,
             systemPrompt: retryPrompt
         ) { [weak self] retryResult in
@@ -342,8 +343,8 @@ final class RuleBasedWritingChecker {
                 return
             }
             progress("Checking with External Grammar…")
-            remoteTask = remoteClient.correctSegments(
-                protected.editableSegments(),
+            remoteTask = remoteClient.correctDocument(
+                protected.contextText,
                 configuration: configuration,
                 systemPrompt: self.externalSystemPrompt
             ) { [weak self] result in
@@ -380,9 +381,9 @@ final class RuleBasedWritingChecker {
     private func externalStealthReplacement(
         source: String,
         protected: StealthProtectedText,
-        edits: [StealthGrammarAnchoredChange]
+        edits: [StealthGrammarDocumentChange]
     ) throws -> String {
-        let corrected = try protected.apply(edits)
+        let corrected = protected.applyingDocumentChanges(edits).text
         guard StealthGrammarService.isSafeReplacement(source, corrected) else {
             throw StealthGrammarRemoteClient.ClientError.safetyRejected
         }
@@ -401,8 +402,8 @@ final class RuleBasedWritingChecker {
         guard self.operationID == operationID else { return }
         progress("Validating External Grammar response… retrying once")
         let retryPrompt = externalSystemPrompt + "\nThe previous response violated a local invariant: " + violation + ". Return only a smaller anchored correction or an empty changes array."
-        remoteTask = remoteClient.correctSegments(
-            protected.editableSegments(),
+        remoteTask = remoteClient.correctDocument(
+            protected.contextText,
             configuration: configuration,
             systemPrompt: retryPrompt
         ) { [weak self] retryResult in

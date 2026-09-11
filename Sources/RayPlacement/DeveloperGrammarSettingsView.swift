@@ -178,7 +178,7 @@ struct DeveloperGrammarSettingsView: View {
                             .foregroundStyle(compatibilityMessage.hasPrefix("Compatible") ? .green : .secondary)
                     }
                 }
-                Text("Sends a protected sample, requests ID-based structured edits, and validates the provider response without changing your notes.")
+                Text("Sends a sanitized full-context sample, requests atomic find/replacement edits, and validates protected values without changing your notes.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -248,22 +248,21 @@ struct DeveloperGrammarSettingsView: View {
         }
         isTestingCompatibility = true
         compatibilityMessage = nil
-        let source = "This are a grammer sentence with Lima and https://example.com."
+        let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
         let started = Date()
-        StealthGrammarRemoteClient().correctSegments(protected.editableSegments(), configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingCompatibility = false
             switch result {
             case .success(let edits):
                 do {
-                    guard !edits.isEmpty else {
+                    guard ExternalGrammarCompatibility.validate(
+                        source: source,
+                        protected: protected,
+                        edits: edits
+                    ) else {
                         throw StealthGrammarRemoteClient.ClientError.compatibilityFailed
-                    }
-                    let corrected = try protected.apply(edits)
-                    guard StealthGrammarService.isSafeReplacement(source, corrected),
-                          corrected != source else {
-                        throw StealthGrammarRemoteClient.ClientError.safetyRejected
                     }
                     compatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"
                 } catch {

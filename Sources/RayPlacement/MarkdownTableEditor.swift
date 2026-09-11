@@ -289,7 +289,6 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             systemSymbolName: "tablecells",
             accessibilityDescription: nil
         ) ?? NSImage())
-        icon.contentTintColor = .controlAccentColor
         toolbarIcon = icon
         icon.setContentHuggingPriority(.required, for: .horizontal)
 
@@ -302,10 +301,17 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         title.wantsLayer = true
         title.layer?.cornerRadius = 4
         title.layer?.borderWidth = LimaDesign.borderWidth
-        title.layer?.borderColor = LimaAppKitDesign.separator.cgColor
+        let appearance = effectiveAppearance
+        let palette = NotesAppearancePalette(
+            theme: SettingsStore.shared.notesVisualTheme,
+            appearance: appearance
+        )
+        title.layer?.borderColor = NotesAppearancePalette
+            .resolved(palette.separator, appearance: appearance)
+            .cgColor
         title.placeholderString = "Untitled table"
         title.font = .systemFont(ofSize: AppTypography.size(12), weight: .semibold)
-        title.textColor = .labelColor
+        title.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: appearance)
         title.setAccessibilityLabel("Table name")
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -345,7 +351,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         button.bezelStyle = .recessed
         button.controlSize = .small
         button.imagePosition = .imageOnly
-        button.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance)
+        button.contentTintColor = NotesAppearancePalette.resolved(palette.accent, appearance: effectiveAppearance)
         button.toolTip = label
         button.setAccessibilityLabel(label)
         return button
@@ -355,7 +362,8 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let button = NSButton(title: title, target: self, action: action)
         button.bezelStyle = .recessed
         button.controlSize = .small
-        button.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance)
+        button.contentTintColor = NotesAppearancePalette.resolved(palette.accent, appearance: effectiveAppearance)
         button.font = .systemFont(ofSize: AppTypography.size(11), weight: .medium)
         return button
     }
@@ -409,7 +417,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
                 guard let self,
                       let field = self.fields.first(where: { $0.coordinate == coordinate }) else { return }
                 self.window?.makeFirstResponder(field)
-                field.currentEditor()?.selectAll(nil)
+                if let editor = field.currentEditor() as? NSTextView {
+                    let caret = min(editor.string.utf16.count, editor.selectedRange.location)
+                    editor.setSelectedRange(NSRange(location: caret, length: 0))
+                }
             }
         }
     }
@@ -433,13 +444,20 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         field.delegate = self
         field.translatesAutoresizingMaskIntoConstraints = false
         field.isBordered = false
+        field.isBezeled = false
         field.drawsBackground = false
+        field.backgroundColor = .clear
+        if let cell = field.cell as? NSTextFieldCell {
+            cell.drawsBackground = false
+            cell.backgroundColor = .clear
+        }
         field.focusRingType = .none
         field.wantsLayer = true
         field.layer?.cornerRadius = 0
         field.layer?.borderWidth = 0
         field.font = .systemFont(ofSize: AppTypography.size(13.5), weight: header ? .semibold : .regular)
-        field.textColor = .labelColor
+        let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance)
+        field.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: effectiveAppearance)
         field.placeholderString = header ? "Column" : "Add value"
         field.lineBreakMode = .byTruncatingTail
         switch coordinate {
@@ -540,27 +558,159 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         layer?.borderColor = border.cgColor
         layer?.borderWidth = 1.0
         gridView?.layer?.backgroundColor = NotesAppearancePalette.resolved(palette.tableGrid, appearance: appearance).cgColor
-        toolbarIcon?.contentTintColor = SettingsStore.shared.accentTheme.readableNSPrimary
+        titleField?.layer?.borderColor = NotesAppearancePalette
+            .resolved(palette.separator, appearance: appearance)
+            .cgColor
+        toolbarIcon?.contentTintColor = NotesAppearancePalette.resolved(palette.accent, appearance: appearance)
+        titleField?.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: appearance)
+        for field in fields {
+            field.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: appearance)
+        }
+        for case let button as NSButton in toolbar.arrangedSubviews {
+            button.contentTintColor = NotesAppearancePalette.resolved(palette.accent, appearance: appearance)
+        }
 
-        for item in cellAppearances {
+        for (index, item) in cellAppearances.enumerated() {
+            let editor = fields.indices.contains(index) ? fields[index].currentEditor() : nil
+            let isFocused = fields.indices.contains(index)
+                && (window?.firstResponder === fields[index] || editor != nil && window?.firstResponder === editor)
             let color: NSColor
-            if let cell = item.view as? MarkdownTableCellView, cell.isHovered {
+            if isFocused {
+                color = palette.tableSelectedCell
+            } else if let cell = item.view as? MarkdownTableCellView, cell.isHovered {
                 color = palette.tableHover
             } else if item.header {
                 color = palette.tableHeader
             } else {
                 color = palette.background
             }
-            item.view.layer?.backgroundColor = NotesAppearancePalette.resolved(color, appearance: appearance).cgColor
+            let resolvedColor = NotesAppearancePalette.resolved(color, appearance: appearance)
+            let renderedColor = isFocused ? composite(resolvedColor, over: background) : resolvedColor
+            if let cell = item.view as? MarkdownTableCellView {
+                cell.renderedBackground = renderedColor
+                cell.layer?.backgroundColor = renderedColor.cgColor
+            }
+            item.view.layer?.backgroundColor = renderedColor.cgColor
         }
         for field in fields {
-            let isFocused = window?.firstResponder === field || field.currentEditor() != nil && window?.firstResponder === field.currentEditor()
+            let editor = field.currentEditor()
+            let isFocused = window?.firstResponder === field || editor != nil && window?.firstResponder === editor
             field.layer?.borderColor = isFocused ? NotesAppearancePalette.resolved(palette.focusRing, appearance: appearance).cgColor : NSColor.clear.cgColor
-            field.layer?.backgroundColor = isFocused ? NotesAppearancePalette.resolved(palette.tableSelectedCell, appearance: appearance).cgColor : NSColor.clear.cgColor
+            field.layer?.backgroundColor = NSColor.clear.cgColor
+            field.layer?.isOpaque = false
+            field.drawsBackground = false
+            field.backgroundColor = .clear
+            if let cell = field.cell as? NSTextFieldCell {
+                cell.drawsBackground = false
+                cell.backgroundColor = .clear
+            }
+            if let editor {
+                let editorColor = NSColor.clear
+                editor.drawsBackground = false
+                editor.backgroundColor = editorColor
+                if let editorView = editor as? NSTextView {
+                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+                    editorView.insertionPointColor = NSColor.clear
+                }
+                editor.wantsLayer = true
+                editor.focusRingType = .none
+                editor.layer?.backgroundColor = editorColor.cgColor
+                editor.layer?.isOpaque = false
+                if let clipView = editor.superview as? NSClipView {
+                    clipView.drawsBackground = false
+                    clipView.backgroundColor = editorColor
+                    clipView.wantsLayer = true
+                    clipView.focusRingType = .none
+                    clipView.layer?.backgroundColor = editorColor.cgColor
+                    clipView.layer?.isOpaque = false
+                }
+                editor.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: appearance)
+            }
         }
     }
 
+    private func composite(_ foreground: NSColor, over background: NSColor) -> NSColor {
+        let fg = foreground.usingColorSpace(.deviceRGB) ?? foreground
+        let bg = background.usingColorSpace(.deviceRGB) ?? background
+        let alpha = fg.alphaComponent
+        let outputAlpha = alpha + bg.alphaComponent * (1 - alpha)
+        guard outputAlpha > 0 else { return .clear }
+        return NSColor(
+            calibratedRed: (fg.redComponent * alpha + bg.redComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            green: (fg.greenComponent * alpha + bg.greenComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            blue: (fg.blueComponent * alpha + bg.blueComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            alpha: outputAlpha
+        )
+    }
+
     private var isViewLoadedForStyling: Bool { layer != nil }
+
+    // Test-only inspection hooks keep the Light-mode regression test focused
+    // on rendered AppKit pixels without making the table's implementation
+    // collections part of the production API.
+    func debugRefreshAppearance() {
+        updateAppearance()
+    }
+
+    func debugSetHoveredCell(row: Int, column: Int) {
+        let index = row * table.columnCount + column
+        guard cellAppearances.indices.contains(index),
+              let cell = cellAppearances[index].view as? MarkdownTableCellView else { return }
+        cell.isHovered = true
+        updateAppearance()
+    }
+
+    func debugFocusCell(row: Int, column: Int) -> Bool {
+        let index = row * table.columnCount + column
+        guard fields.indices.contains(index) else { return false }
+        let field = fields[index]
+        let focused = window?.makeFirstResponder(field) ?? field.becomeFirstResponder()
+        if focused, let editor = field.currentEditor() as? NSTextView {
+            editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+            editor.insertionPointColor = NSColor.clear
+            editor.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+        }
+        updateAppearance()
+        return focused
+    }
+
+    func debugCellFrame(row: Int, column: Int) -> CGRect? {
+        let index = row * table.columnCount + column
+        guard cellAppearances.indices.contains(index) else { return nil }
+        return cellAppearances[index].view.convert(cellAppearances[index].view.bounds, to: self)
+    }
+
+    func debugRenderedBitmap() -> NSBitmapImageRep? {
+        updateAppearance()
+        let bounds = self.bounds.integral
+        guard !bounds.isEmpty,
+              let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(bounds.width),
+                pixelsHigh: Int(bounds.height),
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0
+              ),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap)?.cgContext else { return nil }
+        layoutSubtreeIfNeeded()
+        updateAppearance()
+        displayIfNeeded()
+        CATransaction.flush()
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: context, flipped: false)
+        layer?.render(in: context)
+        NSGraphicsContext.restoreGraphicsState()
+        return bitmap
+    }
+
+    func debugPixel(in bitmap: NSBitmapImageRep, at x: CGFloat, y: CGFloat) -> NSColor? {
+        return bitmap.colorAt(x: Int(x.rounded()), y: Int(y.rounded()))
+    }
 
     func controlTextDidChange(_ notification: Notification) {
         if let field = notification.object as? NSTextField, field === titleField {
@@ -617,8 +767,13 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             onChange?()
             onSizeChange?()
         } else if targetIndex >= 0 {
-            window?.makeFirstResponder(fields[targetIndex])
-            fields[targetIndex].currentEditor()?.selectAll(nil)
+            let target = fields[targetIndex]
+            window?.makeFirstResponder(target)
+            if let editor = target.currentEditor() as? NSTextView {
+                editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+                editor.layoutManager?.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: editor.string.utf16.count))
+                editor.setNeedsDisplay(editor.bounds)
+            }
         }
     }
 
@@ -640,7 +795,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         }
         if let next = fields.first(where: { $0.coordinate == nextCoordinate }) {
             window?.makeFirstResponder(next)
-            next.currentEditor()?.selectAll(nil)
+            if let editor = next.currentEditor() as? NSTextView {
+                editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
+                editor.layoutManager?.invalidateDisplay(forCharacterRange: NSRange(location: 0, length: editor.string.utf16.count))
+                editor.setNeedsDisplay(editor.bounds)
+            }
         }
     }
 
@@ -778,8 +937,16 @@ private enum CellCoordinate: Equatable {
 
 private final class MarkdownTableCellView: NSView {
     var isHovered = false
+    var renderedBackground = NSColor.clear {
+        didSet { needsDisplay = true }
+    }
     var onHoverChanged: (() -> Void)?
     private var trackingArea: NSTrackingArea?
+
+    override func draw(_ dirtyRect: NSRect) {
+        renderedBackground.setFill()
+        dirtyRect.fill()
+    }
 
     override func updateTrackingAreas() {
         if let trackingArea { removeTrackingArea(trackingArea) }
@@ -815,7 +982,34 @@ private final class MarkdownTableField: NSTextField {
             let palette = NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance)
             layer?.borderWidth = LimaDesign.focusWidth
             layer?.borderColor = NotesAppearancePalette.resolved(palette.focusRing, appearance: effectiveAppearance).cgColor
-            layer?.backgroundColor = NotesAppearancePalette.resolved(palette.tableSelectedCell, appearance: effectiveAppearance).cgColor
+            layer?.backgroundColor = NSColor.clear.cgColor
+            drawsBackground = false
+            backgroundColor = .clear
+            if let cell = cell as? NSTextFieldCell {
+                cell.drawsBackground = false
+                cell.backgroundColor = .clear
+            }
+            if let editor = currentEditor() {
+                editor.drawsBackground = false
+                editor.backgroundColor = .clear
+                if let editorView = editor as? NSTextView {
+                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+                    editorView.insertionPointColor = NSColor.clear
+                }
+                editor.wantsLayer = true
+                editor.focusRingType = .none
+                editor.layer?.backgroundColor = NSColor.clear.cgColor
+                editor.layer?.isOpaque = false
+                if let clipView = editor.superview as? NSClipView {
+                    clipView.drawsBackground = false
+                    clipView.backgroundColor = .clear
+                    clipView.wantsLayer = true
+                    clipView.focusRingType = .none
+                    clipView.layer?.backgroundColor = NSColor.clear.cgColor
+                    clipView.layer?.isOpaque = false
+                }
+                editor.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: effectiveAppearance)
+            }
             (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }
         return accepted
@@ -830,6 +1024,20 @@ private final class MarkdownTableField: NSTextField {
             (superview as? MarkdownTableCellView)?.onHoverChanged?()
         }
         return resigned
+    }
+
+    private func composite(_ foreground: NSColor, over background: NSColor) -> NSColor {
+        let fg = foreground.usingColorSpace(.deviceRGB) ?? foreground
+        let bg = background.usingColorSpace(.deviceRGB) ?? background
+        let alpha = fg.alphaComponent
+        let outputAlpha = alpha + bg.alphaComponent * (1 - alpha)
+        guard outputAlpha > 0 else { return .clear }
+        return NSColor(
+            calibratedRed: (fg.redComponent * alpha + bg.redComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            green: (fg.greenComponent * alpha + bg.greenComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            blue: (fg.blueComponent * alpha + bg.blueComponent * bg.alphaComponent * (1 - alpha)) / outputAlpha,
+            alpha: outputAlpha
+        )
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

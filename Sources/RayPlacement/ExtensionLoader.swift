@@ -240,16 +240,42 @@ final class ExtensionLoader {
                         issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) requires undeclared capabilities: \(missing)."))
                         continue
                     }
-                    if command.action.type == .form {
-                        guard let form = command.action.form, !form.fields.isEmpty else {
-                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                    if let surface = command.surface {
+                        switch surface.kind {
+                        case .form where command.action.type != .form:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a form surface but its action is not a form."))
+                            continue
+                        case .generator where command.action.type != .generator:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a generator surface but its action is not a generator."))
+                            continue
+                        case .picker, .textTool, .liveOutput:
+                            // These descriptor kinds are reserved for the
+                            // generic surface SDK, but do not yet have a host
+                            // renderer/executor. Rejecting them here prevents
+                            // a manifest from displaying a placeholder while
+                            // silently skipping its executable action.
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) uses unsupported surface kind \(surface.kind.rawValue); use form or generator until this host surface is implemented."))
+                            continue
+                        default:
+                            break
+                        }
+                    }
+                    if command.action.type == .form || command.action.type == .generator {
+                        guard manifest.presentation != .background else {
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Interactive command \(command.id) cannot use background presentation because it requires input."))
                             continue
                         }
-                        let fieldIDs = form.fields.map(\.id)
-                        guard Set(fieldIDs).count == fieldIDs.count,
-                              fieldIDs.allSatisfy({ !$0.isEmpty }) else {
-                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
-                            continue
+                        if command.action.type == .form {
+                            guard let form = command.action.form, !form.fields.isEmpty else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                                continue
+                            }
+                            let fieldIDs = form.fields.map(\.id)
+                            guard Set(fieldIDs).count == fieldIDs.count,
+                                  fieldIDs.allSatisfy({ !$0.isEmpty }) else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
+                                continue
+                            }
                         }
                     }
                     do {
@@ -273,7 +299,8 @@ final class ExtensionLoader {
                         pack: manifest.pack,
                         category: manifest.category,
                         bundled: manifest.bundled,
-                        version: manifest.version
+                        version: manifest.version,
+                        presentation: manifest.presentation
                     ))
                 }
             } catch {
@@ -315,6 +342,8 @@ final class ExtensionLoader {
         case .form:
             guard action.form != nil else { return [] }
             return [.shell, .filesystem]
+        case .generator:
+            return []
         }
     }
 

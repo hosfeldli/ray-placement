@@ -143,7 +143,7 @@ final class ExtensionExecutor {
                 completion(.failure(ExecutionError.invalidAction("Unknown clipboard operation.")))
             }
 
-        case .form, .picker, .system, .window, .workspace:
+        case .form, .picker, .generator, .system, .window, .workspace:
             completion(.success(.native(action)))
 
         case .shell:

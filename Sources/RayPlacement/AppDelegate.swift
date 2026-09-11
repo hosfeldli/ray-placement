@@ -23,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesDockRightShortcut: ShortcutSpec?
     private var registeredTerminalShortcut: ShortcutSpec?
     private var registeredStealthGrammarShortcut: ShortcutSpec?
+    private var registeredContextShelfCaptureShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -210,6 +211,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore: SettingsStore.shared.restoreStealthGrammarShortcut
         ) { [weak self] application in
             self?.launcher.runStealthGrammar(from: application)
+        }
+        registerActionHotkeyFromApplication(
+            identifier: "builtin.context-shelf.capture-selection",
+            displayName: "Add Selection to Shelf",
+            enabled: SettingsStore.shared.contextShelfCaptureHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.contextShelfCaptureShortcut,
+            previous: &registeredContextShelfCaptureShortcut,
+            restore: SettingsStore.shared.restoreContextShelfCaptureShortcut
+        ) { [weak self] application in
+            self?.launcher.captureSelectionToShelf(from: application)
         }
     }
 

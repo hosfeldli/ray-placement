@@ -16,6 +16,80 @@ enum PickerSurface: Equatable {
     case timezone
 }
 
+enum ExtensionSurfaceKind: Equatable {
+    case form
+    case generator
+    case picker
+    case textTool
+    case liveOutput
+}
+
+struct ExtensionSurfaceSession: Equatable {
+    let id: String
+    let title: String
+    let kind: ExtensionSurfaceKind
+    let preferredHeight: CGFloat
+    let canPopOut: Bool
+    let remembersState: Bool
+
+    init(
+        id: String,
+        title: String,
+        kind: ExtensionSurfaceKind,
+        preferredHeight: CGFloat,
+        canPopOut: Bool,
+        remembersState: Bool = true
+    ) {
+        self.id = id
+        self.title = title
+        self.kind = kind
+        self.preferredHeight = preferredHeight
+        self.canPopOut = canPopOut
+        self.remembersState = remembersState
+    }
+}
+
+@MainActor
+final class InlineExtensionSurfaceModel: ObservableObject {
+    @Published private(set) var form: ExtensionFormViewModel?
+    private(set) var command: LoadedExtensionCommand?
+    private var rememberedForms: [String: ExtensionFormViewModel] = [:]
+
+    var canRun: Bool { form?.canRun == true }
+    var hasOutput: Bool { form?.result?.output.isEmpty == false }
+
+    func configure(
+        command: LoadedExtensionCommand,
+        remembersState: Bool = true,
+        execute: @escaping ([String: String], @escaping (Result<ExtensionExecutor.FormResult, Error>) -> Void) -> Void
+    ) {
+        self.command = command
+        let key = "\(command.extensionID).\(command.command.id)"
+        if remembersState,
+           let remembered = rememberedForms[key],
+           remembered.definition == command.command.action.form {
+            form = remembered
+            return
+        }
+        if !remembersState {
+            rememberedForms.removeValue(forKey: key)
+        }
+        let fresh = ExtensionFormViewModel(command: command, definition: command.command.action.form!, execute: execute)
+        if remembersState {
+            rememberedForms[key] = fresh
+        }
+        form = fresh
+    }
+
+    func run() {
+        form?.run()
+    }
+
+    func copyOutput() {
+        form?.copyOutput()
+    }
+}
+
 enum LauncherMode: Equatable {
     case root
     case files
@@ -23,7 +97,9 @@ enum LauncherMode: Equatable {
     case clipboard
     case history
     case terminal
+    case contextShelf
     case writingReview(WritingReview)
+    case extensionSurface(ExtensionSurfaceSession)
     case output(title: String, text: String, state: LauncherOutputState)
 
     var title: String? {
@@ -37,7 +113,9 @@ enum LauncherMode: Equatable {
         case .clipboard: return "Clipboard History"
         case .history: return "Command History"
         case .terminal: return "Terminal"
+        case .contextShelf: return "Context Shelf"
         case .writingReview: return "Writing Review"
+        case .extensionSurface(let session): return session.title
         case .output(let title, _, _): return title
         }
     }
@@ -130,6 +208,8 @@ enum SystemAction {
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
+    case openContextShelf
+    case addSelectionToShelf
     case openPermissionCenter
     case exportDiagnostics
     case openWorkflows

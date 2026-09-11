@@ -5,6 +5,8 @@ import SwiftUI
 struct LauncherView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var terminalModel: DeveloperTerminalModel
+    @ObservedObject var passwordGeneratorModel: PasswordGeneratorModel
+    @ObservedObject var inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
@@ -14,9 +16,16 @@ struct LauncherView: View {
     @State private var acceptedWritingIssueIDs: Set<String> = []
     @State private var rejectedWritingIssueIDs: Set<String> = []
 
-    init(viewModel: LauncherViewModel, terminalModel: DeveloperTerminalModel) {
+    init(
+        viewModel: LauncherViewModel,
+        terminalModel: DeveloperTerminalModel,
+        passwordGeneratorModel: PasswordGeneratorModel,
+        inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
+    ) {
         self.viewModel = viewModel
         self.terminalModel = terminalModel
+        self.passwordGeneratorModel = passwordGeneratorModel
+        self.inlineExtensionSurfaceModel = inlineExtensionSurfaceModel
     }
 
     var body: some View {
@@ -114,6 +123,8 @@ struct LauncherView: View {
             if viewModel.isTimezonePicker {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
+            } else if case .extensionSurface = viewModel.mode {
+                Spacer(minLength: 0)
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
@@ -158,8 +169,18 @@ struct LauncherView: View {
             writingReviewView(review)
         case .output(let title, let text, let state):
             outputView(title: title, text: text, state: state)
+        case .extensionSurface(let session):
+            if session.kind == .generator && (session.id == "password-generator" || session.id.hasSuffix(".password-generator")) {
+                PasswordGeneratorSurface(model: passwordGeneratorModel)
+            } else if session.kind == .form, let form = inlineExtensionSurfaceModel.form {
+                ExtensionFormView(model: form, showsHeader: false)
+            } else {
+                InlineExtensionSurfacePlaceholder(session: session)
+            }
         case .terminal:
             DeveloperTerminalView(model: terminalModel)
+        case .contextShelf:
+            ContextShelfPlaceholderView(store: .shared)
         case .picker(.emoji):
             emojiGrid
         case .picker(.applications):
@@ -677,6 +698,10 @@ struct LauncherView: View {
                     if case .writingReview = viewModel.mode {
                         KeyHint(keys: "⌘C", label: "Copy")
                         KeyHint(keys: "↩", label: "Replace")
+                    } else if case .extensionSurface(let session) = viewModel.mode {
+                        KeyHint(keys: "⌘R", label: session.kind == .form ? "Run again" : "Regenerate")
+                        KeyHint(keys: "⌘C", label: "Copy")
+                        KeyHint(keys: "↩", label: session.kind == .form ? "Run" : "Copy")
                     }
                     if viewModel.selectedItemIsActionable, !isOutputMode {
                         KeyHint(keys: "↩", label: primaryActionLabel)
@@ -692,7 +717,7 @@ struct LauncherView: View {
 
     private var isOutputMode: Bool {
         switch viewModel.mode {
-        case .output, .writingReview: return true
+        case .output, .writingReview, .extensionSurface: return true
         default: return false
         }
     }
@@ -1126,6 +1151,36 @@ private enum LimaLauncherPalette {
     static let selectionBackground = indigo.opacity(0.13)
 }
 
+private struct InlineExtensionSurfacePlaceholder: View {
+    let session: ExtensionSurfaceSession
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 25, weight: .semibold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+            Text(session.title)
+                .limaFont(.headline.weight(.semibold))
+            Text("This inline extension surface is ready for its form or output specification.")
+                .limaFont(.caption)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: max(180, session.preferredHeight - 130))
+        .padding(20)
+    }
+
+    private var symbol: String {
+        switch session.kind {
+        case .form: return "rectangle.and.pencil.and.ellipsis"
+        case .generator: return "sparkles"
+        case .picker: return "line.3.horizontal.decrease.circle"
+        case .textTool: return "text.cursor"
+        case .liveOutput: return "terminal"
+        }
+    }
+}
+
 private extension LauncherMode {
     var visualIdentity: String {
         switch self {
@@ -1138,7 +1193,9 @@ private extension LauncherMode {
         case .clipboard: return "clipboard"
         case .history: return "history"
         case .terminal: return "terminal"
+        case .contextShelf: return "context-shelf"
         case .writingReview: return "writing-review"
+        case .extensionSurface(let session): return "extension-\(session.id)"
         case .output: return "output"
         }
     }

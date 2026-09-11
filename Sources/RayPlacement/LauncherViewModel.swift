@@ -91,7 +91,9 @@ final class LauncherViewModel: ObservableObject {
         case .clipboard: return "Search clipboard history…"
         case .history: return "Search command history…"
         case .terminal: return "Interactive terminal"
+        case .contextShelf: return "Context Shelf"
         case .writingReview: return "Writing review"
+        case .extensionSurface(let session): return session.title
         case .output: return "Command output"
         }
     }
@@ -452,6 +454,12 @@ final class LauncherViewModel: ObservableObject {
             isSearching = false
             results = historyItems()
         case .terminal:
+            isSearching = false
+            results = []
+        case .contextShelf:
+            isSearching = false
+            results = []
+        case .extensionSurface:
             isSearching = false
             results = []
         case .writingReview:
@@ -1069,6 +1077,8 @@ final class LauncherViewModel: ObservableObject {
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer"], action: .system(.openTerminal)),
+            LauncherItem(id: "builtin.context-shelf", title: "Context Shelf", subtitle: "Temporary working memory for text, files, and tool output", icon: .system("tray.full"), keywords: ["shelf", "context", "working", "memory", "capture"], action: .system(.openContextShelf)),
+            LauncherItem(id: "builtin.add-selection-to-shelf", title: "Add Selection to Shelf", subtitle: "Capture highlighted text without opening Lima", icon: .system("text.badge.plus"), keywords: ["add", "selection", "capture", "shelf", "highlight"], action: .system(.addSelectionToShelf)),
             LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
             LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),
