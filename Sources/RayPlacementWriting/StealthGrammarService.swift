@@ -11,7 +11,6 @@ public struct StealthProtectedText: Equatable, Sendable {
     private let contextReplacements: [String: String]
     private let contextTokens: [String]
     private let sourceBody: String
-    private let protectedRanges: [NSRange]
 
     /// A complete document with protected values replaced by ordinary, stable
     /// placeholders. Unlike `maskedText`, this value intentionally retains all
@@ -25,7 +24,6 @@ public struct StealthProtectedText: Equatable, Sendable {
         trailingWhitespace: String,
         replacements: [String: String],
         sourceBody: String = "",
-        protectedRanges: [NSRange] = [],
         contextText: String? = nil,
         contextReplacements: [String: String] = [:],
         contextTokens: [String]? = nil
@@ -37,7 +35,6 @@ public struct StealthProtectedText: Equatable, Sendable {
         self.contextReplacements = contextReplacements
         self.contextTokens = contextTokens ?? Array(contextReplacements.keys)
         self.sourceBody = sourceBody
-        self.protectedRanges = protectedRanges
         self.contextText = contextText ?? (leadingWhitespace + maskedText + trailingWhitespace)
     }
 
@@ -88,15 +85,6 @@ public struct StealthProtectedText: Equatable, Sendable {
         return result
     }
 
-    public func apply(_ corrections: [StealthGrammarSegmentCorrection]) throws -> String {
-        let correctedBody = try StealthGrammarService.apply(corrections, segments: editableSegments(), to: sourceBody)
-        return leadingWhitespace + correctedBody + trailingWhitespace
-    }
-
-    public func apply(_ changes: [StealthGrammarAnchoredChange]) throws -> String {
-        let correctedBody = try StealthGrammarService.apply(changes, segments: editableSegments(), to: sourceBody)
-        return leadingWhitespace + correctedBody + trailingWhitespace
-    }
 
 
     private func contextTokenSequence(in value: String, tokens: [String]) -> [String] {
@@ -115,7 +103,7 @@ public struct StealthProtectedText: Equatable, Sendable {
     /// placeholder-touching candidates are skipped without discarding valid
     /// corrections returned alongside them.
     public func applyingDocumentChanges(_ changes: [StealthGrammarDocumentChange]) -> StealthGrammarApplyReport {
-        var accepted: [(range: NSRange, replacement: String)] = []
+        var accepted: [(range: NSRange, replacement: String, find: String)] = []
         var rejected = 0
         let source = contextText as NSString
 
@@ -158,71 +146,51 @@ public struct StealthProtectedText: Equatable, Sendable {
                 rejected += 1
                 continue
             }
-            accepted.append((match, change.replacement))
+            accepted.append((match, change.replacement, change.find))
         }
 
-        let mutable = NSMutableString(string: contextText)
-        for edit in accepted.sorted(by: { $0.range.location > $1.range.location }) {
-            mutable.replaceCharacters(in: edit.range, with: edit.replacement)
+        func candidateText(for edits: [(range: NSRange, replacement: String, find: String)]) -> String {
+            let mutable = NSMutableString(string: contextText)
+            for edit in edits.sorted(by: { $0.range.location > $1.range.location }) {
+                mutable.replaceCharacters(in: edit.range, with: edit.replacement)
+            }
+            return mutable as String
         }
-        let restored = restoreContext(mutable as String) ?? (leadingWhitespace + sourceBody + trailingWhitespace)
+
+        // A valid edit can still create a bad interaction with a neighboring
+        // edit. Greedily retain the largest safe subset so one document-level
+        // anomaly does not discard otherwise independent corrections.
+        var safeAccepted: [(range: NSRange, replacement: String, find: String)] = []
+        for edit in accepted {
+            let tentative = safeAccepted + [edit]
+            let tentativeText = candidateText(for: tentative)
+            let allowedPunctuationDeletions = tentative.reduce(into: 0) { total, edit in
+                let sourcePunctuation = edit.find.unicodeScalars.filter { CharacterSet.punctuationCharacters.contains($0) }.count
+                let replacementPunctuation = edit.replacement.unicodeScalars.filter { CharacterSet.punctuationCharacters.contains($0) }.count
+                total += max(0, sourcePunctuation - replacementPunctuation)
+            }
+            if StealthGrammarService.isDocumentSane(
+                contextText,
+                tentativeText,
+                allowedPunctuationDeletions: allowedPunctuationDeletions
+            ) {
+                safeAccepted.append(edit)
+            } else {
+                rejected += 1
+            }
+        }
+
+        let restoredContext = candidateText(for: safeAccepted)
+        let restored = restoreContext(restoredContext) ?? (leadingWhitespace + sourceBody + trailingWhitespace)
         return StealthGrammarApplyReport(
             text: restored,
-            appliedCount: accepted.count,
+            appliedCount: safeAccepted.count,
             rejectedCount: rejected
         )
     }
-
-    /// Returns editable spans in original UTF-16 coordinates. Protected values
-    /// are omitted entirely; the model never receives sentinel tokens or ranges.
-    public func editableSegments() -> [StealthEditableSegment] {
-        guard !sourceBody.isEmpty else { return [] }
-        let protected = protectedRanges.sorted { $0.location < $1.location }
-        var result: [StealthEditableSegment] = []
-        var cursor = 0
-        var index = 0
-        for range in protected {
-            guard range.location >= cursor else { continue }
-            let length = range.location - cursor
-            if length > 0 {
-                result.append(StealthEditableSegment(id: "s\(index)", text: (sourceBody as NSString).substring(with: NSRange(location: cursor, length: length)), start: cursor, length: length))
-                index += 1
-            }
-            cursor = NSMaxRange(range)
-        }
-        if cursor < (sourceBody as NSString).length {
-            let length = (sourceBody as NSString).length - cursor
-            result.append(StealthEditableSegment(id: "s\(index)", text: (sourceBody as NSString).substring(with: NSRange(location: cursor, length: length)), start: cursor, length: length))
-        }
-        return result
-    }
 }
 
-
-/// A local edit is expressed in UTF-16 offsets so Foundation can apply it
-/// safely after a provider correction has been mapped by segment ID.
-public struct StealthEditableSegment: Codable, Equatable, Sendable {
-    public let id: String
-    public let text: String
-    public let start: Int
-    public let length: Int
-    public init(id: String, text: String, start: Int, length: Int) {
-        self.id = id; self.text = text; self.start = start; self.length = length
-    }
-}
-
-public struct StealthGrammarSegmentCorrection: Codable, Equatable, Sendable {
-    public let id: String
-    public let corrected: String
-    public init(id: String, corrected: String) { self.id = id; self.corrected = corrected }
-}
-
-/// A small, anchored proofread change. The provider chooses only the text to
-/// replace; Lima locates it in the original segment and preserves everything
-/// else byte-for-byte.
-/// An atomic external proofread proposal against the complete sanitized
-/// document. `find` and `replacement` are the only characters the provider may
-/// nominate for mutation.
+/// An atomic provider proposal against the complete sanitized document.
 public struct StealthGrammarDocumentChange: Codable, Equatable, Sendable {
     public let find: String
     public let replacement: String
@@ -246,22 +214,6 @@ public struct StealthGrammarApplyReport: Equatable, Sendable {
         self.text = text
         self.appliedCount = appliedCount
         self.rejectedCount = rejectedCount
-    }
-}
-
-public struct StealthGrammarAnchoredChange: Codable, Equatable, Sendable {
-    public let segmentID: String
-    public let find: String
-    public let replacement: String
-    public let before: String?
-    public let after: String?
-
-    public init(segmentID: String, find: String, replacement: String, before: String? = nil, after: String? = nil) {
-        self.segmentID = segmentID
-        self.find = find
-        self.replacement = replacement
-        self.before = before
-        self.after = after
     }
 }
 
@@ -388,7 +340,16 @@ public enum StealthGrammarService {
                 .filter { match in
                     let word = (body as NSString).substring(with: match.range)
                     let lowercased = word.lowercased()
-                    return !commonTitleWords.contains(lowercased)
+                    let prefix = (body as NSString).substring(with: NSRange(location: 0, length: match.range.location))
+                    let preceding = prefix.trimmingCharacters(in: .whitespacesAndNewlines).last
+                    let sentenceInitial = preceding == nil
+                        || preceding == "."
+                        || preceding == "!"
+                        || preceding == "?"
+                        || preceding == ":"
+                        || preceding == "\n"
+                    return !sentenceInitial
+                        && !commonTitleWords.contains(lowercased)
                         && !correctableCapitalizedWords.contains(lowercased)
                 }
                 .map(\.range)
@@ -437,7 +398,6 @@ public enum StealthGrammarService {
             trailingWhitespace: trailing,
             replacements: replacements,
             sourceBody: body,
-            protectedRanges: merged,
             contextText: leading + contextOutput + trailing,
             contextReplacements: contextReplacements,
             contextTokens: contextReplacements.keys.sorted { left, right in
@@ -450,76 +410,6 @@ public enum StealthGrammarService {
     /// Validates and applies provider edits to the exact text sent to the
     /// provider. Protected tokens are rejected before any replacement is made;
     /// the caller can then restore the protected values byte-for-byte.
-    public static func apply(_ changes: [StealthGrammarAnchoredChange], segments: [StealthEditableSegment], to source: String) throws -> String {
-        let byID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
-        var edits: [StealthGrammarEdit] = []
-        var usedLocations = Set<String>()
-        for change in changes {
-            guard !change.find.isEmpty, let segment = byID[change.segmentID] else {
-                throw StealthGrammarEditError.invalidRange
-            }
-            let segmentText = segment.text as NSString
-            var searchStart = 0
-            var matches: [NSRange] = []
-            while searchStart <= segmentText.length {
-                let range = segmentText.range(of: change.find, options: [], range: NSRange(location: searchStart, length: segmentText.length - searchStart))
-                if range.location == NSNotFound { break }
-                matches.append(range)
-                searchStart = max(range.location + max(range.length, 1), searchStart + 1)
-            }
-            if let before = change.before {
-                matches = matches.filter { range in
-                    let start = max(0, range.location - (before as NSString).length)
-                    return segmentText.substring(with: NSRange(location: start, length: range.location - start)) == before
-                }
-            }
-            if let after = change.after {
-                matches = matches.filter { range in
-                    let end = min(segmentText.length, NSMaxRange(range) + (after as NSString).length)
-                    return segmentText.substring(with: NSRange(location: NSMaxRange(range), length: end - NSMaxRange(range))) == after
-                }
-            }
-            guard matches.count == 1, let match = matches.first else {
-                throw StealthGrammarEditError.invalidRange
-            }
-            let absolute = NSRange(location: segment.start + match.location, length: match.length)
-            let key = "\(absolute.location):\(absolute.length)"
-            guard usedLocations.insert(key).inserted else { throw StealthGrammarEditError.overlappingEdits }
-            guard isSafeAnchoredReplacement(change.find, change.replacement) else {
-                throw StealthGrammarEditError.unsafeReplacement
-            }
-            edits.append(StealthGrammarEdit(start: absolute.location, length: absolute.length, replacement: change.replacement))
-        }
-        return try apply(edits, to: source)
-    }
-
-    private static func isSafeAnchoredReplacement(_ source: String, _ replacement: String) -> Bool {
-        guard !source.isEmpty, !replacement.isEmpty,
-              !replacement.contains("\n\n\n"),
-              !isChattyResponse(replacement) else { return false }
-        // An anchored change may alter the selected word or punctuation, but it
-        // may not silently consume a boundary space. Explicitly anchored space
-        // changes remain possible because `find` includes that exact space.
-        let sourceLeading = source.prefix { $0.isWhitespace }
-        let sourceTrailing = source.reversed().prefix { $0.isWhitespace }
-        let replacementLeading = replacement.prefix { $0.isWhitespace }
-        let replacementTrailing = replacement.reversed().prefix { $0.isWhitespace }
-        guard sourceLeading.count == replacementLeading.count,
-              sourceTrailing.count == replacementTrailing.count else { return false }
-        return replacement.utf8.count <= max(128, source.utf8.count + 32)
-    }
-
-    public static func apply(_ corrections: [StealthGrammarSegmentCorrection], segments: [StealthEditableSegment], to source: String) throws -> String {
-        let byID = Dictionary(uniqueKeysWithValues: segments.map { ($0.id, $0) })
-        var edits: [StealthGrammarEdit] = []
-        for correction in corrections {
-            guard let segment = byID[correction.id] else { throw StealthGrammarEditError.invalidRange }
-            guard isSafeReplacement(segment.text, correction.corrected) else { throw StealthGrammarEditError.unsafeReplacement }
-            edits.append(StealthGrammarEdit(start: segment.start, length: segment.length, replacement: correction.corrected))
-        }
-        return try apply(edits, to: source)
-    }
-
     public static func apply(_ edits: [StealthGrammarEdit], to source: String) throws -> String {
         let sourceLength = (source as NSString).length
         let tokenRanges = protectedTokenRanges(in: source)
@@ -691,10 +581,116 @@ public enum StealthGrammarService {
         // punctuation target. The safety validator below rejects whitespace,
         // word, structural, and placeholder deletion.
         guard !change.find.isEmpty,
-              change.find.utf8.count <= 256,
-              change.replacement.utf8.count <= 256 else { return false }
+              change.find.count <= 120,
+              change.replacement.count <= 120,
+              change.find.split(whereSeparator: { $0.isWhitespace }).count <= 15,
+              change.find.rangeOfCharacter(from: .newlines) == nil,
+              change.replacement.rangeOfCharacter(from: .newlines) == nil else { return false }
+        // A normal proofread edit is a small span. Longer sentence-like or
+        // multi-sentence rewrites are intentionally rejected even when they
+        // happen to be grammatically valid.
+        let sentencePunctuation = change.find.contains { ".!?".contains($0) }
+        if sentencePunctuation && change.find.split(whereSeparator: { $0.isWhitespace }).count > 6 {
+            return false
+        }
+        let requiresAnchor = change.find.count < 6
+            || change.find.split(whereSeparator: { $0.isWhitespace }).count == 1
+        let punctuationOnlyDeletion = change.replacement.isEmpty
+            && change.find.unicodeScalars.allSatisfy { CharacterSet.punctuationCharacters.contains($0) }
+        guard !requiresAnchor || change.before != nil || change.after != nil || punctuationOnlyDeletion else {
+            return false
+        }
         return !(change.before?.contains("\n\n\n") ?? false)
             && !(change.after?.contains("\n\n\n") ?? false)
+    }
+
+    private static func isSafeAnchoredReplacement(_ source: String, _ replacement: String) -> Bool {
+        guard !source.isEmpty, !replacement.isEmpty,
+              !replacement.contains("\n\n\n"),
+              !isChattyResponse(replacement) else { return false }
+        // An anchored change may alter the selected word or punctuation, but it
+        // may not silently consume a boundary space. Explicitly anchored space
+        // changes remain possible because `find` includes that exact space.
+        let sourceLeading = source.prefix { $0.isWhitespace }
+        let sourceTrailing = source.reversed().prefix { $0.isWhitespace }
+        let replacementLeading = replacement.prefix { $0.isWhitespace }
+        let replacementTrailing = replacement.reversed().prefix { $0.isWhitespace }
+        guard sourceLeading.count == replacementLeading.count,
+              sourceTrailing.count == replacementTrailing.count else { return false }
+        let allowedExpansion = max(8, min(48, source.utf8.count / 2))
+        return replacement.utf8.count <= source.utf8.count + allowedExpansion
+    }
+
+    static func isDocumentSane(
+        _ source: String,
+        _ corrected: String,
+        allowedPunctuationDeletions: Int
+    ) -> Bool {
+        guard !corrected.contains("\n\n\n"),
+              internalWordSeparatorWhitespaceCount(in: corrected)
+                >= internalWordSeparatorWhitespaceCount(in: source) else { return false }
+
+        let sourceRepeatedWhitespace = repeatedWhitespaceRunCounts(in: source)
+        let correctedRepeatedWhitespace = repeatedWhitespaceRunCounts(in: corrected)
+        for (length, count) in correctedRepeatedWhitespace where count > sourceRepeatedWhitespace[length, default: 0] {
+            return false
+        }
+
+        let sourceAllCaps = allCapsWordCounts(in: source)
+        let correctedAllCaps = allCapsWordCounts(in: corrected)
+        for (word, count) in correctedAllCaps where count > sourceAllCaps[word, default: 0] {
+            return false
+        }
+
+        let sourceRepeatedWords = adjacentRepeatedWordCounts(in: source)
+        let correctedRepeatedWords = adjacentRepeatedWordCounts(in: corrected)
+        for (word, count) in correctedRepeatedWords where count > sourceRepeatedWords[word, default: 0] {
+            return false
+        }
+
+        let sourcePunctuation = source.unicodeScalars.filter { CharacterSet.punctuationCharacters.contains($0) }.count
+        let correctedPunctuation = corrected.unicodeScalars.filter { CharacterSet.punctuationCharacters.contains($0) }.count
+        let removedPunctuation = max(0, sourcePunctuation - correctedPunctuation)
+        guard removedPunctuation <= allowedPunctuationDeletions else { return false }
+        return true
+    }
+
+    private static func repeatedWhitespaceRunCounts(in value: String) -> [Int: Int] {
+        let scalars = Array(value.unicodeScalars)
+        var result: [Int: Int] = [:]
+        var index = 0
+        while index < scalars.count {
+            guard scalars[index] == " " || scalars[index] == "\t" else {
+                index += 1
+                continue
+            }
+            let start = index
+            while index < scalars.count && (scalars[index] == " " || scalars[index] == "\t") {
+                index += 1
+            }
+            let length = index - start
+            if length >= 2 { result[length, default: 0] += 1 }
+        }
+        return result
+    }
+
+    private static func allCapsWordCounts(in value: String) -> [String: Int] {
+        guard let expression = try? NSRegularExpression(pattern: #"\b[A-Z]{3,}\b"#) else { return [:] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).reduce(into: [:]) { result, match in
+            let word = (value as NSString).substring(with: match.range)
+            result[word, default: 0] += 1
+        }
+    }
+
+    private static func adjacentRepeatedWordCounts(in value: String) -> [String: Int] {
+        guard let expression = try? NSRegularExpression(pattern: #"\b([A-Za-z][A-Za-z'-]*)\s+\1\b"#, options: .caseInsensitive) else { return [:] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).reduce(into: [:]) { result, match in
+            guard match.numberOfRanges > 1 else { return }
+            let word = (value as NSString).substring(with: match.range(at: 1)).lowercased()
+            result[word, default: 0] += 1
+        }
     }
 
     static func isSafeDocumentReplacement(_ source: String, _ replacement: String) -> Bool {

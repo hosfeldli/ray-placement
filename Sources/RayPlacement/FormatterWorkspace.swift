@@ -4,9 +4,11 @@ import SwiftUI
 
 @MainActor
 final class FormatterWindowController: NSWindowController {
-    private let model = FormatterWorkspaceModel()
+    let model: FormatterWorkspaceModel
 
-    convenience init() {
+    init(model: FormatterWorkspaceModel) {
+        self.model = model
+
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1_020, height: 690),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -19,7 +21,7 @@ final class FormatterWindowController: NSWindowController {
             accessibilityLabel: "Lima document formatter",
             minSize: NSSize(width: 760, height: 520)
         )
-        self.init(window: window)
+        super.init(window: window)
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             FormatterWorkspaceView(model: model)
@@ -27,6 +29,8 @@ final class FormatterWindowController: NSWindowController {
                 .padding(10)
         }))
     }
+
+    required init?(coder: NSCoder) { nil }
 
     func present() {
         window?.center()
@@ -67,16 +71,67 @@ final class FormatterWorkspaceModel: ObservableObject {
         }
     }
 
-    @Published var source = ""
-    @Published var output = ""
-    @Published var kind: FormatterDocumentKind = .automatic
-    @Published var style: FormatterOutputStyle = .pretty
-    @Published var segmentEnding: SegmentEnding = .detected
-    @Published var searchQuery = "" { didSet { refreshSearch() } }
+    @Published var source = "" {
+        didSet { persist(.string(source), key: "source") }
+    }
+    @Published var output = "" {
+        didSet { persist(.string(output), key: "output") }
+    }
+    @Published var kind: FormatterDocumentKind = .automatic {
+        didSet { persist(.string(kind.rawValue), key: "kind") }
+    }
+    @Published var style: FormatterOutputStyle = .pretty {
+        didSet { persist(.string(style.rawValue), key: "style") }
+    }
+    @Published var segmentEnding: SegmentEnding = .detected {
+        didSet { persist(.string(segmentEnding.rawValue), key: "segmentEnding") }
+    }
+    @Published var searchQuery = "" {
+        didSet {
+            persist(.string(searchQuery), key: "searchQuery")
+            refreshSearch()
+        }
+    }
     @Published private(set) var searchLines: [Int] = []
     @Published private(set) var result: DocumentFormatResult?
     @Published private(set) var errorMessage: String?
+    var onProcessingStateChanged: ((Bool) -> Void)?
     private let maximumCharacters = 1_000_000
+
+    init() {
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "source") {
+            source = value
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "output") {
+            output = value
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "kind"),
+           let restored = FormatterDocumentKind(rawValue: value) {
+            kind = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "style"),
+           let restored = FormatterOutputStyle(rawValue: value) {
+            style = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "segmentEnding"),
+           let restored = SegmentEnding(rawValue: value) {
+            segmentEnding = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "searchQuery") {
+            searchQuery = value
+        }
+        refreshSearch()
+    }
+
+    private func persist(_ value: SurfaceStateValue, key: String) {
+        // Empty editor values are meaningful: they clear the cached workspace
+        // value rather than leaving stale text to be restored next time.
+        SurfaceStateCache.shared.set(
+            value.isEmptyString ? nil : value,
+            for: "formatter",
+            key: key
+        )
+    }
 
     var statusText: String {
         if let errorMessage { return errorMessage }
@@ -88,6 +143,8 @@ final class FormatterWorkspaceModel: ObservableObject {
     }
 
     func format() {
+        onProcessingStateChanged?(true)
+        defer { onProcessingStateChanged?(false) }
         do {
             let formatted = try DocumentFormatterService.format(
                 source,
@@ -172,6 +229,13 @@ final class FormatterWorkspaceModel: ObservableObject {
 
     private func refreshSearch() {
         searchLines = DocumentFormatterService.search(searchQuery, in: output)
+    }
+}
+
+private extension SurfaceStateValue {
+    var isEmptyString: Bool {
+        if case .string(let value) = self { return value.isEmpty }
+        return false
     }
 }
 

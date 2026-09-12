@@ -31,6 +31,9 @@ struct ExtensionSurfaceSession: Equatable {
     let preferredHeight: CGFloat
     let canPopOut: Bool
     let remembersState: Bool
+    let timeoutPolicy: LauncherSurfaceTimeoutPolicy
+    var isPinned: Bool
+    var lastInteractionAt: Date
 
     init(
         id: String,
@@ -38,7 +41,10 @@ struct ExtensionSurfaceSession: Equatable {
         kind: ExtensionSurfaceKind,
         preferredHeight: CGFloat,
         canPopOut: Bool,
-        remembersState: Bool = true
+        remembersState: Bool = true,
+        timeoutPolicy: LauncherSurfaceTimeoutPolicy = .global,
+        isPinned: Bool = false,
+        lastInteractionAt: Date? = nil
     ) {
         self.id = id
         self.title = title
@@ -46,6 +52,9 @@ struct ExtensionSurfaceSession: Equatable {
         self.preferredHeight = preferredHeight
         self.canPopOut = canPopOut
         self.remembersState = remembersState
+        self.timeoutPolicy = timeoutPolicy
+        self.isPinned = isPinned
+        self.lastInteractionAt = lastInteractionAt ?? Date()
     }
 }
 
@@ -53,6 +62,7 @@ struct ExtensionSurfaceSession: Equatable {
 final class InlineExtensionSurfaceModel: ObservableObject {
     @Published private(set) var form: ExtensionFormViewModel?
     private(set) var command: LoadedExtensionCommand?
+    var onExecutionStateChanged: ((Bool) -> Void)?
     private var rememberedForms: [String: ExtensionFormViewModel] = [:]
 
     var canRun: Bool { form?.canRun == true }
@@ -65,17 +75,32 @@ final class InlineExtensionSurfaceModel: ObservableObject {
     ) {
         self.command = command
         let key = "\(command.extensionID).\(command.command.id)"
-        if remembersState,
+        let definition = command.command.action.form!
+        // Secure fields may be used while the current form is open, but must
+        // never be retained in the reusable surface cache. Forms containing a
+        // secure field therefore start clean when reopened.
+        let mayRemember = remembersState && !definition.fields.contains { $0.type == .secure }
+        if mayRemember,
            let remembered = rememberedForms[key],
-           remembered.definition == command.command.action.form {
+           remembered.definition == definition {
+            remembered.onExecutionStateChanged = onExecutionStateChanged
             form = remembered
             return
         }
-        if !remembersState {
+        if !mayRemember {
             rememberedForms.removeValue(forKey: key)
+            // A previously remembered version of the same command must not
+            // leak into a no-memory or secure-field session later.
+            SurfaceStateCache.shared.remove(surfaceID: key)
         }
-        let fresh = ExtensionFormViewModel(command: command, definition: command.command.action.form!, execute: execute)
-        if remembersState {
+        let fresh = ExtensionFormViewModel(
+            command: command,
+            definition: definition,
+            remembersState: mayRemember,
+            execute: execute
+        )
+        fresh.onExecutionStateChanged = onExecutionStateChanged
+        if mayRemember {
             rememberedForms[key] = fresh
         }
         form = fresh
@@ -100,6 +125,7 @@ enum LauncherMode: Equatable {
     case contextShelf
     case writingReview(WritingReview)
     case extensionSurface(ExtensionSurfaceSession)
+    case surface(LauncherSurfaceSession)
     case output(title: String, text: String, state: LauncherOutputState)
 
     var title: String? {
@@ -116,6 +142,7 @@ enum LauncherMode: Equatable {
         case .contextShelf: return "Context Shelf"
         case .writingReview: return "Writing Review"
         case .extensionSurface(let session): return session.title
+        case .surface(let session): return session.surface.title
         case .output(let title, _, _): return title
         }
     }
@@ -215,12 +242,48 @@ enum SystemAction {
     case openWorkflows
     case openSettings
     case openDeveloperGrammarSettings
+    case openGrammarDebugger
     case quit
+}
+
+enum LauncherFileAction: String, CaseIterable {
+    case open
+    case quickLook
+    case reveal
+    case copyPath
+    case openTerminalHere
+    case addToShelf
+    case sendToNote
+
+    var title: String {
+        switch self {
+        case .open: return "Open"
+        case .quickLook: return "Quick Look"
+        case .reveal: return "Reveal"
+        case .copyPath: return "Copy Path"
+        case .openTerminalHere: return "Open Terminal Here"
+        case .addToShelf: return "Add to Shelf"
+        case .sendToNote: return "Send to Note"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .open: return "arrow.up.forward.app"
+        case .quickLook: return "eye"
+        case .reveal: return "finder"
+        case .copyPath: return "doc.on.doc"
+        case .openTerminalHere: return "terminal"
+        case .addToShelf: return "tray.and.arrow.down"
+        case .sendToNote: return "note.text.badge.plus"
+        }
+    }
 }
 
 enum LauncherAction {
     case launchApplication(URL)
     case openFile(URL)
+    case fileAction(URL, LauncherFileAction)
     case revealFile(URL)
     case openURL(URL)
     case copyText(String)

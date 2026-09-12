@@ -3,127 +3,282 @@ import Combine
 import SwiftUI
 
 @MainActor
-private final class DictationHUDState: ObservableObject {
-    @Published var dismissedConversationID: UUID?
-    @Published var dismissedSessionGeneration: UInt64?
+private final class ActivityHUDState: ObservableObject {
+    /// Presentation state is interaction state, not visibility state. Whether
+    /// the recording pill exists is derived exclusively from dictation.phase.
+    @Published var expandedMusic = false
+    /// Set only while the preferred player width cannot clear the launcher.
+    /// This keeps the visual state synchronized with the collision fallback.
+    @Published var collisionMini = false
+    private var collapseTask: Task<Void, Never>?
+
+    func scheduleCollapse(after timeout: TimeInterval) {
+        collapseTask?.cancel()
+        collapseTask = nil
+        guard expandedMusic, timeout > 0 else { return }
+        collapseTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(timeout))
+            } catch {
+                return
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.expandedMusic = false
+            self.collapseTask = nil
+        }
+    }
+
+    func cancelCollapse() {
+        collapseTask?.cancel()
+        collapseTask = nil
+    }
+
+    deinit {
+        collapseTask?.cancel()
+    }
 }
 
 @MainActor
-final class DictationHUDController {
-    private let panel: DictationHUDPanel
-    private let shelfState = DictationHUDState()
+final class ActivityHUDController {
+    private let panel: ActivityHUDPanel
+    private let hudState = ActivityHUDState()
     private let music = MusicNowPlayingService()
     private let focus = ShelfFocusCoordinator()
-    private let conversations: DictationConversationStore
+    private let settings = SettingsStore.shared
     private var stateObserver: AnyCancellable?
-    private var dismissedConversationID: UUID?
-    private var dismissedSessionGeneration: UInt64?
+    private var settingsObserver: AnyCancellable?
+    private var expansionObserver: AnyCancellable?
+    private var collisionObserver: AnyCancellable?
 
     init(
         dictation: NoteDictationService,
         conversations: DictationConversationStore,
         openConversation: @escaping (UUID) -> Void
     ) {
-        self.conversations = conversations
-        panel = DictationHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 320, height: 56))
-        panel.contentView = ShelfHostingView(rootView: LimaTypographyRoot(content: TopShelfView(
+        panel = ActivityHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 250, height: 56))
+        panel.onMiddleClick = { [weak self] in
+            self?.music.perform(.playPause)
+            self?.hudState.scheduleCollapse(after: self?.settings.musicExpandedTimeout ?? 0)
+            self?.focus.restoreSoon()
+        }
+        panel.onVolumeScroll = { [weak self] delta in
+            self?.music.adjustOutputVolume(by: delta)
+            self?.hudState.scheduleCollapse(after: self?.settings.musicExpandedTimeout ?? 0)
+        }
+        panel.contentView = ShelfHostingView(rootView: LimaTypographyRoot(content: ActivityHUDView(
             dictation: dictation,
             conversations: conversations,
             music: music,
             focus: focus,
-            hudState: shelfState,
+            hudState: hudState,
+            settings: settings,
             openDictation: { [weak self] in
-                guard let self, let id = self.conversations.currentConversationID else { return }
-                let generation = self.conversations.currentSessionGeneration
-                self.dismissedConversationID = id
-                self.dismissedSessionGeneration = generation
-                self.shelfState.dismissedConversationID = id
-                self.shelfState.dismissedSessionGeneration = generation
-                self.hideDictationIfNeeded(
-                    phase: dictation.phase,
-                    conversationID: id,
-                    sessionGeneration: generation,
-                    nowPlaying: self.music.nowPlaying
-                )
+                guard let id = conversations.currentConversationID else { return }
                 openConversation(id)
+                self?.focus.restoreSoon()
             }
         )))
 
-        stateObserver = Publishers.CombineLatest4(
+        stateObserver = Publishers.CombineLatest3(
             dictation.$phase,
-            conversations.$currentConversationID,
-            conversations.$currentSessionGeneration,
-            music.$nowPlaying
+            music.$nowPlaying,
+            settings.$musicShowWhenPaused
         )
-            .sink { [weak self] phase, conversationID, sessionGeneration, nowPlaying in
-                guard let self else { return }
-                if sessionGeneration != self.dismissedSessionGeneration {
-                    // A new recording, including a retry of the same
-                    // conversation, gets a fresh HUD. Later phase updates in
-                    // the same generation cannot undo a deliberate dismissal.
-                    if sessionGeneration > 0 {
-                        self.dismissedConversationID = nil
-                        self.dismissedSessionGeneration = nil
-                        self.shelfState.dismissedConversationID = nil
-                        self.shelfState.dismissedSessionGeneration = nil
-                    }
-                }
-                self.hideDictationIfNeeded(
-                    phase: phase,
-                    conversationID: conversationID,
-                    sessionGeneration: sessionGeneration,
-                    nowPlaying: nowPlaying
-                )
-            }
+        .sink { [weak self] _, _, _ in self?.updateLayout(dictation: dictation) }
+        settingsObserver = settings.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in self?.updateLayout(dictation: dictation) }
+        }
+        expansionObserver = hudState.$expandedMusic.sink { [weak self] _ in
+            Task { @MainActor in self?.updateLayout(dictation: dictation) }
+        }
+        collisionObserver = hudState.$collisionMini.sink { [weak self] _ in
+            Task { @MainActor in self?.updateLayout(dictation: dictation) }
+        }
     }
 
-    private func hideDictationIfNeeded(
-        phase: NoteDictationService.Phase,
-        conversationID: UUID?,
-        sessionGeneration: UInt64,
-        nowPlaying: MediaNowPlayingSnapshot?
-    ) {
-        let dictationVisible = phase != .idle
-            && conversationID != nil
-            && sessionGeneration != dismissedSessionGeneration
-        let musicVisible = nowPlaying != nil
+    private func updateLayout(dictation: NoteDictationService) {
+        let dictationVisible = shouldShowRecordingHUD(for: dictation.phase)
+        let musicVisible = shouldShowMusicHUD(music.nowPlaying)
         guard dictationVisible || musicVisible else {
-            hide()
+            panel.orderOut(nil)
             return
         }
-        let width: CGFloat = dictationVisible && musicVisible ? 702 : (dictationVisible ? 320 : 374)
-        show(width: width)
+
+        let requestedMusicWidth = requestedMusicPresentation(dictationVisible: dictationVisible).hudWidth
+        let preferredWidth = dictationVisible && musicVisible
+            ? 210 + 8 + requestedMusicWidth
+            : (dictationVisible ? 210 : requestedMusicWidth)
+        let miniMusicWidth = MusicHUDPresentation.mini.hudWidth
+        let miniWidth = dictationVisible && musicVisible
+            ? 210 + 8 + miniMusicWidth
+            : (dictationVisible ? 210 : miniMusicWidth)
+
+        if !hudState.collisionMini,
+           miniWidth < preferredWidth,
+           !canPlace(width: preferredWidth),
+           canPlace(width: miniWidth) {
+            hudState.collisionMini = true
+            show(width: miniWidth)
+            return
+        }
+        if hudState.collisionMini, canPlace(width: preferredWidth) {
+            hudState.collisionMini = false
+            show(width: preferredWidth)
+            return
+        }
+        show(width: hudState.collisionMini ? miniWidth : preferredWidth)
+    }
+
+    /// The recording pill is intentionally phase-authoritative. Stopping and
+    /// transcription are not recording states, so the pill disappears before
+    /// the asynchronous transcription work completes.
+    private func shouldShowRecordingHUD(for phase: NoteDictationService.Phase) -> Bool {
+        phase == .recording || phase == .paused
+    }
+
+    private func shouldShowMusicHUD(_ snapshot: MediaNowPlayingSnapshot?) -> Bool {
+        guard let snapshot else { return false }
+        return snapshot.isPlaying || settings.musicShowWhenPaused
+    }
+
+    private func requestedMusicPresentation(dictationVisible: Bool) -> MusicHUDPresentation {
+        if hudState.expandedMusic && settings.musicExpandOnClick { return .expanded }
+        if dictationVisible { return .mini }
+        return settings.musicHUDPresentation
+    }
+
+    private func effectiveMusicPresentation(dictationVisible: Bool) -> MusicHUDPresentation {
+        if hudState.collisionMini { return .mini }
+        return requestedMusicPresentation(dictationVisible: dictationVisible)
     }
 
     private func show(width: CGFloat) {
-        panel.setContentSize(NSSize(width: width, height: 56))
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        if let visibleFrame = screen?.visibleFrame {
-            panel.setFrameOrigin(NSPoint(
-                x: visibleFrame.midX - width / 2,
-                y: visibleFrame.minY + 18
-            ))
+        guard let screen = preferredScreen(),
+              let visibleFrame = Optional(screen.visibleFrame) else {
+            panel.setContentSize(NSSize(width: width, height: 56))
+            panel.orderFrontRegardless()
+            return
         }
-        // The shelf is informational and must never interrupt the application
-        // that owns keyboard focus. `orderFrontRegardless()` raises the panel
-        // without making it key or activating Lima.
+
+        let clampedWidth = min(width, max(1, visibleFrame.width - 16))
+        guard let origin = nonOverlappingOrigin(for: clampedWidth, visibleFrame: visibleFrame) else {
+            // There is no visible non-overlapping frame on this display. Hide
+            // explicitly rather than retaining a stale frame that may now
+            // overlap the launcher. A later layout pass retries placement.
+            panel.orderOut(nil)
+            return
+        }
+        panel.setContentSize(NSSize(width: clampedWidth, height: 56))
+        panel.setFrameOrigin(origin)
+        // The shelf is informational and must not activate Lima or steal the
+        // key window while its metadata is refreshed.
         panel.orderFrontRegardless()
     }
 
-    private func hide() {
-        panel.orderOut(nil)
+    private func canPlace(width: CGFloat) -> Bool {
+        guard let screen = preferredScreen(),
+              let visibleFrame = Optional(screen.visibleFrame) else { return true }
+        let clampedWidth = min(width, max(1, visibleFrame.width - 16))
+        return nonOverlappingOrigin(for: clampedWidth, visibleFrame: visibleFrame) != nil
     }
+
+    private func preferredScreen() -> NSScreen? {
+        let pointer = NSEvent.mouseLocation
+        if let pointerScreen = NSScreen.screens.first(where: { NSMouseInRect(pointer, $0.frame, false) }) {
+            return pointerScreen
+        }
+        if let launcherScreen = NSApp.windows
+            .first(where: { $0 is LauncherPanel && $0.isVisible })?.screen {
+            return launcherScreen
+        }
+        return NSScreen.main ?? NSScreen.screens.first
+    }
+
+    private func blockers(in visibleFrame: NSRect) -> [NSWindow] {
+        NSApp.windows.filter { window in
+            window !== panel
+                && window.isVisible
+                && window is LauncherPanel
+                && window.frame.intersects(visibleFrame)
+        }
+    }
+
+    /// Prefer the dock position, then horizontal/vertical displacement, and
+    /// finally scan the visible frame for a valid placement. Every candidate
+    /// is checked against every launcher blocker.
+    private func nonOverlappingOrigin(for width: CGFloat, visibleFrame: NSRect) -> NSPoint? {
+        let height: CGFloat = 56
+        guard width <= visibleFrame.width - 16,
+              height <= visibleFrame.height - 16 else { return nil }
+        let preferredX: CGFloat
+        switch settings.hudDockPosition {
+        case .bottomCenter: preferredX = visibleFrame.midX - width / 2
+        case .bottomLeft: preferredX = visibleFrame.minX + 18
+        case .bottomRight: preferredX = visibleFrame.maxX - width - 18
+        }
+        let safeX = max(visibleFrame.minX + 8, min(preferredX, visibleFrame.maxX - width - 8))
+        let desired = NSRect(x: safeX, y: visibleFrame.minY + 18, width: width, height: height)
+        let blockers = blockers(in: visibleFrame)
+
+        func fits(_ origin: NSPoint) -> Bool {
+            let frame = NSRect(origin: origin, size: desired.size)
+            return frame.minX >= visibleFrame.minX + 8
+                && frame.maxX <= visibleFrame.maxX - 8
+                && frame.minY >= visibleFrame.minY + 8
+                && frame.maxY <= visibleFrame.maxY - 8
+                && !blockers.contains(where: { frame.intersects($0.frame) })
+        }
+
+        if blockers.contains(where: { desired.intersects($0.frame) }) {
+            let horizontalCandidates = blockers.flatMap { blocker in
+                [
+                    NSPoint(x: blocker.frame.minX - width - 10, y: desired.minY),
+                    NSPoint(x: blocker.frame.maxX + 10, y: desired.minY)
+                ]
+            }
+            if let candidate = horizontalCandidates.first(where: fits) { return candidate }
+
+            let verticalCandidates = blockers.flatMap { blocker in
+                [
+                    NSPoint(x: desired.minX, y: blocker.frame.maxY + 10),
+                    NSPoint(x: desired.minX, y: blocker.frame.minY - height - 10)
+                ]
+            }
+            if let candidate = verticalCandidates.first(where: fits) { return candidate }
+        }
+        if fits(desired.origin) { return desired.origin }
+
+        // A launcher can be wider than either side candidate while still
+        // leaving a small visible pocket. Search that pocket rather than
+        // returning an overlapping bottom frame.
+        let maxX = visibleFrame.maxX - width - 8
+        let maxY = visibleFrame.maxY - height - 8
+        var y = visibleFrame.minY + 8
+        while y <= maxY {
+            var x = visibleFrame.minX + 8
+            while x <= maxX {
+                if fits(NSPoint(x: x, y: y)) { return NSPoint(x: x, y: y) }
+                x += 16
+            }
+            y += 16
+        }
+        return nil
+    }
+
 }
 
+/// Compatibility name retained for existing Notes-window callers while the
+/// implementation is now an activity shelf for both music and dictation.
+typealias DictationHUDController = ActivityHUDController
+
 private final class ShelfHostingView<Content: View>: NSHostingView<Content> {
-    // Allow controls to receive the first click without requiring the shelf to
-    // become the key window. Passive shelf updates never change focus.
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-private final class DictationHUDPanel: NSPanel {
-    // This shelf must never become the key window. In particular, showing
-    // music metadata while the user is typing elsewhere must not steal input.
+private final class ActivityHUDPanel: NSPanel {
+    var onMiddleClick: (() -> Void)?
+    var onVolumeScroll: ((Double) -> Void)?
+
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
 
@@ -139,11 +294,6 @@ private final class DictationHUDPanel: NSPanel {
             backing: .buffered,
             defer: false
         )
-        // Keep the shelf above other windows without activating Lima or
-        // changing the active application's key window.
-        // The shelf can receive deliberate clicks, but it cannot become key.
-        // This prevents state updates from redirecting keyboard input while
-        // retaining the music and dictation controls.
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
         becomesKeyOnlyIfNeeded = false
@@ -156,6 +306,22 @@ private final class DictationHUDPanel: NSPanel {
         isReleasedWhenClosed = false
         collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary, .ignoresCycle, .canJoinAllApplications]
         setAccessibilityLabel("Lima activity shelf")
+    }
+
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .otherMouseDown && event.buttonNumber == 2 {
+            onMiddleClick?()
+            return
+        }
+        if event.type == .scrollWheel,
+           event.locationInWindow.x >= frame.width - 112 {
+            let delta = event.scrollingDeltaY == 0 ? event.scrollingDeltaX : event.scrollingDeltaY
+            if delta != 0 {
+                onVolumeScroll?(delta)
+                return
+            }
+        }
+        super.sendEvent(event)
     }
 }
 
@@ -178,33 +344,54 @@ private struct MusicSignalRibbon: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
         .frame(height: 15)
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
     }
 }
 
-private struct TopShelfView: View {
+private extension MusicHUDPresentation {
+    var hudWidth: CGFloat {
+        switch self {
+        case .mini: return 250
+        case .compact: return 360
+        case .expanded: return 520
+        }
+    }
+}
+
+private struct ActivityHUDView: View {
     @ObservedObject var dictation: NoteDictationService
     @ObservedObject var conversations: DictationConversationStore
     @ObservedObject var music: MusicNowPlayingService
     let focus: ShelfFocusCoordinator
-    @ObservedObject var hudState: DictationHUDState
+    @ObservedObject var hudState: ActivityHUDState
+    @ObservedObject var settings: SettingsStore
     let openDictation: () -> Void
+    @State private var volumePopoverVisible = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            if dictation.phase != .idle,
-               let conversationID = conversations.currentConversationID,
-               conversationID != hudState.dismissedConversationID,
-               conversations.currentSessionGeneration != hudState.dismissedSessionGeneration {
-                dictationPill.frame(width: 320)
-            }
-            if let track = music.nowPlaying {
-                musicPill(track).frame(width: 374)
+        let dictationVisible = dictation.phase == .recording || dictation.phase == .paused
+        let musicVisible = music.nowPlaying.map { $0.isPlaying || settings.musicShowWhenPaused } ?? false
+        let presentation = effectivePresentation(dictationVisible: dictationVisible)
+
+        return HStack(spacing: 8) {
+            if dictationVisible { dictationPill.frame(width: 210) }
+            if musicVisible, let track = music.nowPlaying {
+                musicPill(track, presentation: presentation)
+                    .frame(width: presentation.hudWidth)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .limaAnimation(LimaDesign.spring(0.24), value: dictation.phase)
         .limaAnimation(LimaDesign.spring(0.24), value: music.nowPlaying)
+        .onDisappear { hudState.cancelCollapse() }
+    }
+
+    private func effectivePresentation(dictationVisible: Bool) -> MusicHUDPresentation {
+        if hudState.collisionMini { return .mini }
+        if hudState.expandedMusic && settings.musicExpandOnClick { return .expanded }
+        if dictationVisible { return .mini }
+        return settings.musicHUDPresentation
     }
 
     private var dictationPill: some View {
@@ -216,18 +403,12 @@ private struct TopShelfView: View {
                         Text(primaryText)
                             .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                             .lineLimit(1)
-                        Text(streamingText)
+                        Text(secondaryText)
                             .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.head)
-                            .contentTransition(.interpolate)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    Image(systemName: "arrow.up.right.square")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .accessibilityHidden(true)
                 }
                 .contentShape(Rectangle())
             }
@@ -236,8 +417,9 @@ private struct TopShelfView: View {
             .accessibilityLabel("Open current dictation conversation in Lima Notes")
 
             Button {
-                // This is deliberately a sibling control, not a nested button,
-                // so stopping can never bubble into the Notes action.
+                // Notes and the HUD both call the same service action. The
+                // phase changes to stopping immediately, which removes this
+                // pill without any HUD-specific dismissal flag.
                 dictation.performPrimaryAction()
                 focus.restoreSoon()
             } label: {
@@ -255,7 +437,7 @@ private struct TopShelfView: View {
             .help("Stop recording and finish transcription")
             .accessibilityLabel("Stop dictation")
         }
-        .padding(.horizontal, LimaDesign.toolbarPadding)
+        .padding(.horizontal, 8)
         .frame(height: 56)
         .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: LimaColors.danger.opacity(0.30), shadow: true)
         .overlay(alignment: .bottom) {
@@ -274,152 +456,221 @@ private struct TopShelfView: View {
         }
     }
 
-    private func musicPill(_ track: MediaNowPlayingSnapshot) -> some View {
-        let accent = track.source.accent
-        let statusMessage = music.controlAvailabilityMessage
-        let metadata = [track.artist, track.album]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
-        let detail = statusMessage ?? (metadata.isEmpty ? track.source.title : metadata)
+    @ViewBuilder
+    private func musicPill(_ track: MediaNowPlayingSnapshot, presentation: MusicHUDPresentation) -> some View {
+        switch presentation {
+        case .mini: miniMusicPill(track)
+        case .compact: compactMusicPill(track)
+        case .expanded: expandedMusicPill(track)
+        }
+    }
 
-        return HStack(spacing: 8) {
-            Button {
-                music.openSource()
-                focus.restoreSoon()
-            } label: {
-                ZStack(alignment: .bottomTrailing) {
-                    musicArtwork(for: track, accent: accent)
-                    Image(systemName: track.source.symbol)
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(LimaColors.primaryText)
-                        .padding(4)
-                        .background(LimaColors.recessedSurface.opacity(0.92), in: Circle())
-                        .padding(3)
+    private func miniMusicPill(_ track: MediaNowPlayingSnapshot) -> some View {
+        HStack(spacing: 7) {
+            if settings.musicShowArtwork {
+                artworkButton(for: track, size: 38)
+            }
+            Button { toggleExpandedOrOpenSource() } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title).limaFont(.system(size: 11.5, weight: .semibold, design: .rounded)).lineLimit(1)
+                    Text(track.artist.isEmpty ? track.source.title : track.artist)
+                        .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .frame(width: 40, height: 40)
-                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .strokeBorder(accent.opacity(0.42), lineWidth: LimaDesign.borderWidth)
-                        .allowsHitTesting(false)
-                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .help("Open \(track.source.title)")
-            .accessibilityLabel("Open \(track.source.title): \(track.title)")
-
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 5) {
-                    Text(track.title)
-                        .limaFont(.system(size: 12, weight: .semibold, design: .rounded))
-                        .lineLimit(1)
-                    Spacer(minLength: 2)
-                    Image(systemName: track.isPlaying ? "waveform" : "pause.fill")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(track.isPlaying ? accent : .secondary)
-                }
-                Text(detail)
-                    .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(statusMessage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                HStack(spacing: 4) {
-                    Text(timeLabel(track.position))
-                        .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(LimaColors.secondaryText)
-                    MusicSignalRibbon(
-                        progress: track.duration > 0 ? track.position / track.duration : 0,
-                        accent: accent
-                    )
-                    Text(timeLabel(track.duration))
-                        .limaFont(.system(size: 7.5, weight: .medium, design: .monospaced))
-                        .foregroundStyle(LimaColors.secondaryText)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-            VStack(spacing: 3) {
-                HStack(spacing: 1) {
-                    mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
-                    Button { runMediaAction(.playPause) } label: {
-                        Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .frame(width: 27, height: 25)
-                            .foregroundStyle(LimaColors.primaryText)
-                            .background(accent, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
-                    .accessibilityLabel(track.isPlaying ? "Pause \(track.title)" : "Play \(track.title)")
-                    mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
-                }
-                HStack(spacing: 3) {
-                    Image(systemName: "speaker.wave.2.fill")
-                        .font(.system(size: 7.5, weight: .bold))
-                        .foregroundStyle(.secondary)
-                    Slider(value: Binding(get: { music.outputVolume }, set: { music.setOutputVolume($0) }), in: 0...1)
-                        .controlSize(.mini)
-                        .frame(width: 60)
-                        .help("Output volume")
-                }
-            }
-            .frame(width: 88)
-            .padding(.vertical, 3)
-            .background(LimaColors.recessedSurface.opacity(0.92), in: Capsule())
-            .overlay(Capsule().stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
-            .opacity(music.isPerformingTransport ? 0.55 : 1)
-            .disabled(music.isPerformingTransport)
+            .help(settings.musicExpandOnClick ? "Expand player" : "Open \(track.source.title)")
+            if settings.musicShowPlaybackControls { transportControls(track, compact: true) }
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: accent.opacity(0.26), shadow: true)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.26), shadow: true)
         .overlay(alignment: .bottom) {
-            AudioAccentRail(
-                level: track.isPlaying ? music.outputAudioLevel : 0,
-                accent: accent,
-                active: track.isPlaying
-            )
+            if settings.musicShowProgress {
+                MusicSignalRibbon(progress: track.duration > 0 ? track.position / track.duration : 0, accent: track.source.accent)
+                    .padding(.horizontal, 8)
+                    .frame(height: 6)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(track.source.title), \(track.isPlaying ? "playing" : "paused"): \(track.title) by \(track.artist)")
     }
 
-    @ViewBuilder
-    private func musicArtwork(for track: MediaNowPlayingSnapshot, accent: Color) -> some View {
-        if let artwork = music.artwork {
-            Image(nsImage: artwork)
-                .resizable()
-                .scaledToFill()
-        } else {
-            ZStack {
-                LinearGradient(
-                    colors: [accent.opacity(0.34), SettingsStore.shared.accentTheme.primary.opacity(0.16)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                )
-                Image(systemName: track.source.symbol)
-                    .limaFont(.system(size: 13, weight: .bold))
-                    .foregroundStyle(accent)
+    private func compactMusicPill(_ track: MediaNowPlayingSnapshot) -> some View {
+        HStack(spacing: 8) {
+            if settings.musicShowArtwork { artworkButton(for: track, size: 40) }
+            Button { toggleExpandedOrOpenSource() } label: {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(track.title).limaFont(.system(size: 12, weight: .semibold, design: .rounded)).lineLimit(1)
+                    Text([track.artist, track.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                        .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    if settings.musicShowProgress {
+                        HStack(spacing: 4) {
+                            Text(timeLabel(track.position)).limaFont(.system(size: 7.5, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
+                            MusicSignalRibbon(progress: track.duration > 0 ? track.position / track.duration : 0, accent: track.source.accent)
+                            Text(timeLabel(track.duration)).limaFont(.system(size: 7.5, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
+            .buttonStyle(.plain)
+            if settings.musicShowPlaybackControls { transportControls(track, compact: false) }
+            volumeButton
         }
+        .padding(.horizontal, 8)
+        .frame(height: 56)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.26), shadow: true)
+        .overlay(alignment: .bottom) {
+            AudioAccentRail(level: track.isPlaying ? music.outputAudioLevel : 0, accent: track.source.accent, active: track.isPlaying)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(track.source.title), \(track.isPlaying ? "playing" : "paused"): \(track.title) by \(track.artist)")
     }
 
-    private func mediaButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 9.5, weight: .bold))
+    private func expandedMusicPill(_ track: MediaNowPlayingSnapshot) -> some View {
+        HStack(spacing: 9) {
+            artworkButton(for: track, size: 46)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(track.title).limaFont(.system(size: 12.5, weight: .bold, design: .rounded)).lineLimit(1)
+                Text(track.artist).limaFont(.system(size: 9, weight: .medium, design: .rounded)).foregroundStyle(.secondary).lineLimit(1)
+                Text(track.album.isEmpty ? track.source.title : track.album)
+                    .limaFont(.system(size: 8, weight: .medium, design: .rounded)).foregroundStyle(.tertiary).lineLimit(1)
+                if settings.musicShowProgress {
+                    HStack(spacing: 4) {
+                        Text(timeLabel(track.position)).limaFont(.system(size: 7.5, design: .monospaced)).foregroundStyle(.secondary)
+                        MusicSignalRibbon(progress: track.duration > 0 ? track.position / track.duration : 0, accent: track.source.accent)
+                        Text(timeLabel(track.duration)).limaFont(.system(size: 7.5, design: .monospaced)).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if settings.musicShowPlaybackControls { transportControls(track, compact: false) }
+            VStack(spacing: 3) {
+                Image(systemName: "speaker.wave.2.fill").font(.system(size: 8, weight: .bold)).foregroundStyle(.secondary)
+                Slider(value: Binding(get: { music.outputVolume }, set: {
+                    music.setOutputVolume($0)
+                    scheduleCollapse()
+                }), in: 0...1)
+                    .controlSize(.mini)
+                    .frame(width: 62)
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 56)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.30), shadow: true)
+        .onAppear { hudState.scheduleCollapse(after: settings.musicExpandedTimeout) }
+    }
+
+    private var volumeButton: some View {
+        Button {
+            volumePopoverVisible.toggle()
+            scheduleCollapse()
+        } label: {
+            Image(systemName: "speaker.wave.2.fill")
+                .font(.system(size: 9, weight: .bold))
                 .frame(width: 24, height: 24)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .contentShape(Rectangle())
+        .popover(isPresented: $volumePopoverVisible, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Output volume").font(.caption.weight(.semibold))
+                Slider(value: Binding(get: { music.outputVolume }, set: {
+                    music.setOutputVolume($0)
+                    scheduleCollapse()
+                }), in: 0...1)
+                    .frame(width: 150)
+            }
+            .padding(12)
+        }
+        .help("Adjust output volume")
+        .accessibilityLabel("Output volume")
+    }
+
+    private func artworkButton(for track: MediaNowPlayingSnapshot, size: CGFloat) -> some View {
+        Button {
+            music.openSource()
+            scheduleCollapse()
+            focus.restoreSoon()
+        } label: {
+            ZStack(alignment: .bottomTrailing) {
+                musicArtwork(for: track, accent: track.source.accent)
+                Image(systemName: track.source.symbol)
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundStyle(LimaColors.primaryText)
+                    .padding(4)
+                    .background(LimaColors.recessedSurface.opacity(0.92), in: Circle())
+                    .padding(2)
+            }
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .help("Open \(track.source.title)")
+        .accessibilityLabel("Open \(track.source.title): \(track.title)")
+    }
+
+    private func transportControls(_ track: MediaNowPlayingSnapshot, compact: Bool) -> some View {
+        HStack(spacing: compact ? 0 : 1) {
+            mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
+            Button { runMediaAction(.playPause) } label: {
+                Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
+                    .font(.system(size: compact ? 8 : 9, weight: .bold))
+                    .frame(width: compact ? 24 : 27, height: compact ? 24 : 25)
+                    .foregroundStyle(LimaColors.primaryText)
+                    .background(track.source.accent, in: Circle())
+            }
+            .buttonStyle(.plain)
+            mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
+        }
+        .opacity(music.isPerformingTransport ? 0.55 : 1)
+        .disabled(music.isPerformingTransport)
+    }
+
+    private func mediaButton(_ symbol: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol).font(.system(size: 8.5, weight: .bold)).frame(width: 23, height: 24)
+        }
+        .buttonStyle(.plain)
         .help(label)
         .accessibilityLabel(label)
+    }
+
+    private func toggleExpandedOrOpenSource() {
+        guard settings.musicExpandOnClick else {
+            music.openSource()
+            focus.restoreSoon()
+            return
+        }
+        hudState.expandedMusic = true
+        hudState.scheduleCollapse(after: settings.musicExpandedTimeout)
+    }
+
+    private func scheduleCollapse() {
+        hudState.scheduleCollapse(after: settings.musicExpandedTimeout)
     }
 
     private func runMediaAction(_ action: MusicNowPlayingService.TransportAction) {
         music.perform(action)
         focus.restoreSoon()
+        if hudState.expandedMusic { scheduleCollapse() }
+    }
+
+    @ViewBuilder
+    private func musicArtwork(for track: MediaNowPlayingSnapshot, accent: Color) -> some View {
+        if settings.musicShowArtwork, let artwork = music.artwork {
+            Image(nsImage: artwork).resizable().scaledToFill()
+        } else {
+            ZStack {
+                LinearGradient(colors: [accent.opacity(0.34), settings.accentTheme.primary.opacity(0.16)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                Image(systemName: track.source.symbol).limaFont(.system(size: 13, weight: .bold)).foregroundStyle(accent)
+            }
+        }
     }
 
     private func timeLabel(_ seconds: Double) -> String {
@@ -432,63 +683,22 @@ private struct TopShelfView: View {
         switch dictation.phase {
         case .recording: SpeechLevelView(level: dictation.audioLevel)
         case .paused: Image(systemName: "pause.fill")
-        case .requestingPermission, .stopping, .transcribing: ProgressView().controlSize(.small)
-        case .completed: Image(systemName: "checkmark.circle.fill")
-        case .failed: Image(systemName: "exclamationmark.triangle.fill")
-        case .idle: Image(systemName: "mic")
+        default: EmptyView()
         }
     }
 
     private var primaryText: String {
-        switch dictation.phase {
-        case .requestingPermission: return "Waiting for dictation permission"
-        case .recording: return "Recording · Dictation conversation"
-        case .paused: return "Recording paused"
-        case .stopping: return "Finishing recording"
-        case .transcribing: return "Transcribing conversation"
-        case .completed: return "Dictation completed"
-        case .failed: return "Dictation failed"
-        case .idle: return "Dictation ready"
-        }
+        dictation.phase == .paused ? "Recording paused" : "Recording"
     }
 
     private var secondaryText: String {
-        switch dictation.phase {
-        case .requestingPermission:
-            return SettingsStore.shared.dictationEngine == .localWhisper
-                ? "Approve Microphone access if prompted"
-                : "Approve Microphone and Speech Recognition if prompted"
-        case .recording:
-            let live = dictation.semiLiveSegmentCount == 0 ? "live · listening" : "live · \(dictation.semiLiveSegmentCount) added"
-            return "\(Self.clock(dictation.recordingElapsed)) · \(live) · \(dictation.inputSignalText)"
-        case .paused:
-            return "\(Self.clock(dictation.recordingElapsed)) · paused"
-        case .stopping:
-            return "Finishing recording…"
-        case .transcribing:
-            return dictation.transcriptionProgress ?? "Transcribing…"
-        case .completed:
-            return "Transcript ready to edit"
-        case .failed:
-            return "Retry the saved recording or record again"
-        case .idle:
-            return ""
-        }
-    }
-
-    private var streamingText: String {
-        if dictation.phase == .recording,
-           !dictation.livePreviewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "“\(dictation.livePreviewText)”"
-        }
-        return secondaryText
+        dictation.phase == .paused
+            ? Self.clock(dictation.recordingElapsed)
+            : "\(Self.clock(dictation.recordingElapsed)) · \(dictation.inputSignalText)"
     }
 
     private var accessibilityText: String {
-        if dictation.phase == .recording {
-            return "Recording conversation · \(Self.clock(dictation.recordingElapsed)) elapsed"
-        }
-        return primaryText
+        "\(primaryText) · \(Self.clock(dictation.recordingElapsed)) elapsed"
     }
 
     private static func clock(_ seconds: TimeInterval) -> String {

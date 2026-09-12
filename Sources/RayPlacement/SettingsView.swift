@@ -467,6 +467,14 @@ struct SettingsView: View {
                 Text("External API sends the checked text to the selected provider after protected spans are masked. It never falls back to Local on failure.")
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
+                Picker("Ensemble", selection: $settings.grammarEnsembleStrategy) {
+                    ForEach(GrammarEnsembleStrategy.allCases) { strategy in
+                        Text("\(strategy.title) · \(strategy.detail)").tag(strategy)
+                    }
+                }
+                Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
                 Picker("Provider", selection: Binding(
                     get: { settings.developerGrammarProvider },
                     set: { settings.selectDeveloperGrammarProvider($0) }
@@ -584,15 +592,16 @@ struct SettingsView: View {
         let started = Date()
         let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
-        StealthGrammarRemoteClient().correctText(protected.contextText, configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingGrammarCompatibility = false
             switch result {
-            case .success(let corrected):
-                if ExternalGrammarCompatibility.validate(source: source, protected: protected, corrected: corrected) {
-                    grammarCompatibilityMessage = "Compatible · plain corrected text and protected text passed · \(latency) ms"
+            case .success(let changes):
+                let report = protected.applyingDocumentChanges(changes)
+                if ExternalGrammarCompatibility.validate(source: source, protected: protected, report: report) {
+                    grammarCompatibilityMessage = "Compatible · applied \(report.appliedCount) · rejected \(report.rejectedCount) · \(latency) ms"
                 } else {
-                    grammarCompatibilityMessage = "Failed · the provider did not return a safe corrected text response"
+                    grammarCompatibilityMessage = "Failed · the provider did not return safe atomic document changes"
                 }
             case .failure(let error):
                 grammarCompatibilityMessage = "Failed · \(error.localizedDescription)"
@@ -935,6 +944,45 @@ struct SettingsView: View {
                 Text(settings.interfaceDensity.detail)
                     .limaFont(.caption)
                     .foregroundStyle(.secondary)
+            }
+
+            Section("Launcher surfaces") {
+                Picker("Return tools to Search after inactivity", selection: Binding(
+                    get: { LauncherSurfaceTimeoutOption.allCases.first { $0.seconds == settings.launcherSurfaceTimeout } ?? .thirtySeconds },
+                    set: { settings.launcherSurfaceTimeout = $0.seconds }
+                )) {
+                    ForEach(LauncherSurfaceTimeoutOption.allCases) { option in
+                        Text(option.title).tag(option)
+                    }
+                }
+                Toggle("Apply launcher timeout to Terminal", isOn: $settings.terminalUsesLauncherTimeout)
+                Text("Typing, clicks, selection changes, edits, copies, and runs reset the timer. Active work suspends it.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Music HUD") {
+                Picker("Appearance", selection: $settings.musicHUDPresentation) {
+                    Text("Mini").tag(MusicHUDPresentation.mini)
+                    Text("Compact").tag(MusicHUDPresentation.compact)
+                }
+                .pickerStyle(.segmented)
+                Toggle("Show artwork", isOn: $settings.musicShowArtwork)
+                Toggle("Show playback controls", isOn: $settings.musicShowPlaybackControls)
+                Toggle("Show progress", isOn: $settings.musicShowProgress)
+                Toggle("Show when paused", isOn: $settings.musicShowWhenPaused)
+                Toggle("Expand on click", isOn: $settings.musicExpandOnClick)
+                Picker("Auto-collapse expanded player", selection: Binding(
+                    get: { settings.musicExpandedTimeout },
+                    set: { settings.musicExpandedTimeout = $0 }
+                )) {
+                    Text("5 seconds").tag(TimeInterval(5))
+                    Text("10 seconds").tag(TimeInterval(10))
+                    Text("15 seconds").tag(TimeInterval(15))
+                }
+                Picker("Dock position", selection: $settings.hudDockPosition) {
+                    ForEach(HUDDockPosition.allCases) { Text($0.title).tag($0) }
+                }
             }
 
             Section("Startup") {

@@ -23,16 +23,17 @@ final class RuleBasedWritingChecker {
 
     private let reviewer = WritingCheckService()
     private let remoteClient = StealthGrammarRemoteClient()
+    private lazy var ensembleCoordinator = GrammarEnsembleCoordinator(remoteClient: remoteClient)
 
     private var externalSystemPrompt: String {
         let mode = SettingsStore.shared.grammarCorrectionMode
         let modeInstruction: String = mode == .polish
             ? "In addition to proofreading, make only small, clearly beneficial clarity or flow improvements. Preserve the author's voice."
             : "Only correct high-confidence spelling, grammar, capitalization, and punctuation. Do not polish or rephrase."
-        return StealthGrammarRemoteClient.plainTextSystemPrompt + "\n" + modeInstruction
+        return StealthGrammarRemoteClient.systemPrompt + "\n" + modeInstruction
     }
     private var activeProcess: Process?
-    private var remoteTask: URLSessionDataTask?
+    private var externalGrammarTask: Task<Void, Never>?
     private var usageID: UUID?
     private var operationID: UUID?
 
@@ -40,8 +41,8 @@ final class RuleBasedWritingChecker {
         operationID = nil
         if activeProcess?.isRunning == true { activeProcess?.terminate() }
         activeProcess = nil
-        remoteTask?.cancel()
-        remoteTask = nil
+        externalGrammarTask?.cancel()
+        externalGrammarTask = nil
         if let usageID {
             UsageMonitor.shared.finish(usageID, succeeded: false, detail: "Cancelled")
             self.usageID = nil
@@ -150,80 +151,98 @@ final class RuleBasedWritingChecker {
             return
         }
 
-        progress("Applying External Grammar…")
-        remoteTask = remoteClient.correctText(
-            protected.contextText,
+        progress("Applying External Grammar ensemble…")
+        runExternalEnsemble(
+            source: source,
+            protected: protected,
             configuration: configuration,
-            systemPrompt: self.externalSystemPrompt
-        ) { [weak self] result in
-            guard let self, self.operationID == operationID else { return }
-            self.remoteTask = nil
-            do {
-                let corrected = try self.externalPlainReplacement(
-                    source: source,
-                    protected: protected,
-                    response: try result.get()
-                )
-                let review = try self.reviewer.review(sourceText: source, rewrittenText: corrected, engineTitle: "External API")
-                self.finish(success: true, output: review.suggestedText.count)
-                completion(.success(review))
-            } catch {
-                self.finishExternalFailure(error, completion: completion)
-            }
-        }
+            operationID: operationID,
+            progress: progress,
+            completion: completion
+        )
     }
 
-    private func externalPlainReplacement(
-        source: String,
-        protected: StealthProtectedText,
-        response: String
-    ) throws -> String {
-        for candidate in StealthGrammarRemoteClient.plainTextCandidates(from: response) {
-            guard let corrected = protected.restoreContext(candidate),
-                  StealthGrammarService.isSafeReplacement(source, corrected) else { continue }
-            return corrected
-        }
-        throw StealthGrammarRemoteClient.ClientError.invalidResponse
+    private struct ExternalReviewOutcome {
+        let report: StealthGrammarApplyReport
+        let review: WritingReview
     }
 
     private func externalReview(
         source: String,
-        protected: StealthProtectedText,
-        edits: [StealthGrammarDocumentChange]
-    ) throws -> WritingReview {
-        let report = protected.applyingDocumentChanges(edits)
-        let enhanced = report.text
-        guard StealthGrammarService.isSafeReplacement(source, enhanced) else {
+        report: StealthGrammarApplyReport
+    ) throws -> ExternalReviewOutcome {
+        guard StealthGrammarService.isSafeReplacement(source, report.text) else {
             throw StealthGrammarRemoteClient.ClientError.safetyRejected
         }
-        return try reviewer.review(sourceText: source, rewrittenText: enhanced, engineTitle: "External API")
+        var review = try reviewer.review(
+            sourceText: source,
+            rewrittenText: report.text,
+            engineTitle: "External API"
+        )
+        if report.rejectedCount > 0 {
+            review = WritingReview(
+                sourceText: review.sourceText,
+                suggestedText: review.suggestedText,
+                issues: review.issues,
+                status: "Corrected \(report.appliedCount) issues · \(report.rejectedCount) suggestions ignored for safety"
+            )
+        }
+        return ExternalReviewOutcome(report: report, review: review)
     }
 
-    private func retryExternalReview(
+    private func runExternalEnsemble(
         source: String,
         protected: StealthProtectedText,
         configuration: DeveloperGrammarConfiguration,
         operationID: UUID,
-        violation: String,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
-        guard self.operationID == operationID else { return }
-        progress("Validating External Grammar response… retrying once")
-        let retryPrompt = externalSystemPrompt + "\nThe previous response violated a local invariant: " + violation + ". Return a smaller anchored change or an empty changes array."
-        remoteTask = remoteClient.correctDocument(
-            protected.contextText,
-            configuration: configuration,
-            systemPrompt: retryPrompt
-        ) { [weak self] retryResult in
-            guard let self, self.operationID == operationID else { return }
-            self.remoteTask = nil
+        externalGrammarTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let edits = try retryResult.get()
-                let review = try self.externalReview(source: source, protected: protected, edits: edits)
-                self.finish(success: true, output: review.suggestedText.count)
-                completion(.success(review))
+                let strategy = SettingsStore.shared.grammarEnsembleStrategy
+                var result = try await self.ensembleCoordinator.run(
+                    contextText: protected.contextText,
+                    source: source,
+                    protected: protected,
+                    configuration: configuration,
+                    strategy: strategy,
+                    systemPrompt: self.externalSystemPrompt,
+                    useJudgeOnDisagreement: SettingsStore.shared.grammarJudgeOnDisagreement
+                )
+
+                // A disagreement with no edit-level consensus is retried once
+                // with the same controlled ensemble. This is deliberately an
+                // operation-level retry, not one retry per candidate.
+                if result.hasProposals && result.report.appliedCount == 0 {
+                    guard self.operationID == operationID else { return }
+                    progress("Validating External Grammar ensemble… retrying once")
+                    result = try await self.ensembleCoordinator.run(
+                        contextText: protected.contextText,
+                        source: source,
+                        protected: protected,
+                        configuration: configuration,
+                        strategy: strategy,
+                        systemPrompt: self.externalSystemPrompt + "\nThe prior ensemble had no safe edit-level consensus. Be more conservative and return only corrections supported by the supplied document.",
+                        useJudgeOnDisagreement: SettingsStore.shared.grammarJudgeOnDisagreement
+                    )
+                }
+
+                guard self.operationID == operationID else { return }
+                guard !result.hasProposals || result.report.appliedCount > 0 else {
+                    throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                }
+                let outcome = try self.externalReview(source: source, report: result.report)
+                self.finish(success: true, output: outcome.review.suggestedText.count)
+                self.externalGrammarTask = nil
+                completion(.success(outcome.review))
+            } catch is CancellationError {
+                // cancel() invalidates operationID; do not publish a stale
+                // completion or overwrite the cancellation usage record.
             } catch {
+                guard self.operationID == operationID else { return }
+                self.externalGrammarTask = nil
                 self.finishExternalFailure(error, completion: completion)
             }
         }
@@ -347,74 +366,85 @@ final class RuleBasedWritingChecker {
                 completion(.failure(error))
                 return
             }
-            progress("Checking with External Grammar…")
-            remoteTask = remoteClient.correctText(
-                protected.contextText,
+            progress("Checking with External Grammar ensemble…")
+            runExternalStealthEnsemble(
+                source: source,
+                protected: protected,
                 configuration: configuration,
-                systemPrompt: self.externalSystemPrompt
-            ) { [weak self] result in
-                guard let self, self.operationID == operationID else { return }
-                self.remoteTask = nil
-                do {
-                    let corrected = try self.externalPlainReplacement(
-                        source: source,
-                        protected: protected,
-                        response: try result.get()
-                    )
-                    self.finish(success: true, output: corrected.count)
-                    completion(.success(corrected))
-                } catch {
-                    self.finish(success: false, detail: error.localizedDescription)
-                    completion(.failure(error))
-                }
-            }
+                operationID: operationID,
+                progress: progress,
+                completion: completion
+            )
             return
         }
 
         runLocalStealth(source: source, protected: protected, operationID: operationID, progress: progress, completion: completion)
     }
 
-    private func externalStealthReplacement(
-        source: String,
-        protected: StealthProtectedText,
-        edits: [StealthGrammarDocumentChange]
-    ) throws -> String {
-        let corrected = protected.applyingDocumentChanges(edits).text
-        guard StealthGrammarService.isSafeReplacement(source, corrected) else {
-            throw StealthGrammarRemoteClient.ClientError.safetyRejected
-        }
-        return corrected
+    private struct ExternalStealthOutcome {
+        let report: StealthGrammarApplyReport
+        let text: String
     }
 
-    private func retryExternalStealthReview(
+    private func externalStealthReplacement(
+        source: String,
+        report: StealthGrammarApplyReport
+    ) throws -> ExternalStealthOutcome {
+        guard StealthGrammarService.isSafeReplacement(source, report.text) else {
+            throw StealthGrammarRemoteClient.ClientError.safetyRejected
+        }
+        return ExternalStealthOutcome(report: report, text: report.text)
+    }
+
+    private func runExternalStealthEnsemble(
         source: String,
         protected: StealthProtectedText,
         configuration: DeveloperGrammarConfiguration,
         operationID: UUID,
-        violation: String,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
-        guard self.operationID == operationID else { return }
-        progress("Validating External Grammar response… retrying once")
-        let retryPrompt = externalSystemPrompt + "\nThe previous response violated a local invariant: " + violation + ". Return only a smaller anchored correction or an empty changes array."
-        remoteTask = remoteClient.correctDocument(
-            protected.contextText,
-            configuration: configuration,
-            systemPrompt: retryPrompt
-        ) { [weak self] retryResult in
-            guard let self, self.operationID == operationID else { return }
-            self.remoteTask = nil
+        externalGrammarTask = Task { [weak self] in
+            guard let self else { return }
             do {
-                let corrected = try self.externalStealthReplacement(
+                let strategy = SettingsStore.shared.grammarEnsembleStrategy
+                var result = try await self.ensembleCoordinator.run(
+                    contextText: protected.contextText,
                     source: source,
                     protected: protected,
-                    edits: try retryResult.get()
+                    configuration: configuration,
+                    strategy: strategy,
+                    systemPrompt: self.externalSystemPrompt,
+                    useJudgeOnDisagreement: SettingsStore.shared.grammarJudgeOnDisagreement
                 )
-                self.finish(success: true, output: corrected.count)
-                completion(.success(corrected))
+                if result.hasProposals && result.report.appliedCount == 0 {
+                    guard self.operationID == operationID else { return }
+                    progress("Validating External Grammar ensemble… retrying once")
+                    result = try await self.ensembleCoordinator.run(
+                        contextText: protected.contextText,
+                        source: source,
+                        protected: protected,
+                        configuration: configuration,
+                        strategy: strategy,
+                        systemPrompt: self.externalSystemPrompt + "\nThe prior ensemble had no safe edit-level consensus. Be more conservative and return only corrections supported by the supplied document.",
+                        useJudgeOnDisagreement: SettingsStore.shared.grammarJudgeOnDisagreement
+                    )
+                }
+                guard self.operationID == operationID else { return }
+                guard !result.hasProposals || result.report.appliedCount > 0 else {
+                    throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                }
+                let outcome = try self.externalStealthReplacement(source: source, report: result.report)
+                self.finish(success: true, output: outcome.text.count)
+                self.externalGrammarTask = nil
+                completion(.success(outcome.text))
+            } catch is CancellationError {
+                // The parent task is cancelled by cancel(); its operation ID
+                // is invalidated before any stale result can be delivered.
             } catch {
-                self.finish(success: false, detail: error.localizedDescription)
+                guard self.operationID == operationID else { return }
+                self.externalGrammarTask = nil
+                finish(success: false, detail: error.localizedDescription)
                 completion(.failure(error))
             }
         }

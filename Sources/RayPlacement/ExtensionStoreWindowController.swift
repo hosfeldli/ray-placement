@@ -60,10 +60,14 @@ final class ExtensionStoreModel: ObservableObject {
     @Published private(set) var installingID: String?
     @Published private(set) var status = "Browse reviewed extensions published for Lima."
 
-    private let onInstalled: () -> Void
+    private var onInstalled: () -> Void
 
     init(onInstalled: @escaping () -> Void) {
         self.onInstalled = onInstalled
+    }
+
+    func setOnInstalled(_ handler: @escaping () -> Void) {
+        onInstalled = handler
     }
 
     var filteredEntries: [ExtensionStoreEntry] {
@@ -415,43 +419,7 @@ final class ExtensionStoreModel: ObservableObject {
     }
 }
 
-@MainActor
-final class ExtensionStoreWindowController: NSWindowController {
-    private let model: ExtensionStoreModel
-    private var hasPresented = false
-
-    init(onInstalled: @escaping () -> Void) {
-        model = ExtensionStoreModel(onInstalled: onInstalled)
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 800, height: 610),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        LimaWindowChrome.configure(
-            window,
-            title: "Lima Extension Store",
-            accessibilityLabel: "Lima Extension Store",
-            minSize: NSSize(width: 620, height: 460)
-        )
-        super.init(window: window)
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionStoreView(model: model)))
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func present() {
-        if !hasPresented {
-            window?.center()
-            hasPresented = true
-        }
-        if let window { WorkspaceWindowCoordinator.shared.present(window) }
-        NSApp.activate(ignoringOtherApps: true)
-        model.load()
-    }
-}
-
-private struct ExtensionStoreView: View {
+struct ExtensionStoreView: View {
     @ObservedObject var model: ExtensionStoreModel
 
     var body: some View {
@@ -539,6 +507,7 @@ private struct ExtensionStoreView: View {
         }
         .tint(SettingsStore.shared.accentTheme.readablePrimary)
         .preferredColorScheme(SettingsStore.shared.appearance.swiftUIColorScheme)
+        .onAppear { model.load() }
     }
 }
 

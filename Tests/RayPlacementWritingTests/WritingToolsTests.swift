@@ -258,51 +258,83 @@ private final class FakePasteboard: PlainTextPasteboard {
 }
 
 
-@Test func editableGrammarSegmentsExcludeProtectedValuesAndMapByID() throws {
+@Test func documentGrammarChangesReplaceAcrossProtectedContext() {
     let source = "This are a grammer sentence with Lima and https://example.com."
     let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
-    let segments = protected.editableSegments()
-
-    #expect(segments.count == 2)
-    #expect(segments.allSatisfy { !$0.text.contains("Lima") && !$0.text.contains("https://") })
-    #expect(segments.map(\.id) == ["s0", "s1"])
-
-    let corrected = try protected.apply([
-        StealthGrammarSegmentCorrection(id: "s0", corrected: "This is a grammar sentence with ")
+    let report = protected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "This ", after: " a"),
+        StealthGrammarDocumentChange(find: "grammer", replacement: "grammar", before: "a ", after: " sentence")
     ])
-    #expect(corrected == "This is a grammar sentence with Lima and https://example.com.")
+
+    #expect(report.text == "This is a grammar sentence with Lima and https://example.com.")
+    #expect(report.appliedCount == 2)
+    #expect(report.rejectedCount == 0)
 }
 
-@Test func editableGrammarSegmentsRejectUnknownIDs() {
-    let protected = StealthGrammarService.protect("This is text.", ignoreList: "")
-    #expect(throws: StealthGrammarEditError.invalidRange) {
-        _ = try protected.apply([StealthGrammarSegmentCorrection(id: "unknown", corrected: "changed")])
-    }
+@Test func documentGrammarChangesRequireAnchorsForShortFinds() {
+    let protected = StealthGrammarService.protect("This are repeated. Those are repeated.", ignoreList: "")
+    let report = protected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(find: "are", replacement: "is"),
+        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "This ", after: " repeated")
+    ])
+
+    #expect(report.text == "This is repeated. Those are repeated.")
+    #expect(report.appliedCount == 1)
+    #expect(report.rejectedCount == 1)
 }
 
+@Test func documentGrammarSanityRejectsDuplicationAndCapitalizationExplosions() {
+    let duplicateSource = "The application works."
+    let duplicateProtected = StealthGrammarService.protect(duplicateSource, ignoreList: "")
+    let duplicateReport = duplicateProtected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(
+            find: "application",
+            replacement: "application application",
+            before: "The ",
+            after: " works"
+        )
+    ])
+    #expect(duplicateReport.text == duplicateSource)
+    #expect(duplicateReport.appliedCount == 0)
+    #expect(duplicateReport.rejectedCount == 1)
 
-@Test func anchoredGrammarEditsRejectAmbiguousMatchesAndHonorContext() throws {
-    let segments = [StealthEditableSegment(id: "s0", text: "This is a test. This is another test.", start: 0, length: 37)]
-    #expect(throws: StealthGrammarEditError.invalidRange) {
-        try StealthGrammarService.apply([
-            StealthGrammarAnchoredChange(segmentID: "s0", find: "test", replacement: "check")
-        ], segments: segments, to: segments[0].text)
-    }
-    let result = try StealthGrammarService.apply([
-        StealthGrammarAnchoredChange(segmentID: "s0", find: "test", replacement: "check", before: "a ", after: ".")
-    ], segments: segments, to: segments[0].text)
-    #expect(result == "This is a check. This is another test.")
+    let capitalizationSource = "This is fine."
+    let capitalizationProtected = StealthGrammarService.protect(capitalizationSource, ignoreList: "")
+    let capitalizationReport = capitalizationProtected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(find: "This", replacement: "THIS", after: " is")
+    ])
+    #expect(capitalizationReport.text == capitalizationSource)
+    #expect(capitalizationReport.appliedCount == 0)
+    #expect(capitalizationReport.rejectedCount == 1)
 }
 
-@Test func anchoredGrammarEditsPreserveWhitespaceBoundaries() {
-    let segments = [StealthEditableSegment(id: "s0", text: "Fix teh typo", start: 0, length: 12)]
-    #expect(throws: StealthGrammarEditError.unsafeReplacement) {
-        try StealthGrammarService.apply([
-            StealthGrammarAnchoredChange(segmentID: "s0", find: "teh", replacement: " teh ")
-        ], segments: segments, to: segments[0].text)
-    }
+@Test func sentenceInitialCapitalizationIsNotAutomaticallyProtected() {
+    let protected = StealthGrammarService.protect(
+        "Apple are ready. The API is available.",
+        ignoreList: ""
+    )
+
+    #expect(!protected.contextText.contains("[NAME_0] are ready."))
+    #expect(protected.contextText.contains("[ACRONYM_0] is available."))
+    #expect(protected.restoreContext(protected.contextText) == "Apple are ready. The API is available.")
 }
 
+@Test func documentGrammarChangesRejectOversizedOrSentenceWideEdits() {
+    let source = "This is a short sentence. Another sentence follows."
+    let protected = StealthGrammarService.protect(source, ignoreList: "")
+    let longFind = String(repeating: "word ", count: 16).trimmingCharacters(in: .whitespaces)
+    let report = protected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(find: longFind, replacement: "short"),
+        StealthGrammarDocumentChange(
+            find: "This is a short sentence. Another sentence follows.",
+            replacement: "A rewritten paragraph."
+        )
+    ])
+
+    #expect(report.text == source)
+    #expect(report.appliedCount == 0)
+    #expect(report.rejectedCount == 2)
+}
 
 @Test func documentGrammarChangesPreserveContextProtectedValuesAndWhitespace() {
     let cases = [
@@ -314,7 +346,9 @@ private final class FakePasteboard: PlainTextPasteboard {
         let report = protected.applyingDocumentChanges([
             StealthGrammarDocumentChange(
                 find: source == "This are wrong." ? "are" : "dont",
-                replacement: source == "This are wrong." ? "is" : "don't"
+                replacement: source == "This are wrong." ? "is" : "don't",
+                before: source == "This are wrong." ? "This " : "I ",
+                after: source == "This are wrong." ? " wrong." : " know."
             )
         ])
         #expect(report.text == expected)
@@ -328,7 +362,7 @@ private final class FakePasteboard: PlainTextPasteboard {
     let punctuation = "Hello, world!"
     let punctuationProtected = StealthGrammarService.protect(punctuation, ignoreList: "")
     #expect(punctuationProtected.applyingDocumentChanges([
-        StealthGrammarDocumentChange(find: "world", replacement: "there")
+        StealthGrammarDocumentChange(find: "world", replacement: "there", before: "Hello, ", after: "!")
     ]).text == "Hello, there!")
 }
 
@@ -369,27 +403,56 @@ private final class FakePasteboard: PlainTextPasteboard {
 
 
 @Test func deterministicExternalGrammarCompatibilityCorpusPreservesDocumentInvariants() {
-    let source = "This are wrong. I dont know. Hello world. Hello  world. Hello, world! Lima are ready. See https://example.com/a?x=1 today."
+    let source = "This are wrong. I dont know. He go to work every day. Hello, how are you? Hello world. Hello  world. Hello, world! Lima are ready. The API dont work. This is **very** good. - [ ] This are broken 😀. “This are quoted.” See https://example.com/a?x=1 today."
     let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
 
     #expect(protected.contextText.contains("[NAME_0]"))
+    #expect(protected.contextText.contains("[ACRONYM_0]"))
     #expect(protected.contextText.contains("[URL_0]"))
     #expect(protected.contextText.contains("[NAME_0] are ready."))
     #expect(protected.contextText.contains("https://") == false)
+    #expect(protected.contextText.contains("Hello, how are you?"))
+    #expect(protected.contextText.contains("This is **very** good."))
+    #expect(protected.contextText.contains("😀"))
+    #expect(protected.contextText.contains("“This are quoted.”"))
 
     let report = protected.applyingDocumentChanges([
         StealthGrammarDocumentChange(find: "are", replacement: "is", before: "This ", after: " wrong."),
-        StealthGrammarDocumentChange(find: "dont", replacement: "don't"),
-        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "[NAME_0] ", after: " ready.")
+        StealthGrammarDocumentChange(find: "dont", replacement: "don't", before: "I ", after: " know."),
+        StealthGrammarDocumentChange(find: "go", replacement: "goes", before: "He ", after: " to"),
+        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "[NAME_0] ", after: " ready."),
+        StealthGrammarDocumentChange(find: "dont", replacement: "doesn't", before: "[ACRONYM_0] ", after: " work."),
+        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "This ", after: " broken"),
+        StealthGrammarDocumentChange(find: "are", replacement: "is", before: "This ", after: " quoted.")
     ])
 
-    #expect(report.text == "This is wrong. I don't know. Hello world. Hello  world. Hello, world! Lima is ready. See https://example.com/a?x=1 today.")
-    #expect(report.appliedCount == 3)
+    #expect(report.text == "This is wrong. I don't know. He goes to work every day. Hello, how are you? Hello world. Hello  world. Hello, world! Lima is ready. The API doesn't work. This is **very** good. - [ ] This is broken 😀. “This is quoted.” See https://example.com/a?x=1 today.")
+    #expect(report.appliedCount == 7)
     #expect(report.rejectedCount == 0)
     #expect(report.text.components(separatedBy: "https://example.com/a?x=1").count == 2)
     #expect(report.text.contains("Hello world."))
     #expect(report.text.contains("Hello  world."))
     #expect(report.text.contains("Hello, world!"))
+    #expect(report.text.contains("**very**"))
+    #expect(report.text.contains("😀"))
+    #expect(report.text.contains("“This is quoted.”"))
+}
+
+@Test func documentGrammarChangesRejectEmbeddedNewlines() {
+    let source = "This is fine."
+    let protected = StealthGrammarService.protect(source, ignoreList: "")
+    let report = protected.applyingDocumentChanges([
+        StealthGrammarDocumentChange(
+            find: "is",
+            replacement: "is\nvery",
+            before: "This ",
+            after: " fine."
+        )
+    ])
+
+    #expect(report.text == source)
+    #expect(report.appliedCount == 0)
+    #expect(report.rejectedCount == 1)
 }
 
 @Test func documentGrammarAllowsOnlyExplicitPunctuationDeletion() {

@@ -51,28 +51,6 @@ final class StealthGrammarRemoteClient {
     explanations.
     """
 
-    /// The live correction path intentionally uses a plain-text response. The
-    /// model must not spend its response budget producing an edit protocol when
-    /// the caller only needs the corrected sentence/text.
-    static let plainTextSystemPrompt = """
-    You are a meticulous grammar and spelling corrector. Correct the supplied
-    sentence or text as accurately as possible.
-
-    Your entire response must be ONLY the corrected sentence or text itself.
-    Return the corrected text and absolutely nothing else. Do not explain any
-    correction. Do not describe what you changed. Do not add an introduction,
-    conclusion, label, heading, commentary, apology, or summary. Do not return
-    JSON, XML, Markdown, a list, quotation marks around the answer, or code
-    fences. Do not say "Here is the corrected text" or anything similar.
-
-    Preserve the author's meaning, voice, formatting, paragraph breaks,
-    punctuation, Markdown structure, and whitespace wherever it is not necessary
-    to correct an error. Never invent content and never rewrite correct text. If
-    the supplied sentence/text is already correct, return it unchanged. Treat
-    ordinary placeholders such as [NAME_0] and [URL_0] as immutable text and
-    reproduce them exactly.
-    """
-
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
 
     static let openAIStructuredOutputFormat: [String: Any] = [
@@ -90,6 +68,80 @@ final class StealthGrammarRemoteClient {
             ], "required": ["changes"], "additionalProperties": false
         ]
     ]
+
+    static let openAIJudgeOutputFormat: [String: Any] = [
+        "type": "json_schema", "name": "grammar_adjudication", "strict": true,
+        "schema": [
+            "type": "object", "properties": [
+                "decisions": ["type": "array", "items": [
+                    "type": "object", "properties": [
+                        "issue_id": ["type": "string"],
+                        "winner": ["type": ["string", "null"]],
+                        "confidence": ["type": "number"]
+                    ], "required": ["issue_id", "winner", "confidence"],
+                    "additionalProperties": false
+                ]]
+            ], "required": ["decisions"], "additionalProperties": false
+        ]
+    ]
+
+    /// Bridges the callback-based URLSession API to async/await while making
+    /// cancellation terminal. URLSession does not guarantee that a cancelled
+    /// data task will invoke its completion handler, so cancelling only the
+    /// task can otherwise leave the continuation suspended forever.
+    private final class AsyncRequestBridge<Value>: @unchecked Sendable {
+        private let lock = NSLock()
+        private var task: URLSessionDataTask?
+        private var continuation: CheckedContinuation<Value, Error>?
+        private var finished = false
+
+        func setContinuation(_ continuation: CheckedContinuation<Value, Error>) {
+            lock.lock()
+            if finished {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            self.continuation = continuation
+            lock.unlock()
+        }
+
+        func setTask(_ task: URLSessionDataTask?) {
+            lock.lock()
+            self.task = task
+            let shouldCancel = finished
+            lock.unlock()
+            if shouldCancel { task?.cancel() }
+        }
+
+        func finish(_ result: Result<Value, Error>) {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                return
+            }
+            finished = true
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            continuation?.resume(with: result)
+        }
+
+        func cancel() {
+            lock.lock()
+            guard !finished else {
+                lock.unlock()
+                return
+            }
+            finished = true
+            let task = self.task
+            let continuation = self.continuation
+            self.continuation = nil
+            lock.unlock()
+            task?.cancel()
+            continuation?.resume(throwing: CancellationError())
+        }
+    }
 
     private let session: URLSession
 
@@ -171,70 +223,6 @@ final class StealthGrammarRemoteClient {
         }
     }
 
-    private static func segmentRequestText(_ segments: [StealthEditableSegment]) -> String? {
-        let publicSegments = segments.map { ["id": $0.id, "text": $0.text] }
-        guard let data = try? JSONSerialization.data(withJSONObject: ["segments": publicSegments]) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    @discardableResult
-    func correctText(
-        _ text: String,
-        configuration: DeveloperGrammarConfiguration,
-        systemPrompt: String = StealthGrammarRemoteClient.plainTextSystemPrompt,
-        completion: @escaping (Result<String, Error>) -> Void
-    ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
-              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !text.isEmpty,
-              let request = makeRequest(
-                text: text,
-                configuration: configuration,
-                systemPrompt: systemPrompt,
-                plainTextResponse: true
-              ) else {
-            completion(.failure(ClientError.invalidConfiguration))
-            return nil
-        }
-        return perform(request: request, provider: configuration.provider, completion: completion)
-    }
-
-    /// Candidate forms make the client tolerant of a model that disobeys the
-    /// no-wrapper instruction once, without accepting explanations or changing
-    /// the caller's protected-text validation rules.
-    static func plainTextCandidates(from value: String) -> [String] {
-        let raw = value
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        var candidates = [raw]
-        if trimmed != raw { candidates.append(trimmed) }
-
-        if trimmed.hasPrefix("```") && trimmed.hasSuffix("```") {
-            var body = trimmed
-            body.removeFirst(3)
-            body.removeLast(3)
-            if let newline = body.firstIndex(of: "\n") {
-                let language = body[..<newline].trimmingCharacters(in: .whitespacesAndNewlines)
-                if language.isEmpty || language.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" }) {
-                    body = String(body[body.index(after: newline)...])
-                }
-            }
-            candidates.append(body.trimmingCharacters(in: .whitespacesAndNewlines))
-        }
-
-        if trimmed.count >= 2 {
-            let pairs: [(Character, Character)] = [("\"", "\""), ("'", "'"), ("“", "”"), ("‘", "’")]
-            for (opening, closing) in pairs where trimmed.first == opening && trimmed.last == closing {
-                candidates.append(String(trimmed.dropFirst().dropLast()))
-            }
-        }
-
-        var unique: [String] = []
-        for candidate in candidates where !unique.contains(candidate) {
-            unique.append(candidate)
-        }
-        return unique
-    }
-
     @discardableResult
     func correctDocument(
         _ contextText: String,
@@ -242,38 +230,152 @@ final class StealthGrammarRemoteClient {
         systemPrompt: String = StealthGrammarRemoteClient.systemPrompt,
         completion: @escaping (Result<[StealthGrammarDocumentChange], Error>) -> Void
     ) -> URLSessionDataTask? {
+        return correctDocument(
+            contextText,
+            configuration: configuration,
+            systemPrompt: systemPrompt,
+            temperature: nil,
+            reasoningEffort: nil,
+            completion: completion
+        )
+    }
+
+    func correctDocument(
+        _ contextText: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String,
+        temperature: Double?,
+        reasoningEffort: String?
+    ) async throws -> [StealthGrammarDocumentChange] {
+        let bridge = AsyncRequestBridge<[StealthGrammarDocumentChange]>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                bridge.setContinuation(continuation)
+                let task = correctDocument(
+                    contextText,
+                    configuration: configuration,
+                    systemPrompt: systemPrompt,
+                    temperature: temperature,
+                    reasoningEffort: reasoningEffort
+                ) { result in
+                    bridge.finish(result)
+                }
+                bridge.setTask(task)
+                if Task.isCancelled {
+                    bridge.cancel()
+                }
+            }
+        }, onCancel: {
+            bridge.cancel()
+        })
+    }
+
+    struct JudgeDecision: Sendable, Equatable {
+        let issueID: String
+        let winner: String?
+        let confidence: Double
+    }
+
+    func judgeDocument(
+        contextText: String,
+        candidateSummary: String,
+        configuration: DeveloperGrammarConfiguration,
+        profile: GrammarCandidateProfile = .conservativeAdjudicator
+    ) async throws -> [JudgeDecision] {
+        let systemPrompt = """
+        You are a conservative adjudicator for a grammar correction ensemble.
+        Evaluate only the proposed atomic corrections in the candidate summary.
+        Do not proofread the source yourself. Do not invent or rewrite any edit.
+        For each issue, return the existing candidate ID that should win, or null
+        when none is reliable. Prefer objective correctness, meaning preservation,
+        minimal edits, and formatting preservation. Confidence must be between 0 and 1.
+
+        Return only the required structured JSON object.
+        """
+        let userPrompt = """
+        Sanitized source document:
+        <source>
+        \(contextText)
+        </source>
+
+        Proposed candidate corrections:
+        <candidates>
+        \(candidateSummary)
+        </candidates>
+        """
+        let taskBox = AsyncRequestBridge<[JudgeDecision]>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                let task = performJudgeRequest(
+                    text: userPrompt,
+                    configuration: configuration,
+                    systemPrompt: systemPrompt + "\nProfile: \(profile.id)\nLima diversity seed: \(profile.diversitySeed)\nPrompt version: \(profile.promptVersion)",
+                    temperature: profile.temperature,
+                    reasoningEffort: profile.reasoningEffort
+                ) { result in
+                    taskBox.finish(result.flatMap { value in
+                        do { return .success(try Self.extractJudgeDecisions(from: value)) }
+                        catch { return .failure(error) }
+                    })
+                }
+                taskBox.setTask(task)
+                if Task.isCancelled { taskBox.cancel() }
+            }
+        }, onCancel: {
+            taskBox.cancel()
+        })
+    }
+
+    @discardableResult
+    private func performJudgeRequest(
+        text: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String,
+        temperature: Double?,
+        reasoningEffort: String?,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              let request = makeRequest(
+                text: text,
+                configuration: configuration,
+                systemPrompt: systemPrompt,
+                temperature: temperature,
+                reasoningEffort: reasoningEffort,
+                outputFormat: Self.openAIJudgeOutputFormat
+              ) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider, completion: completion)
+    }
+
+    @discardableResult
+    private func correctDocument(
+        _ contextText: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String,
+        temperature: Double?,
+        reasoningEffort: String?,
+        completion: @escaping (Result<[StealthGrammarDocumentChange], Error>) -> Void
+    ) -> URLSessionDataTask? {
         guard !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !contextText.isEmpty,
-              let request = makeRequest(text: contextText, configuration: configuration, systemPrompt: systemPrompt) else {
+              let request = makeRequest(
+                text: contextText,
+                configuration: configuration,
+                systemPrompt: systemPrompt,
+                temperature: temperature,
+                reasoningEffort: reasoningEffort
+              ) else {
             completion(.failure(ClientError.invalidConfiguration))
             return nil
         }
         return perform(request: request, provider: configuration.provider) { result in
             completion(result.flatMap { value in
                 do { return .success(try Self.extractDocumentChanges(from: value)) }
-                catch { return .failure(error) }
-            })
-        }
-    }
-
-    @discardableResult
-    func correctSegments(
-        _ segments: [StealthEditableSegment],
-        configuration: DeveloperGrammarConfiguration,
-        systemPrompt: String = StealthGrammarRemoteClient.systemPrompt,
-        completion: @escaping (Result<[StealthGrammarAnchoredChange], Error>) -> Void
-    ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
-              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let requestText = Self.segmentRequestText(segments),
-              let request = makeRequest(text: requestText, configuration: configuration, systemPrompt: systemPrompt) else {
-            completion(.failure(ClientError.invalidConfiguration))
-            return nil
-        }
-        return perform(request: request, provider: configuration.provider) { result in
-            completion(result.flatMap { value in
-                do { return .success(try Self.extractAnchoredChanges(from: value)) }
                 catch { return .failure(error) }
             })
         }
@@ -377,7 +479,9 @@ final class StealthGrammarRemoteClient {
         text: String,
         configuration: DeveloperGrammarConfiguration,
         systemPrompt: String,
-        plainTextResponse: Bool = false
+        temperature: Double? = nil,
+        reasoningEffort: String? = nil,
+        outputFormat: [String: Any]? = nil
     ) -> URLRequest? {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
         let url: URL?
@@ -409,15 +513,15 @@ final class StealthGrammarRemoteClient {
                     ["role": "user", "content": [["type": "input_text", "text": text]]]
                 ]
             ]
-            if !plainTextResponse {
-                payload["text"] = ["format": Self.openAIStructuredOutputFormat]
-            }
+            payload["text"] = ["format": outputFormat ?? Self.openAIStructuredOutputFormat]
+            if let temperature { payload["temperature"] = temperature }
+            if let reasoningEffort { payload["reasoning"] = ["effort": reasoningEffort] }
             request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "model": configuration.model,
-                "temperature": 0,
+                "temperature": temperature ?? 0,
                 "messages": [
                     ["role": "system", "content": systemPrompt],
                     ["role": "user", "content": text]
@@ -429,7 +533,7 @@ final class StealthGrammarRemoteClient {
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "model": configuration.model,
                 "max_tokens": 8_000,
-                "temperature": 0,
+                "temperature": temperature ?? 0,
                 "system": systemPrompt,
                 "messages": [["role": "user", "content": text]]
             ])
@@ -437,7 +541,7 @@ final class StealthGrammarRemoteClient {
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "systemInstruction": ["parts": [["text": systemPrompt]]],
                 "contents": [["role": "user", "parts": [["text": text]]]],
-                "generationConfig": ["temperature": 0]
+                "generationConfig": ["temperature": temperature ?? 0]
             ])
         }
         return request
@@ -520,12 +624,43 @@ final class StealthGrammarRemoteClient {
         }.joined()
     }
 
-    private struct ChangeEnvelope: Decodable {
-        let changes: [StealthGrammarAnchoredChange]
-    }
-
     private struct DocumentChangeEnvelope: Decodable {
         let changes: [StealthGrammarDocumentChange]
+    }
+
+    private struct JudgeDecisionEnvelope: Decodable {
+        struct Decision: Decodable {
+            let issueID: String
+            let winner: String?
+            let confidence: Double
+
+            enum CodingKeys: String, CodingKey {
+                case issueID = "issue_id"
+                case winner
+                case confidence
+            }
+        }
+        let decisions: [Decision]
+    }
+
+    private static func extractJudgeDecisions(from value: String) throws -> [JudgeDecision] {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        var candidates = [trimmed]
+        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
+            candidates.append(String(trimmed[first...last]))
+        }
+        for candidate in candidates {
+            guard let data = candidate.data(using: .utf8),
+                  let envelope = try? JSONDecoder().decode(JudgeDecisionEnvelope.self, from: data) else { continue }
+            return envelope.decisions.map {
+                JudgeDecision(
+                    issueID: $0.issueID,
+                    winner: $0.winner,
+                    confidence: min(1, max(0, $0.confidence))
+                )
+            }
+        }
+        throw ClientError.invalidJSON
     }
 
     private static func extractDocumentChanges(from value: String) throws -> [StealthGrammarDocumentChange] {
@@ -537,20 +672,6 @@ final class StealthGrammarRemoteClient {
         for candidate in candidates {
             guard let data = candidate.data(using: .utf8) else { continue }
             if let envelope = try? JSONDecoder().decode(DocumentChangeEnvelope.self, from: data) {
-                return envelope.changes
-            }
-        }
-        throw ClientError.invalidJSON
-    }
-
-    private static func extractAnchoredChanges(from value: String) throws -> [StealthGrammarAnchoredChange] {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        var candidates = [trimmed]
-        if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
-            candidates.append(String(trimmed[first...last]))
-        }
-        for candidate in candidates where candidate.data(using: .utf8) != nil {
-            if let data = candidate.data(using: .utf8), let envelope = try? JSONDecoder().decode(ChangeEnvelope.self, from: data) {
                 return envelope.changes
             }
         }

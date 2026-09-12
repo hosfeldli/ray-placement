@@ -42,6 +42,31 @@ struct DeveloperGrammarSettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Grammar Ensemble") {
+                Picker("Strategy", selection: $settings.grammarEnsembleStrategy) {
+                    ForEach(GrammarEnsembleStrategy.allCases) { strategy in
+                        Text("\(strategy.title) · \(strategy.detail)").tag(strategy)
+                    }
+                }
+                Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Use judge when candidates disagree", isOn: $settings.grammarJudgeOnDisagreement)
+                Text("The judge may select only an existing candidate edit or reject the disputed edit; it cannot invent a replacement.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Grammar Debugger") {
+                Toggle("Store source text and sanitized context", isOn: $settings.grammarDebugStoreSourceText)
+                Text("Off by default. Candidate metadata, prompts, edits, errors, latency, and aggregate analytics are stored locally without source text.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Stepper("Retain runs for \(settings.grammarDebugRetentionDays) days", value: $settings.grammarDebugRetentionDays, in: 1...3650)
+                Stepper("Keep at most \(settings.grammarDebugMaximumRuns) runs", value: $settings.grammarDebugMaximumRuns, in: 10...100_000, step: 10)
+                Button { NSApp.activate(ignoringOtherApps: true); } label: { Label("Open Grammar Debugger from the launcher", systemImage: "ladybug") }
+            }
+
             Section("Provider and model") {
                 Picker("Provider", selection: Binding(
                     get: { settings.developerGrammarProvider },
@@ -251,15 +276,16 @@ struct DeveloperGrammarSettingsView: View {
         let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
         let started = Date()
-        StealthGrammarRemoteClient().correctText(protected.contextText, configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingCompatibility = false
             switch result {
-            case .success(let corrected):
-                if ExternalGrammarCompatibility.validate(source: source, protected: protected, corrected: corrected) {
-                    compatibilityMessage = "Compatible · plain corrected text and protected text passed · \(latency) ms"
+            case .success(let changes):
+                let report = protected.applyingDocumentChanges(changes)
+                if ExternalGrammarCompatibility.validate(source: source, protected: protected, report: report) {
+                    compatibilityMessage = "Compatible · applied \(report.appliedCount) · rejected \(report.rejectedCount) · \(latency) ms"
                 } else {
-                    compatibilityMessage = "Failed · the provider did not return a safe corrected text response"
+                    compatibilityMessage = "Failed · the provider did not return safe atomic document changes"
                 }
             case .failure(let error):
                 compatibilityMessage = "Failed: \(error.localizedDescription)"

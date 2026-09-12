@@ -7,6 +7,14 @@ struct LauncherView: View {
     @ObservedObject var terminalModel: DeveloperTerminalModel
     @ObservedObject var passwordGeneratorModel: PasswordGeneratorModel
     @ObservedObject var inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
+    @ObservedObject var formatterModel: FormatterWorkspaceModel
+    @ObservedObject var extensionStoreModel: ExtensionStoreModel
+    @ObservedObject var workflowModel: WorkflowEditorModel
+    @ObservedObject var surfaceSessionController: LauncherSurfaceSessionController
+    let onSurfaceInteraction: () -> Void
+    let onPinSurface: (Bool) -> Void
+    let onOpenSurfaceWorkspace: () -> Void
+    let onPerformSurfacePrimaryAction: () -> Void
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
@@ -20,12 +28,28 @@ struct LauncherView: View {
         viewModel: LauncherViewModel,
         terminalModel: DeveloperTerminalModel,
         passwordGeneratorModel: PasswordGeneratorModel,
-        inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
+        inlineExtensionSurfaceModel: InlineExtensionSurfaceModel,
+        formatterModel: FormatterWorkspaceModel,
+        extensionStoreModel: ExtensionStoreModel,
+        workflowModel: WorkflowEditorModel,
+        surfaceSessionController: LauncherSurfaceSessionController,
+        onSurfaceInteraction: @escaping () -> Void = {},
+        onPinSurface: @escaping (Bool) -> Void = { _ in },
+        onOpenSurfaceWorkspace: @escaping () -> Void = {},
+        onPerformSurfacePrimaryAction: @escaping () -> Void = {}
     ) {
         self.viewModel = viewModel
         self.terminalModel = terminalModel
         self.passwordGeneratorModel = passwordGeneratorModel
         self.inlineExtensionSurfaceModel = inlineExtensionSurfaceModel
+        self.formatterModel = formatterModel
+        self.extensionStoreModel = extensionStoreModel
+        self.workflowModel = workflowModel
+        self.surfaceSessionController = surfaceSessionController
+        self.onSurfaceInteraction = onSurfaceInteraction
+        self.onPinSurface = onPinSurface
+        self.onOpenSurfaceWorkspace = onOpenSurfaceWorkspace
+        self.onPerformSurfacePrimaryAction = onPerformSurfacePrimaryAction
     }
 
     var body: some View {
@@ -123,7 +147,7 @@ struct LauncherView: View {
             if viewModel.isTimezonePicker {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
-            } else if case .extensionSurface = viewModel.mode {
+            } else if isDedicatedSurfaceMode {
                 Spacer(minLength: 0)
             } else if isOutputMode {
                 Text(outputHeaderText)
@@ -152,12 +176,135 @@ struct LauncherView: View {
                     .padding(.vertical, 4)
                     .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
             }
+
+            if isSurfaceMenuVisible {
+                surfaceActionMenu
+            }
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
         .liquidGlass(cornerRadius: LimaRadius.searchField, depth: .raised, accentOpacity: 0.024)
         .padding(.horizontal, 8)
         .padding(.top, 8)
+    }
+
+    private var isDedicatedSurfaceMode: Bool {
+        switch viewModel.mode {
+        case .surface, .extensionSurface, .output, .writingReview:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var isSurfaceMenuVisible: Bool {
+        guard viewModel.mode != .root, viewModel.mode != .terminal else { return false }
+        return isDedicatedSurfaceMode || isPinEligible
+    }
+
+    private var isPinEligible: Bool {
+        switch viewModel.mode {
+        case .surface, .extensionSurface:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var surfaceCanPopOut: Bool {
+        switch viewModel.mode {
+        case .surface(let session): return session.surface.canPopOut
+        case .extensionSurface(let session): return session.canPopOut
+        default: return false
+        }
+    }
+
+    private var surfaceActionMenu: some View {
+        Menu {
+            Button("Back to Search") {
+                onSurfaceInteraction()
+                viewModel.enter(.root)
+            }
+            if isPinEligible {
+                Button(surfaceSessionController.isPinned ? "Unpin Surface" : "Keep Open") {
+                    onSurfaceInteraction()
+                    onPinSurface(!surfaceSessionController.isPinned)
+                }
+            }
+            if surfaceCanPopOut {
+                Divider()
+                Button("Open Full Workspace") {
+                    onSurfaceInteraction()
+                    onOpenSurfaceWorkspace()
+                }
+            }
+            if let action = surfacePrimaryActionTitle {
+                Divider()
+                Button(action) {
+                    onSurfaceInteraction()
+                    performSurfacePrimaryAction()
+                }
+            }
+            if surfaceSupportsCopy {
+                Button("Copy Result") {
+                    onSurfaceInteraction()
+                    copySurfaceResult()
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .limaFont(.system(size: 13, weight: .bold))
+                .foregroundStyle(.primary)
+                .frame(width: 29, height: 29)
+        }
+        .menuStyle(.borderlessButton)
+        .help("Surface actions")
+        .accessibilityLabel("Surface actions")
+    }
+
+    private var surfacePrimaryActionTitle: String? {
+        switch viewModel.mode {
+        case .surface(let session):
+            switch session.surface.id {
+            case "formatter": return "Format"
+            case "workflows": return "Run Workflow"
+            default: return nil
+            }
+        case .extensionSurface(let session):
+            if session.kind == .form { return "Run" }
+            if session.kind == .generator { return "Regenerate" }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private var surfaceSupportsCopy: Bool {
+        switch viewModel.mode {
+        case .surface(let session): return session.surface.id == "formatter"
+        case .extensionSurface: return true
+        case .output: return true
+        default: return false
+        }
+    }
+
+    private func performSurfacePrimaryAction() {
+        onPerformSurfacePrimaryAction()
+    }
+
+    private func copySurfaceResult() {
+        switch viewModel.mode {
+        case .surface(let session) where session.surface.id == "formatter":
+            formatterModel.copyOutput()
+        case .extensionSurface(let session) where session.kind == .generator:
+            passwordGeneratorModel.copy()
+        case .extensionSurface(let session) where session.kind == .form:
+            inlineExtensionSurfaceModel.copyOutput()
+        case .output(_, let text, _):
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+        default: break
+        }
     }
 
     @ViewBuilder
@@ -169,6 +316,8 @@ struct LauncherView: View {
             writingReviewView(review)
         case .output(let title, let text, let state):
             outputView(title: title, text: text, state: state)
+        case .surface(let session):
+            inlineSurface(session)
         case .extensionSurface(let session):
             if session.kind == .generator && (session.id == "password-generator" || session.id.hasSuffix(".password-generator")) {
                 PasswordGeneratorSurface(model: passwordGeneratorModel)
@@ -187,6 +336,38 @@ struct LauncherView: View {
             resultList
         default:
             resultList
+        }
+    }
+
+    @ViewBuilder
+    private func inlineSurface(_ session: LauncherSurfaceSession) -> some View {
+        switch session.id {
+        case "formatter":
+            FormatterWorkspaceView(model: formatterModel)
+                .padding(10)
+                .onChange(of: formatterModel.source) { _ in onSurfaceInteraction() }
+                .onChange(of: formatterModel.kind) { _ in onSurfaceInteraction() }
+                .onChange(of: formatterModel.style) { _ in onSurfaceInteraction() }
+                .onChange(of: formatterModel.segmentEnding) { _ in onSurfaceInteraction() }
+                .onChange(of: formatterModel.searchQuery) { _ in onSurfaceInteraction() }
+        case "permissions":
+            PermissionCenterView(center: .shared)
+                .padding(.horizontal, 10)
+                .onSurfaceInteraction(onSurfaceInteraction)
+        case "extension-store":
+            ExtensionStoreView(model: extensionStoreModel)
+                .onChange(of: extensionStoreModel.query) { _ in onSurfaceInteraction() }
+                .onSurfaceInteraction(onSurfaceInteraction)
+        case "workflows":
+            WorkflowEditorView(model: workflowModel)
+                .onChange(of: workflowModel.selectedID) { _ in onSurfaceInteraction() }
+                .onChange(of: workflowModel.commandFilter) { _ in onSurfaceInteraction() }
+                .onSurfaceInteraction(onSurfaceInteraction)
+        case "extension-development":
+            ExtensionDevelopmentView()
+                .onSurfaceInteraction(onSurfaceInteraction)
+        default:
+            InlineLauncherSurfacePlaceholder(session: session)
         }
     }
 
@@ -300,6 +481,7 @@ struct LauncherView: View {
                         ForEach(Array(viewModel.results.enumerated()), id: \.element.id) { index, item in
                         if viewModel.isActionable(item) {
                             Button {
+                                onSurfaceInteraction()
                                 viewModel.select(index)
                                 viewModel.executeSelected()
                             } label: {
@@ -702,9 +884,21 @@ struct LauncherView: View {
                         KeyHint(keys: "⌘R", label: session.kind == .form ? "Run again" : "Regenerate")
                         KeyHint(keys: "⌘C", label: "Copy")
                         KeyHint(keys: "↩", label: session.kind == .form ? "Run" : "Copy")
+                    } else if case .surface(let session) = viewModel.mode {
+                        if session.surface.id == "formatter" || session.surface.id == "workflows" {
+                            KeyHint(keys: "⌘R", label: session.surface.id == "formatter" ? "Format" : "Run")
+                        }
+                        if session.surface.id == "formatter" { KeyHint(keys: "⌘C", label: "Copy") }
+                        if session.surface.canPopOut { KeyHint(keys: "⌘O", label: "Open in Window") }
+                        KeyHint(keys: "↩", label: session.surface.id == "formatter" ? "Format" : session.surface.id == "workflows" ? "Run" : "Open")
                     }
                     if viewModel.selectedItemIsActionable, !isOutputMode {
                         KeyHint(keys: "↩", label: primaryActionLabel)
+                    }
+                    if let remaining = surfaceSessionController.secondsRemaining,
+                       remaining < 5,
+                       !surfaceSessionController.isPinned {
+                        KeyHint(keys: "", label: "Search in \(max(1, Int(ceil(remaining))))s")
                     }
                 }
                 .padding(.horizontal, 8)
@@ -758,7 +952,7 @@ struct LauncherView: View {
     private var primaryActionLabel: String {
         guard let action = viewModel.selectedItem?.action else { return "Run" }
         switch action {
-        case .launchApplication, .openFile, .openURL: return "Open"
+        case .launchApplication, .openFile, .fileAction(_, .open), .openURL: return "Open"
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
@@ -772,7 +966,7 @@ struct LauncherView: View {
 
     private func actionLabel(for item: LauncherItem) -> String {
         switch item.action {
-        case .launchApplication, .openFile, .openURL: return "Open"
+        case .launchApplication, .openFile, .fileAction(_, .open), .openURL: return "Open"
         case .copyText: return "Copy"
         case .pasteText: return "Paste"
         case .replaceSelectedText: return "Replace"
@@ -1151,6 +1345,33 @@ private enum LimaLauncherPalette {
     static let selectionBackground = indigo.opacity(0.13)
 }
 
+private extension View {
+    func onSurfaceInteraction(_ action: @escaping () -> Void) -> some View {
+        simultaneousGesture(TapGesture().onEnded { action() })
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 2).onEnded { _ in action() }
+            )
+    }
+}
+
+private struct InlineLauncherSurfacePlaceholder: View {
+    let session: LauncherSurfaceSession
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "rectangle.inset.filled")
+                .font(.system(size: 25, weight: .semibold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+            Text(session.surface.title).limaFont(.headline.weight(.semibold))
+            Text("This tool is running inside Lima's central launcher.")
+                .limaFont(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: max(180, session.surface.preferredSize.height - 130))
+        .padding(20)
+    }
+}
+
 private struct InlineExtensionSurfacePlaceholder: View {
     let session: ExtensionSurfaceSession
 
@@ -1196,6 +1417,7 @@ private extension LauncherMode {
         case .contextShelf: return "context-shelf"
         case .writingReview: return "writing-review"
         case .extensionSurface(let session): return "extension-\(session.id)"
+        case .surface(let session): return "surface-\(session.id)"
         case .output: return "output"
         }
     }

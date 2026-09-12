@@ -30,6 +30,8 @@ enum LauncherPanelLayout {
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))
         case .extensionSurface(let session):
             return NSSize(width: width, height: min(640, max(standardHeight, session.preferredHeight)))
+        case .surface(let session):
+            return NSSize(width: session.surface.preferredSize.width, height: min(700, max(standardHeight, session.surface.preferredSize.height)))
         case .picker(.emoji), .picker(.applications), .picker(.displays), .picker(.timezone), .files, .clipboard, .history:
             return NSSize(width: width, height: standardHeight)
         default:

@@ -21,6 +21,9 @@ final class LauncherViewModel: ObservableObject {
         didSet {
             if oldValue != query {
                 selectedIndex = 0
+                if mode == .files {
+                    SurfaceStateCache.shared.set(.string(query), for: "files", key: "query")
+                }
                 refreshResults()
             }
         }
@@ -94,6 +97,7 @@ final class LauncherViewModel: ObservableObject {
         case .contextShelf: return "Context Shelf"
         case .writingReview: return "Writing review"
         case .extensionSurface(let session): return session.title
+        case .surface(let session): return session.surface.title
         case .output: return "Command output"
         }
     }
@@ -233,13 +237,80 @@ final class LauncherViewModel: ObservableObject {
         // The terminal is a persistent workspace inside the launcher. Reopen
         // the launcher to the same terminal surface instead of resetting the
         // shell to the root command list.
-        if mode != .terminal {
-            mode = .root
-            query = ""
-            selectedIndex = 0
-            refreshResults()
+        switch reopeningPolicy {
+        case .resume:
+            break
+        case .resumeIfPinned:
+            if !isPinnedSurface { resetToRoot() }
+        case .root:
+            resetToRoot()
         }
         focusGeneration += 1
+    }
+
+    var reopeningPolicy: LauncherSurfaceReopeningPolicy {
+        switch mode {
+        case .terminal: return .resume
+        case .contextShelf: return .resumeIfPinned
+        case .surface(let session): return session.surface.reopeningPolicy
+        default: return .root
+        }
+    }
+
+    private var isPinnedSurface: Bool {
+        mode.isPinnedSurface
+    }
+
+    func recordSurfaceInteraction(at date: Date = Date()) {
+        switch mode {
+        case .surface(var session):
+            session.lastInteractionAt = date
+            mode = .surface(session)
+        case .extensionSurface(var session):
+            // Extension sessions use the same timeout semantics as generalized
+            // surfaces. Reassign the value-type session so the timestamp is
+            // retained by the mode rather than lost in a no-op branch.
+            session.lastInteractionAt = date
+            mode = .extensionSurface(session)
+        default:
+            break
+        }
+    }
+
+    private func resetToRoot() {
+        mode = .root
+        query = ""
+        selectedIndex = 0
+        refreshResults()
+    }
+
+    func focusSearch() {
+        focusGeneration += 1
+    }
+
+    /// Updates the value-type session stored in `mode` without losing the
+    /// active surface identity. Pinning is intentionally session-scoped and is
+    /// not written to UserDefaults.
+    func setSurfacePinned(_ pinned: Bool) {
+        switch mode {
+        case .surface(var session):
+            session.isPinned = pinned
+            mode = .surface(session)
+        case .extensionSurface(var session):
+            session.isPinned = pinned
+            // Preserve the complete session, especially lastInteractionAt.
+            mode = .extensionSurface(session)
+        default:
+            break
+        }
+    }
+
+    var selectedFileURL: URL? {
+        guard mode == .files, let item = selectedItem else { return nil }
+        switch item.action {
+        case .openFile(let url), .fileAction(let url, _), .revealFile(let url): return url
+        default: return nil
+        }
     }
 
     func enter(_ newMode: LauncherMode) {
@@ -250,7 +321,13 @@ final class LauncherViewModel: ObservableObject {
         mode = newMode
         query = ""
         selectedIndex = 0
-        refreshResults()
+        if newMode == .files,
+           let restoredQuery = SurfaceStateCache.shared.string(for: "files", key: "query"),
+           !restoredQuery.isEmpty {
+            query = restoredQuery
+        } else {
+            refreshResults()
+        }
     }
 
     func enter(_ newMode: LauncherMode, query initialQuery: String) {
@@ -459,7 +536,7 @@ final class LauncherViewModel: ObservableObject {
         case .contextShelf:
             isSearching = false
             results = []
-        case .extensionSurface:
+        case .extensionSurface, .surface:
             isSearching = false
             results = []
         case .writingReview:
@@ -1082,6 +1159,7 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
             LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),
+            LauncherItem(id: "builtin.grammar-debugger", title: "Grammar Debugger", subtitle: "Inspect candidate cards, consensus, feedback, and seed analytics", icon: .system("ladybug"), keywords: ["grammar", "debug", "ensemble", "candidates", "analytics", "benchmark"], action: .system(.openGrammarDebugger)),
             LauncherItem(id: "builtin.clipboard", title: "Clipboard History", subtitle: "Search text copied on this Mac", icon: .system("clipboard.fill"), keywords: ["copy", "paste", "history"], action: .enterMode(.clipboard)),
             LauncherItem(id: "builtin.command-history", title: "Command History", subtitle: "Re-run recently used commands and tools", icon: .system("clock.arrow.circlepath"), keywords: ["recent", "history", "last", "again", "commands"], action: .enterMode(.history)),
             LauncherItem(id: "builtin.extension-store", title: "Extension Store", subtitle: "Browse and install published Lima extensions", icon: .system("storefront.fill"), keywords: ["extensions", "plugins", "store", "install", "download", "marketplace"], action: .system(.openExtensionStore)),
@@ -1117,7 +1195,7 @@ final class LauncherViewModel: ObservableObject {
             subtitle: url.deletingLastPathComponent().path,
             icon: .file(url),
             keywords: [url.path],
-            action: .openFile(url)
+            action: .fileAction(url, .open)
         )
     }
 

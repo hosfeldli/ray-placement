@@ -270,6 +270,7 @@ enum ApplicationPaths {
     static let usageLog = usage.appendingPathComponent("usage-log.json")
     static let workspaceProfiles = applicationSupport.appendingPathComponent("workspace-profiles.json")
     static let contextShelf = applicationSupport.appendingPathComponent("context-shelf.json")
+    static let grammarDebugDatabase = applicationSupport.appendingPathComponent("grammar-debug.sqlite")
 
     static func prepare() throws {
         try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
@@ -280,6 +281,54 @@ enum ApplicationPaths {
         try FileManager.default.createDirectory(at: noteAssets, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
+    }
+}
+
+enum LauncherSurfaceTimeoutOption: String, CaseIterable, Identifiable {
+    case never = "never"
+    case fiveSeconds = "5"
+    case tenSeconds = "10"
+    case fifteenSeconds = "15"
+    case thirtySeconds = "30"
+    case oneMinute = "60"
+    case twoMinutes = "120"
+    case fiveMinutes = "300"
+
+    var id: String { rawValue }
+    var seconds: TimeInterval { Double(rawValue) ?? 0 }
+    var title: String {
+        switch self {
+        case .never: return "Never"
+        case .fiveSeconds: return "5 seconds"
+        case .tenSeconds: return "10 seconds"
+        case .fifteenSeconds: return "15 seconds"
+        case .thirtySeconds: return "30 seconds"
+        case .oneMinute: return "1 minute"
+        case .twoMinutes: return "2 minutes"
+        case .fiveMinutes: return "5 minutes"
+        }
+    }
+}
+
+enum MusicHUDPresentation: String, Codable, CaseIterable, Identifiable {
+    case mini
+    case compact
+    case expanded
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+enum HUDDockPosition: String, Codable, CaseIterable, Identifiable {
+    case bottomCenter
+    case bottomLeft
+    case bottomRight
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .bottomCenter: return "Bottom Center"
+        case .bottomLeft: return "Bottom Left"
+        case .bottomRight: return "Bottom Right"
+        }
     }
 }
 
@@ -334,6 +383,11 @@ final class SettingsStore: ObservableObject {
         static let developerGrammarEnabled = "developerGrammarEnabled"
         static let grammarEngineMode = "grammarEngineMode"
         static let grammarCorrectionMode = "grammarCorrectionMode"
+        static let grammarEnsembleStrategy = "grammarEnsembleStrategy"
+        static let grammarJudgeOnDisagreement = "grammarJudgeOnDisagreement"
+        static let grammarDebugStoreSourceText = "grammarDebugStoreSourceText"
+        static let grammarDebugRetentionDays = "grammarDebugRetentionDays"
+        static let grammarDebugMaximumRuns = "grammarDebugMaximumRuns"
         static let developerGrammarProvider = "developerGrammarProvider"
         static let developerGrammarModel = "developerGrammarModel"
         static let developerGrammarBaseURL = "developerGrammarBaseURL"
@@ -344,6 +398,16 @@ final class SettingsStore: ObservableObject {
         static let dictationComputeMode = "dictationComputeMode"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
+        static let launcherSurfaceTimeout = "launcherSurfaceTimeout"
+        static let terminalUsesLauncherTimeout = "terminalUsesLauncherTimeout"
+        static let musicHUDPresentation = "musicHUDPresentation"
+        static let musicShowArtwork = "musicShowArtwork"
+        static let musicShowPlaybackControls = "musicShowPlaybackControls"
+        static let musicShowProgress = "musicShowProgress"
+        static let musicShowWhenPaused = "musicShowWhenPaused"
+        static let musicExpandOnClick = "musicExpandOnClick"
+        static let musicExpandedTimeout = "musicExpandedTimeout"
+        static let hudDockPosition = "hudDockPosition"
     }
 
     private let defaults = UserDefaults.standard
@@ -599,6 +663,26 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(grammarCorrectionMode.rawValue, forKey: Key.grammarCorrectionMode) }
     }
 
+    @Published var grammarEnsembleStrategy: GrammarEnsembleStrategy {
+        didSet { defaults.set(grammarEnsembleStrategy.rawValue, forKey: Key.grammarEnsembleStrategy) }
+    }
+
+    @Published var grammarJudgeOnDisagreement: Bool {
+        didSet { defaults.set(grammarJudgeOnDisagreement, forKey: Key.grammarJudgeOnDisagreement) }
+    }
+
+    @Published var grammarDebugStoreSourceText: Bool {
+        didSet { defaults.set(grammarDebugStoreSourceText, forKey: Key.grammarDebugStoreSourceText) }
+    }
+
+    @Published var grammarDebugRetentionDays: Int {
+        didSet { grammarDebugRetentionDays = min(max(grammarDebugRetentionDays, 1), 3650); defaults.set(grammarDebugRetentionDays, forKey: Key.grammarDebugRetentionDays) }
+    }
+
+    @Published var grammarDebugMaximumRuns: Int {
+        didSet { grammarDebugMaximumRuns = min(max(grammarDebugMaximumRuns, 10), 100_000); defaults.set(grammarDebugMaximumRuns, forKey: Key.grammarDebugMaximumRuns) }
+    }
+
     @Published var grammarEngineMode: GrammarEngineMode {
         didSet {
             defaults.set(grammarEngineMode.rawValue, forKey: Key.grammarEngineMode)
@@ -725,6 +809,46 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dynamicPerformance, forKey: Key.dynamicPerformance) }
     }
 
+    @Published var launcherSurfaceTimeout: TimeInterval {
+        didSet { defaults.set(launcherSurfaceTimeout, forKey: Key.launcherSurfaceTimeout) }
+    }
+
+    @Published var terminalUsesLauncherTimeout: Bool {
+        didSet { defaults.set(terminalUsesLauncherTimeout, forKey: Key.terminalUsesLauncherTimeout) }
+    }
+
+    @Published var musicHUDPresentation: MusicHUDPresentation {
+        didSet { defaults.set(musicHUDPresentation.rawValue, forKey: Key.musicHUDPresentation) }
+    }
+
+    @Published var musicShowArtwork: Bool {
+        didSet { defaults.set(musicShowArtwork, forKey: Key.musicShowArtwork) }
+    }
+
+    @Published var musicShowPlaybackControls: Bool {
+        didSet { defaults.set(musicShowPlaybackControls, forKey: Key.musicShowPlaybackControls) }
+    }
+
+    @Published var musicShowProgress: Bool {
+        didSet { defaults.set(musicShowProgress, forKey: Key.musicShowProgress) }
+    }
+
+    @Published var musicShowWhenPaused: Bool {
+        didSet { defaults.set(musicShowWhenPaused, forKey: Key.musicShowWhenPaused) }
+    }
+
+    @Published var musicExpandOnClick: Bool {
+        didSet { defaults.set(musicExpandOnClick, forKey: Key.musicExpandOnClick) }
+    }
+
+    @Published var musicExpandedTimeout: TimeInterval {
+        didSet { defaults.set(musicExpandedTimeout, forKey: Key.musicExpandedTimeout) }
+    }
+
+    @Published var hudDockPosition: HUDDockPosition {
+        didSet { defaults.set(hudDockPosition.rawValue, forKey: Key.hudDockPosition) }
+    }
+
     @Published private(set) var extensionShortcutOverrides: [String: String]
     /// Legacy extension-ID overrides remain readable so upgrades do not reset
     /// user choices. New settings write stable pack keys instead.
@@ -790,6 +914,13 @@ final class SettingsStore: ObservableObject {
         grammarCorrectionMode = GrammarCorrectionMode(
             rawValue: defaults.string(forKey: Key.grammarCorrectionMode) ?? ""
         ) ?? .proofread
+        grammarEnsembleStrategy = GrammarEnsembleStrategy(
+            rawValue: defaults.string(forKey: Key.grammarEnsembleStrategy) ?? ""
+        ) ?? .balanced
+        grammarJudgeOnDisagreement = defaults.object(forKey: Key.grammarJudgeOnDisagreement) as? Bool ?? true
+        grammarDebugStoreSourceText = defaults.object(forKey: Key.grammarDebugStoreSourceText) as? Bool ?? false
+        grammarDebugRetentionDays = min(max(defaults.object(forKey: Key.grammarDebugRetentionDays) as? Int ?? 30, 1), 3650)
+        grammarDebugMaximumRuns = min(max(defaults.object(forKey: Key.grammarDebugMaximumRuns) as? Int ?? 500, 10), 100_000)
         let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
@@ -801,6 +932,16 @@ final class SettingsStore: ObservableObject {
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
+        launcherSurfaceTimeout = defaults.object(forKey: Key.launcherSurfaceTimeout) as? Double ?? 30
+        terminalUsesLauncherTimeout = defaults.object(forKey: Key.terminalUsesLauncherTimeout) as? Bool ?? false
+        musicHUDPresentation = MusicHUDPresentation(rawValue: defaults.string(forKey: Key.musicHUDPresentation) ?? "") ?? .compact
+        musicShowArtwork = defaults.object(forKey: Key.musicShowArtwork) as? Bool ?? true
+        musicShowPlaybackControls = defaults.object(forKey: Key.musicShowPlaybackControls) as? Bool ?? true
+        musicShowProgress = defaults.object(forKey: Key.musicShowProgress) as? Bool ?? true
+        musicShowWhenPaused = defaults.object(forKey: Key.musicShowWhenPaused) as? Bool ?? true
+        musicExpandOnClick = defaults.object(forKey: Key.musicExpandOnClick) as? Bool ?? true
+        musicExpandedTimeout = defaults.object(forKey: Key.musicExpandedTimeout) as? Double ?? 5
+        hudDockPosition = HUDDockPosition(rawValue: defaults.string(forKey: Key.hudDockPosition) ?? "") ?? .bottomCenter
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
         extensionPackEnabledOverrides = defaults.dictionary(forKey: Key.extensionPackEnabledOverrides) as? [String: Bool] ?? [:]
@@ -1117,6 +1258,12 @@ final class SettingsStore: ObservableObject {
         case Key.developerGrammarEnabled: if let value = bool() { grammarEngineMode = value ? .externalAPI : .local }
         case Key.grammarCorrectionMode:
             if let value = string(), let parsed = GrammarCorrectionMode(rawValue: value) { grammarCorrectionMode = parsed }
+        case Key.grammarEnsembleStrategy:
+            if let value = string(), let parsed = GrammarEnsembleStrategy(rawValue: value) { grammarEnsembleStrategy = parsed }
+        case Key.grammarJudgeOnDisagreement: if let value = bool() { grammarJudgeOnDisagreement = value }
+        case Key.grammarDebugStoreSourceText: if let value = bool() { grammarDebugStoreSourceText = value }
+        case Key.grammarDebugRetentionDays: if let value = int() { grammarDebugRetentionDays = value }
+        case Key.grammarDebugMaximumRuns: if let value = int() { grammarDebugMaximumRuns = value }
         case Key.developerGrammarProvider:
             if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
