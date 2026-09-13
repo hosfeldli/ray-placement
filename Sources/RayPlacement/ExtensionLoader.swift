@@ -249,19 +249,15 @@ final class ExtensionLoader {
                             issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a generator surface but its action is not a generator."))
                             continue
                         case .picker, .textTool, .liveOutput:
-                            // These descriptor kinds are reserved for the
-                            // generic surface SDK, but do not yet have a host
-                            // renderer/executor. Rejecting them here prevents
-                            // a manifest from displaying a placeholder while
-                            // silently skipping its executable action.
-                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) uses unsupported surface kind \(surface.kind.rawValue); use form or generator until this host surface is implemented."))
-                            continue
+                            // Descriptor-driven surfaces are valid API v3 metadata.
+                            // The host may choose the appropriate renderer at execution time.
+                            break
                         default:
                             break
                         }
                     }
                     if command.action.type == .form || command.action.type == .generator {
-                        guard manifest.presentation != .background else {
+                        guard (command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)) != .background else {
                             issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Interactive command \(command.id) cannot use background presentation because it requires input."))
                             continue
                         }
@@ -300,7 +296,7 @@ final class ExtensionLoader {
                         category: manifest.category,
                         bundled: manifest.bundled,
                         version: manifest.version,
-                        presentation: manifest.presentation
+                        presentation: command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)
                     ))
                 }
             } catch {
@@ -340,8 +336,10 @@ final class ExtensionLoader {
             default: return []
             }
         case .form:
-            guard action.form != nil else { return [] }
-            return [.shell, .filesystem]
+            guard let form = action.form else { return [] }
+            var required: Set<ExtensionManifest.Capability> = [.shell]
+            if form.fields.contains(where: { $0.type == .file || $0.type == .directory }) { required.insert(.filesystem) }
+            return required
         case .generator:
             return []
         }

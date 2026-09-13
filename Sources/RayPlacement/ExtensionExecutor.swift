@@ -150,14 +150,6 @@ final class ExtensionExecutor {
 
         case .shell:
             run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation) { result in
-                if case .success(.completed(let output)) = result, let output, !output.isEmpty {
-                    ContextShelfIntegration.addExtensionOutput(
-                        output,
-                        extensionID: loaded.extensionID,
-                        commandID: loaded.command.id,
-                        title: loaded.command.title
-                    )
-                }
                 completion(result)
             }
         }

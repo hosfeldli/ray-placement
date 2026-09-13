@@ -41,6 +41,9 @@ jobs:
       - name: Run Swift tests
         run: make test
 
+      - name: Validate extension manifests against the public schema
+        run: python3 scripts/validate_extension_schema.py
+
       - name: Run release metadata and updater tests
         shell: zsh {0}
         run: |

@@ -1,3 +1,11 @@
+# Lima Extensions
+
+Lima extensions add commands and interactive tools directly to Lima's central launcher. Inline presentation is the default: selecting an extension command should normally transform the launcher into the extension's picker, form, generator, or output surface without opening another window.
+
+Extensions should request a separate workspace only when the task genuinely requires sustained independent interaction. Background presentation is for actions that need no interactive surface.
+
+Extensions can participate in Lima's search, direct command arguments, Context Shelf, contextual selected-text actions, and universal host actions such as Copy, Paste, Add to Shelf, and Send to Note.
+
 # Build a Lima extension
 
 Lima extensions add searchable commands and compact local macOS workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
@@ -216,3 +224,32 @@ Before sharing an extension:
 7. Test the installed extension in Lima, not only its executable in Terminal.
 
 See `docs/EXTENSION_AUTHORING_FOR_AI.md` for the implementation contract and `docs/starter-extension/manifest.json` for a copy-ready local example.
+
+## API v3 execution model
+
+```text
+Search result
+   ↓
+instant native action OR inline surface
+   ↓
+host-managed output actions
+   ↓
+Search
+```
+
+### Presentation
+
+* `inline` is the default and keeps interaction in Lima's launcher.
+* `workspace` is an explicit separate workspace for sustained interaction.
+* `background` runs without a persistent interactive surface.
+* `runInBackground` remains accepted for v1/v2 compatibility; use `presentation: "background"` in v3.
+* Surfaces use the user's global timeout. `timeoutPolicy: "never"` is reserved for persistent tools, and extensions cannot set arbitrary durations.
+* `Escape` returns to Search; `canPopOut` permits an explicit workspace.
+
+### Aliases, invocation, and context
+
+Commands may declare aliases and structured arguments. For example, an integer argument allows `pw 16` without custom query parsing. Context compatibility is declared with `invocation.context`, such as `selectedText` or `contextShelfText`. Host-provided context is preferred to independent Accessibility queries, is supplied only for the active invocation, and is not automatically written to analytics or settings.
+
+### Typed output
+
+An output descriptor declares whether text or files are copyable, pasteable, Shelf-eligible, or Notes-eligible. Lima exposes shared `Copy`, `Paste`, `Add to Shelf`, and `Send to Note` actions; extensions should not duplicate those controls. Shell output is shown inline and is not automatically persisted to Context Shelf.

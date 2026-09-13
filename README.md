@@ -84,7 +84,7 @@ Writing Check captures the exact current selection through a Copy transaction, i
 
 ## Other bundled extensions
 
-- **Password Generator** — cryptographically secure local passwords, length 8–128, selected character classes, ambiguous-character exclusion, entropy display, and copy
+- **Password Generator** — cryptographically secure local passwords, length 8–20, selected character classes, ambiguous-character exclusion, entropy display, and copy
 - **Document Formatter** — a dedicated temporary workspace for EDI, JSON, and XML; pretty/minify, validation, search, EDI delimiter detection and swapping, field inspection, and common transaction/envelope checks
 - **Emoji Picker** — the complete paged Unicode keyboard set with ranked aliases, fast bounded lookup, focus-aware paste, and automatic clipboard restoration; default double Command
 - **Focused File Launcher** — Finder-backed file/folder selection with a choice of any installed destination app
@@ -97,7 +97,7 @@ Formatter is separate from Notes and never appears as a note type.
 
 ## Extensions
 
-Extensions live under `~/Library/Application Support/Lima/Extensions/`. A manifest can open resources, use generic application/window/system/clipboard/picker capabilities, run a reviewed executable, or create a native form and output workflow. Schema v2 supports sections, conditional visibility, file and directory pickers, secure fields, dates, sliders, key/value editors, and bounded native action chains.
+Extensions live under `~/Library/Application Support/Lima/Extensions/`. Extension API v3 is inline-first. Commands can provide aliases, structured launcher arguments, reusable launcher surfaces, contextual input compatibility, and typed outputs. Lima renders supported forms, pickers, generators, and outputs inside the central launcher and provides shared Copy, Paste, Context Shelf, Notes, timeout, and pop-out behavior.
 
 See [docs/EXTENSIONS.md](docs/EXTENSIONS.md), the JSON [manifest schema](docs/extension-manifest.schema.json), and the [coding-agent authoring guide](docs/EXTENSION_AUTHORING_FOR_AI.md). `Examples/project-tools` is a small working example.
 

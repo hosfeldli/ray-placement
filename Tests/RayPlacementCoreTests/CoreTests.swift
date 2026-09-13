@@ -732,3 +732,28 @@ private func packageRoot() -> URL {
     #expect(command.surface?.remembersState == true)
     #expect(command.surface?.canPopOut == false)
 }
+
+@Test func extensionV3InvocationAndSurfaceCodable() throws {
+    let descriptor = ExtensionInvocationDescriptor(
+        arguments: [ExtensionInvocationArgument(id: "length", kind: .integer, required: true, minimum: 8, maximum: 20)],
+        context: [.selectedText, .contextShelfText]
+    )
+    let parsed = try ExtensionInvocationParser.parse("16", descriptor: descriptor)
+    #expect(parsed["length"] == "16")
+    #expect(descriptor.context?.contains(.selectedText) == true)
+    #expect(throws: ExtensionInvocationError.outOfRange("length")) {
+        _ = try ExtensionInvocationParser.parse("7", descriptor: descriptor)
+    }
+    let surface = ExtensionSurfaceDescriptor(kind: .liveOutput, timeoutPolicy: .global)
+    let data = try JSONEncoder().encode(surface)
+    #expect(try JSONDecoder().decode(ExtensionSurfaceDescriptor.self, from: data) == surface)
+}
+
+@Test func commandAliasStoreNormalizesWithoutChangingManifest() {
+    let suite = "lima-alias-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = CommandAliasStore(defaults: defaults)
+    store.set([" PW ", "pw", ""], for: "password")
+    #expect(store.aliases(for: "password") == ["pw"])
+}

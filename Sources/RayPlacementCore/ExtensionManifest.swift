@@ -147,18 +147,76 @@ public struct ExtensionSurfaceDescriptor: Codable, Equatable, Sendable {
     public var kind: Kind
     public var preferredHeight: Double?
     public var remembersState: Bool?
+    public enum TimeoutPolicy: String, Codable, Sendable {
+        case global
+        case never
+    }
+
     public var canPopOut: Bool?
+    public var timeoutPolicy: TimeoutPolicy?
 
     public init(
         kind: Kind,
         preferredHeight: Double? = nil,
         remembersState: Bool? = nil,
-        canPopOut: Bool? = nil
+        canPopOut: Bool? = nil,
+        timeoutPolicy: TimeoutPolicy? = nil
     ) {
         self.kind = kind
         self.preferredHeight = preferredHeight
         self.remembersState = remembersState
         self.canPopOut = canPopOut
+        self.timeoutPolicy = timeoutPolicy
+    }
+}
+
+public enum ExtensionContextKind: String, Codable, Sendable {
+    case selectedText
+    case clipboardText
+    case file
+    case contextShelfText
+}
+
+public struct ExtensionInvocationArgument: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        case text, integer, number, application, file, directory, choice
+    }
+
+    public var id: String
+    public var kind: Kind
+    public var required: Bool?
+    public var options: [String]?
+    public var minimum: Double?
+    public var maximum: Double?
+    public var consumeRemainder: Bool?
+
+    public init(id: String, kind: Kind, required: Bool? = nil, options: [String]? = nil, minimum: Double? = nil, maximum: Double? = nil, consumeRemainder: Bool? = nil) {
+        self.id = id; self.kind = kind; self.required = required; self.options = options
+        self.minimum = minimum; self.maximum = maximum; self.consumeRemainder = consumeRemainder
+    }
+}
+
+public struct ExtensionInvocationDescriptor: Codable, Sendable, Equatable {
+    public var acceptsRemainder: Bool?
+    public var arguments: [ExtensionInvocationArgument]?
+    public var context: Set<ExtensionContextKind>?
+
+    public init(acceptsRemainder: Bool? = nil, arguments: [ExtensionInvocationArgument]? = nil, context: Set<ExtensionContextKind>? = nil) {
+        self.acceptsRemainder = acceptsRemainder; self.arguments = arguments; self.context = context
+    }
+}
+
+public struct ExtensionOutputDescriptor: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable { case text, markdown, json, file, status }
+    public var kind: Kind
+    public var copyable: Bool?
+    public var pasteable: Bool?
+    public var shelfEligible: Bool?
+    public var notesEligible: Bool?
+
+    public init(kind: Kind, copyable: Bool? = nil, pasteable: Bool? = nil, shelfEligible: Bool? = nil, notesEligible: Bool? = nil) {
+        self.kind = kind; self.copyable = copyable; self.pasteable = pasteable
+        self.shelfEligible = shelfEligible; self.notesEligible = notesEligible
     }
 }
 
@@ -167,24 +225,32 @@ public struct ExtensionCommand: Codable, Identifiable, Sendable {
     public var title: String
     public var subtitle: String?
     public var keywords: [String]?
+    public var aliases: [String]?
     public var icon: String?
     public var hotkey: String?
     public var runInBackground: Bool?
+    public var presentation: ExtensionManifest.Presentation?
+    public var invocation: ExtensionInvocationDescriptor?
+    public var output: ExtensionOutputDescriptor?
     /// Optional generic launcher surface metadata. Commands without this field
     /// retain the legacy action routing and receive host defaults inferred from
     /// their action type.
     public var surface: ExtensionSurfaceDescriptor?
     public var action: ExtensionAction
 
-    public init(id: String, title: String, subtitle: String? = nil, keywords: [String]? = nil, icon: String? = nil, hotkey: String? = nil, runInBackground: Bool? = nil, surface: ExtensionSurfaceDescriptor? = nil, action: ExtensionAction) {
+    public init(id: String, title: String, subtitle: String? = nil, keywords: [String]? = nil, aliases: [String]? = nil, icon: String? = nil, hotkey: String? = nil, runInBackground: Bool? = nil, presentation: ExtensionManifest.Presentation? = nil, invocation: ExtensionInvocationDescriptor? = nil, surface: ExtensionSurfaceDescriptor? = nil, output: ExtensionOutputDescriptor? = nil, action: ExtensionAction) {
         self.id = id
         self.title = title
         self.subtitle = subtitle
         self.keywords = keywords
+        self.aliases = aliases
         self.icon = icon
         self.hotkey = hotkey
         self.runInBackground = runInBackground
+        self.presentation = presentation
+        self.invocation = invocation
         self.surface = surface
+        self.output = output
         self.action = action
     }
 }
@@ -289,7 +355,12 @@ public struct ExtensionAction: Codable, Sendable {
             default: capabilities = []
             }
         case .form:
-            capabilities = [.shell, .filesystem]
+            // Forms need shell access to execute shell-backed submissions.
+            // Filesystem approval is requested only by file/directory fields.
+            capabilities = [.shell]
+            if form?.fields.contains(where: { $0.type == .file || $0.type == .directory }) == true {
+                capabilities.insert(.filesystem)
+            }
         case .generator:
             capabilities = []
         }
@@ -455,6 +526,10 @@ public struct LoadedExtensionCommand: Sendable {
 
     /// Stable preferences identity for a pack. User extensions without pack
     /// metadata fall back to their extension ID, preserving older settings.
+    public var effectivePresentation: ExtensionManifest.Presentation {
+        command.presentation ?? (command.runInBackground == true ? .background : presentation)
+    }
+
     public var settingsPackKey: String {
         let source = bundled || trust == .bundled || trust == .builtIn
             ? "bundled"

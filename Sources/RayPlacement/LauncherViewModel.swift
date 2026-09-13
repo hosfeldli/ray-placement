@@ -674,8 +674,10 @@ final class LauncherViewModel: ObservableObject {
                     favorite.accessory = "Favorite"
                     return favorite
                 }
-            let ordered = recent + favorites + defaults.filter { defaultItem in
-                !recent.contains(where: { $0.id == defaultItem.id })
+            let contextual = contextualSelectionText == nil ? [] : items.filter { $0.id.hasPrefix("context.") }.prefix(4).map { $0 }
+            let ordered = Array(contextual) + Array(favorites.prefix(4)) + Array(recent.prefix(4)) + defaults.filter { defaultItem in
+                !contextual.contains(where: { $0.id == defaultItem.id })
+                    && !recent.contains(where: { $0.id == defaultItem.id })
                     && !favorites.contains(where: { $0.id == defaultItem.id })
             }
             var unique = [LauncherItem]()
@@ -752,7 +754,7 @@ final class LauncherViewModel: ObservableObject {
 
         for loaded in extensionCommands where SettingsStore.shared.isCommandEnabled(loaded) {
             let commandWords = normalizedSearchTokens(
-                ([loaded.command.title, loaded.command.subtitle ?? ""] + (loaded.command.keywords ?? [])).joined(separator: " ")
+                ([loaded.command.title, loaded.command.subtitle ?? ""] + (loaded.command.keywords ?? []) + (loaded.command.aliases ?? [])).joined(separator: " ")
             )
             let unmatched = queryTokens.filter { token in
                 !commandWords.contains { word in
@@ -1083,7 +1085,7 @@ final class LauncherViewModel: ObservableObject {
                 title: loaded.command.title,
                 subtitle: loaded.command.subtitle ?? loaded.extensionName,
                 icon: .system(loaded.command.icon ?? "puzzlepiece.extension.fill"),
-                keywords: loaded.command.keywords ?? [],
+                keywords: (loaded.command.keywords ?? []) + (loaded.command.aliases ?? []),
                 action: .extensionCommand(loaded),
                 shortcut: SettingsStore.shared.isHotkeyEnabled(loaded)
                     ? SettingsStore.shared.effectiveShortcut(for: loaded)
@@ -1222,33 +1224,50 @@ final class LauncherViewModel: ObservableObject {
 
 }
 
+private struct CommandUsageRecord: Codable {
+    var totalInvocations: Int
+    var lastUsedAt: Date
+    var recentUses: [Date]
+    var sourceApplicationCounts: [String: Int]
+}
+
 private final class UsageStore {
-    private let scoreKey = "commandUsage"
+    private let recordsKey = "commandUsageRecords"
     private let historyKey = "commandHistory"
-    private var values: [String: Double]
+    private var records: [String: CommandUsageRecord]
     private var order: [String]
 
     init() {
-        values = UserDefaults.standard.dictionary(forKey: scoreKey) as? [String: Double] ?? [:]
+        if let data = UserDefaults.standard.data(forKey: recordsKey),
+           let decoded = try? JSONDecoder().decode([String: CommandUsageRecord].self, from: data) {
+            records = decoded
+        } else { records = [:] }
         order = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
     }
 
-    func record(_ identifier: String) {
-        values[identifier] = Date().timeIntervalSince1970
-        order.removeAll { $0 == identifier }
-        order.insert(identifier, at: 0)
+    func record(_ identifier: String, sourceApplication: String? = nil) {
+        let now = Date()
+        var record = records[identifier] ?? CommandUsageRecord(totalInvocations: 0, lastUsedAt: now, recentUses: [], sourceApplicationCounts: [:])
+        record.totalInvocations += 1
+        record.lastUsedAt = now
+        record.recentUses.insert(now, at: 0)
+        record.recentUses = Array(record.recentUses.prefix(20))
+        if let sourceApplication, !sourceApplication.isEmpty { record.sourceApplicationCounts[sourceApplication, default: 0] += 1 }
+        records[identifier] = record
+        order.removeAll { $0 == identifier }; order.insert(identifier, at: 0)
         if order.count > 100 { order = Array(order.prefix(100)) }
-        UserDefaults.standard.set(values, forKey: scoreKey)
+        if let data = try? JSONEncoder().encode(records) { UserDefaults.standard.set(data, forKey: recordsKey) }
         UserDefaults.standard.set(order, forKey: historyKey)
     }
 
-    func recentIdentifiers(limit: Int) -> [String] {
-        Array(order.prefix(max(0, limit)))
-    }
+    func recentIdentifiers(limit: Int) -> [String] { Array(order.prefix(max(0, limit))) }
 
     func score(for identifier: String) -> Double {
-        guard let timestamp = values[identifier] else { return 0 }
-        let ageInDays = max(0, Date().timeIntervalSince1970 - timestamp) / 86_400
-        return max(0, 800 - ageInDays * 15)
+        guard let record = records[identifier] else { return 0 }
+        let ageDays = max(0, Date().timeIntervalSince(record.lastUsedAt)) / 86_400
+        let recency = min(120, max(0, 120 - ageDays * 8))
+        let frequency = min(100, log1p(Double(record.totalInvocations)) * 18)
+        // Adaptive signals are intentionally bounded; fuzzy/title matching remains dominant.
+        return recency + frequency
     }
 }

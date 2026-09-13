@@ -1,16 +1,26 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 3,
   "id": "local.project-tools",
   "name": "Project Tools",
-  "version": "1.0.0",
-  "description": "Example Lima commands",
+  "version": "2.0.0",
+  "description": "Inline developer helpers",
+  "presentation": "inline",
+  "capabilities": [
+    "filesystem",
+    "shell",
+    "contextShelf"
+  ],
   "commands": [
     {
       "id": "open-codex-folder",
       "title": "Open Codex Folder",
-      "subtitle": "Project Tools",
-      "keywords": ["projects", "workspace", "documents"],
-      "icon": "folder.fill",
+      "aliases": [
+        "projects"
+      ],
+      "keywords": [
+        "workspace",
+        "documents"
+      ],
       "action": {
         "type": "file",
         "value": "~/Documents/Codex"
@@ -18,11 +28,31 @@
     },
     {
       "id": "system-summary",
-      "title": "Show System Summary",
-      "subtitle": "Runs an example local script",
-      "keywords": ["uptime", "disk", "computer"],
+      "title": "System Summary",
+      "aliases": [
+        "sysinfo",
+        "summary"
+      ],
+      "keywords": [
+        "uptime",
+        "disk",
+        "computer"
+      ],
       "icon": "gauge.with.dots.needle.67percent",
-      "hotkey": "option+shift+i",
+      "surface": {
+        "kind": "liveOutput",
+        "preferredHeight": 340,
+        "remembersState": true,
+        "canPopOut": false,
+        "timeoutPolicy": "global"
+      },
+      "output": {
+        "kind": "text",
+        "copyable": true,
+        "pasteable": false,
+        "shelfEligible": true,
+        "notesEligible": true
+      },
       "action": {
         "type": "shell",
         "value": "bin/system-summary"
@@ -31,8 +61,9 @@
     {
       "id": "open-status-page",
       "title": "Open Apple System Status",
-      "subtitle": "Project Tools",
-      "icon": "network",
+      "aliases": [
+        "status"
+      ],
       "action": {
         "type": "url",
         "value": "https://www.apple.com/support/systemstatus/"
