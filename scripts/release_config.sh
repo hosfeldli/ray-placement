@@ -63,7 +63,30 @@ lima_release_validate_version() {
 lima_release_build_number() {
     local version="$1"
     lima_release_validate_version "$version"
-    print -r -- "${version//./}"
+
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "$version"
+    (( minor < 1000 && patch < 1000 )) || {
+        print -u2 "Version minor and patch components must be less than 1000: $version"
+        return 1
+    }
+
+    # CFBundleVersion is Sparkle's ordering value. Keep minor and patch at
+    # fixed widths so changing component digit counts cannot reverse order.
+    printf '%d%03d%03d\n' "$major" "$minor" "$patch"
+}
+
+lima_release_assert_build_increases() {
+    local candidate="$1"
+    local previous="$2"
+    [[ "$candidate" =~ '^[0-9]+$' && "$previous" =~ '^[0-9]+$' ]] || {
+        print -u2 "Build numbers must be unsigned integers: candidate=$candidate previous=$previous"
+        return 1
+    }
+    [[ "$candidate" -gt "$previous" ]] || {
+        print -u2 "Build $candidate is not greater than the previous release build $previous."
+        return 1
+    }
 }
 
 lima_release_version_from_plist() {

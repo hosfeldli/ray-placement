@@ -37,6 +37,7 @@ release_assert_clean_tree
 "$SCRIPT_DIRECTORY/check_release_consistency.sh"
 release_assert_tag_matches_source "$TAG"
 release_assert_exact_tag_identity "$TAG"
+release_assert_build_increases_over_previous_release "$TAG"
 
 branch="$(git -C "$PROJECT_DIRECTORY" branch --show-current)"
 upstream="$(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"

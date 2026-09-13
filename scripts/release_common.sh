@@ -69,6 +69,76 @@ release_assert_exact_tag_identity() {
     print "Exact source identity verified: $tag ($head)"
 }
 
+release_previous_published_tag() {
+    local candidate_tag="$1"
+    local candidate_version="${candidate_tag#v}"
+    local releases
+    releases="$(gh release list --limit 100 --json tagName,isDraft,isPrerelease,publishedAt)"
+    python3 - "$candidate_version" "$releases" <<'PYINNER'
+import json
+import re
+import sys
+
+candidate = tuple(map(int, sys.argv[1].split('.')))
+releases = json.loads(sys.argv[2])
+versions = []
+for release in releases:
+    tag = release.get("tagName", "")
+    match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", tag)
+    if not match or release.get("isDraft") or release.get("isPrerelease"):
+        continue
+    version = tuple(map(int, match.groups()))
+    if version < candidate:
+        versions.append((version, tag))
+if versions:
+    print(max(versions)[1])
+PYINNER
+}
+
+release_published_build_for_tag() {
+    local tag="$1"
+    local temporary_directory
+    temporary_directory="$(mktemp -d "${TMPDIR%/}/lima-previous-release.XXXXXX")"
+    trap 'rm -rf "$temporary_directory"' RETURN
+
+    if gh release download "$tag" --pattern 'Lima-release.json' --dir "$temporary_directory" >/dev/null 2>&1 && [[ -f "$temporary_directory/Lima-release.json" ]]; then
+        jq -er '.build' "$temporary_directory/Lima-release.json"
+        return
+    fi
+
+    if gh release download "$tag" --pattern 'appcast.xml' --dir "$temporary_directory" >/dev/null 2>&1 && [[ -f "$temporary_directory/appcast.xml" ]]; then
+        python3 - "$temporary_directory/appcast.xml" <<'PYINNER'
+import sys
+from xml.etree import ElementTree
+
+sparkle = "http://www.andymatuschak.org/xml-namespaces/sparkle"
+root = ElementTree.parse(sys.argv[1]).getroot()
+value = root.findtext(f"./channel/item/{{{sparkle}}}version")
+if not value or not value.isdigit():
+    raise SystemExit("Previous release appcast has no numeric Sparkle version")
+print(value)
+PYINNER
+        return
+    fi
+
+    print -u2 "Could not find release metadata or appcast for previous release $tag."
+    return 1
+}
+
+release_assert_build_increases_over_previous_release() {
+    local candidate_tag="$1"
+    local previous_tag candidate_build previous_build
+    previous_tag="$(release_previous_published_tag "$candidate_tag")"
+    if [[ -z "$previous_tag" ]]; then
+        print "No earlier published semantic release found; build monotonicity check skipped."
+        return 0
+    fi
+    candidate_build="$(lima_release_build_number "${candidate_tag#v}")"
+    previous_build="$(release_published_build_for_tag "$previous_tag")"
+    lima_release_assert_build_increases "$candidate_build" "$previous_build"
+    print "Build monotonicity verified: $candidate_tag ($candidate_build) > $previous_tag ($previous_build)"
+}
+
 release_metadata_file() {
     local tag="$1"
     print -r -- "$(release_project_file "dist/Lima-release.json")"
