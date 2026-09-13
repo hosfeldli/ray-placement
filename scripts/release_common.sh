@@ -99,15 +99,17 @@ release_published_build_for_tag() {
     local tag="$1"
     local temporary_directory
     temporary_directory="$(mktemp -d "${TMPDIR%/}/lima-previous-release.XXXXXX")"
-    trap 'rm -rf "$temporary_directory"' RETURN
+    local build=""
 
     if gh release download "$tag" --pattern 'Lima-release.json' --dir "$temporary_directory" >/dev/null 2>&1 && [[ -f "$temporary_directory/Lima-release.json" ]]; then
-        jq -er '.build' "$temporary_directory/Lima-release.json"
+        build="$(jq -er '.build' "$temporary_directory/Lima-release.json")"
+        rm -rf "$temporary_directory"
+        print -r -- "$build"
         return
     fi
 
     if gh release download "$tag" --pattern 'appcast.xml' --dir "$temporary_directory" >/dev/null 2>&1 && [[ -f "$temporary_directory/appcast.xml" ]]; then
-        python3 - "$temporary_directory/appcast.xml" <<'PYINNER'
+        build="$(python3 - "$temporary_directory/appcast.xml" <<'PYINNER'
 import sys
 from xml.etree import ElementTree
 
@@ -118,9 +120,13 @@ if not value or not value.isdigit():
     raise SystemExit("Previous release appcast has no numeric Sparkle version")
 print(value)
 PYINNER
+)"
+        rm -rf "$temporary_directory"
+        print -r -- "$build"
         return
     fi
 
+    rm -rf "$temporary_directory"
     print -u2 "Could not find release metadata or appcast for previous release $tag."
     return 1
 }
