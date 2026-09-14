@@ -14,6 +14,7 @@ final class StealthGrammarRemoteClient {
         case invalidResponse
         case responseTooLarge
         case noModelsFound
+        case requestTimedOut
 
         var errorDescription: String? {
             switch self {
@@ -32,6 +33,7 @@ final class StealthGrammarRemoteClient {
             case .invalidResponse: return "The external grammar provider returned an unreadable correction."
             case .responseTooLarge: return "The external grammar provider returned too much data."
             case .noModelsFound: return "The provider returned no text-capable models."
+            case .requestTimedOut: return "The external grammar provider took too long to respond. Try again or choose a different provider."
             }
         }
     }
@@ -464,7 +466,7 @@ final class StealthGrammarRemoteClient {
         guard let url = components?.url else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        request.timeoutInterval = 90
+        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if configuration.provider == .anthropic {
             request.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
@@ -501,7 +503,7 @@ final class StealthGrammarRemoteClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 90
+        request.timeoutInterval = 30
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         switch configuration.provider {
         case .openAI:

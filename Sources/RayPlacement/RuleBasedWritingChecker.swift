@@ -1,4 +1,5 @@
 @preconcurrency import Foundation
+import Darwin
 import RayPlacementWriting
 
 @MainActor
@@ -6,11 +7,13 @@ final class RuleBasedWritingChecker {
     enum CheckerError: LocalizedError {
         case missingResources
         case processFailed(String)
+        case timedOut
 
         var errorDescription: String? {
             switch self {
             case .missingResources: return "The local grammar resources are missing. Reinstall Lima."
             case .processFailed(let detail): return detail.isEmpty ? "The local grammar checker failed." : detail
+            case .timedOut: return "The local grammar checker took too long to respond. Try again."
             }
         }
     }
@@ -39,7 +42,12 @@ final class RuleBasedWritingChecker {
 
     func cancel() {
         operationID = nil
-        if activeProcess?.isRunning == true { activeProcess?.terminate() }
+        if let process = activeProcess, process.isRunning {
+            process.terminate()
+            // Do not wait for an uncooperative helper: the pipe readers below
+            // must be released immediately so the completion can publish.
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+        }
         activeProcess = nil
         externalGrammarTask?.cancel()
         externalGrammarTask = nil
@@ -571,6 +579,20 @@ final class RuleBasedWritingChecker {
             completion(.failure(error))
             return
         }
+
+        // A helper process must never be able to suspend grammar checking
+        // indefinitely. Terminate it when the deadline expires, then force-kill a helper
+        // that does not exit promptly so pipe readers are released as well.
+        let timeout = DispatchWorkItem { [weak self, weak process] in
+            guard let process, process.isRunning else { return }
+            process.terminate()
+            // Do not wait for an uncooperative helper: the pipe readers below
+            // must be released immediately so the completion can publish.
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
+            if self?.activeProcess === process { self?.activeProcess = nil }
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30, execute: timeout)
+
         DispatchQueue.global(qos: .userInitiated).async {
             inputPipe.fileHandleForWriting.write(input)
             try? inputPipe.fileHandleForWriting.close()
@@ -589,14 +611,20 @@ final class RuleBasedWritingChecker {
             }
             process.waitUntilExit()
             group.wait()
+            timeout.cancel()
+            let timedOut = process.terminationReason == .uncaughtSignal && process.terminationStatus == SIGKILL
             let result = Output(
                 status: process.terminationStatus,
                 stdout: stdout,
-                stderr: String(decoding: stderr.prefix(32_000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                stderr: timedOut ? "The local grammar checker timed out." : String(decoding: stderr.prefix(32_000), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
             )
             DispatchQueue.main.async { [weak self] in
                 if self?.activeProcess === process { self?.activeProcess = nil }
-                completion(.success(result))
+                if timedOut {
+                    completion(.failure(CheckerError.timedOut))
+                } else {
+                    completion(.success(result))
+                }
             }
         }
     }
