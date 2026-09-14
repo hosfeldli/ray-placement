@@ -217,9 +217,14 @@ struct ContextShelfView: View {
     @State private var activeID: UUID?
     @State private var errorMessage: String?
     @State private var detailItem: ContextShelfItem?
-    @State private var searchQuery = ""
+    @Binding var searchQuery: String
     @State private var compareItems: [ContextShelfItem] = []
     @State private var destinationMode: DestinationMode?
+
+    init(store: ContextShelfStore, searchQuery: Binding<String> = .constant("")) {
+        self.store = store
+        self._searchQuery = searchQuery
+    }
 
     fileprivate enum DestinationMode: Identifiable {
         case append, create

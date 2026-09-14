@@ -48,6 +48,10 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
     let canPopOut: Bool
     let preservesState: Bool
     let reopeningPolicy: LauncherSurfaceReopeningPolicy
+    let handler: LauncherSurfaceHandlerKey
+    let primaryActionTitle: String?
+    let supportsCopy: Bool
+    let supportsSearch: Bool
 
     init(
         id: String,
@@ -57,7 +61,11 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
         timeoutPolicy: LauncherSurfaceTimeoutPolicy = .global,
         canPopOut: Bool = false,
         preservesState: Bool = true,
-        reopeningPolicy: LauncherSurfaceReopeningPolicy = .root
+        reopeningPolicy: LauncherSurfaceReopeningPolicy = .root,
+        handler: LauncherSurfaceHandlerKey = .generic,
+        primaryActionTitle: String? = nil,
+        supportsCopy: Bool = false,
+        supportsSearch: Bool = true
     ) {
         self.id = id
         self.title = title
@@ -67,6 +75,10 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
         self.canPopOut = canPopOut
         self.preservesState = preservesState
         self.reopeningPolicy = reopeningPolicy
+        self.handler = handler
+        self.primaryActionTitle = primaryActionTitle
+        self.supportsCopy = supportsCopy
+        self.supportsSearch = supportsSearch
     }
 }
 
@@ -77,6 +89,9 @@ protocol LauncherSurface {
     var timeoutPolicy: LauncherSurfaceTimeoutPolicy { get }
     var canPopOut: Bool { get }
     var preservesState: Bool { get }
+    var primaryActionTitle: String? { get }
+    var supportsCopy: Bool { get }
+    var supportsSearch: Bool { get }
 }
 
 extension LauncherSurfaceDescriptor: LauncherSurface {}

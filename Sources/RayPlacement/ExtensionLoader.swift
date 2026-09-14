@@ -1,6 +1,7 @@
 import Foundation
 import RayPlacementCore
 
+@MainActor
 final class ExtensionLoader {
     func prepareFolder() {
         do {
@@ -178,7 +179,10 @@ final class ExtensionLoader {
         for (file, directory) in manifestFiles {
             do {
                 let manifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: file))
-                guard (1...2).contains(manifest.schemaVersion) else {
+                if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
+                    continue
+                }
+                guard (1...3).contains(manifest.schemaVersion) else {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Unsupported schema version \(manifest.schemaVersion)."))
                     continue
                 }
@@ -189,6 +193,7 @@ final class ExtensionLoader {
                 let manifestData = try Data(contentsOf: file)
                 let manifestHash = ExtensionSecurityPolicy.manifestHash(manifestData)
                 let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
+                ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (manifest.provenance == .unsigned ? .localDeveloper : .userInstalled), manifestHash: manifestHash)
                 if isBundled {
                     // Bundled packs are shipped and verified with Lima; they do not
                     // require the interactive approval flow used by user extensions.

@@ -86,6 +86,15 @@ final class CommandManager: ObservableObject {
         notifyChanged()
     }
 
+    func resetFavorites() {
+        favoriteIDs.removeAll()
+        if let index = profiles.firstIndex(where: { $0.id == activeProfileID }) {
+            profiles[index].favoriteCommandIDs.removeAll()
+            profiles[index].favoriteCommandOrder.removeAll()
+        }
+        save(); notifyChanged()
+    }
+
     func moveFavorite(_ id: String, by offset: Int) {
         guard var profile = activeProfile,
               let profileIndex = profiles.firstIndex(where: { $0.id == profile.id }),

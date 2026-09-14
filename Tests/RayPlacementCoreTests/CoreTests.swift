@@ -757,3 +757,35 @@ private func packageRoot() -> URL {
     store.set([" PW ", "pw", ""], for: "password")
     #expect(store.aliases(for: "password") == ["pw"])
 }
+
+@Test func apiV3FixtureDecodesSchemaAndLifecycleMetadata() throws {
+    let fixtureURL = try #require(Bundle.module.url(forResource: "extension-v3", withExtension: "json"))
+    let data = try Data(contentsOf: fixtureURL)
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.schemaVersion == 3)
+    #expect(manifest.presentation == .inline)
+    #expect(manifest.commands.count == 2)
+    #expect(manifest.commands[0].aliases == ["fmt"])
+    #expect(manifest.commands[0].invocation?.context?.contains(ExtensionContextKind.selectedText) == true)
+    #expect(manifest.commands[0].surface?.kind == .form)
+    #expect(manifest.commands[0].output?.kind == .markdown)
+    #expect(manifest.commands[1].action.chain?.count == 1)
+    try manifest.validateLifecycleMetadata()
+
+    let schemaURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/extension-manifest.schema.json")
+    let schema = try JSONSerialization.jsonObject(with: Data(contentsOf: schemaURL)) as! [String: Any]
+    let rootProperties = try #require(schema["properties"] as? [String: Any])
+    let versions = try #require(rootProperties["schemaVersion"] as? [String: Any])
+    #expect((versions["enum"] as? [Int])?.contains(3) == true)
+    let docsURL = schemaURL.deletingLastPathComponent().appendingPathComponent("EXTENSIONS.md")
+    let docs = try String(contentsOf: docsURL)
+    #expect(docs.contains("API v3"))
+}
+
+@Test func extensionLifecycleRejectsInvalidProvenanceCombinations() throws {
+    let command = ExtensionCommand(id: "test", title: "Test", action: ExtensionAction(type: .url, value: "https://example.com"))
+    let impostor = ExtensionManifest(schemaVersion: 3, id: "impostor", name: "Impostor", bundled: false, provenance: .bundled, commands: [command], trust: .bundled)
+    #expect(throws: ExtensionManifest.ValidationError.nonBundledCannotUseBundledTrust) { try impostor.validateLifecycleMetadata() }
+    let incomplete = ExtensionManifest(schemaVersion: 3, id: "incomplete", name: "Incomplete", bundled: true, provenance: .userInstalled, commands: [command], trust: .unsigned)
+    #expect(throws: ExtensionManifest.ValidationError.bundledRequiresBundledProvenance) { try incomplete.validateLifecycleMetadata() }
+}

@@ -12,11 +12,6 @@ final class ExtensionExecutor {
         let succeeded: Bool
     }
 
-    enum ExecutionResult {
-        case completed(String?)
-        case native(ExtensionAction)
-        case nativeChain([ExtensionAction])
-    }
     private var activeProcesses: [UUID: Process] = [:]
     private var cancelledProcesses = Set<UUID>()
     private var timedOutProcesses = Set<UUID>()
@@ -40,7 +35,7 @@ final class ExtensionExecutor {
     func executeAsync(
         _ loaded: LoadedExtensionCommand,
         clipboard: ClipboardHistoryService
-    ) async throws -> ExecutionResult {
+    ) async throws -> ExtensionExecutionOutput {
         try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { continuation in
                 execute(loaded, clipboard: clipboard, reportCancellation: true) { result in
@@ -56,7 +51,7 @@ final class ExtensionExecutor {
         _ loaded: LoadedExtensionCommand,
         clipboard: ClipboardHistoryService,
         reportCancellation: Bool = false,
-        completion: @escaping (Result<ExecutionResult, Error>) -> Void
+        completion: @escaping (Result<ExtensionExecutionOutput, Error>) -> Void
     ) {
         let action = loaded.command.action
         if let chain = action.chain, !chain.isEmpty {
@@ -66,7 +61,7 @@ final class ExtensionExecutor {
                 completion(.failure(ExecutionError.invalidAction("Action chains may contain at most eight approved native actions.")))
                 return
             }
-            completion(.success(.nativeChain(chain)))
+            completion(.success(.nativeChain(for: loaded, actions: chain)))
             return
         }
         switch action.type {
@@ -77,7 +72,7 @@ final class ExtensionExecutor {
             }
             if NSWorkspace.shared.open(url) {
                 ContextShelfIntegration.addURL(url, sourceApplication: NSRunningApplication.current.localizedName)
-                completion(.success(.completed(nil)))
+                completion(.success(.text(for: loaded, value: nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.absoluteString)))
             }
@@ -96,7 +91,7 @@ final class ExtensionExecutor {
             }
             if NSWorkspace.shared.open(url) {
                 ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
-                completion(.success(.completed(nil)))
+                completion(.success(.text(for: loaded, value: nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.path)))
             }
@@ -105,7 +100,7 @@ final class ExtensionExecutor {
             // A path-based application action is retained for user extensions;
             // operation-based actions are public native host requests.
             if let operation = action.operation, !operation.isEmpty {
-                completion(.success(.native(action)))
+                completion(.success(.native(for: loaded, action: action)))
                 return
             }
             let url: URL
@@ -120,7 +115,7 @@ final class ExtensionExecutor {
                 return
             }
             if NSWorkspace.shared.open(url) {
-                completion(.success(.completed(nil)))
+                completion(.success(.text(for: loaded, value: nil)))
             } else {
                 completion(.failure(ExecutionError.cannotOpen(url.path)))
             }
@@ -129,15 +124,15 @@ final class ExtensionExecutor {
             switch action.operation ?? "copy" {
             case "copy":
                 clipboard.copy(action.value)
-                completion(.success(.completed(nil)))
+                completion(.success(.text(for: loaded, value: nil)))
             case "paste":
                 clipboard.copy(action.value)
-                completion(.success(.native(action)))
+                completion(.success(.native(for: loaded, action: action)))
             case "pastePlainText":
                 do {
                     let text = try PlainTextPasteboardService.rewriteAsPlainText()
                     clipboard.copy(text)
-                    completion(.success(.native(ExtensionAction(type: .clipboard, value: text, operation: "pastePlainText"))))
+                    completion(.success(.native(for: loaded, action: ExtensionAction(type: .clipboard, value: text, operation: "pastePlainText"))))
                 } catch {
                     completion(.failure(error))
                 }
@@ -146,11 +141,11 @@ final class ExtensionExecutor {
             }
 
         case .form, .picker, .generator, .system, .window, .workspace:
-            completion(.success(.native(action)))
+            completion(.success(.native(for: loaded, action: action)))
 
         case .shell:
             run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation) { result in
-                completion(result)
+                completion(result.map { ExtensionExecutionOutput.text(for: loaded, value: $0) })
             }
         }
     }
@@ -185,10 +180,7 @@ final class ExtensionExecutor {
             run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: false) { result in
                 switch result {
                 case .success(let executionResult):
-                    guard case .completed(let output) = executionResult else {
-                        completion(.failure(ExecutionError.invalidAction("Form execution returned a native action instead of command output.")))
-                        return
-                    }
+                    let output = executionResult
                     completion(.success(FormResult(
                         headline: "Command completed",
                         detail: "Exit status 0",
@@ -214,7 +206,7 @@ final class ExtensionExecutor {
         relativeTo directory: URL,
         capabilities: Set<ExtensionManifest.Capability>,
         reportCancellation: Bool = false,
-        completion: @escaping (Result<ExecutionResult, Error>) -> Void
+        completion: @escaping (Result<String?, Error>) -> Void
     ) {
         let executable: URL
         do {
@@ -334,7 +326,7 @@ final class ExtensionExecutor {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: true, outputCharacters: outputText.count)
                         }
-                        completion(.success(.completed(outputText.isEmpty ? nil : outputText)))
+                        completion(.success(outputText.isEmpty ? nil : outputText))
                     } else {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Exit \(task.terminationStatus)")

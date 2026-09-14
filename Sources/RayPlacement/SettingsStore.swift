@@ -2,7 +2,7 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
-enum GrammarCorrectionMode: String, CaseIterable, Identifiable {
+enum GrammarCorrectionMode: String, CaseIterable, Identifiable, Codable {
     case proofread
     case polish
 
@@ -16,7 +16,7 @@ enum GrammarCorrectionMode: String, CaseIterable, Identifiable {
     }
 }
 
-enum GrammarEngineMode: String, CaseIterable, Identifiable {
+enum GrammarEngineMode: String, CaseIterable, Identifiable, Codable {
     case local
     case externalAPI
 
@@ -385,6 +385,16 @@ final class SettingsStore: ObservableObject {
         static let grammarCorrectionMode = "grammarCorrectionMode"
         static let grammarEnsembleStrategy = "grammarEnsembleStrategy"
         static let grammarJudgeOnDisagreement = "grammarJudgeOnDisagreement"
+        static let grammarCandidateSettings = "grammarCandidateSettings"
+        static let grammarJudgeConfiguration = "grammarJudgeConfiguration"
+        static let grammarScoringWeights = "grammarScoringWeights"
+        static let grammarCorrectionPolicy = "grammarCorrectionPolicy"
+        static let grammarRecordCandidatePrompts = "grammarRecordCandidatePrompts"
+        static let grammarRecordProviderResponses = "grammarRecordProviderResponses"
+        static let grammarRecordScoringComponents = "grammarRecordScoringComponents"
+        static let grammarRecordRejectedEdits = "grammarRecordRejectedEdits"
+        static let grammarStoreFullOriginalInput = "grammarStoreFullOriginalInput"
+        static let grammarStoreSanitizedDocument = "grammarStoreSanitizedDocument"
         static let grammarDebugStoreSourceText = "grammarDebugStoreSourceText"
         static let grammarDebugRetentionDays = "grammarDebugRetentionDays"
         static let grammarDebugMaximumRuns = "grammarDebugMaximumRuns"
@@ -668,7 +678,45 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published var grammarJudgeOnDisagreement: Bool {
-        didSet { defaults.set(grammarJudgeOnDisagreement, forKey: Key.grammarJudgeOnDisagreement) }
+        didSet {
+            defaults.set(grammarJudgeOnDisagreement, forKey: Key.grammarJudgeOnDisagreement)
+            grammarJudgeConfiguration.enabled = grammarJudgeOnDisagreement
+        }
+    }
+
+    @Published var grammarCandidateSettings: [String: GrammarCandidateSettings] {
+        didSet { saveCodable(grammarCandidateSettings, key: Key.grammarCandidateSettings) }
+    }
+
+    @Published var grammarJudgeConfiguration: GrammarJudgeConfiguration {
+        didSet { saveCodable(grammarJudgeConfiguration, key: Key.grammarJudgeConfiguration) }
+    }
+
+    @Published var grammarScoringWeights: GrammarScoringWeights {
+        didSet { saveCodable(grammarScoringWeights, key: Key.grammarScoringWeights) }
+    }
+
+    @Published var grammarCorrectionPolicy: GrammarCorrectionPolicy {
+        didSet { saveCodable(grammarCorrectionPolicy, key: Key.grammarCorrectionPolicy) }
+    }
+
+    @Published var grammarRecordCandidatePrompts: Bool {
+        didSet { defaults.set(grammarRecordCandidatePrompts, forKey: Key.grammarRecordCandidatePrompts) }
+    }
+    @Published var grammarRecordProviderResponses: Bool {
+        didSet { defaults.set(grammarRecordProviderResponses, forKey: Key.grammarRecordProviderResponses) }
+    }
+    @Published var grammarRecordScoringComponents: Bool {
+        didSet { defaults.set(grammarRecordScoringComponents, forKey: Key.grammarRecordScoringComponents) }
+    }
+    @Published var grammarRecordRejectedEdits: Bool {
+        didSet { defaults.set(grammarRecordRejectedEdits, forKey: Key.grammarRecordRejectedEdits) }
+    }
+    @Published var grammarStoreFullOriginalInput: Bool {
+        didSet { defaults.set(grammarStoreFullOriginalInput, forKey: Key.grammarStoreFullOriginalInput) }
+    }
+    @Published var grammarStoreSanitizedDocument: Bool {
+        didSet { defaults.set(grammarStoreSanitizedDocument, forKey: Key.grammarStoreSanitizedDocument) }
     }
 
     @Published var grammarDebugStoreSourceText: Bool {
@@ -731,6 +779,31 @@ final class SettingsStore: ObservableObject {
 
     var enhancedGrammarAPIKeyStored: Bool {
         !developerGrammarAPIKey.isEmpty
+    }
+
+    func grammarCandidateSettings(for profile: GrammarCandidateProfile) -> GrammarCandidateSettings {
+        grammarCandidateSettings[profile.id] ?? GrammarCandidateSettings(profile: profile)
+    }
+
+    func updateGrammarCandidateSettings(_ value: GrammarCandidateSettings, for profileID: String) {
+        grammarCandidateSettings[profileID] = value
+    }
+
+    func resetGrammarAdvancedSettings() {
+        grammarCandidateSettings = Dictionary(uniqueKeysWithValues: GrammarCandidateProfile.profiles(for: .thorough).map { ($0.id, GrammarCandidateSettings(profile: $0)) })
+        grammarJudgeConfiguration = GrammarJudgeConfiguration()
+        grammarJudgeOnDisagreement = true
+        grammarScoringWeights = GrammarScoringWeights()
+        grammarCorrectionPolicy = .safeDefaults
+    }
+
+    private func saveCodable<T: Encodable>(_ value: T, key: String) {
+        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: key) }
+    }
+
+    private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 
     func selectDeveloperGrammarProvider(_ provider: DeveloperGrammarProvider) {
@@ -917,7 +990,21 @@ final class SettingsStore: ObservableObject {
         grammarEnsembleStrategy = GrammarEnsembleStrategy(
             rawValue: defaults.string(forKey: Key.grammarEnsembleStrategy) ?? ""
         ) ?? .balanced
-        grammarJudgeOnDisagreement = defaults.object(forKey: Key.grammarJudgeOnDisagreement) as? Bool ?? true
+        let loadedJudgeEnabled = defaults.object(forKey: Key.grammarJudgeOnDisagreement) as? Bool ?? true
+        grammarJudgeOnDisagreement = loadedJudgeEnabled
+        let defaultCandidateSettings = Dictionary(uniqueKeysWithValues: GrammarCandidateProfile.profiles(for: .thorough).map { ($0.id, GrammarCandidateSettings(profile: $0)) })
+        grammarCandidateSettings = Self.loadCodable([String: GrammarCandidateSettings].self, key: Key.grammarCandidateSettings) ?? defaultCandidateSettings
+        var loadedJudgeConfiguration = Self.loadCodable(GrammarJudgeConfiguration.self, key: Key.grammarJudgeConfiguration) ?? GrammarJudgeConfiguration()
+        loadedJudgeConfiguration.enabled = loadedJudgeEnabled
+        grammarJudgeConfiguration = loadedJudgeConfiguration
+        grammarScoringWeights = Self.loadCodable(GrammarScoringWeights.self, key: Key.grammarScoringWeights) ?? GrammarScoringWeights()
+        grammarCorrectionPolicy = Self.loadCodable(GrammarCorrectionPolicy.self, key: Key.grammarCorrectionPolicy) ?? .safeDefaults
+        grammarRecordCandidatePrompts = defaults.object(forKey: Key.grammarRecordCandidatePrompts) as? Bool ?? true
+        grammarRecordProviderResponses = defaults.object(forKey: Key.grammarRecordProviderResponses) as? Bool ?? true
+        grammarRecordScoringComponents = defaults.object(forKey: Key.grammarRecordScoringComponents) as? Bool ?? true
+        grammarRecordRejectedEdits = defaults.object(forKey: Key.grammarRecordRejectedEdits) as? Bool ?? true
+        grammarStoreFullOriginalInput = defaults.object(forKey: Key.grammarStoreFullOriginalInput) as? Bool ?? false
+        grammarStoreSanitizedDocument = defaults.object(forKey: Key.grammarStoreSanitizedDocument) as? Bool ?? false
         grammarDebugStoreSourceText = defaults.object(forKey: Key.grammarDebugStoreSourceText) as? Bool ?? false
         grammarDebugRetentionDays = min(max(defaults.object(forKey: Key.grammarDebugRetentionDays) as? Int ?? 30, 1), 3650)
         grammarDebugMaximumRuns = min(max(defaults.object(forKey: Key.grammarDebugMaximumRuns) as? Int ?? 500, 10), 100_000)

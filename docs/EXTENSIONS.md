@@ -223,7 +223,7 @@ Before sharing an extension:
 6. Confirm a background command leaves the launcher responsive.
 7. Test the installed extension in Lima, not only its executable in Terminal.
 
-See `docs/EXTENSION_AUTHORING_FOR_AI.md` for the implementation contract and `docs/starter-extension/manifest.json` for a copy-ready local example.
+See `docs/EXTENSION_AUTHORING_FOR_AI.md` for the implementation contract, `Sources/RayPlacementCore/Fixtures/extension-v3.json` for the canonical API v3 fixture, and `docs/starter-extension/manifest.json` for a copy-ready local example.
 
 ## API v3 execution model
 

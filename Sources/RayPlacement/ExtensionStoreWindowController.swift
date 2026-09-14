@@ -54,7 +54,7 @@ enum ExtensionStoreError: LocalizedError {
 
 @MainActor
 final class ExtensionStoreModel: ObservableObject {
-    @Published private(set) var entries: [ExtensionStoreEntry] = []
+    @Published var entries: [ExtensionStoreEntry] = []
     @Published var query = ""
     @Published private(set) var isLoading = false
     @Published private(set) var installingID: String?
@@ -123,18 +123,43 @@ final class ExtensionStoreModel: ObservableObject {
 
     func install(_ entry: ExtensionStoreEntry) {
         guard installingID == nil else { return }
-        installingID = entry.id
-        status = "Downloading \(entry.name)…"
-
         Task { @MainActor in
-            defer { installingID = nil }
-            do {
+            await installEntries([entry])
+        }
+    }
+
+    /// Installs packages one at a time so Update All cannot drop entries while
+    /// the single-package installer is already occupied.
+    func installAll(_ entries: [ExtensionStoreEntry]) {
+        guard installingID == nil, !entries.isEmpty else { return }
+        Task { @MainActor in
+            await installEntries(entries)
+        }
+    }
+
+    private func installEntries(_ entries: [ExtensionStoreEntry]) async {
+        var installedCount = 0
+        for entry in entries {
+            installingID = entry.id
+            status = "Downloading \(entry.name)…"
+            let transaction = await ExtensionPackageManager.shared.performInstall(id: entry.id, name: entry.name, version: entry.version, provenance: .catalogInstalled) {
                 try await Self.install(entry)
+            }
+            if transaction.committed {
+                installedCount += 1
                 onInstalled()
                 status = "Installed \(entry.name). Review its requested capabilities in Settings → Extensions."
-            } catch {
-                status = error.localizedDescription
+            } else {
+                // Continue with the remaining packages. A failed update leaves
+                // its previous package in place because installation is staged.
+                status = "Could not install \(entry.name): \(transaction.error ?? "unknown error")"
             }
+            installingID = nil
+        }
+        if entries.count > 1 {
+            status = installedCount == entries.count
+                ? "Updated \(installedCount) extensions."
+                : "Updated \(installedCount) of \(entries.count) extensions."
         }
     }
 
@@ -242,7 +267,8 @@ final class ExtensionStoreModel: ObservableObject {
         let manifestURL = package.appendingPathComponent("manifest.json")
         let manifestData = try Data(contentsOf: manifestURL)
         let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: manifestData)
-        guard (1...2).contains(manifest.schemaVersion),
+        try manifest.validateLifecycleMetadata()
+        guard (1...3).contains(manifest.schemaVersion),
               manifest.id == entry.id,
               manifest.name == entry.name,
               manifest.version == entry.version,

@@ -19,7 +19,8 @@ private struct SettingsExtensionGroup: Identifiable {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case shortcuts
-    case writing
+    case grammar
+    case dictation
     case clipboard
     case extensions
     case privacy
@@ -32,7 +33,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .shortcuts: return "Shortcuts & Input"
-        case .writing: return "Writing & Dictation"
+        case .grammar: return "Grammar & AI"
+        case .dictation: return "Dictation"
         case .clipboard: return "Clipboard"
         case .extensions: return "Extensions"
         case .privacy: return "Privacy & Permissions"
@@ -45,7 +47,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "gearshape.fill"
         case .shortcuts: return "command"
-        case .writing: return "wand.and.stars"
+        case .grammar: return "wand.and.stars"
+        case .dictation: return "mic.fill"
         case .clipboard: return "clipboard.fill"
         case .extensions: return "puzzlepiece.extension.fill"
         case .privacy: return "checkmark.shield.fill"
@@ -58,7 +61,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return ["general", "appearance", "accent", "density", "text size", "launch at login", "theme"]
         case .shortcuts: return ["shortcuts", "input", "launcher", "notes", "quick note", "dictation", "terminal", "mouse", "hotkey"]
-        case .writing: return ["writing", "dictation", "grammar", "engine", "local", "enhanced", "provider", "api key", "preserved terms", "stealth", "whisper", "transcription"]
+        case .grammar: return ["grammar", "writing", "proofread", "polish", "AI", "external", "OpenAI", "provider", "ensemble", "candidate", "judge", "debugger", "analytics", "prompt", "API", "preserved terms"]
+        case .dictation: return ["dictation", "whisper", "microphone", "transcription", "speech", "recording"]
         case .clipboard: return ["clipboard", "history", "monitoring", "clear", "limit"]
         case .extensions: return ["extensions", "packs", "permissions", "commands", "shortcuts"]
         case .privacy: return ["privacy", "permissions", "accessibility", "microphone", "speech recognition", "security", "backup", "diagnostics"]
@@ -108,6 +112,7 @@ struct SettingsView: View {
     @State private var advancedSubsection = 0
     @State private var confirmUsageClear = false
     @State private var commandProfileName = ""
+    @State private var aliasDrafts: [String: String] = [:]
     @State private var workspaceProfileName = ""
     @State private var grammarAPIKey = ""
     @State private var grammarConnectionMessage: String?
@@ -116,6 +121,8 @@ struct SettingsView: View {
     @State private var isTestingGrammarCompatibility = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
+    let openGrammarDebugger: () -> Void
+    @ObservedObject var extensionStoreModel: ExtensionStoreModel
 
     var body: some View {
         ZStack {
@@ -204,7 +211,7 @@ struct SettingsView: View {
 
             if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 sidebarGroup("GENERAL", sections: [.general, .shortcuts])
-                sidebarGroup("FEATURES", sections: [.writing, .clipboard, .extensions])
+                sidebarGroup("FEATURES", sections: [.grammar, .dictation, .clipboard, .extensions])
                 sidebarGroup("SYSTEM", sections: [.privacy, .advanced, .about])
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
@@ -305,7 +312,8 @@ struct SettingsView: View {
         switch selectedSection {
         case .general: generalTab
         case .shortcuts: shortcutsTab
-        case .writing: writingTab
+        case .grammar: grammarSettingsTab
+        case .dictation: dictationTab
         case .clipboard: clipboardTab
         case .extensions: extensionsTab
         case .privacy: privacyTab
@@ -609,52 +617,37 @@ struct SettingsView: View {
         }
     }
 
-    private var writingTab: some View {
+    private var grammarSettingsTab: some View {
+        GrammarSettingsView(settings: settings, openDebugger: openGrammarDebugger)
+    }
+
+    private var dictationTab: some View {
         Form {
-            grammarEngineSection
-            Section("Local checker") {
-                Toggle("Check Notes while typing", isOn: $settings.inlineGrammarCheckingEnabled)
-                Text("Lima checks the current paragraph after a short pause. Code, links, protected terms, and Markdown structure are excluded.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                Label("Python spelling + Harper grammar", systemImage: "checkmark.shield.fill")
-                    .foregroundStyle(.green)
-                Text("Checks stay on this Mac. No text-generation model is installed or used.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Keyboard Grammar") {
-                Toggle("Enable keyboard grammar correction", isOn: $settings.stealthGrammarEnabled)
-                PrimaryShortcutRow(
-                    title: "Check and Correct Selected Text",
-                    symbol: "wand.and.stars",
-                    enabled: $settings.stealthGrammarEnabled,
-                    shortcut: $settings.stealthGrammarShortcut
-                )
-                Text("Corrects highlighted text in place without opening a review. It uses the local checker by default and keeps URLs, proper nouns, acronyms, code-like text, and your preserved terms unchanged.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Preserved terms") {
-                Text("Enter product names, acronyms, and intentional spellings the checker should leave unchanged, separated by spaces, commas, or lines.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                TextEditor(text: $settings.writingInstructions)
-                    .limaFont(.system(size: 12.5))
-                    .frame(minHeight: 118)
-                    .limaEditorSurface(cornerRadius: 5)
-                    .accessibilityLabel("Words preserved by grammar correction")
-                HStack {
-                    Text("\(settings.writingInstructions.count.formatted()) / 4,000 characters")
-                        .limaFont(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Spacer()
-                    Button("Restore Defaults") {
-                        settings.resetWritingInstructions()
+            Section("Dictation engine") {
+                Picker("Transcription engine", selection: $settings.dictationEngine) {
+                    ForEach(DictationEngine.allCases) { engine in
+                        Text(engine.title).tag(engine)
                     }
                 }
+                Text(settings.dictationEngine.detail)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                if settings.dictationEngine == .localWhisper {
+                    Picker("Whisper compute", selection: $settings.dictationComputeMode) {
+                        ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
+                    }
+                }
+            }
+            Section("Recording") {
+                Toggle("Enable dictation hotkey", isOn: $settings.dictationHotkeyEnabled)
+                PrimaryShortcutRow(title: "Dictation", symbol: "mic.fill", enabled: $settings.dictationHotkeyEnabled, shortcut: $settings.dictationShortcut)
+                Text("Recordings and transcripts remain on this Mac. Start Dictation from the launcher or its keyboard shortcut.")
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Section("Performance") {
+                performanceSlider("Dictation", selection: $settings.dictationPerformance, active: settings.runtimeDictationPerformance)
+                LabeledContent("Recording limit", value: "\(Int(settings.runtimeDictationPerformance.dictationMaximumDuration / 60)) minutes")
             }
         }
         .formStyle(.grouped)
@@ -664,6 +657,7 @@ struct SettingsView: View {
 
     private var usageTab: some View {
         let summary = usageMonitor.summary
+        let latencySamples = Array(LauncherPerformanceDiagnostics.shared.samples.suffix(8))
         return Form {
             Section("Live activity") {
                 if usageMonitor.activeTasks.isEmpty {
@@ -691,6 +685,78 @@ struct SettingsView: View {
                 LabeledContent("Local processing time", value: durationLabel(summary.processingSecondsToday))
                 LabeledContent("Characters processed", value: summary.inputCharactersToday.formatted())
                 LabeledContent("Characters produced", value: summary.outputCharactersToday.formatted())
+            }
+
+            Section("Launcher learning") {
+                LabeledContent("Recent commands", value: "\(viewModel.lastLearnedCommands().count)")
+                Button("Reset Learned Ranking", role: .destructive) { viewModel.resetLearnedRanking() }
+                    .help("Forget usage frequency, recency, and source-application ranking")
+                Button("Reset Favorites") { CommandManager.shared.resetFavorites() }
+            }
+
+            Section("Command ranking controls") {
+                Text("Manage pinned commands and learned ranking without opening the Action Panel.")
+                    .foregroundStyle(.secondary)
+                    .limaFont(.caption)
+                ForEach(viewModel.commandDescriptors) { descriptor in
+                    HStack(spacing: 8) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(descriptor.title).limaFont(.callout.weight(.medium))
+                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            CommandManager.shared.toggleFavorite(descriptor.id)
+                            viewModel.refreshForSettings()
+                        } label: {
+                            Label(CommandManager.shared.isFavorite(descriptor.id) ? "Pinned" : "Pin", systemImage: CommandManager.shared.isFavorite(descriptor.id) ? "pin.fill" : "pin")
+                        }
+                        .buttonStyle(.bordered)
+                        Button("Forget") { viewModel.forgetLearnedRanking(descriptor.id) }
+                            .buttonStyle(.bordered)
+                            .disabled(!viewModel.lastLearnedCommands(limit: 100).contains(descriptor.id))
+                    }
+                }
+            }
+
+            Section("Command aliases") {
+                Text("Aliases are local and are ranked below an exact command title.")
+                    .foregroundStyle(.secondary)
+                    .limaFont(.caption)
+                ForEach(viewModel.commandDescriptors) { descriptor in
+                    VStack(alignment: .leading, spacing: 5) {
+                        Text(descriptor.title).limaFont(.callout.weight(.medium))
+                        HStack {
+                            TextField("comma-separated aliases", text: Binding(
+                                get: { aliasDrafts[descriptor.id] ?? viewModel.aliases(for: descriptor.id).joined(separator: ", ") },
+                                set: { aliasDrafts[descriptor.id] = $0 }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            Button("Save") {
+                                viewModel.setAliases((aliasDrafts[descriptor.id] ?? "").split(separator: ",").map(String.init), for: descriptor.id)
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+
+            MacroComposerView(viewModel: viewModel)
+
+            Section("Launcher latency budgets") {
+                ForEach(Array(latencySamples.enumerated()), id: \.offset) { _, sample in
+                    HStack {
+                        Text(sample.operation)
+                        Spacer()
+                        Text("\(sample.milliseconds, specifier: "%.1f") ms / \(sample.budget, specifier: "%.0f") ms")
+                            .foregroundStyle(sample.withinBudget ? Color.secondary : Color.orange)
+                    }
+                }
+                if LauncherPerformanceDiagnostics.shared.samples.isEmpty {
+                    Text("No launcher measurements recorded yet.")
+                        .foregroundStyle(.secondary)
+                }
+                Button("Clear Diagnostics") { LauncherPerformanceDiagnostics.shared.clear() }
             }
 
             Section("Recent work") {
@@ -1188,130 +1254,7 @@ struct SettingsView: View {
     }
 
     private var extensionsTab: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Picker("Command profile", selection: Binding(
-                    get: { commandManager.activeProfileID ?? commandManager.profiles.first?.id },
-                    set: { id in if let id, let profile = commandManager.profiles.first(where: { $0.id == id }) { commandManager.activate(profile) } }
-                )) {
-                    ForEach(commandManager.profiles) { profile in Text(profile.name).tag(Optional(profile.id)) }
-                }
-                .frame(width: 180)
-                TextField("New profile", text: $commandProfileName)
-                    .frame(width: 120)
-                Button("Create") {
-                    commandManager.createProfile(name: commandProfileName.isEmpty ? "New Profile" : commandProfileName)
-                    commandProfileName = ""
-                }
-                if let profile = commandManager.activeProfile {
-                    Button("Rename") {
-                        let name = commandProfileName.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if !name.isEmpty { commandManager.renameProfile(profile, name: name); commandProfileName = "" }
-                    }
-                    .disabled(commandProfileName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Delete", role: .destructive) { commandManager.deleteProfile(profile) }
-                }
-            }
-            HStack(spacing: 8) {
-                Button("Open Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
-                Button("Reload") { reloadExtensions() }
-                Spacer()
-                Text("\(viewModel.extensionCommands.count) commands")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            .help(ApplicationPaths.extensions.path)
-
-            if !viewModel.extensionIssues.isEmpty {
-                GroupBox("Extension issues") {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(viewModel.extensionIssues) { issue in
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(issue.file).limaFont(.caption.weight(.semibold))
-                                    Text(issue.message).limaFont(.caption).foregroundStyle(.secondary)
-                                    if issue.extensionID != nil {
-                                        Button("Approve requested capabilities") { viewModel.approveExtension(issue) }
-                                            .buttonStyle(.borderless)
-                                            .limaFont(.caption.weight(.medium))
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                        }
-                        .padding(4)
-                    }
-                    .frame(maxHeight: 95)
-                }
-            }
-
-            if viewModel.extensionCommands.isEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "puzzlepiece.extension")
-                        .limaFont(.system(size: 30))
-                        .foregroundStyle(.secondary)
-                    Text("No extension commands loaded").limaFont(.headline)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 8) {
-                        ForEach(extensionGroups) { group in
-                            VStack(spacing: 0) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "puzzlepiece.extension.fill")
-                                        .foregroundStyle(SettingsColors.readableViolet)
-                                    VStack(alignment: .leading, spacing: 1) {
-                                        Text(group.name)
-                                            .limaFont(.system(size: 13, weight: .semibold))
-                                        Text("\(group.category) · \(group.provenance)")
-                                            .limaFont(.caption2)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    if let representative = group.commands.first {
-                                        Toggle(
-                                            "Pack",
-                                            isOn: Binding(
-                                                get: { settings.isPackEnabled(for: representative) },
-                                                set: { settings.setPackEnabled($0, for: representative) }
-                                            )
-                                        )
-                                            .toggleStyle(.checkbox)
-                                            .limaFont(.caption2)
-                                    }
-                                }
-                                .padding(.horizontal, 11)
-                                .frame(height: 36)
-
-                                Divider().opacity(0.6)
-
-                                ForEach(group.commands, id: \LoadedExtensionCommand.settingsIdentifier) { loaded in
-                                    HStack(spacing: 6) {
-                                        Toggle("", isOn: Binding(
-                                            get: { commandManager.isEnabled(loaded.settingsIdentifier) },
-                                            set: { commandManager.setEnabled($0, for: loaded.settingsIdentifier) }
-                                        )).labelsHidden().toggleStyle(.checkbox)
-                                        Button {
-                                            commandManager.toggleFavorite(loaded.settingsIdentifier)
-                                        } label: {
-                                            Image(systemName: commandManager.isFavorite(loaded.settingsIdentifier) ? "star.fill" : "star")
-                                                .foregroundStyle(commandManager.isFavorite(loaded.settingsIdentifier) ? .yellow : .secondary)
-                                        }.buttonStyle(.borderless).help("Favorite command")
-                                        ExtensionShortcutRow(settings: settings, loaded: loaded)
-                                    }
-                                    .disabled(group.commands.first.map { !settings.isPackEnabled(for: $0) } ?? false)
-                                    .opacity(group.commands.first.map { settings.isPackEnabled(for: $0) ? 1 : 0.42 } ?? 1)
-                                }
-                            }
-                            .liquidGlass(cornerRadius: 13, depth: .recessed, accentOpacity: 0.012)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-            }
-        }
-        .padding(12)
+        ExtensionsSettingsView(viewModel: viewModel, storeModel: extensionStoreModel, reloadExtensions: reloadExtensions)
     }
 
     private var extensionGroups: [SettingsExtensionGroup] {
@@ -1338,9 +1281,9 @@ struct SettingsView: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(settings.accentTheme.readablePrimary)
             Text("Lima").limaFont(.title.bold())
-            Text("A fast, local-only macOS command launcher")
+            Text("A fast macOS command launcher built around local-first workflows and explicit integrations.")
                 .foregroundStyle(.secondary)
-            Text("Local Python and Harper writing tools. No network requests or analytics.")
+            Text("Local features stay on this Mac. Features configured with external providers may send only the data required for that action.")
                 .limaFont(.callout.weight(.medium))
             Text("Version \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                 .limaFont(.caption)
@@ -1715,9 +1658,9 @@ private final class ShortcutCaptureView: NSView {
 final class SettingsWindowController: NSWindowController {
     private let settingsStore: SettingsStore
 
-    init(settings: SettingsStore, viewModel: LauncherViewModel, updateService: UpdateService, reloadExtensions: @escaping () -> Void) {
+    init(settings: SettingsStore, viewModel: LauncherViewModel, updateService: UpdateService, reloadExtensions: @escaping () -> Void, openGrammarDebugger: @escaping () -> Void, extensionStoreModel: ExtensionStoreModel) {
         self.settingsStore = settings
-        let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions)
+        let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions, openGrammarDebugger: openGrammarDebugger, extensionStoreModel: extensionStoreModel)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

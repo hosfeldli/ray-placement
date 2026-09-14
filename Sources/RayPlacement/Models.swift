@@ -26,6 +26,7 @@ enum ExtensionSurfaceKind: Equatable {
 
 struct ExtensionSurfaceSession: Equatable {
     let id: String
+    let handler: ExtensionSurfaceHandlerKey
     let title: String
     let kind: ExtensionSurfaceKind
     let preferredHeight: CGFloat
@@ -37,6 +38,7 @@ struct ExtensionSurfaceSession: Equatable {
 
     init(
         id: String,
+        handler: ExtensionSurfaceHandlerKey = .generic,
         title: String,
         kind: ExtensionSurfaceKind,
         preferredHeight: CGFloat,
@@ -47,6 +49,7 @@ struct ExtensionSurfaceSession: Equatable {
         lastInteractionAt: Date? = nil
     ) {
         self.id = id
+        self.handler = handler
         self.title = title
         self.kind = kind
         self.preferredHeight = preferredHeight
@@ -223,6 +226,14 @@ enum WindowLayout: String, CaseIterable {
     }
 }
 
+enum BuiltinInvocation: Equatable {
+    case password(length: Int)
+    case timezone(query: String)
+    case note(title: String)
+    case terminal(path: String)
+    case format(kind: String)
+}
+
 enum SystemAction {
     case lockScreen
     case sleep
@@ -296,10 +307,41 @@ enum LauncherAction {
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
     case universalSearch(LimaSearchResult)
+    case builtinInvocation(BuiltinInvocation)
     case workflow(UUID)
+    case macro(UUID)
+    case extensionOutput(UUID)
+    case note(UUID)
+    case shelfItem(UUID)
+    case clipboardEntry(UUID)
     case window(WindowLayout)
     case system(SystemAction)
     case noOp
+    case useWith(LimaContextValue)
+    case toggleFavorite(String)
+    case forgetRanking(String)
+}
+
+enum LauncherActionRole: String, Hashable {
+    case primary
+    case secondary
+    case destructive
+}
+
+struct LauncherItemAction: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let shortcut: String?
+    let role: LauncherActionRole
+    let action: LauncherAction
+}
+
+enum LimaAliasKind: String, Codable, Sendable {
+    case exactTitle
+    case builtInAlias
+    case extensionAlias
+    case userAlias
 }
 
 struct LauncherItem: Identifiable {
@@ -311,6 +353,8 @@ struct LauncherItem: Identifiable {
     let action: LauncherAction
     var shortcut: String?
     var accessory: String?
+    /// Search provenance used to keep exact titles ahead of aliases.
+    var aliasKind: LimaAliasKind?
 
     var searchableText: String {
         ([title, subtitle] + keywords).joined(separator: " ")
@@ -380,4 +424,12 @@ extension Notification.Name {
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")
     static let rayPlacementCommandProfilesChanged = Notification.Name("RayPlacementCommandProfilesChanged")
+}
+
+
+extension LauncherMode {
+    var surfaceHandler: LauncherSurfaceHandlerKey? {
+        if case .surface(let session) = self { return session.surface.handler }
+        return nil
+    }
 }

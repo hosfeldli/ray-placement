@@ -73,6 +73,22 @@ public struct ExtensionManifest: Codable, Sendable {
         self.presentation = presentation
     }
 
+    public enum ValidationError: Error, Equatable, Sendable {
+        case bundledRequiresBundledProvenance
+        case nonBundledCannotUseBundledTrust
+    }
+
+    /// Validates lifecycle metadata independently from JSON decoding. This is
+    /// shared by fixture tests and package installation so provenance cannot be
+    /// used to self-grant bundled trust.
+    public func validateLifecycleMetadata() throws {
+        if bundled {
+            guard provenance == .bundled, trust == .bundled || trust == .builtIn else { throw ValidationError.bundledRequiresBundledProvenance }
+        } else if provenance == .bundled || trust == .bundled || trust == .builtIn {
+            throw ValidationError.nonBundledCannotUseBundledTrust
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1

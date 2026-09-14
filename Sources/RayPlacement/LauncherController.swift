@@ -49,6 +49,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var modeSubscription: AnyCancellable?
     private var surfaceModeSubscription: AnyCancellable?
     private var queryInteractionSubscription: AnyCancellable?
+    private var surfaceQuerySubscriptions: [AnyCancellable] = []
     private var settingsSubscription: AnyCancellable?
     private var pendingFileActionURL: URL?
     private var quickLookItem: FileQuickLookItem?
@@ -59,12 +60,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let surfaceSessionController = LauncherSurfaceSessionController()
     private let updateService: UpdateService
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
-    private lazy var grammarDebuggerWindow = GrammarDebuggerWindowController(settings: .shared)
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
         updateService: updateService,
-        reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() }
+        reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
+        openGrammarDebugger: { [weak self] in self?.showGrammarDebugger() },
+        extensionStoreModel: extensionStoreModel
     )
 
     init(updateService: UpdateService) {
@@ -148,10 +150,36 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         queryInteractionSubscription = viewModel.$query
             .dropFirst()
-            .sink { [weak self] _ in
+            .sink { [weak self] query in
                 guard let self, self.viewModel.mode != .root else { return }
+                switch self.viewModel.mode {
+                case .surface(let session):
+                    switch session.surface.handler {
+                    case .formatter: if self.formatterModel.searchQuery != query { self.formatterModel.searchQuery = query }
+                    case .extensionStore: if self.extensionStoreModel.query != query { self.extensionStoreModel.query = query }
+                    case .workflows: if self.workflowModel.commandFilter != query { self.workflowModel.commandFilter = query }
+                    default: break
+                    }
+                case .contextShelf:
+                    break // The Shelf receives the binding directly from LauncherView.
+                default: break
+                }
                 self.surfaceSessionController.interactionOccurred()
             }
+        surfaceQuerySubscriptions = [
+            formatterModel.$searchQuery.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .formatter, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            },
+            extensionStoreModel.$query.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .extensionStore, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            },
+            workflowModel.$commandFilter.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .workflows, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            }
+        ]
         resizePanel(for: viewModel.mode, animated: false)
         surfaceSessionController.surfaceChanged(to: viewModel.mode)
         rememberExternalApplicationActivation()
@@ -170,6 +198,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func show(from sourceApplication: NSRunningApplication? = nil) {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer { LauncherPerformanceDiagnostics.shared.mark("hotkey-visible", startedAt: startedAt, budget: 80) }
         rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
@@ -202,8 +232,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showGrammarDebugger() {
-        hide()
-        grammarDebuggerWindow.present()
+        let descriptor = LimaSurfaceRegistry.shared.descriptor(
+            id: "grammar-debugger",
+            title: "Grammar Debugger",
+            kind: .inspector,
+            handler: .grammarDebugger,
+            preferredHeight: 680,
+            canPopOut: false,
+            supportsSearch: true
+        )
+        viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
+        presentPanel()
     }
 
     func showNotes() {
@@ -212,7 +251,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showExtensionStore() {
-        enterGenericSurface(id: "extension-store", title: "Extension Store", kind: .results, height: 600, canPopOut: false)
+        showSettings()
     }
 
     func showQuickNote() {
@@ -266,6 +305,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func launcherViewModel(_ viewModel: LauncherViewModel, perform action: LauncherAction, item: LauncherItem) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer { LauncherPerformanceDiagnostics.shared.record(operation: "common-local-action", budget: 100, milliseconds: Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
         switch action {
         case .launchApplication(let url):
             hide()
@@ -334,6 +375,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .universalSearch(let result):
             routeUniversalSearchResult(result)
 
+        case .builtinInvocation(let invocation):
+            executeBuiltinInvocation(invocation)
+
         case .workflow(let id):
             guard let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) else {
                 presentError(title: "Workflow", message: "That workflow no longer exists.")
@@ -341,14 +385,121 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
             executeWorkflow(workflow)
 
+        case .macro(let id):
+            executeMacro(id)
+
+        case .note(let id):
+            notesWindow.selectNote(id)
+            notesWindow.present()
+        case .shelfItem(let id):
+            viewModel.enter(.contextShelf)
+            ContextShelfStore.shared.selectedIDs = [id]
+            presentPanel()
+        case .clipboardEntry(let id):
+            guard let entry = clipboard.entries.first(where: { $0.id == id }) else { return }
+            clipboard.copy(entry.text)
+            toast.show("Copied clipboard entry")
+        case .extensionOutput(let id):
+            guard let output = ExtensionOutputStore.shared.outputs.first(where: { $0.id == id }) else { return }
+            if output.canCopy { clipboard.copy(output.value); toast.show("Copied output") }
+
         case .window(let layout):
             applyWindowLayout(layout)
 
         case .system(let systemAction):
             performSystemAction(systemAction)
 
+        case .useWith:
+            viewModel.openActionPanel(for: item)
+
+        case .toggleFavorite(let id):
+            CommandManager.shared.toggleFavorite(id)
+            viewModel.refreshForSettings()
+        case .forgetRanking(let id):
+            viewModel.forgetLearnedRanking(id)
+
         case .noOp:
             break
+        }
+    }
+
+    private func executeMacro(_ id: UUID) {
+        guard let macro = LimaMacroStore.shared.chains.first(where: { $0.id == id }) else {
+            presentError(title: "Macro", message: "That macro no longer exists.")
+            return
+        }
+        guard macro.steps.count <= 8, macro.steps.allSatisfy({ !$0.commandID.isEmpty }) else {
+            presentError(title: "Macro", message: "Macros may contain at most eight registered commands.")
+            return
+        }
+        hide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var failures = 0
+            var lastOutput: String?
+            for step in macro.steps {
+                do {
+                    guard let command = self.viewModel.extensionCommands.first(where: { loaded in
+                        loaded.command.id == step.commandID || "extension.\(loaded.extensionID).\(loaded.command.id)" == step.commandID
+                    }) else { throw ExtensionExecutor.ExecutionError.invalidAction("Command \(step.commandID) is unavailable.") }
+                    var prepared = command
+                    var action = prepared.command.action
+                    let context = lastOutput
+                    if !step.parameters.isEmpty || context != nil {
+                        var parameters = action.parameters ?? [:]
+                        for (key, value) in step.parameters { parameters[key] = value.replacingOccurrences(of: "{{input}}", with: context ?? "") }
+                        if let context { parameters["context"] = context }
+                        action.parameters = parameters
+                        prepared.command.action = action
+                    }
+                    let output = try await self.extensionExecutor.executeAsync(prepared, clipboard: self.clipboard)
+                    lastOutput = output.value.isEmpty ? context : output.value
+                    try await self.dispatchExecutionOutput(output)
+                } catch {
+                    failures += 1
+                    if macro.failurePolicy == .stop { break }
+                }
+            }
+            self.toast.show(failures == 0 ? "\(macro.name) completed" : "\(macro.name) completed with \(failures) error\(failures == 1 ? "" : "s")", style: failures == 0 ? .success : .error)
+        }
+    }
+
+    private func dispatchExecutionOutput(_ output: ExtensionExecutionOutput) async throws {
+        switch output.payload {
+        case .text:
+            if output.isPersistable { ExtensionOutputStore.shared.record(output) }
+        case .native(let action):
+            await withCheckedContinuation { continuation in dispatchNativeAction(action) { continuation.resume() } }
+        case .nativeChain(let actions):
+            await withCheckedContinuation { continuation in dispatchNativeChain(actions) { continuation.resume() } }
+        }
+    }
+
+    private func executeBuiltinInvocation(_ invocation: BuiltinInvocation) {
+        switch invocation {
+        case .password(let length):
+            passwordGeneratorModel.setLength(length)
+            passwordGeneratorModel.generate()
+            viewModel.enter(.extensionSurface(ExtensionSurfaceSession(id: "password-generator", handler: .generator, title: "Password Generator", kind: .generator, preferredHeight: 430, canPopOut: false)))
+            presentPanel()
+        case .timezone(let query):
+            viewModel.enter(.picker(.timezone), query: query)
+            presentPanel()
+        case .note(let title):
+            notesWindow.store.createQuickNote(with: title)
+            notesWindow.presentQuickNote()
+            hide()
+        case .terminal(let path):
+            let expanded = (path as NSString).expandingTildeInPath
+            let session = TerminalSessionStore.shared.create(name: "Terminal · \(URL(fileURLWithPath: expanded).lastPathComponent)")
+            TerminalSessionStore.shared.updateDirectory(expanded, for: session.id)
+            terminalModel.selectSession(session.id)
+            viewModel.enter(.terminal)
+            presentPanel()
+        case .format(let kind):
+            formatterModel.kind = kind.lowercased() == "json" ? .json : formatterModel.kind
+            viewModel.enter(.surface(LauncherSurfaceSession(surface: LimaSurfaceRegistry.shared.descriptor(id: "formatter", title: "Formatter", kind: .textEditor, handler: .formatter, preferredHeight: 600, canPopOut: true, primaryActionTitle: "Format", supportsCopy: true))))
+            presentPanel()
         }
     }
 
@@ -409,6 +560,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func presentPanel() {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer { LauncherPerformanceDiagnostics.shared.mark("surface-presentation", startedAt: startedAt, budget: 50) }
         let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         var finalOrigin = panel.frame.origin
         if let visibleFrame = targetScreen?.visibleFrame {
@@ -478,9 +631,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func performCurrentSurfacePrimaryAction() {
         switch viewModel.mode {
         case .surface(let session):
-            switch session.surface.id {
-            case "formatter": formatterModel.format()
-            case "workflows": workflowModel.executeSelected()
+            switch session.surface.handler {
+            case .formatter: formatterModel.format()
+            case .workflows: workflowModel.executeSelected()
             default: break
             }
         case .extensionSurface(let session):
@@ -524,13 +677,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     return nil
                 }
                 if characters == "k" {
-                    if self.viewModel.mode == .root {
-                        self.viewModel.enter(.history)
-                    } else if self.viewModel.mode == .files,
-                              let url = self.viewModel.selectedFileURL,
-                              self.viewModel.selectedItem != nil {
-                        self.presentFileActionMenu(for: url)
-                    }
+                    self.viewModel.openActionPanel()
+                    return nil
+                }
+                if characters == "r", flags.contains(.shift) {
+                    self.viewModel.repeatLastAction()
                     return nil
                 }
                 if characters == "c", case .writingReview(let review) = self.viewModel.mode {
@@ -585,13 +736,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.viewModel.moveSelection(by: self.viewModel.isEmojiPicker ? -LauncherViewModel.emojiGridColumnCount : -1)
                 return nil
             }
+            if event.keyCode == 124 {
+                self.viewModel.openActionPanel()
+                return nil
+            }
+            if flags.contains(.command), event.keyCode == 36 {
+                self.viewModel.openActionPanel()
+                return nil
+            }
             if event.keyCode == 36 || event.keyCode == 76 {
                 if case .writingReview(let review) = self.viewModel.mode {
                     self.viewModel.pasteWritingResult(review)
                     return nil
                 }
                 if case .extensionSurface(let session) = self.viewModel.mode {
-                    if self.isPasswordGeneratorSession(session) {
+                    if session.kind == .generator {
                         passwordGeneratorModel.copy()
                         if !flags.contains(.command) { self.viewModel.enter(.root) }
                     } else if session.kind == .form {
@@ -609,15 +768,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if flags.contains(.command), characters == "r" {
                 switch self.viewModel.mode {
                 case .extensionSurface(let session):
-                    if self.isPasswordGeneratorSession(session) {
+                    if session.kind == .generator {
                         passwordGeneratorModel.generate()
                     } else if session.kind == .form {
                         inlineExtensionSurfaceModel.run()
                     }
                 case .surface(let session):
-                    switch session.surface.id {
-                    case "formatter": formatterModel.format()
-                    case "workflows": workflowModel.executeSelected()
+                    switch session.surface.handler {
+                    case .formatter: formatterModel.format()
+                    case .workflows: workflowModel.executeSelected()
                     default: break
                     }
                 default:
@@ -628,12 +787,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if flags.contains(.command), characters == "c" {
                 switch self.viewModel.mode {
                 case .extensionSurface(let session):
-                    if self.isPasswordGeneratorSession(session) {
+                    if session.kind == .generator {
                         passwordGeneratorModel.copy()
                     } else if session.kind == .form {
                         inlineExtensionSurfaceModel.copyOutput()
                     }
-                case .surface(let session) where session.surface.id == "formatter":
+                case .surface(let session) where session.surface.handler == .formatter:
                     formatterModel.copyOutput()
                 case .output(_, let text, _):
                     NSPasteboard.general.clearContents()
@@ -662,6 +821,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 }
             }
             if event.keyCode == 53 {
+                if self.viewModel.actionPanelItem != nil {
+                    self.viewModel.closeActionPanel()
+                    return nil
+                }
                 if case .output(_, _, .running(let canCancel)) = self.viewModel.mode, canCancel {
                     self.extensionExecutor.cancelAll()
                     self.surfaceSessionController.resumeTimeout(for: "extension-execution")
@@ -727,16 +890,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func isPasswordGeneratorCommand(_ command: LoadedExtensionCommand) -> Bool {
-        command.command.action.type == .generator
-            && (command.command.id == "password-generator" || command.command.id.hasSuffix(".password-generator"))
-    }
-
-    private func isPasswordGeneratorSession(_ session: ExtensionSurfaceSession) -> Bool {
-        session.kind == .generator
-            && (session.id == "password-generator" || session.id.hasSuffix(".password-generator"))
-    }
-
     private func sessionMode(_ session: ExtensionSurfaceSession) -> LauncherMode {
         .extensionSurface(session)
     }
@@ -772,6 +925,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let canPopOut = descriptor?.canPopOut ?? (kind == .form)
         let session = ExtensionSurfaceSession(
             id: command.extensionID + "." + command.command.id,
+            handler: kind == .form ? .form : (kind == .generator ? .generator : .generic),
             title: command.command.title,
             kind: kind,
             preferredHeight: preferredHeight,
@@ -787,7 +941,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             inlineExtensionSurfaceModel.configure(command: command, remembersState: remembersState) { [weak self] values, completion in
                 self?.extensionExecutor.executeForm(command, values: values, completion: completion)
             }
-        } else if kind == .generator && isPasswordGeneratorCommand(command) {
+        } else if kind == .generator {
             // Preferences survive launches, but generated credentials do not.
             // Generate a fresh value whenever the surface is opened.
             passwordGeneratorModel.generate()
@@ -801,7 +955,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         title: String,
         kind: LauncherSurfaceKind,
         height: CGFloat,
-        canPopOut: Bool
+        canPopOut: Bool,
+        handler: LauncherSurfaceHandlerKey = .generic,
+        primaryActionTitle: String? = nil,
+        supportsCopy: Bool = false
     ) {
         let descriptor = LauncherSurfaceDescriptor(
             id: id,
@@ -809,7 +966,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             kind: kind,
             preferredSize: CGSize(width: 680, height: height),
             canPopOut: canPopOut,
-            preservesState: true
+            preservesState: true,
+            handler: handler,
+            primaryActionTitle: primaryActionTitle,
+            supportsCopy: supportsCopy
         )
         viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
         presentPanel()
@@ -845,7 +1005,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             guard let self else { return }
             self.surfaceSessionController.resumeTimeout(for: "extension-execution")
             switch result {
-            case .success(.completed(let output)):
+            case .success(let executionOutput):
+                if executionOutput.isPersistable { ExtensionOutputStore.shared.record(executionOutput) }
+                switch executionOutput.payload {
+                case .text(let output):
                 if let output, !output.isEmpty {
                     if suppressPersistentUI {
                         self.toast.show("\(command.command.title) completed", style: .success)
@@ -861,12 +1024,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                         if !self.panel.isVisible { self.presentPanel() }
                     }
                 }
-
-            case .success(.native(let action)):
-                self.dispatchNativeAction(action)
-
-            case .success(.nativeChain(let actions)):
-                self.dispatchNativeChain(actions)
+                case .native(let action):
+                    self.dispatchNativeAction(action)
+                case .nativeChain(let actions):
+                    self.dispatchNativeChain(actions)
+                }
 
             case .failure(let error):
                 if suppressPersistentUI {
@@ -980,16 +1142,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func openSurfaceWorkspace() {
         guard case .surface(let session) = viewModel.mode else { return }
-        switch session.surface.id {
-        case "formatter":
+        switch session.surface.handler {
+        case .formatter:
             let window = FormatterWindowController(model: formatterModel)
             retainedSurfaceWindows.append(window)
             window.present()
-        case "workflows":
+        case .workflows:
             let window = WorkflowWindowController { [weak self] workflow in self?.executeWorkflow(workflow) }
             retainedSurfaceWindows.append(window)
             window.present()
-        case "extension-development":
+        case .extensionDevelopment:
             let window = ExtensionDevelopmentWindowController()
             retainedSurfaceWindows.append(window)
             window.present()
@@ -1048,6 +1210,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 passwordGeneratorModel.generate()
                 viewModel.enter(.extensionSurface(ExtensionSurfaceSession(
                     id: "password-generator",
+                    handler: .generator,
                     title: "Password Generator",
                     kind: .generator,
                     preferredHeight: 430,
@@ -1067,9 +1230,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 viewModel.enter(.files)
                 presentPanel()
             case "formatter":
-                enterGenericSurface(id: "formatter", title: "Formatter", kind: .textEditor, height: 600, canPopOut: true)
+                enterGenericSurface(id: "formatter", title: "Formatter", kind: .textEditor, height: 600, canPopOut: true, handler: .formatter, primaryActionTitle: "Format", supportsCopy: true)
             case "extensionDevelopment":
-                enterGenericSurface(id: "extension-development", title: "Extension Development", kind: .inspector, height: 600, canPopOut: true)
+                enterGenericSurface(id: "extension-development", title: "Extension Development", kind: .inspector, height: 600, canPopOut: true, handler: .extensionDevelopment)
             case "repairExtensions":
                 toast.show(viewModel.repairBundledExtensions())
             case "uninstall":
@@ -2334,8 +2497,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
-        switch result {
-        case .completed:
+        switch result.payload {
+        case .text:
             return
         case .native(let action):
             await withCheckedContinuation { continuation in
@@ -2385,7 +2548,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.open(ApplicationPaths.extensions)
 
         case .openExtensionStore:
-            enterGenericSurface(id: "extension-store", title: "Extension Store", kind: .results, height: 600, canPopOut: false)
+            showSettings()
 
         case .reloadExtensions:
             viewModel.reloadExtensions()
@@ -2413,7 +2576,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openPermissionCenter:
             PermissionCenter.shared.refresh()
-            enterGenericSurface(id: "permissions", title: "Permissions", kind: .inspector, height: 480, canPopOut: false)
+            enterGenericSurface(id: "permissions", title: "Permissions", kind: .inspector, height: 480, canPopOut: false, handler: .permissions)
 
         case .exportDiagnostics:
             do {
@@ -2424,7 +2587,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
         case .openWorkflows:
-            enterGenericSurface(id: "workflows", title: "Workflows", kind: .results, height: 600, canPopOut: true)
+            enterGenericSurface(id: "workflows", title: "Workflows", kind: .results, height: 600, canPopOut: true, handler: .workflows, primaryActionTitle: "Run Workflow")
 
         case .openSettings:
             showSettings()

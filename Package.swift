@@ -26,7 +26,7 @@ let package = Package(
     ],
     dependencies: packageDependencies,
     targets: [
-        .target(name: "RayPlacementCore"),
+        .target(name: "RayPlacementCore", resources: [.process("Fixtures")]),
         .target(name: "RayPlacementWriting"),
         .executableTarget(
             name: "RayPlacement",

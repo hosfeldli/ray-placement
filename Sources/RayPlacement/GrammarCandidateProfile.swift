@@ -62,6 +62,17 @@ struct GrammarCandidateProfile: Identifiable, Equatable, Sendable {
         reasoningEffort: nil
     )
 
+    func applying(_ settings: GrammarCandidateSettings) -> GrammarCandidateProfile {
+        GrammarCandidateProfile(
+            id: id,
+            diversitySeed: settings.diversitySeed,
+            promptVersion: settings.promptVersion,
+            instructions: instructions,
+            temperature: settings.temperature,
+            reasoningEffort: settings.reasoningEffort
+        )
+    }
+
     static func profiles(for strategy: GrammarEnsembleStrategy) -> [GrammarCandidateProfile] {
         switch strategy {
         case .fast: return [minimalEditor, grammarAnalyst]

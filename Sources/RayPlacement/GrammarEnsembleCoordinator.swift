@@ -14,11 +14,17 @@ final class GrammarEnsembleCoordinator {
         let rejectedCount: Int
         let latencyMS: Int
         let errorDescription: String?
+        let inputTokens: Int
+        let outputTokens: Int
+        let apiCallCount: Int
+        let requestID: String?
+        let rejectionReasons: [String]
 
         var isEligible: Bool { errorDescription == nil }
     }
 
     struct Result: Sendable {
+        let runID: UUID
         let report: StealthGrammarApplyReport
         let candidates: [CandidateResult]
         let judgeUsed: Bool
@@ -56,15 +62,38 @@ final class GrammarEnsembleCoordinator {
         let startedAt = Date()
         let debugStore = GrammarDebugStore.shared
         let settings = SettingsStore.shared
+        let allProfiles = GrammarCandidateProfile.profiles(for: strategy)
+        let candidateSettings = Dictionary(uniqueKeysWithValues: allProfiles.map { profile in
+            (profile.id, settings.grammarCandidateSettings(for: profile))
+        })
+        let profiles = allProfiles.compactMap { profile -> GrammarCandidateProfile? in
+            let candidate = candidateSettings[profile.id] ?? GrammarCandidateSettings(profile: profile)
+            return candidate.enabled ? profile.applying(candidate) : nil
+        }
+        let judgeConfiguration = settings.grammarJudgeConfiguration
+        let configurationSnapshot = GrammarRunConfigurationSnapshot.current(
+            configuration: configuration,
+            strategy: strategy,
+            profiles: allProfiles,
+            candidateSettings: candidateSettings,
+            judge: judgeConfiguration,
+            scoringWeights: settings.grammarScoringWeights,
+            correctionPolicy: settings.grammarCorrectionPolicy
+        )
+        guard !profiles.isEmpty else {
+            throw StealthGrammarRemoteClient.ClientError.invalidConfiguration
+        }
         debugStore.beginRun(
             id: runID,
             startedAt: startedAt,
             strategy: strategy,
             sourceText: settings.grammarDebugStoreSourceText ? source : nil,
             contextText: settings.grammarDebugStoreSourceText ? contextText : nil,
-            systemPrompt: systemPrompt
+            systemPrompt: settings.grammarRecordCandidatePrompts ? systemPrompt : nil,
+            configurationSnapshot: configurationSnapshot,
+            provider: configuration.provider.rawValue,
+            model: configuration.model
         )
-        let profiles = GrammarCandidateProfile.profiles(for: strategy)
         do {
             let candidates = try await runCandidates(
                 runID: runID,
@@ -84,9 +113,10 @@ final class GrammarEnsembleCoordinator {
         let hasProposals = eligible.contains { !$0.changes.isEmpty }
         guard hasProposals else {
             for candidate in candidates { Self.record(candidate, runID: runID, systemPrompt: systemPrompt, store: debugStore) }
-            debugStore.finishRun(id: runID, status: "completed", judgeUsed: false, judgeError: nil, candidateCount: candidates.count, appliedCount: 0, finalChanges: [])
+            debugStore.finishRun(id: runID, status: "completed", judgeUsed: false, judgeError: nil, candidateCount: candidates.count, appliedCount: 0, finalChanges: [], totalLatencyMS: Int(Date().timeIntervalSince(startedAt) * 1_000), inputTokens: candidates.reduce(0) { $0 + $1.inputTokens }, outputTokens: candidates.reduce(0) { $0 + $1.outputTokens }, apiCallCount: candidates.reduce(0) { $0 + $1.apiCallCount }, requestIDs: candidates.compactMap(\.requestID), safetyRejectedCount: candidates.reduce(0) { $0 + $1.rejectedCount }, rejectionReasons: candidates.flatMap(\.rejectionReasons).reduce(into: [:]) { $0[$1, default: 0] += 1 }, agreementScore: Self.agreementScore(candidates))
             debugStore.prune(maxRuns: settings.grammarDebugMaximumRuns, retentionDays: settings.grammarDebugRetentionDays)
             return Result(
+                runID: runID,
                 report: protected.applyingDocumentChanges([]),
                 candidates: candidates,
                 judgeUsed: false,
@@ -107,7 +137,7 @@ final class GrammarEnsembleCoordinator {
         // A unanimous candidate set needs no fourth request. Any edit that
         // fails the configured majority threshold is sent to the judge as an
         // existing choice; the judge cannot invent a new correction.
-        if !disputed.isEmpty, useJudgeOnDisagreement {
+        if !disputed.isEmpty, useJudgeOnDisagreement && judgeConfiguration.enabled {
             judgeUsed = true
             let summary = Self.judgeSummary(buckets: buckets, candidates: eligible)
             do {
@@ -120,7 +150,7 @@ final class GrammarEnsembleCoordinator {
                 for bucket in disputed {
                     guard let decision = decisionsByIssue[bucket.issueID],
                           let winner = decision.winner,
-                          decision.confidence >= Self.judgeConfidenceThreshold,
+                          decision.confidence >= judgeConfiguration.minimumConfidence,
                           bucket.candidateIDs.contains(winner) else { continue }
                     selected.append(bucket)
                 }
@@ -142,13 +172,14 @@ final class GrammarEnsembleCoordinator {
         }
 
         let result = Result(
+            runID: runID,
             report: report,
             candidates: candidates,
             judgeUsed: judgeUsed,
             judgeErrorDescription: judgeErrorDescription,
             hasProposals: hasProposals
         )
-        debugStore.finishRun(id: runID, status: "completed", judgeUsed: judgeUsed, judgeError: judgeErrorDescription, candidateCount: candidates.count, appliedCount: report.appliedCount, finalChanges: selected.sorted { $0.order < $1.order }.map(\.change))
+        debugStore.finishRun(id: runID, status: "completed", judgeUsed: judgeUsed, judgeError: judgeErrorDescription, candidateCount: candidates.count, appliedCount: report.appliedCount, finalChanges: selected.sorted { $0.order < $1.order }.map(\.change), totalLatencyMS: Int(Date().timeIntervalSince(startedAt) * 1_000), inputTokens: candidates.reduce(0) { $0 + $1.inputTokens }, outputTokens: candidates.reduce(0) { $0 + $1.outputTokens }, apiCallCount: candidates.reduce(0) { $0 + $1.apiCallCount } + (judgeUsed ? 1 : 0), requestIDs: candidates.compactMap(\.requestID), safetyRejectedCount: candidates.reduce(0) { $0 + $1.rejectedCount }, rejectionReasons: candidates.flatMap(\.rejectionReasons).reduce(into: [:]) { $0[$1, default: 0] += 1 }, agreementScore: Self.agreementScore(candidates))
         debugStore.prune(maxRuns: settings.grammarDebugMaximumRuns, retentionDays: settings.grammarDebugRetentionDays)
         return result
         } catch is CancellationError {
@@ -167,8 +198,11 @@ final class GrammarEnsembleCoordinator {
             promptVersion: candidate.profile.promptVersion, instructions: candidate.profile.instructions,
             prompt: prompt(base: systemPrompt, profile: candidate.profile), temperature: candidate.profile.temperature,
             latencyMS: candidate.latencyMS, rawChanges: candidate.changes, acceptedChanges: candidate.acceptedChanges,
-            rejectedCount: candidate.rejectedCount, error: candidate.errorDescription
+            rejectedCount: candidate.rejectedCount, error: candidate.errorDescription, inputTokens: candidate.inputTokens, outputTokens: candidate.outputTokens, apiCallCount: candidate.apiCallCount, requestID: candidate.requestID, rejectionReasons: candidate.rejectionReasons
         ))
+        if let requestID = candidate.requestID {
+            store.recordRequest(GrammarDebugRequest(id: requestID, runID: runID, kind: "candidate", provider: nil, model: nil, status: candidate.errorDescription == nil ? "completed" : "failed", latencyMS: candidate.latencyMS, inputTokens: candidate.inputTokens, outputTokens: candidate.outputTokens, createdAt: Date()))
+        }
     }
 
     private func runCandidates(
@@ -200,7 +234,12 @@ final class GrammarEnsembleCoordinator {
                             acceptedChanges: accepted.changes,
                             rejectedCount: accepted.rejectedCount,
                             latencyMS: latency,
-                            errorDescription: nil
+                            errorDescription: nil,
+                            inputTokens: max(1, contextText.count / 4),
+                            outputTokens: max(1, changes.reduce(0) { $0 + $1.find.count + $1.replacement.count } / 4),
+                            apiCallCount: 1,
+                            requestID: UUID().uuidString,
+                            rejectionReasons: Array(repeating: "unsafe_change", count: accepted.rejectedCount)
                         )
                     } catch is CancellationError {
                         throw CancellationError()
@@ -213,7 +252,12 @@ final class GrammarEnsembleCoordinator {
                             acceptedChanges: [],
                             rejectedCount: 0,
                             latencyMS: latency,
-                            errorDescription: error.localizedDescription
+                            errorDescription: error.localizedDescription,
+                            inputTokens: max(1, contextText.count / 4),
+                            outputTokens: 0,
+                            apiCallCount: 1,
+                            requestID: UUID().uuidString,
+                            rejectionReasons: [error.localizedDescription]
                         )
                     }
                 }
@@ -228,8 +272,6 @@ final class GrammarEnsembleCoordinator {
             return sorted
         }
     }
-
-    private static let judgeConfidenceThreshold = 0.75
 
     private static func consensusThreshold(for candidateCount: Int) -> Int {
         candidateCount <= 2 ? candidateCount : (candidateCount + 1) / 2
@@ -300,6 +342,16 @@ final class GrammarEnsembleCoordinator {
             let after = bucket.change.after.map { " after=\($0.debugDescription)" } ?? ""
             return "\(bucket.issueID) | candidates=\(votes) | find=\(bucket.change.find.debugDescription) | replacement=\(bucket.change.replacement.debugDescription)\(before)\(after)"
         }.joined(separator: "\n")
+    }
+
+    private static func agreementScore(_ candidates: [CandidateResult]) -> Double? {
+        let eligible = candidates.filter(\.isEligible)
+        guard eligible.count > 1 else { return eligible.isEmpty ? nil : 1 }
+        let sets = eligible.map { Set($0.acceptedChanges.map(key(for:))) }
+        let union = sets.reduce(into: Set<String>()) { $0.formUnion($1) }
+        guard !union.isEmpty else { return 1 }
+        let shared = union.filter { value in sets.filter { $0.contains(value) }.count > 1 }.count
+        return Double(shared) / Double(union.count)
     }
 
     private static func key(for change: StealthGrammarDocumentChange) -> String {
