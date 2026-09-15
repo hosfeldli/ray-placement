@@ -256,7 +256,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func showQuickNote() {
         hide()
-        notesWindow.presentQuickNote()
+        notesWindow.toggleQuickNote()
     }
 
     func dockNotesLeft() {
@@ -355,7 +355,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .saveSelectionToQuickNote(let text):
             hide()
             notesWindow.store.createQuickNote(with: text)
-            notesWindow.presentQuickNote()
+            notesWindow.showQuickNote()
 
         case .checkSelectedText:
             performWritingCheck()
@@ -487,7 +487,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             presentPanel()
         case .note(let title):
             notesWindow.store.createQuickNote(with: title)
-            notesWindow.presentQuickNote()
+            notesWindow.showQuickNote()
             hide()
         case .terminal(let path):
             let expanded = (path as NSString).expandingTildeInPath
@@ -1070,7 +1070,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             toast.show("Added file to Shelf")
         case .sendToNote:
             notesWindow.store.createQuickNote(with: url.path)
-            notesWindow.presentQuickNote()
+            notesWindow.showQuickNote()
             hide()
         }
     }
@@ -1605,9 +1605,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         hide()
-        // Copy is the broadest public selected-text API on macOS. It works in
-        // browser, Electron, Office, and custom editors that omit AXSelectedText.
-        captureWritingSelectionWithKeyboard(from: previousApplication)
+        // Fix Writing is a background action: correct the captured selection and
+        // replace it in place. It must never open the legacy review surface.
+        captureWritingSelectionWithKeyboard(from: previousApplication, stealth: true)
     }
 
     private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication, stealth: Bool = false) {

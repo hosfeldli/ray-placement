@@ -759,11 +759,11 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(developerGrammarBaseURL, forKey: Key.developerGrammarBaseURL) }
     }
 
-    // Retained as an import/export compatibility boundary only. External
-    // failures are never redirected to the local engine.
+    /// If AI correction is unavailable, complete the operation locally with Harper.
+    /// The preference is intentionally independent of the selected engine.
     var grammarFallbackToLocal: Bool {
-        get { false }
-        set { defaults.set(false, forKey: Key.grammarFallbackToLocal) }
+        get { defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.grammarFallbackToLocal) }
     }
 
     @Published var inlineGrammarCheckingEnabled: Bool {
@@ -983,7 +983,9 @@ final class SettingsStore: ObservableObject {
         let legacyExternalGrammar = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
         grammarEngineMode = GrammarEngineMode(
             rawValue: defaults.string(forKey: Key.grammarEngineMode) ?? ""
-        ) ?? (legacyExternalGrammar ? .externalAPI : .local)
+        ) ?? (defaults.object(forKey: Key.developerGrammarEnabled) == nil
+            ? .externalAPI
+            : (legacyExternalGrammar ? .externalAPI : .local))
         grammarCorrectionMode = GrammarCorrectionMode(
             rawValue: defaults.string(forKey: Key.grammarCorrectionMode) ?? ""
         ) ?? .proofread

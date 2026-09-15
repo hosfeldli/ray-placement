@@ -1,6 +1,36 @@
 import Foundation
 import RayPlacementWriting
 
+struct GrammarExecutionBudget: Sendable, Equatable {
+    let softCandidateDeadline: Duration
+    let hardCandidateDeadline: Duration
+    let judgeDeadline: Duration
+    let totalDeadline: Duration
+    let minimumCandidates: Int
+
+    static let fast = GrammarExecutionBudget(softCandidateDeadline: .seconds(4), hardCandidateDeadline: .seconds(8), judgeDeadline: .seconds(5), totalDeadline: .seconds(12), minimumCandidates: 2)
+    static let balanced = GrammarExecutionBudget(softCandidateDeadline: .seconds(6), hardCandidateDeadline: .seconds(12), judgeDeadline: .seconds(6), totalDeadline: .seconds(18), minimumCandidates: 2)
+    static let thorough = GrammarExecutionBudget(softCandidateDeadline: .seconds(10), hardCandidateDeadline: .seconds(18), judgeDeadline: .seconds(8), totalDeadline: .seconds(28), minimumCandidates: 3)
+
+    static func forStrategy(_ strategy: GrammarEnsembleStrategy) -> GrammarExecutionBudget {
+        switch strategy {
+        case .fast: return .fast
+        case .balanced: return .balanced
+        case .thorough: return .thorough
+        }
+    }
+}
+
+enum GrammarExecutionError: LocalizedError {
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .timedOut: return "Grammar checking reached its time limit. Safe results were kept."
+        }
+    }
+}
+
 /// Runs the controlled candidate ensemble and assembles only locally safe,
 /// edit-level corrections. HTTP/provider details remain in
 /// StealthGrammarRemoteClient; this type owns consensus and adjudication.
@@ -36,6 +66,21 @@ final class GrammarEnsembleCoordinator {
         }
     }
 
+    private actor CandidateIterator {
+        var iterator: AsyncStream<CandidateResult>.AsyncIterator
+
+        init(stream: AsyncStream<CandidateResult>) {
+            self.iterator = stream.makeAsyncIterator()
+        }
+
+        func next() async -> CandidateResult? {
+            var local = iterator
+            let value = await local.next()
+            iterator = local
+            return value
+        }
+    }
+
     private struct ConsensusBucket: Sendable {
         let issueID: String
         let change: StealthGrammarDocumentChange
@@ -56,7 +101,8 @@ final class GrammarEnsembleCoordinator {
         configuration: DeveloperGrammarConfiguration,
         strategy: GrammarEnsembleStrategy,
         systemPrompt: String,
-        useJudgeOnDisagreement: Bool = true
+        useJudgeOnDisagreement: Bool = true,
+        budget: GrammarExecutionBudget? = nil
     ) async throws -> Result {
         let runID = UUID()
         let startedAt = Date()
@@ -71,6 +117,8 @@ final class GrammarEnsembleCoordinator {
             return candidate.enabled ? profile.applying(candidate) : nil
         }
         let judgeConfiguration = settings.grammarJudgeConfiguration
+        let executionBudget = budget ?? .forStrategy(strategy)
+        let deadline = ContinuousClock.now + executionBudget.totalDeadline
         let configurationSnapshot = GrammarRunConfigurationSnapshot.current(
             configuration: configuration,
             strategy: strategy,
@@ -101,7 +149,9 @@ final class GrammarEnsembleCoordinator {
                 contextText: contextText,
                 protected: protected,
                 configuration: configuration,
-                systemPrompt: systemPrompt
+                systemPrompt: systemPrompt,
+                budget: executionBudget,
+                deadline: deadline
             )
             let eligible = candidates.filter(\.isEligible)
             guard !eligible.isEmpty else {
@@ -141,11 +191,13 @@ final class GrammarEnsembleCoordinator {
             judgeUsed = true
             let summary = Self.judgeSummary(buckets: buckets, candidates: eligible)
             do {
-                let decisions = try await remoteClient.judgeDocument(
-                    contextText: contextText,
-                    candidateSummary: summary,
-                    configuration: configuration
-                )
+                let decisions = try await withTimeout(executionBudget.judgeDeadline, deadline: deadline) {
+                    try await self.remoteClient.judgeDocument(
+                        contextText: contextText,
+                        candidateSummary: summary,
+                        configuration: configuration
+                    )
+                }
                 let decisionsByIssue = Dictionary(uniqueKeysWithValues: decisions.map { ($0.issueID, $0) })
                 for bucket in disputed {
                     guard let decision = decisionsByIssue[bucket.issueID],
@@ -211,29 +263,34 @@ final class GrammarEnsembleCoordinator {
         contextText: String,
         protected: StealthProtectedText,
         configuration: DeveloperGrammarConfiguration,
-        systemPrompt: String
+        systemPrompt: String,
+        budget: GrammarExecutionBudget,
+        deadline: ContinuousClock.Instant
     ) async throws -> [CandidateResult] {
-        try await withThrowingTaskGroup(of: CandidateResult.self, returning: [CandidateResult].self) { group in
+        var tasks: [Task<Void, Never>] = []
+        let stream = AsyncStream<CandidateResult> { continuation in
             for profile in profiles {
-                group.addTask { [remoteClient] in
+                let task = Task { [remoteClient] in
                     let started = Date()
+                    let candidate: CandidateResult
                     do {
-                        let changes = try await remoteClient.correctDocument(
-                            contextText,
-                            configuration: configuration,
-                            systemPrompt: await Self.prompt(base: systemPrompt, profile: profile),
-                            temperature: profile.temperature,
-                            reasoningEffort: profile.reasoningEffort
-                        )
-                        let accepted = await Self.individuallySafeChanges(changes, protected: protected)
-                        let latency = Int(Date().timeIntervalSince(started) * 1_000)
-                        return CandidateResult(
+                        let changes = try await self.withTimeout(budget.hardCandidateDeadline, deadline: deadline) {
+                            try await remoteClient.correctDocument(
+                                contextText,
+                                configuration: configuration,
+                                systemPrompt: await Self.prompt(base: systemPrompt, profile: profile),
+                                temperature: profile.temperature,
+                                reasoningEffort: profile.reasoningEffort
+                            )
+                        }
+                        let accepted = Self.individuallySafeChanges(changes, protected: protected)
+                        candidate = CandidateResult(
                             id: profile.id,
                             profile: profile,
                             changes: changes,
                             acceptedChanges: accepted.changes,
                             rejectedCount: accepted.rejectedCount,
-                            latencyMS: latency,
+                            latencyMS: Int(Date().timeIntervalSince(started) * 1_000),
                             errorDescription: nil,
                             inputTokens: max(1, contextText.count / 4),
                             outputTokens: max(1, changes.reduce(0) { $0 + $1.find.count + $1.replacement.count } / 4),
@@ -242,16 +299,15 @@ final class GrammarEnsembleCoordinator {
                             rejectionReasons: Array(repeating: "unsafe_change", count: accepted.rejectedCount)
                         )
                     } catch is CancellationError {
-                        throw CancellationError()
+                        return
                     } catch {
-                        let latency = Int(Date().timeIntervalSince(started) * 1_000)
-                        return CandidateResult(
+                        candidate = CandidateResult(
                             id: profile.id,
                             profile: profile,
                             changes: [],
                             acceptedChanges: [],
                             rejectedCount: 0,
-                            latencyMS: latency,
+                            latencyMS: Int(Date().timeIntervalSince(started) * 1_000),
                             errorDescription: error.localizedDescription,
                             inputTokens: max(1, contextText.count / 4),
                             outputTokens: 0,
@@ -260,16 +316,110 @@ final class GrammarEnsembleCoordinator {
                             rejectionReasons: [error.localizedDescription]
                         )
                     }
+                    continuation.yield(candidate)
                 }
+                tasks.append(task)
+            }
+        }
+
+        defer { tasks.forEach { $0.cancel() } }
+        let candidateIterator = CandidateIterator(stream: stream)
+        var collected: [CandidateResult] = []
+        let softDeadline = min(deadline, ContinuousClock.now + budget.softCandidateDeadline)
+        let hardDeadline = min(deadline, ContinuousClock.now + budget.hardCandidateDeadline)
+        var reachedSoftDeadline = false
+
+        while collected.count < profiles.count {
+            let now = ContinuousClock.now
+            let cutoff = reachedSoftDeadline ? hardDeadline : softDeadline
+            guard now < cutoff else {
+                reachedSoftDeadline = true
+                if Self.hasQuorumAgreement(collected, minimum: budget.minimumCandidates) || ContinuousClock.now >= hardDeadline {
+                    break
+                }
+                continue
             }
 
-            var collected: [CandidateResult] = []
-            for try await result in group { collected.append(result) }
-            let sorted = collected.sorted { lhs, rhs in
-                profiles.firstIndex { $0.id == lhs.id } ?? 0 < profiles.firstIndex { $0.id == rhs.id } ?? 0
+            do {
+                let remaining = cutoff - now
+                guard let candidate = try await Self.nextCandidate(
+                    from: candidateIterator,
+                    before: remaining
+                ) else { break }
+                collected.append(candidate)
+
+                if collected.count == profiles.count { break }
+                if reachedSoftDeadline && Self.hasQuorumAgreement(collected, minimum: budget.minimumCandidates) {
+                    break
+                }
+            } catch is GrammarExecutionError {
+                reachedSoftDeadline = true
+                if Self.hasQuorumAgreement(collected, minimum: budget.minimumCandidates) || ContinuousClock.now >= hardDeadline {
+                    break
+                }
             }
-            for candidate in sorted { Self.record(candidate, runID: runID, systemPrompt: systemPrompt, store: GrammarDebugStore.shared) }
-            return sorted
+        }
+
+        // If the soft deadline passed without agreement, allow the remaining
+        // candidates to complete until the hard deadline. At that point the
+        // caller receives every valid result already available.
+        if !reachedSoftDeadline { reachedSoftDeadline = true }
+        while ContinuousClock.now < hardDeadline && collected.count < profiles.count {
+            do {
+                let remaining = hardDeadline - ContinuousClock.now
+                guard let candidate = try await Self.nextCandidate(from: candidateIterator, before: remaining) else { break }
+                collected.append(candidate)
+            } catch {
+                break
+            }
+        }
+
+        let sorted = collected.sorted { lhs, rhs in
+            profiles.firstIndex { $0.id == lhs.id } ?? 0 < profiles.firstIndex { $0.id == rhs.id } ?? 0
+        }
+        for candidate in sorted { Self.record(candidate, runID: runID, systemPrompt: systemPrompt, store: GrammarDebugStore.shared) }
+        return sorted
+    }
+
+    private static func hasQuorumAgreement(_ candidates: [CandidateResult], minimum: Int) -> Bool {
+        let eligible = candidates.filter(\.isEligible)
+        guard eligible.count >= minimum else { return false }
+        let buckets = buckets(from: eligible)
+        guard !buckets.isEmpty else { return true }
+        return buckets.contains { $0.candidateIDs.count >= minimum }
+    }
+
+    private static func nextCandidate(
+        from iterator: CandidateIterator,
+        before timeout: Duration
+    ) async throws -> CandidateResult? {
+        try await withThrowingTaskGroup(of: CandidateResult?.self) { group in
+            group.addTask { await iterator.next() }
+            group.addTask {
+                try await ContinuousClock().sleep(for: timeout)
+                throw GrammarExecutionError.timedOut
+            }
+            defer { group.cancelAll() }
+            return try await group.next() ?? nil
+        }
+    }
+
+    private func withTimeout<T: Sendable>(
+        _ timeout: Duration,
+        deadline: ContinuousClock.Instant,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        let remaining = min(timeout, max(.zero, deadline - ContinuousClock.now))
+        guard remaining > .zero else { throw GrammarExecutionError.timedOut }
+        return try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await ContinuousClock().sleep(for: remaining)
+                throw GrammarExecutionError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let result = try await group.next() else { throw GrammarExecutionError.timedOut }
+            return result
         }
     }
 

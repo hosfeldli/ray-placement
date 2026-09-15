@@ -53,6 +53,13 @@ final class StealthGrammarRemoteClient {
     explanations.
     """
 
+    static let simpleCorrectionSystemPrompt = """
+    Correct spelling, grammar, punctuation, and capitalization in the supplied text.
+    Preserve the author's wording, tone, whitespace, formatting, names, URLs, code,
+    file paths, and technical terms unless a change is necessary to correct an
+    objective error. Do not explain your changes. Return only the corrected text.
+    """
+
     static let connectionSystemPrompt = "Return only the word OK. Do not explain your response."
 
     static let openAIStructuredOutputFormat: [String: Any] = [
@@ -272,6 +279,30 @@ final class StealthGrammarRemoteClient {
         })
     }
 
+    func correctText(
+        _ text: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String = StealthGrammarRemoteClient.simpleCorrectionSystemPrompt
+    ) async throws -> String {
+        let bridge = AsyncRequestBridge<String>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                bridge.setContinuation(continuation)
+                let task = performTextRequest(
+                    text: text,
+                    configuration: configuration,
+                    systemPrompt: systemPrompt
+                ) { result in
+                    bridge.finish(result)
+                }
+                bridge.setTask(task)
+                if Task.isCancelled { bridge.cancel() }
+            }
+        }, onCancel: {
+            bridge.cancel()
+        })
+    }
+
     struct JudgeDecision: Sendable, Equatable {
         let issueID: String
         let winner: String?
@@ -326,6 +357,27 @@ final class StealthGrammarRemoteClient {
         }, onCancel: {
             taskBox.cancel()
         })
+    }
+
+    @discardableResult
+    private func performTextRequest(
+        text: String,
+        configuration: DeveloperGrammarConfiguration,
+        systemPrompt: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) -> URLSessionDataTask? {
+        guard !configuration.apiKey.isEmpty,
+              !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !text.isEmpty,
+              let request = makeRequest(
+                text: text,
+                configuration: configuration,
+                systemPrompt: systemPrompt
+              ) else {
+            completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        return perform(request: request, provider: configuration.provider, completion: completion)
     }
 
     @discardableResult
@@ -515,7 +567,9 @@ final class StealthGrammarRemoteClient {
                     ["role": "user", "content": [["type": "input_text", "text": text]]]
                 ]
             ]
-            payload["text"] = ["format": outputFormat ?? Self.openAIStructuredOutputFormat]
+            if let outputFormat {
+                payload["text"] = ["format": outputFormat]
+            }
             if let temperature { payload["temperature"] = temperature }
             if let reasoningEffort { payload["reasoning"] = ["effort": reasoningEffort] }
             request.httpBody = try? JSONSerialization.data(withJSONObject: payload)

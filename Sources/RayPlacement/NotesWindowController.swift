@@ -118,12 +118,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
         super.init()
-        self.applicationDeactivateObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            guard SettingsStore.shared.quickNoteAutoHide else { return }
-            self?.quickNotePanel?.orderOut(nil)
-        }
         self.spaceChangeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main
         ) { [weak self] notification in
@@ -168,21 +162,30 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
     }
 
-    func presentQuickNote() {
+    func showQuickNote() {
         selectQuickNoteTarget()
         let preferredMode: NotesWindowMode = presentation.mode == .dockedLeft ? .dockedLeft : .dockedRight
         let panel = ensureQuickNotePanel()
         applyPresentationMode(preferredMode, to: panel, animated: true)
         configureQuickNotePanel(panel)
         markQuickNoteTarget()
-        if quickNotePanel?.isVisible == true {
-            quickNotePanel?.orderOut(nil)
-            return
-        }
         if presentation.quickNoteInteractionMode == .edit {
             panel.makeKeyAndOrderFront(nil)
         } else {
             panel.orderFrontRegardless()
+        }
+    }
+
+    func hideQuickNote() {
+        store.flush()
+        quickNotePanel?.orderOut(nil)
+    }
+
+    func toggleQuickNote() {
+        if quickNotePanel?.isVisible == true {
+            hideQuickNote()
+        } else {
+            showQuickNote()
         }
     }
 
@@ -333,8 +336,17 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         store.flush()
         conversations.flush()
         quickNotePanel?.orderOut(nil)
-        if let applicationDeactivateObserver { NotificationCenter.default.removeObserver(applicationDeactivateObserver) }
         if let spaceChangeObserver { NotificationCenter.default.removeObserver(spaceChangeObserver) }
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        guard let panel = notification.object as? NSPanel, panel === quickNotePanel else { return }
+        guard presentation.quickNoteInteractionMode == .edit,
+              SettingsStore.shared.quickNoteAutoHide else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak panel] in
+            guard let self, let panel, !panel.isKeyWindow else { return }
+            self.hideQuickNote()
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -403,7 +415,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         )
         panel.isReleasedWhenClosed = false
         panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = SettingsStore.shared.quickNoteAutoHide
+        panel.hidesOnDeactivate = false
         panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
         panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
         if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
@@ -433,8 +445,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     private func configureQuickNotePanel(_ panel: NSPanel) {
         panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
-        panel.level = presentation.mode == .fullScreen ? .screenSaver : .floating
-        panel.hidesOnDeactivate = SettingsStore.shared.quickNoteAutoHide
+        panel.level = .screenSaver
+        panel.hidesOnDeactivate = false
         panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
         if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
         panel.alphaValue = CGFloat(min(max(SettingsStore.shared.quickNoteOpacity, 0.35), 1))

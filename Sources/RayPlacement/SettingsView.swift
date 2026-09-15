@@ -18,56 +18,50 @@ private struct SettingsExtensionGroup: Identifiable {
 
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
-    case shortcuts
-    case grammar
-    case dictation
-    case clipboard
+    case commands
     case extensions
-    case privacy
+    case writing
+    case appearance
     case advanced
-    case about
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .general: return "General"
-        case .shortcuts: return "Shortcuts & Input"
-        case .grammar: return "Grammar & AI"
-        case .dictation: return "Dictation"
-        case .clipboard: return "Clipboard"
+        case .commands: return "Commands & Shortcuts"
         case .extensions: return "Extensions"
-        case .privacy: return "Privacy & Permissions"
+        case .writing: return "Writing & Dictation"
+        case .appearance: return "Appearance"
         case .advanced: return "Advanced"
-        case .about: return "About"
         }
     }
 
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
-        case .shortcuts: return "command"
-        case .grammar: return "wand.and.stars"
-        case .dictation: return "mic.fill"
-        case .clipboard: return "clipboard.fill"
+        case .commands: return "command"
         case .extensions: return "puzzlepiece.extension.fill"
-        case .privacy: return "checkmark.shield.fill"
+        case .writing: return "text.badge.checkmark"
+        case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
-        case .about: return "info.circle.fill"
         }
     }
 
     var searchTerms: [String] {
         switch self {
-        case .general: return ["general", "appearance", "accent", "density", "text size", "launch at login", "theme"]
-        case .shortcuts: return ["shortcuts", "input", "launcher", "notes", "quick note", "dictation", "terminal", "mouse", "hotkey"]
-        case .grammar: return ["grammar", "writing", "proofread", "polish", "AI", "external", "OpenAI", "provider", "ensemble", "candidate", "judge", "debugger", "analytics", "prompt", "API", "preserved terms"]
-        case .dictation: return ["dictation", "whisper", "microphone", "transcription", "speech", "recording"]
-        case .clipboard: return ["clipboard", "history", "monitoring", "clear", "limit"]
-        case .extensions: return ["extensions", "packs", "permissions", "commands", "shortcuts"]
-        case .privacy: return ["privacy", "permissions", "accessibility", "microphone", "speech recognition", "security", "backup", "diagnostics"]
-        case .advanced: return ["advanced", "performance", "whisper compute", "usage", "debugging", "secrets", "keychain", "model", "base url"]
-        case .about: return ["about", "updates", "version", "support"]
+        case .general:
+            return ["startup", "launcher", "updates", "login", "behavior", "default"]
+        case .commands:
+            return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "conflict", "key"]
+        case .extensions:
+            return ["extensions", "installed", "store", "developer", "packs", "reload", "install", "uninstall"]
+        case .writing:
+            return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
+        case .appearance:
+            return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
+        case .advanced:
+            return ["advanced", "performance", "privacy", "permissions", "usage", "logs", "developer", "secrets", "diagnostics", "clipboard"]
         }
     }
 
@@ -210,9 +204,7 @@ struct SettingsView: View {
             .padding(.bottom, 10)
 
             if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                sidebarGroup("GENERAL", sections: [.general, .shortcuts])
-                sidebarGroup("FEATURES", sections: [.grammar, .dictation, .clipboard, .extensions])
-                sidebarGroup("SYSTEM", sections: [.privacy, .advanced, .about])
+                sidebarGroup("SETTINGS", sections: [.general, .commands, .extensions, .writing, .appearance, .advanced])
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
                     .limaFont(.caption)
@@ -311,14 +303,75 @@ struct SettingsView: View {
     private var selectedContent: some View {
         switch selectedSection {
         case .general: generalTab
-        case .shortcuts: shortcutsTab
-        case .grammar: grammarSettingsTab
-        case .dictation: dictationTab
-        case .clipboard: clipboardTab
+        case .commands: shortcutsTab
         case .extensions: extensionsTab
-        case .privacy: privacyTab
-        case .advanced: advancedDetails
-        case .about: aboutTab
+        case .writing: writingSettingsTab
+        case .appearance: appearanceSettingsTab
+        case .advanced: advancedSettingsTab
+        }
+    }
+
+    private var writingSettingsTab: some View {
+        VStack(spacing: 0) {
+            Picker("Writing area", selection: $advancedSubsection) {
+                Text("Fix Writing").tag(0)
+                Text("Dictation").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+            Group {
+                switch advancedSubsection {
+                case 1: dictationTab
+                default: grammarSettingsTab
+                }
+            }
+        }
+    }
+
+    private var appearanceSettingsTab: some View {
+        Form {
+            Section("Theme") {
+                Picker("Color scheme", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                AccentThemePicker(selection: $settings.accentTheme)
+                Picker("Contrast", selection: $settings.contrastMode) {
+                    ForEach(AppContrastMode.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                Text(settings.contrastMode.detail).limaFont(.caption).foregroundStyle(.secondary)
+            }
+            Section("Layout") {
+                InterfaceTextSizeControl()
+                Picker("Interface density", selection: $settings.interfaceDensity) {
+                    ForEach(AppInterfaceDensity.allCases) { Text($0.title).tag($0) }
+                }
+                Text(settings.interfaceDensity.detail).limaFont(.caption).foregroundStyle(.secondary)
+            }
+            Section("Motion") {
+                Text("Lima follows the macOS Reduce Motion accessibility preference for transitions and animated surfaces.")
+                    .limaFont(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
+    }
+
+    private var advancedSettingsTab: some View {
+        VStack(spacing: 0) {
+            Picker("Advanced area", selection: $advancedSubsection) {
+                Text("Performance").tag(0)
+                Text("Privacy & Permissions").tag(1)
+                Text("Usage & Logs").tag(2)
+                Text("Developer").tag(3)
+            }
+            .pickerStyle(.segmented)
+            .padding(12)
+            Group {
+                switch advancedSubsection {
+                case 1: privacyTab
+                case 2: usageTab
+                case 3: secretsTab
+                default: advancedTab
+                }
+            }
         }
     }
 
@@ -618,7 +671,7 @@ struct SettingsView: View {
     }
 
     private var grammarSettingsTab: some View {
-        GrammarSettingsView(settings: settings, openDebugger: openGrammarDebugger)
+        SimpleWritingSettingsView(settings: settings, apiKey: $grammarAPIKey)
     }
 
     private var dictationTab: some View {
@@ -957,6 +1010,32 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Command audit") {
+                Text("Command enablement and shortcuts are independent. Use the recorder on any row to assign a shortcut.")
+                    .limaFont(.caption).foregroundStyle(.secondary)
+                ForEach(viewModel.commandDescriptors) { descriptor in
+                    HStack(spacing: 9) {
+                        Image(systemName: "command.circle").foregroundStyle(settings.accentTheme.readablePrimary)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(descriptor.title).limaFont(.callout.weight(.medium))
+                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Toggle("Enable \(descriptor.title)", isOn: Binding(
+                            get: { CommandManager.shared.isEnabled(descriptor.id) },
+                            set: { CommandManager.shared.setEnabled($0, for: descriptor.id) }
+                        )).labelsHidden().toggleStyle(.switch).controlSize(.small)
+                    }
+                }
+                if !CommandManager.shared.conflictMessages.isEmpty {
+                    ForEach(CommandManager.shared.conflictMessages, id: \.self) { message in
+                        Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).limaFont(.caption)
+                    }
+                } else {
+                    Label("No shortcut conflicts detected for extension commands.", systemImage: "checkmark.circle").foregroundStyle(.secondary).limaFont(.caption)
+                }
+            }
+
             Section("Dictation input") {
                 Picker("Dictation engine", selection: $settings.dictationEngine) {
                     ForEach(DictationEngine.allCases) { engine in
@@ -976,135 +1055,6 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .controlSize(.small)
-    }
-
-    private var generalTab: some View {
-        Form {
-            Section("Appearance") {
-                Picker("Color scheme", selection: $settings.appearance) {
-                    ForEach(AppAppearance.allCases) { appearance in
-                        Text(appearance.title).tag(appearance)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text("System follows macOS. Light and Dark apply only to Lima windows.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                AccentThemePicker(selection: $settings.accentTheme)
-                Picker("Contrast", selection: $settings.contrastMode) {
-                    ForEach(AppContrastMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(settings.contrastMode.detail)
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-                InterfaceTextSizeControl()
-                Picker("Interface density", selection: $settings.interfaceDensity) {
-                    ForEach(AppInterfaceDensity.allCases) { density in
-                        Text(density.title).tag(density)
-                    }
-                }
-                .pickerStyle(.segmented)
-                Text(settings.interfaceDensity.detail)
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Launcher surfaces") {
-                Picker("Return tools to Search after inactivity", selection: Binding(
-                    get: { LauncherSurfaceTimeoutOption.allCases.first { $0.seconds == settings.launcherSurfaceTimeout } ?? .thirtySeconds },
-                    set: { settings.launcherSurfaceTimeout = $0.seconds }
-                )) {
-                    ForEach(LauncherSurfaceTimeoutOption.allCases) { option in
-                        Text(option.title).tag(option)
-                    }
-                }
-                Toggle("Apply launcher timeout to Terminal", isOn: $settings.terminalUsesLauncherTimeout)
-                Text("Typing, clicks, selection changes, edits, copies, and runs reset the timer. Active work suspends it.")
-                    .limaFont(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section("Music HUD") {
-                Picker("Appearance", selection: $settings.musicHUDPresentation) {
-                    Text("Mini").tag(MusicHUDPresentation.mini)
-                    Text("Compact").tag(MusicHUDPresentation.compact)
-                }
-                .pickerStyle(.segmented)
-                Toggle("Show artwork", isOn: $settings.musicShowArtwork)
-                Toggle("Show playback controls", isOn: $settings.musicShowPlaybackControls)
-                Toggle("Show progress", isOn: $settings.musicShowProgress)
-                Toggle("Show when paused", isOn: $settings.musicShowWhenPaused)
-                Toggle("Expand on click", isOn: $settings.musicExpandOnClick)
-                Picker("Auto-collapse expanded player", selection: Binding(
-                    get: { settings.musicExpandedTimeout },
-                    set: { settings.musicExpandedTimeout = $0 }
-                )) {
-                    Text("5 seconds").tag(TimeInterval(5))
-                    Text("10 seconds").tag(TimeInterval(10))
-                    Text("15 seconds").tag(TimeInterval(15))
-                }
-                Picker("Dock position", selection: $settings.hudDockPosition) {
-                    ForEach(HUDDockPosition.allCases) { Text($0.title).tag($0) }
-                }
-            }
-
-            Section("Startup") {
-                Toggle("Start Lima when I log in", isOn: Binding(
-                    get: { settings.launchAtLogin },
-                    set: { settings.setLaunchAtLogin($0) }
-                ))
-                if let error = settings.lastError {
-                    Label(error, systemImage: "exclamationmark.triangle.fill")
-                        .limaFont(.caption)
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            Section("Accessibility") {
-                Label(
-                    accessibilityTrusted ? "Accessibility access is working" : "Accessibility access is not available",
-                    systemImage: accessibilityTrusted ? "checkmark.shield.fill" : "exclamationmark.shield.fill"
-                )
-                .foregroundStyle(accessibilityTrusted ? .green : .orange)
-
-                HStack {
-                    Button(accessibilityTrusted ? "Recheck" : "Request Access") { requestAccessibilityAccess() }
-                    Button("Open Settings") { openAccessibilitySettings() }
-                    Spacer()
-                    Text("Needed for selection, replace, paste, and windows")
-                        .limaFont(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-
-                DisclosureGroup("Troubleshooting") {
-                    Text(Bundle.main.bundleURL.path)
-                        .limaFont(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
-                }
-            }
-
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .controlSize(.small)
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            accessibilityTrusted = AXIsProcessTrusted()
-        }
-    }
-
-    private func requestAccessibilityAccess() {
-        let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
-        accessibilityTrusted = AXIsProcessTrustedWithOptions([key: true] as CFDictionary)
-    }
-
-    private func openAccessibilitySettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     private var privacyTab: some View {
@@ -1272,6 +1222,36 @@ struct SettingsView: View {
                 )
             }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+    }
+
+
+    private var generalTab: some View {
+        Form {
+            Section(editingSecretID == nil ? "Add secret" : "Replace secret") {
+                TextField("Name", text: $secretName)
+                Picker("Kind", selection: $secretKind) {
+                    ForEach(LimaSecretKind.allCases, id: \.self) { kind in Text(kind.title).tag(kind) }
+                }
+                SecureField("Value", text: $secretValue)
+                Text("Editing requires entering the value again; existing secret values are not revealed.")
+                    .limaFont(.caption2).foregroundStyle(.secondary)
+                HStack {
+                    Button(editingSecretID == nil ? "Add to Keychain" : "Replace value") {
+                        do {
+                            _ = try secrets.save(secretValue, name: secretName, kind: secretKind, id: editingSecretID)
+                            secretName = ""; secretValue = ""; editingSecretID = nil
+                        } catch { settings.lastError = error.localizedDescription }
+                    }
+                    .disabled(secretName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || secretValue.isEmpty)
+                    if editingSecretID != nil {
+                        Button("Cancel") { secretName = ""; secretValue = ""; editingSecretID = nil }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private var aboutTab: some View {
@@ -1687,5 +1667,47 @@ final class SettingsWindowController: NSWindowController {
         NSApp.activate(ignoringOtherApps: true)
         showWindow(nil)
         if let window { WorkspaceWindowCoordinator.shared.present(window) }
+    }
+}
+
+
+@MainActor
+private struct SimpleWritingSettingsView: View {
+    @ObservedObject var settings: SettingsStore
+    @Binding var apiKey: String
+    @State private var message: String?
+
+    var body: some View {
+        Form {
+            Section("Fix Writing") {
+                Toggle("Enable Fix Writing", isOn: Binding(get: { settings.grammarEngineEnhanced }, set: { settings.grammarEngineEnhanced = $0 }))
+                Picker("Engine", selection: Binding(get: { settings.grammarEngineMode }, set: { settings.grammarEngineMode = $0 })) {
+                    Text("AI correction").tag(GrammarEngineMode.externalAPI)
+                    Text("Harper (local)").tag(GrammarEngineMode.local)
+                }.pickerStyle(.segmented)
+                Toggle("Use Harper if AI is unavailable", isOn: Binding(get: { settings.grammarFallbackToLocal }, set: { settings.grammarFallbackToLocal = $0 }))
+            }
+            Section("AI connection") {
+                SecureField("API key", text: $apiKey)
+                HStack {
+                    Label(settings.enhancedGrammarAPIKeyStored ? "API key stored in Keychain" : "No API key stored", systemImage: settings.enhancedGrammarAPIKeyStored ? "checkmark.circle.fill" : "key")
+                        .foregroundStyle(settings.enhancedGrammarAPIKeyStored ? .green : .secondary)
+                    Spacer()
+                    Button("Save") {
+                        do { try settings.saveDeveloperGrammarAPIKey(apiKey); apiKey = ""; message = "Saved securely in Keychain." }
+                        catch { message = error.localizedDescription }
+                    }.disabled(apiKey.isEmpty)
+                }
+                Picker("Model", selection: Binding(get: { settings.developerGrammarModel }, set: { settings.developerGrammarModel = $0 })) {
+                    ForEach(settings.developerGrammarProvider.modelOptions, id: \.id) { option in Text(option.title).tag(option.id) }
+                }
+                Text("Only the selected text is sent for the current AI correction. Harper remains local.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            }
+            Section("Shortcut") {
+                PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: Binding(get: { settings.stealthGrammarShortcut }, set: { settings.stealthGrammarShortcut = $0 }))
+            }
+        }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
     }
 }

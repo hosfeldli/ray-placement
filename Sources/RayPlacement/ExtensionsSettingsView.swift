@@ -19,8 +19,9 @@ struct ExtensionsSettingsView: View {
 
     private enum ExtensionTab: String, CaseIterable, Identifiable {
         case installed = "Installed"
-        case available = "Available"
+        case available = "Store"
         case updates = "Updates"
+        case developer = "Developer"
         var id: String { rawValue }
     }
 
@@ -166,6 +167,7 @@ struct ExtensionsSettingsView: View {
                 case .installed: installedView
                 case .available: availableView
                 case .updates: updatesView
+                case .developer: developerView
                 }
             }
         }
@@ -355,6 +357,30 @@ struct ExtensionsSettingsView: View {
         .padding(11)
         .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaColors.border, lineWidth: 1))
+    }
+
+    private var developerView: some View {
+        Form {
+            Section("Developer extensions") {
+                Text("Install and inspect local extension packages. Developer tools are intentionally separate from the Store.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button("Open Extensions Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
+                Button("Reload Installed Extensions") { reloadExtensions() }
+            }
+            Section("Package provenance") {
+                ForEach(installed) { package in
+                    HStack {
+                        Image(systemName: package.bundled ? "shippingbox.fill" : "person.crop.circle")
+                        VStack(alignment: .leading) {
+                            Text(package.name).font(.callout.weight(.medium))
+                            Text("\(package.source) · \(package.id)").font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(package.bundled ? "Bundled" : "Local / installed").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
     }
 
     private var updatesView: some View {
