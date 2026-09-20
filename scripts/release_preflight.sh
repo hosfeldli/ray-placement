@@ -89,8 +89,10 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     release_is_draft=1
     print "Existing draft found: $TAG (resume is safe)."
 fi
-if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && (( ! release_is_draft )); then
-    print -u2 "Remote tag $TAG already exists without a resumable draft release; refusing to reuse it."; exit 1
+if (( ! release_exists )); then
+    # A pushed immutable tag is the expected state between `release_tag.sh` and
+    # `release_stage.sh`. Staging creates the first draft for this exact tag.
+    print "No GitHub release exists yet: stage will create a draft for $TAG."
 fi
 
 available_kb="$(df -Pk "$PROJECT_DIRECTORY" | awk 'NR==2 {print $4}')"

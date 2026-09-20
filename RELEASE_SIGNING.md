@@ -13,9 +13,10 @@ managed by Sparkle's `generate_keys` tool.
     `.build/artifacts/sparkle/Sparkle/bin/generate_keys --account lima-sparkle -p`
 
 The private key must never be committed to Git, printed in a terminal, pasted
-into chat, or stored in this repository. The GitHub Actions repository secret
-`SPARKLE_EDDSA_PRIVATE_KEY` contains a protected export of this same key for
-release automation.
+into chat, or stored in this repository. Local `release_build.sh` signs the
+appcast through the `lima-sparkle` login-Keychain account when no explicit key
+input is set, so a local release never needs an export. GitHub Actions uses the
+protected `SPARKLE_EDDSA_PRIVATE_KEY` repository secret for the same key.
 
 If the key must be transferred to another machine, use Sparkle's export/import
 options only through a protected temporary file, then remove the file after the

@@ -56,12 +56,10 @@ gh auth status >/dev/null
 if gh release view "$TAG" >/dev/null 2>&1; then
     release_assert_draft "$TAG"
 else
-    if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
-        print -u2 "Remote tag $TAG already exists without a draft release; refusing to create a conflicting release."
-        exit 1
-    fi
-    target="$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)"
-    gh release create "$TAG" --draft --target "$target" --title "Lima $TAG" --generate-notes
+    # The immutable tag has already been checked against HEAD above. Tell GitHub
+    # to use that existing tag rather than treating a normal first draft as a
+    # conflicting release state.
+    gh release create "$TAG" --draft --verify-tag --title "Lima $TAG" --generate-notes
 fi
 
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.zip" Lima-Update.zip "$(jq -er '.update.sha256' "$DIST/Lima-release.json")"

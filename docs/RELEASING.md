@@ -117,7 +117,32 @@ after this rotation as a migration release: validate a manual installation
 or an explicitly implemented dual-trust path before claiming seamless updates.
 The pre-rotation local materials are retained under the dated rollback backup.
 
+## Fast paths
+
+Use the dispatcher for routine releases; it owns the normal command sequence and
+prints one concise outcome. It does not bypass source identity, signing, asset
+digest, or draft-verification checks.
+
+```sh
+# Create, build, stage, and verify the next patch as a GitHub draft.
+./scripts/release.sh ship --bump patch
+
+# Do the same and make the verified draft public.
+./scripts/release.sh ship --bump patch --publish --yes
+
+# Inspect the next version without changing the working tree or GitHub.
+./scripts/release.sh ship --bump patch --dry-run
+```
+
+`ship` commits and pushes version metadata, creates and pushes the immutable tag,
+then runs preflight, one local build, draft staging, and verification. Publication
+requires both `--publish` and `--yes` before it begins a workflow that can make
+an existing draft public. Use `deploy --tag vX.Y.Z` only to resume an already
+prepared/tagged release.
+
 ## Normal release lifecycle
+
+The individual commands remain available for diagnosis, CI, and recovery.
 
 ### 1. Prepare the version
 
@@ -169,14 +194,18 @@ unrelated changes are intentional and will not be included in the release.
 ```
 
 Preflight requires a clean worktree and a branch whose upstream has the exact
-same commit. It refuses an existing published release. An existing draft for the
-same tag is resumable.
+same commit. It refuses an existing published release, resumes an existing draft,
+and accepts a newly pushed tag with no release yet; the stage command creates that
+first draft.
 
 ### 4. Build locally
 
 ```sh
-LIMA_RELEASE_SKIP_PREFLIGHT=1 ./scripts/release_build.sh --tag v3.12.6
+./scripts/release_build.sh --tag v3.12.6
 ```
+
+`release_build.sh` runs preflight when invoked directly. The dispatcher skips only
+that duplicate check after it has completed preflight in the same invocation.
 
 This phase runs:
 
@@ -281,25 +310,20 @@ The script requires a clean tree, a draft release, matching source/tag metadata,
 and a successful verification. It only changes the GitHub draft to public and
 prints the final release URL. It does not rebuild or upload anything.
 
-The dispatcher provides the same lifecycle:
+For an already tagged release, the dispatcher resumes the complete staged flow:
 
 ```sh
-./scripts/release.sh preflight --tag v3.12.6
-./scripts/release.sh build --tag v3.12.6
-./scripts/release.sh stage --tag v3.12.6
-./scripts/release.sh verify --tag v3.12.6
-./scripts/release.sh publish --tag v3.12.6 --yes
+# Build, stage, and verify a draft.
+./scripts/release.sh deploy --tag v3.12.6
+
+# Re-run every gate, then publish the verified draft.
+./scripts/release.sh deploy --tag v3.12.6 --publish --yes
 ```
 
-The compatibility command is now staged rather than monolithic:
-
-```sh
-./scripts/deploy_lima.sh --tag v3.12.6
-./scripts/deploy_lima.sh --tag v3.12.6 --publish --yes
-```
-
-The first command remains draft-only. The second is equivalent to running all
-phases followed by explicit publication.
+`deploy_lima.sh` remains a compatibility alias for `release.sh deploy`. The
+`ship` fast path is preferred for a new release because it also prepares and tags
+the source commit. Both commands create a missing draft from the existing
+immutable tag and never overwrite a published release.
 
 ## Resume and recovery
 

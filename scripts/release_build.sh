@@ -64,8 +64,9 @@ mkdir -p "$DIST"
 rm -f "$DIST/Lima-Update.zip" "$DIST/Lima-Update.sha256" "$DIST/Lima-Sparkle.zip" "$DIST/Lima-Sparkle.sha256" "$DIST/Lima.dmg" "$DIST/Lima.dmg.sha256" "$DIST/Lima-release.json" "$DIST/latest.json" "$DIST/appcast.xml"
 rm -rf "$DIST/.release-work/${TAG}"
 
-print '==> Running release versioning regression tests'
+print '==> Running release workflow regression tests'
 "$SCRIPT_DIRECTORY/test_release_versioning.sh"
+/bin/zsh "$SCRIPT_DIRECTORY/test_release_dispatcher.sh"
 
 print '==> Running Swift tests'
 make -C "$PROJECT_DIRECTORY" test

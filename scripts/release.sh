@@ -3,6 +3,38 @@
 set -euo pipefail
 SCRIPT_DIRECTORY="${0:A:h}"
 
+release_tag_from_plist() {
+    local version
+    version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SCRIPT_DIRECTORY/../Packaging/Info.plist")"
+    [[ "$version" == <->.<->.<-> ]] || { print -u2 "Invalid release version in Packaging/Info.plist: $version"; exit 1; }
+    print -r -- "v$version"
+}
+
+release_deploy() {
+    local tag="$1"
+    local publish="$2"
+    local confirmed="$3"
+
+    if (( publish && ! confirmed )); then
+        print -u2 "Publishing is irreversible. Use --publish --yes."
+        exit 2
+    fi
+
+    "$SCRIPT_DIRECTORY/release_preflight.sh" --tag "$tag"
+    # The successful preflight above is authoritative for this invocation.
+    # Avoid re-running the same remote and signing checks before the local build.
+    LIMA_RELEASE_SKIP_PREFLIGHT=1 "$SCRIPT_DIRECTORY/release_build.sh" --tag "$tag"
+    "$SCRIPT_DIRECTORY/release_stage.sh" --tag "$tag"
+    "$SCRIPT_DIRECTORY/release_verify.sh" --tag "$tag"
+
+    if (( publish )); then
+        "$SCRIPT_DIRECTORY/release_publish.sh" --tag "$tag" --yes
+    else
+        print "Draft is ready: $tag"
+        print "Publish after review: ./scripts/release.sh publish --tag $tag --yes"
+    fi
+}
+
 usage() {
     cat <<USAGE
 Usage: release.sh <command> [options]
@@ -15,7 +47,8 @@ Commands:
   stage      Resume/create a draft and upload verified assets.
   verify     Verify local and remote artifacts.
   publish    Publish a verified draft; requires --yes for the irreversible action.
-  deploy     Run preflight, build, stage, verify, and optionally publish.
+  deploy     Run preflight, build, stage, verify, and optionally publish an existing tag.
+  ship       Prepare, tag, build, stage, verify, and optionally publish a new release.
   help       Show this help.
 
 Examples:
@@ -24,6 +57,8 @@ Examples:
   ./scripts/release.sh build --tag v3.12.6
   ./scripts/release.sh stage --tag v3.12.6
   ./scripts/release.sh publish --tag v3.12.6 --yes
+  ./scripts/release.sh ship --bump patch
+  ./scripts/release.sh ship --bump patch --publish --yes
 USAGE
 }
 command="${1:-help}"
@@ -53,29 +88,52 @@ case "$command" in
         fi
         exec "$SCRIPT_DIRECTORY/release_publish.sh" "${publish_args[@]}"
         ;;
+    ship)
+        version_args=()
+        publish=0
+        confirmed=0
+        dry_run=0
+        while (( $# > 0 )); do
+            case "$1" in
+                --bump) version_args+=(--bump "${2:?--bump requires patch, minor, or major}"); shift 2;;
+                --version) version_args+=(--version "${2:?--version requires X.Y.Z}"); shift 2;;
+                --publish) publish=1; shift;;
+                --yes) confirmed=1; shift;;
+                --dry-run) dry_run=1; shift;;
+                -h|--help) usage; exit 0;;
+                *) print -u2 "Unknown ship option: $1"; usage >&2; exit 2;;
+            esac
+        done
+        (( ${#version_args[@]} == 2 )) || { print -u2 "ship requires exactly one of --bump or --version."; exit 2; }
+        if (( dry_run )); then
+            "$SCRIPT_DIRECTORY/release_prepare.sh" "${version_args[@]}" --dry-run
+            print 'Dry run stops before committing, tagging, building, staging, or publishing.'
+            exit 0
+        fi
+        if (( publish && ! confirmed )); then
+            print -u2 "Publishing is irreversible. Use --publish --yes."
+            exit 2
+        fi
+        "$SCRIPT_DIRECTORY/release_prepare.sh" "${version_args[@]}" --commit --push
+        tag="$(release_tag_from_plist)"
+        "$SCRIPT_DIRECTORY/release_tag.sh" --tag "$tag" --push
+        release_deploy "$tag" "$publish" "$confirmed"
+        ;;
     deploy)
         publish=0
         confirmed=0
-        tag_args=()
+        tag=""
         while (( $# > 0 )); do
             case "$1" in
                 --publish) publish=1; shift;;
                 --yes) confirmed=1; shift;;
-                --tag) tag_args+=(--tag "${2:?--tag requires a value}"); shift 2;;
+                --tag) tag="${2:?--tag requires a value}"; shift 2;;
                 -h|--help) usage; exit 0;;
                 *) print -u2 "Unknown deploy option: $1"; usage >&2; exit 2;;
             esac
         done
-        "$SCRIPT_DIRECTORY/release_preflight.sh" "${tag_args[@]}"
-        "$SCRIPT_DIRECTORY/release_build.sh" "${tag_args[@]}"
-        "$SCRIPT_DIRECTORY/release_stage.sh" "${tag_args[@]}"
-        "$SCRIPT_DIRECTORY/release_verify.sh" "${tag_args[@]}"
-        if (( publish )); then
-            (( confirmed )) || { print -u2 "Publishing is irreversible. Use --publish --yes."; exit 2; }
-            "$SCRIPT_DIRECTORY/release_publish.sh" "${tag_args[@]}" --yes
-        else
-            print 'Draft is ready. Run release.sh publish with the same tag after review.'
-        fi
+        [[ -n "$tag" ]] || tag="$(release_tag_from_plist)"
+        release_deploy "$tag" "$publish" "$confirmed"
         ;;
     help|-h|--help) usage;;
     *) print -u2 "Unknown release command: $command"; usage >&2; exit 2;;
