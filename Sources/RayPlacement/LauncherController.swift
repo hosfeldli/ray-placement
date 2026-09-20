@@ -60,6 +60,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let surfaceSessionController = LauncherSurfaceSessionController()
     private let updateService: UpdateService
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
+    private lazy var aiChatWindow = AIChatWindowController()
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
@@ -248,6 +249,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func showNotes() {
         hide()
         notesWindow.toggleVisibility()
+    }
+
+    func showAIChat() {
+        hide()
+        aiChatWindow.present()
     }
 
     func showExtensionStore() {
@@ -2558,6 +2564,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openNotes:
             showNotes()
+
+        case .openAIChat:
+            showAIChat()
 
         case .openQuickNote:
             showQuickNote()

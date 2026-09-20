@@ -108,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showAIChat() { launcher.showAIChat() }
     @objc func showExtensionStore() { launcher.showExtensionStore() }
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
@@ -460,6 +461,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         menu.addItem(notes)
+        let aiChat = NSMenuItem(title: "AI Chat…", action: #selector(showAIChat), keyEquivalent: "")
+        aiChat.target = self
+        menu.addItem(aiChat)
         let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self
@@ -496,6 +500,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         appMenu.addItem(notes)
+        let aiChat = NSMenuItem(title: "AI Chat…", action: #selector(showAIChat), keyEquivalent: "")
+        aiChat.target = self
+        appMenu.addItem(aiChat)
         let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self

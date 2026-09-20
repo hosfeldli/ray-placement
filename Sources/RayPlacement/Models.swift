@@ -243,6 +243,7 @@ enum SystemAction {
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
+    case openAIChat
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
