@@ -8,6 +8,72 @@ import Testing
     #expect(AIReasoningEffort.high.detail.contains("deliberate"))
 }
 
+@Test func aiModelCapabilitiesLimitReasoningToSupportedValues() {
+    let chat = AIModelOption(id: "gpt-5")
+    #expect(chat.supportsReasoning)
+    #expect(chat.supportedReasoningEfforts.contains(.high))
+
+    let nonReasoning = AIModelOption(id: "gpt-4o")
+    #expect(!nonReasoning.supportsReasoning)
+    #expect(nonReasoning.supportedReasoningEfforts.isEmpty)
+}
+
+@Test func aiModelDiscoveryFiltersNonChatModels() {
+    #expect(AIModelOption.isChatModel("gpt-5"))
+    #expect(AIModelOption.isChatModel("o4-mini"))
+    #expect(!AIModelOption.isChatModel("text-embedding-3-small"))
+    #expect(!AIModelOption.isChatModel("dall-e-3"))
+}
+
+@Test func responsesPayloadOmitsUnsupportedReasoningAndPreservesContinuation() throws {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-4o",
+        input: [["role": "user", "content": [["type": "input_text", "text": "Hello"]]]],
+        previousResponseID: "resp_previous",
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["model"] as? String == "gpt-4o")
+    #expect(body["previous_response_id"] as? String == "resp_previous")
+    #expect(body["reasoning"] == nil)
+    #expect(body["stream"] as? Bool == true)
+}
+
+@Test func responsePayloadUsesMCPApprovalPolicyWithoutEmbeddingCredential() throws {
+    let serverID = UUID()
+    let tools = [
+        MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true),
+        MCPToolDescriptor(serverID: serverID, name: "delete_repo", risk: .destructive, enabled: true)
+    ]
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5",
+        input: [["role": "user", "content": [["type": "input_text", "text": "Inspect"]]]],
+        previousResponseID: nil,
+        reasoningEffort: .medium,
+        tools: [[
+            "type": "mcp",
+            "server_label": "GitHub",
+            "server_url": "https://example.com/mcp",
+            "allowed_tools": tools.map(\.name),
+            "require_approval": ["never": ["tool_names": ["search"]]]
+        ]]
+    )
+    let payload = try #require(body["tools"] as? [[String: Any]])
+    #expect(payload.first?["authorization"] == nil)
+    #expect(payload.first?["headers"] == nil)
+}
+
+@Test func mcpHTTPURLsRejectMissingHostsAndSanitizeLabels() {
+    let server = MCPServer(name: "123 GitHub / Docs", url: "https://")
+    #expect(server.validHTTPURL == nil)
+    #expect(server.apiLabel == "mcp_123_GitHub___Docs")
+}
+
+@Test func mcpAuthorizationHeaderPreservesExplicitScheme() {
+    #expect(MCPCredentialStore.authorizationHeaderValue("token") == "Bearer token")
+    #expect(MCPCredentialStore.authorizationHeaderValue("Basic abc") == "Basic abc")
+}
+
 @Test func aiConversationRoundTripsNewPhaseTwoMetadata() throws {
     let conversation = AIConversation(
         title: "API debugging",
@@ -58,6 +124,14 @@ import Testing
     ]
     let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: tools.map(\.name), tools: tools)
     #expect(server.enabledTools.map(\.name) == ["read_file", "delete_file"])
+    #expect(server.apiLabel == "Files")
+}
+
+@Test func mcpServerCanRepresentAllToolsDisabled() {
+    let serverID = UUID()
+    let tool = MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true)
+    let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: [MCPServer.noToolsSentinel], tools: [tool])
+    #expect(server.enabledTools.isEmpty)
 }
 
 @Test func markdownRendererSeparatesFencedCodeBlocks() {

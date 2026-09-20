@@ -53,7 +53,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         title: String = "New Chat",
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
-        model: String = "gpt-5.6",
+        model: String = "gpt-5",
         lastResponseID: String? = nil,
         reasoningEffort: AIReasoningEffort = .medium,
         reasoningSummary: String? = nil,
@@ -298,6 +298,7 @@ struct AIChatResponsesClient {
         case invalidResponse
         case requestFailed(Int, String)
         case malformedStream
+        case noModelsFound
 
         var errorDescription: String? {
             switch self {
@@ -307,8 +308,33 @@ struct AIChatResponsesClient {
                 return "OpenAI request failed (\(status)): \(message)"
             case .malformedStream:
                 return "The AI response stream could not be read."
+            case .noModelsFound:
+                return "OpenAI returned no chat-capable models for this API key."
             }
         }
+    }
+
+    func listModels(apiKey: String) async throws -> [AIModelOption] {
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/models")!)
+        request.httpMethod = "GET"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw ClientError.requestFailed(http.statusCode, Self.safeErrorMessage(from: data))
+        }
+        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let rawModels = object["data"] as? [[String: Any]] else {
+            throw ClientError.noModelsFound
+        }
+        let options = rawModels.compactMap { raw -> AIModelOption? in
+            guard let id = raw["id"] as? String, AIModelOption.isChatModel(id) else { return nil }
+            return AIModelOption(id: id)
+        }
+        let unique = Dictionary(options.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        guard !unique.isEmpty else { throw ClientError.noModelsFound }
+        return unique.values.sorted { $0.displayName.localizedStandardCompare($1.displayName) == .orderedAscending }
     }
 
     func streamReply(
@@ -323,18 +349,13 @@ struct AIChatResponsesClient {
         do {
             let inputContent = try AIInputEncoder.content(text: input, attachments: attachments)
             let userInput: [String: Any] = ["role": "user", "content": inputContent]
-            var body: [String: Any] = [
-                "model": model,
-                "input": [userInput],
-                "stream": true,
-                "store": true,
-                "reasoning": ["effort": reasoningEffort.rawValue, "summary": "auto"]
-            ]
-            let tools = mcpToolPayload(for: mcpServers)
-            if !tools.isEmpty { body["tools"] = tools }
-            if let previousResponseID, !previousResponseID.isEmpty {
-                body["previous_response_id"] = previousResponseID
-            }
+            let body = Self.replyBody(
+                model: model,
+                input: [userInput],
+                previousResponseID: previousResponseID,
+                reasoningEffort: reasoningEffort,
+                tools: mcpToolPayload(for: mcpServers)
+            )
             return stream(body: body, apiKey: apiKey)
         } catch {
             return AsyncThrowingStream { continuation in
@@ -360,27 +381,51 @@ struct AIChatResponsesClient {
             "approve": approve
         ]
         if let reason, !reason.isEmpty { approval["reason"] = reason }
+        let body = Self.replyBody(
+            model: model,
+            input: [approval],
+            previousResponseID: previousResponseID,
+            reasoningEffort: reasoningEffort,
+            tools: mcpToolPayload(for: mcpServers)
+        )
+        return stream(body: body, apiKey: apiKey)
+    }
+
+    static func replyBody(
+        model: String,
+        input: [[String: Any]],
+        previousResponseID: String?,
+        reasoningEffort: AIReasoningEffort,
+        tools: [[String: Any]]
+    ) -> [String: Any] {
+        let option = AIModelOption(id: model)
         var body: [String: Any] = [
             "model": model,
-            "input": [approval],
+            "input": input,
             "stream": true,
-            "store": true,
-            "reasoning": ["effort": reasoningEffort.rawValue, "summary": "auto"],
-            "previous_response_id": previousResponseID
+            "store": true
         ]
-        let tools = mcpToolPayload(for: mcpServers)
+        if option.supportsReasoning {
+            let effort = option.supportedReasoningEfforts.contains(reasoningEffort)
+                ? reasoningEffort
+                : (option.supportedReasoningEfforts.last ?? .medium)
+            body["reasoning"] = ["effort": effort.rawValue, "summary": "auto"]
+        }
         if !tools.isEmpty { body["tools"] = tools }
-        return stream(body: body, apiKey: apiKey)
+        if let previousResponseID, !previousResponseID.isEmpty {
+            body["previous_response_id"] = previousResponseID
+        }
+        return body
     }
 
     private func mcpToolPayload(for servers: [MCPServer]) -> [[String: Any]] {
         servers.filter(\.enabled).compactMap { server in
             let enabledTools = server.enabledTools
-            guard !enabledTools.isEmpty, server.validURL != nil else { return nil }
+            guard !enabledTools.isEmpty, server.validHTTPURL != nil else { return nil }
             var tool: [String: Any] = [
                 "type": "mcp",
-                "server_label": server.name,
-                "server_url": server.url,
+                "server_label": server.apiLabel,
+                "server_url": server.validHTTPURL?.absoluteString ?? server.url,
                 "allowed_tools": enabledTools.map(\.name)
             ]
             let readTools = enabledTools.filter { !$0.risk.requiresApproval }.map(\.name)
@@ -390,7 +435,7 @@ struct AIChatResponsesClient {
                 tool["require_approval"] = ["never": ["tool_names": readTools]]
             }
             if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
-                tool["authorization"] = credential
+                tool["headers"] = ["Authorization": MCPCredentialStore.authorizationHeaderValue(credential)]
             }
             return tool
         }
@@ -417,9 +462,9 @@ struct AIChatResponsesClient {
                         var errorText = ""
                         for try await line in bytes.lines {
                             errorText += line
-                            if errorText.count > 1_000 { break }
+                            if errorText.count > 2_000 { break }
                         }
-                        throw ClientError.requestFailed(http.statusCode, errorText)
+                        throw ClientError.requestFailed(http.statusCode, Self.safeErrorMessage(from: Data(errorText.utf8)))
                     }
 
                     var eventType = ""
@@ -449,6 +494,16 @@ struct AIChatResponsesClient {
         }
     }
 
+    private static func safeErrorMessage(from data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return String(decoding: data.prefix(1_000), as: UTF8.self)
+        }
+        if let error = object["error"] as? [String: Any], let message = error["message"] as? String {
+            return message
+        }
+        return (object["message"] as? String) ?? "The provider returned an error."
+    }
+
     private func emit(
         eventType: String,
         dataLines: [String],
@@ -469,6 +524,10 @@ struct AIChatResponsesClient {
             if let delta = value["delta"] as? String { continuation.yield(.textDelta(delta)) }
         case "response.reasoning_summary_text.delta", "response.reasoning_summary.delta":
             if let delta = value["delta"] as? String { continuation.yield(.reasoningSummaryDelta(delta)) }
+        case "response.reasoning_summary_part.added":
+            if let part = value["part"] as? [String: Any], let text = part["text"] as? String {
+                continuation.yield(.reasoningSummaryDelta(text))
+            }
         case "response.output_item.added":
             if let item = value["item"] as? [String: Any], let itemType = item["type"] as? String, itemType.contains("mcp") || itemType.contains("tool") {
                 let name = (item["name"] as? String) ?? "Tool call"
@@ -476,32 +535,40 @@ struct AIChatResponsesClient {
             }
             if let item = value["item"] as? [String: Any], (item["type"] as? String) == "mcp_approval_request" {
                 let request = AIToolApprovalRequest(
-                    remoteApprovalID: item["id"] as? String,
+                    remoteApprovalID: item["id"] as? String ?? item["approval_request_id"] as? String,
                     serverLabel: item["server_label"] as? String ?? "Remote MCP",
-                    toolName: item["name"] as? String ?? "MCP tool",
+                    toolName: item["name"] as? String ?? item["tool_name"] as? String ?? "MCP tool",
                     arguments: item["arguments"] as? String
                 )
                 continuation.yield(.approval(request))
             }
         case "response.mcp_call.arguments.delta", "response.mcp_call_arguments.delta":
             break
-        case "response.mcp_call.completed":
+        case "response.mcp_call.completed", "response.mcp_call.done":
             if let item = value["item"] as? [String: Any] {
                 continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: item["name"] as? String ?? "Tool call", completed: true)))
+            } else {
+                continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: value["name"] as? String ?? "Tool call", completed: true)))
             }
-        case "response.mcp_call.failed":
-            continuation.yield(.activity(AIAgentActivity(kind: .toolFailed, title: "MCP tool failed", detail: value["error"] as? String, completed: true)))
+        case "response.mcp_call.failed", "response.mcp_call.error":
+            let detail = (value["error"] as? [String: Any])?["message"] as? String
+                ?? value["error"] as? String
+                ?? "The MCP tool failed."
+            continuation.yield(.activity(AIAgentActivity(kind: .toolFailed, title: "MCP tool failed", detail: detail, completed: true)))
         case "response.output_item.done":
             if let item = value["item"] as? [String: Any], let itemType = item["type"] as? String, itemType.contains("mcp") || itemType.contains("tool") {
                 let name = (item["name"] as? String) ?? "Tool call"
-                continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: name, completed: true)))
+                if let error = item["error"] as? [String: Any] {
+                    continuation.yield(.activity(AIAgentActivity(kind: .toolFailed, title: name, detail: error["message"] as? String, completed: true)))
+                } else {
+                    continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: name, completed: true)))
+                }
             }
+        case "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
+            break
         case "response.completed":
             if let response = value["response"] as? [String: Any], let usage = response["usage"] as? [String: Any] {
-                let input = usage["input_tokens"] as? Int
-                let output = usage["output_tokens"] as? Int
-                let details = usage["output_tokens_details"] as? [String: Any]
-                continuation.yield(.usage(AIUsageMetrics(inputTokens: input, cachedInputTokens: usage["input_tokens_details"] as? [String: Any] == nil ? nil : input, outputTokens: output, reasoningTokens: details?["reasoning_tokens"] as? Int)))
+                continuation.yield(.usage(AIUsageMetrics.from(responseUsage: usage)))
             }
             let response = value["response"] as? [String: Any]
             continuation.yield(.completed(response?["id"] as? String))
@@ -520,8 +587,10 @@ struct AIChatResponsesClient {
 final class AIChatViewModel: ObservableObject {
     @Published private(set) var selectedConversationID: UUID?
     @Published var draft = ""
-    @Published var model = "gpt-5.6"
+    @Published var model = "gpt-5"
     @Published var reasoningEffort: AIReasoningEffort = .medium
+    @Published private(set) var availableModels: [AIModelOption] = AIModelOption.fallbackModels
+    @Published private(set) var isLoadingModels = false
     @Published var attachments: [AIAttachment] = []
     @Published var showActivity = true
     @Published private(set) var isStreaming = false
@@ -541,6 +610,7 @@ final class AIChatViewModel: ObservableObject {
             reasoningEffort = selected.reasoningEffort
             attachments = selected.attachments
         }
+        ensureModelIsAvailable()
     }
 
     deinit { streamTask?.cancel() }
@@ -555,6 +625,65 @@ final class AIChatViewModel: ObservableObject {
             model = conversation.model
             reasoningEffort = conversation.reasoningEffort
             attachments = conversation.attachments
+            ensureModelIsAvailable()
+        }
+    }
+
+    var selectedModelOption: AIModelOption {
+        availableModels.first(where: { $0.id == model }) ?? AIModelOption(id: model)
+    }
+
+    var supportedReasoningEfforts: [AIReasoningEffort] {
+        selectedModelOption.supportedReasoningEfforts
+    }
+
+    func refreshModels() {
+        guard !isLoadingModels else { return }
+        guard let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
+            streamError = "Save an OpenAI API key before loading available models."
+            return
+        }
+        isLoadingModels = true
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isLoadingModels = false }
+            do {
+                let models = try await AIChatResponsesClient().listModels(apiKey: apiKey)
+                self.availableModels = models
+                self.ensureModelIsAvailable()
+            } catch {
+                self.streamError = error.localizedDescription
+            }
+        }
+    }
+
+    func selectModel(_ option: AIModelOption) {
+        model = option.id
+        if !option.supportedReasoningEfforts.contains(reasoningEffort) {
+            reasoningEffort = option.supportedReasoningEfforts.last ?? .medium
+        }
+        if let id = selectedConversationID, var conversation = store.conversation(id: id) {
+            conversation.model = model
+            conversation.reasoningEffort = reasoningEffort
+            store.update(conversation)
+        }
+    }
+
+    func selectReasoningEffort(_ effort: AIReasoningEffort) {
+        guard selectedModelOption.supportedReasoningEfforts.contains(effort) else { return }
+        reasoningEffort = effort
+        if let id = selectedConversationID, var conversation = store.conversation(id: id) {
+            conversation.reasoningEffort = effort
+            store.update(conversation)
+        }
+    }
+
+    private func ensureModelIsAvailable() {
+        if !availableModels.contains(where: { $0.id == model }), let first = availableModels.first {
+            model = first.id
+        }
+        if !selectedModelOption.supportedReasoningEfforts.contains(reasoningEffort) {
+            reasoningEffort = selectedModelOption.supportedReasoningEfforts.last ?? .medium
         }
     }
 
@@ -844,6 +973,7 @@ final class AIChatWindowController: NSWindowController {
 
 private struct AIChatWorkspaceView: View {
     @ObservedObject var model: AIChatViewModel
+    @ObservedObject private var mcpStore = MCPServerStore.shared
     @State private var apiKey = ""
     @State private var showKey = false
     @State private var keyMessage: String?
@@ -918,7 +1048,7 @@ private struct AIChatWorkspaceView: View {
                 }
             }
             Spacer()
-            Text(MCPServerStore.shared.servers.filter(\.enabled).isEmpty ? "OpenAI Responses API · tools off" : "OpenAI Responses API · MCP tools enabled")
+            Text(mcpStore.servers.filter(\.enabled).isEmpty ? "OpenAI Responses API · tools off" : "OpenAI Responses API · MCP tools enabled")
                 .limaFont(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(12)
@@ -946,25 +1076,42 @@ private struct AIChatWorkspaceView: View {
                 }
                 Spacer()
                 Menu {
-                    ForEach(AIReasoningEffort.allCases) { effort in
+                    ForEach(model.supportedReasoningEfforts) { effort in
                         Button {
-                            model.reasoningEffort = effort
-                            if let id = model.selectedConversationID, var conversation = model.store.conversation(id: id) {
-                                conversation.reasoningEffort = effort
-                                model.store.update(conversation)
-                            }
+                            model.selectReasoningEffort(effort)
                         } label: {
                             Label("\(effort.title) · \(effort.detail)", systemImage: model.reasoningEffort == effort ? "checkmark" : "circle")
                         }
                     }
+                    if model.supportedReasoningEfforts.isEmpty {
+                        Text("This model does not expose reasoning controls")
+                    }
                 } label: {
-                    Label("Think: \(model.reasoningEffort.title)", systemImage: "brain.head.profile")
+                    Label(model.selectedModelOption.supportsReasoning ? "Think: \(model.reasoningEffort.title)" : "Think: Off", systemImage: "brain.head.profile")
                 }
                 .menuStyle(.borderlessButton)
-                TextField("Model", text: $model.model)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 150)
-                    .disabled(model.isStreaming)
+                Menu {
+                    ForEach(model.availableModels) { option in
+                        Button {
+                            model.selectModel(option)
+                        } label: {
+                            Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+                        }
+                    }
+                    Divider()
+                    Button("Refresh Available Models", action: model.refreshModels)
+                } label: {
+                    Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(model.isStreaming || model.isLoadingModels)
+                .help("Choose an OpenAI Responses model")
+                Button(action: model.refreshModels) {
+                    Image(systemName: model.isLoadingModels ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.isLoadingModels || model.isStreaming)
+                .help("Load models available to this API key")
                 Button {
                     model.showActivity.toggle()
                 } label: {
@@ -1081,12 +1228,25 @@ private struct AIChatWorkspaceView: View {
                     Button("Add Clipboard", action: model.addClipboard)
                     Button("Add Current Selection", action: model.addSelection)
                     Divider()
+                    Text("Tools for this chat")
+                    ForEach(mcpStore.servers) { server in
+                        Toggle(isOn: Binding(
+                            get: { server.enabled },
+                            set: { mcpStore.setEnabled(server.id, enabled: $0) }
+                        )) {
+                            Label("\(server.name) (\(server.enabledTools.count))", systemImage: "server.rack")
+                        }
+                    }
+                    if mcpStore.servers.isEmpty {
+                        Text("No MCP servers configured")
+                    }
+                    Divider()
                     Button("Manage MCP Servers…") { model.openMCPManager() }
                 } label: {
-                    Image(systemName: "plus")
+                    Label("Tools \(mcpStore.servers.filter(\.enabled).count)", systemImage: "wrench.and.screwdriver")
                 }
-                .buttonStyle(.borderless)
-                .help("Add context")
+                .menuStyle(.borderlessButton)
+                .help("Choose MCP servers and manage individual tools")
                 TextEditor(text: $model.draft)
                     .font(.system(size: 14))
                     .frame(minHeight: 44, maxHeight: 110)

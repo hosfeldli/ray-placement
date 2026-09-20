@@ -191,21 +191,21 @@ private struct MCPManagerView: View {
                 let tools = try await MCPHTTPClient().test(server: current)
                 store.updateTools(tools, for: current.id)
                 status = "Connected · \(tools.count) tools discovered."
-            } catch { status = error.localizedDescription }
+            } catch {
+                store.markTestFailed(error.localizedDescription, for: current.id)
+                status = error.localizedDescription
+            }
             isTesting = false
         }
     }
 
     private func toolIsEnabled(_ tool: MCPToolDescriptor, server: MCPServer) -> Bool {
-        server.allowedToolNames.isEmpty || server.allowedToolNames.contains(tool.name)
+        server.allowedToolNames != [MCPServer.noToolsSentinel]
+            && (server.allowedToolNames.isEmpty || server.allowedToolNames.contains(tool.name))
+            && tool.enabled
     }
 
     private func setToolEnabled(_ tool: MCPToolDescriptor, enabled: Bool, server: MCPServer) {
-        var names = server.allowedToolNames.isEmpty ? server.tools.map(\.name) : server.allowedToolNames
-        names.removeAll { $0 == tool.name }
-        if enabled { names.append(tool.name) }
-        var updated = server
-        updated.allowedToolNames = names
-        store.addOrUpdate(updated)
+        store.setToolEnabled(tool.name, enabled: enabled, for: server.id)
     }
 }

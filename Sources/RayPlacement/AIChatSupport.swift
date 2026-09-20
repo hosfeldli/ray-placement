@@ -36,6 +36,82 @@ enum AIReasoningEffort: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+struct AIModelOption: Hashable, Identifiable, Sendable {
+    let id: String
+    let displayName: String
+    let supportsReasoning: Bool
+    let supportedReasoningEfforts: [AIReasoningEffort]
+
+    init(
+        id: String,
+        displayName: String? = nil,
+        supportsReasoning: Bool? = nil,
+        supportedReasoningEfforts: [AIReasoningEffort]? = nil
+    ) {
+        self.id = id
+        self.displayName = displayName ?? Self.displayName(for: id)
+        let inferredReasoning = Self.isReasoningModel(id)
+        self.supportsReasoning = supportsReasoning ?? inferredReasoning
+        self.supportedReasoningEfforts = supportedReasoningEfforts
+            ?? ((supportsReasoning ?? inferredReasoning) ? Self.reasoningEfforts(for: id) : [])
+    }
+
+    var isLegacyOrUnknown: Bool {
+        !Self.isKnownModel(id)
+    }
+
+    static func isChatModel(_ id: String) -> Bool {
+        let value = id.lowercased()
+        let nonChatMarkers = ["embedding", "moderation", "whisper", "tts", "dall-e", "image", "search-preview", "transcribe", "realtime", "audio", "search"]
+        guard !nonChatMarkers.contains(where: value.contains) else { return false }
+        return value.hasPrefix("gpt-")
+            || value.hasPrefix("o1")
+            || value.hasPrefix("o3")
+            || value.hasPrefix("o4")
+            || value.hasPrefix("chatgpt-")
+            || value.contains("computer-use")
+    }
+
+    private static func isKnownModel(_ id: String) -> Bool {
+        let value = id.lowercased()
+        return value.hasPrefix("gpt-") || value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4")
+    }
+
+    static func isReasoningModel(_ id: String) -> Bool {
+        let value = id.lowercased()
+        return value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4") || value.contains("gpt-5")
+    }
+
+    static func reasoningEfforts(for id: String) -> [AIReasoningEffort] {
+        let value = id.lowercased()
+        if value.contains("pro") {
+            return [.high]
+        }
+        if value.contains("xhigh") || value.contains("5.2") {
+            return [.low, .medium, .high, .xhigh]
+        }
+        if value.hasPrefix("gpt-5") {
+            return [.minimal, .low, .medium, .high]
+        }
+        return [.low, .medium, .high]
+    }
+
+    static func displayName(for id: String) -> String {
+        id.split(separator: "-")
+            .map { part in
+                let value = String(part)
+                return value.isEmpty ? value : value.prefix(1).uppercased() + value.dropFirst()
+            }
+            .joined(separator: " ")
+    }
+
+    static let fallbackModels: [AIModelOption] = [
+        AIModelOption(id: "gpt-5", displayName: "GPT-5"),
+        AIModelOption(id: "gpt-5-mini", displayName: "GPT-5 mini"),
+        AIModelOption(id: "o4-mini", displayName: "o4-mini")
+    ]
+}
+
 enum AIAttachmentKind: String, Codable, CaseIterable, Sendable {
     case file
     case image
@@ -103,6 +179,17 @@ struct AIUsageMetrics: Codable, Hashable, Sendable {
     var cachedInputTokens: Int?
     var outputTokens: Int?
     var reasoningTokens: Int?
+
+    static func from(responseUsage usage: [String: Any]) -> Self {
+        let inputDetails = usage["input_tokens_details"] as? [String: Any]
+        let outputDetails = usage["output_tokens_details"] as? [String: Any]
+        return Self(
+            inputTokens: usage["input_tokens"] as? Int,
+            cachedInputTokens: inputDetails?["cached_tokens"] as? Int,
+            outputTokens: usage["output_tokens"] as? Int,
+            reasoningTokens: outputDetails?["reasoning_tokens"] as? Int
+        )
+    }
 
     var totalKnownTokens: Int? {
         let values = [inputTokens, outputTokens, reasoningTokens].compactMap { $0 }
@@ -260,8 +347,30 @@ struct MCPServer: Codable, Hashable, Identifiable, Sendable {
 
     var validURL: URL? { URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) }
 
+    var validHTTPURL: URL? {
+        guard let validURL,
+              ["http", "https"].contains(validURL.scheme?.lowercased()),
+              let host = validURL.host,
+              !host.isEmpty,
+              validURL.user == nil,
+              validURL.password == nil else { return nil }
+        return validURL
+    }
+
+    var apiLabel: String {
+        let label = name.unicodeScalars.map { scalar in
+            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "_"
+        }.joined()
+        let trimmed = String(label.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        let base = trimmed.isEmpty ? "mcp_\(id.uuidString.prefix(8))" : trimmed
+        return base.first?.isNumber == true ? "mcp_\(base)" : base
+    }
+
+    static let noToolsSentinel = "__lima_no_mcp_tools__"
+
     var enabledTools: [MCPToolDescriptor] {
-        tools.filter { $0.enabled && (allowedToolNames.isEmpty || allowedToolNames.contains($0.name)) }
+        guard allowedToolNames != [Self.noToolsSentinel] else { return [] }
+        return tools.filter { $0.enabled && (allowedToolNames.isEmpty || allowedToolNames.contains($0.name)) }
     }
 }
 
@@ -302,8 +411,45 @@ final class MCPServerStore: ObservableObject {
 
     func updateTools(_ tools: [MCPToolDescriptor], for id: UUID) {
         guard var server = servers.first(where: { $0.id == id }) else { return }
-        server.tools = tools
+        server.tools = tools.map { tool in
+            var updated = tool
+            updated.enabled = server.allowedToolNames == [MCPServer.noToolsSentinel]
+                ? false
+                : (server.allowedToolNames.isEmpty || server.allowedToolNames.contains(tool.name))
+            return updated
+        }
+        server.lastTestedAt = Date()
+        server.lastError = nil
         if server.allowedToolNames.isEmpty { server.allowedToolNames = tools.map(\.name) }
+        addOrUpdate(server)
+    }
+
+    func setToolEnabled(_ toolName: String, enabled: Bool, for serverID: UUID) {
+        guard var server = servers.first(where: { $0.id == serverID }) else { return }
+        var names: [String]
+        if server.allowedToolNames == [MCPServer.noToolsSentinel] {
+            names = []
+        } else if server.allowedToolNames.isEmpty {
+            names = server.tools.map(\.name)
+        } else {
+            names = server.allowedToolNames
+        }
+        names.removeAll { $0 == toolName }
+        if enabled { names.append(toolName) }
+        server.allowedToolNames = names.isEmpty && !enabled ? [MCPServer.noToolsSentinel] : names
+        server.tools = server.tools.map {
+            guard $0.name == toolName else { return $0 }
+            var updated = $0
+            updated.enabled = enabled
+            return updated
+        }
+        addOrUpdate(server)
+    }
+
+    func markTestFailed(_ message: String, for id: UUID) {
+        guard var server = servers.first(where: { $0.id == id }) else { return }
+        server.lastTestedAt = Date()
+        server.lastError = message
         addOrUpdate(server)
     }
 
@@ -350,6 +496,13 @@ enum MCPCredentialStore {
         return String(data: data, encoding: .utf8)
     }
 
+    static func authorizationHeaderValue(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.range(of: "^(bearer|basic)\\s", options: [.regularExpression, .caseInsensitive]) == nil
+            ? "Bearer \(trimmed)"
+            : trimmed
+    }
+
     static func remove(serverID: UUID) {
         let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: serverID.uuidString]
         SecItemDelete(query as CFDictionary)
@@ -376,30 +529,160 @@ struct MCPHTTPClient {
         }
     }
 
+    private let protocolVersion = "2025-06-18"
+
     func discoverTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
-        guard let url = server.validURL, ["http", "https"].contains(url.scheme?.lowercased()) else { throw ClientError.invalidURL }
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty { request.setValue("Bearer \(credential)", forHTTPHeaderField: "Authorization") }
-        request.httpBody = try JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": UUID().uuidString, "method": "tools/list", "params": [:]])
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else { throw ClientError.requestFailed(http.statusCode, String(decoding: data.prefix(1_000), as: UTF8.self)) }
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { throw ClientError.invalidToolList }
+        guard let url = server.validHTTPURL else { throw ClientError.invalidURL }
+        let endpoint: URL
+        switch server.transport {
+        case .streamableHTTP:
+            endpoint = url
+        case .sse:
+            endpoint = try await discoverSSEEndpoint(from: url, server: server)
+        }
+
+        let initialize = try await post(
+            to: endpoint,
+            server: server,
+            method: "initialize",
+            params: [
+                "protocolVersion": protocolVersion,
+                "capabilities": [:],
+                "clientInfo": ["name": "Lima", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"]
+            ],
+            sessionID: nil
+        )
+        let initializeObject = try jsonObject(from: initialize.data)
+        guard initializeObject["result"] != nil else { throw ClientError.invalidToolList }
+
+        let sessionID = initialize.response.value(forHTTPHeaderField: "MCP-Session-Id")
+        if let sessionID {
+            _ = try await post(
+                to: endpoint,
+                server: server,
+                method: "notifications/initialized",
+                params: [:],
+                sessionID: sessionID,
+                requestID: nil
+            )
+        }
+
+        let listed = try await post(
+            to: endpoint,
+            server: server,
+            method: "tools/list",
+            params: [:],
+            sessionID: sessionID
+        )
+        let object = try jsonObject(from: listed.data)
         let result = (object["result"] as? [String: Any]) ?? object
         guard let tools = result["tools"] as? [[String: Any]] else { throw ClientError.invalidToolList }
         return tools.compactMap { tool in
             guard let name = tool["name"] as? String else { return nil }
             let description = tool["description"] as? String
-            let lower = "\(name) \(description ?? "")".lowercased()
-            let risk: MCPToolRisk = lower.contains("delete") || lower.contains("remove") || lower.contains("destroy") ? .destructive : (lower.contains("create") || lower.contains("update") || lower.contains("write") || lower.contains("send") || lower.contains("close") ? .write : .read)
-            return MCPToolDescriptor(serverID: server.id, name: name, title: nil, description: description, risk: risk, enabled: true)
+            return MCPToolDescriptor(
+                serverID: server.id,
+                name: name,
+                title: tool["title"] as? String,
+                description: description,
+                risk: risk(for: tool, name: name, description: description),
+                enabled: true
+            )
         }
     }
 
     func test(server: MCPServer) async throws -> [MCPToolDescriptor] { try await discoverTools(server: server) }
+
+    private func post(
+        to url: URL,
+        server: MCPServer,
+        method: String,
+        params: [String: Any],
+        sessionID: String?,
+        requestID: String? = UUID().uuidString
+    ) async throws -> (data: Data, response: HTTPURLResponse) {
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
+        if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id") }
+        if sessionID != nil { request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
+        if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
+            request.setValue(MCPCredentialStore.authorizationHeaderValue(credential), forHTTPHeaderField: "Authorization")
+        }
+        var body: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
+        if let requestID { body["id"] = requestID }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
+        guard (200...299).contains(http.statusCode) else {
+            throw ClientError.requestFailed(http.statusCode, Self.safeResponseText(data))
+        }
+        return (data, http)
+    }
+
+    private func discoverSSEEndpoint(from url: URL, server: MCPServer) async throws -> URL {
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
+            request.setValue(MCPCredentialStore.authorizationHeaderValue(credential), forHTTPHeaderField: "Authorization")
+        }
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            throw ClientError.invalidResponse
+        }
+        var event = ""
+        var dataLines: [String] = []
+        for try await line in bytes.lines {
+            if line.isEmpty {
+                if event == "endpoint", let value = dataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines).removingPercentEncoding,
+                   let endpoint = URL(string: value, relativeTo: url)?.absoluteURL {
+                    return endpoint
+                }
+                event = ""
+                dataLines = []
+            } else if line.hasPrefix("event:") {
+                event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            } else if line.hasPrefix("data:") {
+                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+            }
+        }
+        throw ClientError.invalidResponse
+    }
+
+    private func jsonObject(from data: Data) throws -> [String: Any] {
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return object }
+        let candidates = String(decoding: data, as: UTF8.self)
+            .components(separatedBy: .newlines)
+            .compactMap { line -> String? in
+                guard line.hasPrefix("data:") else { return nil }
+                return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+            }
+            .reversed()
+        for candidate in candidates where candidate != "[DONE]" {
+            if let object = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any] { return object }
+        }
+        throw ClientError.invalidToolList
+    }
+
+    private func risk(for tool: [String: Any], name: String, description: String?) -> MCPToolRisk {
+        if let annotations = tool["annotations"] as? [String: Any] {
+            if annotations["destructiveHint"] as? Bool == true { return .destructive }
+            if annotations["readOnlyHint"] as? Bool == true { return .read }
+        }
+        let lower = "\(name) \(description ?? "")".lowercased()
+        if ["delete", "remove", "destroy", "drop", "purge"].contains(where: lower.contains) { return .destructive }
+        if ["create", "update", "write", "send", "close", "move", "rename", "execute", "run"].contains(where: lower.contains) { return .write }
+        return .read
+    }
+
+    private static func safeResponseText(_ data: Data) -> String {
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let error = object["error"] as? [String: Any],
+           let message = error["message"] as? String { return message }
+        return String(decoding: data.prefix(1_000), as: UTF8.self)
+    }
 }
 
 // MARK: - Local context and attachment encoding
