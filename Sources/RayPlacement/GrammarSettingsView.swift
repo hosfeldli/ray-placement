@@ -58,10 +58,10 @@ struct GrammarSettingsView: View {
                 }
                 if settings.grammarEngineMode == .externalAPI {
                     Text("\(settings.developerGrammarProvider.title) · \(settings.developerGrammarModel)")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 } else {
                     Text("Local checker · no network request")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Picker("Correction style", selection: $settings.grammarCorrectionMode) {
                     ForEach(GrammarCorrectionMode.allCases) { Text($0.title).tag($0) }
@@ -69,7 +69,7 @@ struct GrammarSettingsView: View {
                 .pickerStyle(.segmented)
                 Text(settings.grammarCorrectionMode.detail)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 LabeledContent("Ensemble", value: "\(settings.grammarEnsembleStrategy.title) · \(settings.grammarEnsembleStrategy.candidateCount) candidates")
                 LabeledContent("Adjudication", value: settings.grammarJudgeOnDisagreement ? "Judge on disagreement" : "Disabled")
             }
@@ -82,7 +82,7 @@ struct GrammarSettingsView: View {
                     LabeledContent("Judge", value: run.judgeUsed ? "Used" : "Not required")
                 } else {
                     Text("No grammar checks have been recorded yet.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 LabeledContent("Stored runs", value: "\(GrammarDebugStore.shared.recentRuns(limit: 500).count)")
             }
@@ -93,7 +93,7 @@ struct GrammarSettingsView: View {
                     .limaEditorSurface(cornerRadius: 6)
                 Text("Run the configured engine and inspect the complete trace in Grammar Debugger.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 HStack {
                     Button {
                         runTestLab()
@@ -105,24 +105,24 @@ struct GrammarSettingsView: View {
                 }
                 if let result = testResult {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("FINAL").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                        Text("FINAL").font(.caption.weight(.bold)).foregroundStyle(LimaTheme.textSecondary)
                         Text(result.report.text).textSelection(.enabled)
                         Text("\(result.successfulCandidateCount) candidates · \(result.judgeUsed ? "Judge used" : "Judge not required") · \(result.report.appliedCount) applied")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                         Button("Open Run in Debugger") { openDebugger() }
                     }
                     .padding(8)
-                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 if let testOutput {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("FINAL").font(.caption.weight(.bold)).foregroundStyle(.secondary)
+                        Text("FINAL").font(.caption.weight(.bold)).foregroundStyle(LimaTheme.textSecondary)
                         Text(testOutput).textSelection(.enabled)
                         Text("Local engine · no network request\(testLatencyMS.map { " · \($0) ms" } ?? "")")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     }
                     .padding(8)
-                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 }
                 if let testError { Text(testError).font(.caption).foregroundStyle(.red) }
             }
@@ -149,7 +149,7 @@ struct GrammarSettingsView: View {
                 .pickerStyle(.segmented)
                 Text(strategyDescription)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
 
             Section("Candidate profiles") {
@@ -160,7 +160,7 @@ struct GrammarSettingsView: View {
                         LabeledContent("Prompt version", value: profile.promptVersion)
                         Text(profile.instructions)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                         Button("View Full Instructions") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(profile.instructions, forType: .string) }
                     } label: {
                         HStack {
@@ -169,7 +169,7 @@ struct GrammarSettingsView: View {
                             Spacer()
                             Text("seed \(profile.diversitySeed)")
                                 .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LimaTheme.textSecondary)
                         }
                     }
                 }
@@ -179,7 +179,7 @@ struct GrammarSettingsView: View {
                 Toggle("Use judge when candidates materially disagree", isOn: $settings.grammarJudgeOnDisagreement)
                 Text("The judge evaluates existing proposals only. It may select a candidate or reject the disputed correction; it cannot invent replacement text.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)
@@ -235,7 +235,7 @@ struct GrammarSettingsView: View {
                     }
                     if settings.enhancedGrammarAPIKeyStored { Label("Stored", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 }
-                if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(.secondary) }
+                if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
                 HStack {
                     Button {
                         testConnection()
@@ -243,7 +243,7 @@ struct GrammarSettingsView: View {
                         if isTestingConnection { ProgressView().controlSize(.small) } else { Text("Test Connection") }
                     }
                     .disabled(isTestingConnection || !settings.enhancedGrammarAPIKeyStored)
-                    if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(.secondary) }
+                    if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
                 }
             }
             Section("Advanced provider settings") {
@@ -251,7 +251,7 @@ struct GrammarSettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 Text("Custom compatible endpoints can be configured here. External failures are reported directly; Lima never falls back to Local automatically.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)
@@ -267,14 +267,14 @@ struct GrammarSettingsView: View {
                         .foregroundStyle(.green)
                     Spacer()
                     Text("\(runs.count) recent runs")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Toggle("Record source text", isOn: $settings.grammarDebugStoreSourceText)
                 Stepper("Retention: \(settings.grammarDebugRetentionDays) days", value: $settings.grammarDebugRetentionDays, in: 1...3650)
                 Stepper("Maximum runs: \(settings.grammarDebugMaximumRuns)", value: $settings.grammarDebugMaximumRuns, in: 10...100_000, step: 10)
                 Text("Prompts, provider responses, scoring components, and rejected edits remain local. API keys and authorization headers are never stored.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Button("Open Grammar Debugger", action: openDebugger)
                 Button("Export Analytics…") {
                     do { let url = try GrammarDebugStore.shared.export(includeSource: settings.grammarDebugStoreSourceText); NSWorkspace.shared.activateFileViewerSelecting([url]) } catch { settings.lastError = error.localizedDescription }
@@ -289,7 +289,7 @@ struct GrammarSettingsView: View {
                         Spacer()
                         Text("\(run.strategy.title) · \(run.candidateCount) candidates")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
             }
@@ -309,7 +309,7 @@ struct GrammarSettingsView: View {
             }
             Section("Candidate analytics") {
                 if analytics.isEmpty {
-                    Text("Candidate analytics will appear after the first external ensemble run.").foregroundStyle(.secondary)
+                    Text("Candidate analytics will appear after the first external ensemble run.").foregroundStyle(LimaTheme.textSecondary)
                 } else {
                     ForEach(analytics) { item in
                         HStack {
@@ -317,7 +317,7 @@ struct GrammarSettingsView: View {
                             Spacer()
                             Text("\(Int(item.contributionRate * 100))% contribution")
                             Text("\(item.averageLatencyMS) ms")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LimaTheme.textSecondary)
                         }
                         .font(.caption)
                     }

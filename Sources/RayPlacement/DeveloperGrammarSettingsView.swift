@@ -39,7 +39,7 @@ struct DeveloperGrammarSettingsView: View {
                      ? "Local keeps all text on this Mac."
                      : "External API sends checked text to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected. External failures are reported directly; there is no fallback.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
 
             Section("Grammar Ensemble") {
@@ -50,18 +50,18 @@ struct DeveloperGrammarSettingsView: View {
                 }
                 Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Toggle("Use judge when candidates disagree", isOn: $settings.grammarJudgeOnDisagreement)
                 Text("The judge may select only an existing candidate edit or reject the disputed edit; it cannot invent a replacement.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
 
             Section("Grammar Debugger") {
                 Toggle("Store source text and sanitized context", isOn: $settings.grammarDebugStoreSourceText)
                 Text("Off by default. Candidate metadata, prompts, edits, errors, latency, and aggregate analytics are stored locally without source text.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Stepper("Retain runs for \(settings.grammarDebugRetentionDays) days", value: $settings.grammarDebugRetentionDays, in: 1...3650)
                 Stepper("Keep at most \(settings.grammarDebugMaximumRuns) runs", value: $settings.grammarDebugMaximumRuns, in: 10...100_000, step: 10)
                 Button { NSApp.activate(ignoringOtherApps: true); } label: { Label("Open Grammar Debugger from the launcher", systemImage: "ladybug") }
@@ -107,7 +107,7 @@ struct DeveloperGrammarSettingsView: View {
                             .textFieldStyle(.roundedBorder)
                         Text("Usually no change is needed. Use this only for a custom or OpenAI-compatible endpoint.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
                 HStack {
@@ -124,7 +124,7 @@ struct DeveloperGrammarSettingsView: View {
                     if let modelsMessage {
                         Text(modelsMessage)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
             }
@@ -160,7 +160,7 @@ struct DeveloperGrammarSettingsView: View {
                     }
                 }
                 if let saveMessage {
-                    Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(saveMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
 
@@ -184,7 +184,7 @@ struct DeveloperGrammarSettingsView: View {
                 }
                 Text("Tests authentication, the selected endpoint, and the selected model with a minimal request. It does not proofread text.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
 
                 HStack {
                     Button {
@@ -205,12 +205,12 @@ struct DeveloperGrammarSettingsView: View {
                 }
                 Text("Sends a sanitized full-context sample, requests atomic find/replacement edits, and validates protected values without changing your notes.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Available providers") {
                 Text("OpenAI, Anthropic, Google Gemini, Mistral, xAI, DeepSeek, OpenRouter, and generic OpenAI-compatible endpoints are supported. Credentials are stored in macOS Keychain and are not written to UserDefaults, logs, usage records, or the source tree.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)

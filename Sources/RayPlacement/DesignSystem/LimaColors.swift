@@ -319,32 +319,72 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
 /// Dynamic semantic colors shared by every Lima workspace. These resolve through
 /// AppKit so explicit Light, Dark, and System appearance settings remain correct
 /// even when a view is hosted outside the main application window.
-enum LimaColors {
-    static var windowBackground: Color { Color(nsColor: .windowBackgroundColor) }
-    static var sidebarBackground: Color { Color(nsColor: .controlBackgroundColor) }
-    static var raisedSurface: Color { Color(nsColor: .controlBackgroundColor) }
-    static var recessedSurface: Color { Color(nsColor: .textBackgroundColor) }
-    static var editorBackground: Color { Color(nsColor: .textBackgroundColor) }
-    static var hoverFill: Color { Color(nsColor: .selectedContentBackgroundColor).opacity(0.38) }
-    static var selectedFill: Color { Color(nsColor: .selectedContentBackgroundColor).opacity(0.62) }
-    static var primaryText: Color { Color(nsColor: .labelColor) }
-    static var secondaryText: Color { Color(nsColor: .secondaryLabelColor) }
-    static var tertiaryText: Color { Color(nsColor: .tertiaryLabelColor) }
-    static var separator: Color { Color(nsColor: .separatorColor) }
-    static var border: Color { Color(nsColor: .separatorColor) }
-    static var focusedBorder: Color { Color(nsColor: .controlAccentColor) }
+/// Stable semantic palette for every Lima surface. Each token uses an AppKit
+/// dynamic color so a view remains legible when it is hosted in a separate
+/// floating window, or when the app's explicit appearance differs from macOS.
+enum LimaTheme {
+    private static func dynamic(light: NSColor, dark: NSColor) -> Color {
+        Color(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? dark : light
+        })
+    }
+
+    static var windowBackground: Color { dynamic(light: NSColor(calibratedRed: 0.955, green: 0.962, blue: 0.977, alpha: 1), dark: NSColor(calibratedRed: 0.075, green: 0.079, blue: 0.098, alpha: 1)) }
+    static var floatingWindowBackground: Color { dynamic(light: NSColor(calibratedRed: 0.985, green: 0.988, blue: 0.996, alpha: 0.98), dark: NSColor(calibratedRed: 0.105, green: 0.110, blue: 0.135, alpha: 0.985)) }
+    static var surfacePrimary: Color { dynamic(light: NSColor(calibratedRed: 0.990, green: 0.991, blue: 0.996, alpha: 1), dark: NSColor(calibratedRed: 0.105, green: 0.110, blue: 0.135, alpha: 1)) }
+    static var surfaceSecondary: Color { dynamic(light: NSColor(calibratedRed: 0.945, green: 0.952, blue: 0.970, alpha: 1), dark: NSColor(calibratedRed: 0.135, green: 0.140, blue: 0.170, alpha: 1)) }
+    static var surfaceRaised: Color { dynamic(light: NSColor(calibratedRed: 1, green: 1, blue: 1, alpha: 1), dark: NSColor(calibratedRed: 0.165, green: 0.170, blue: 0.205, alpha: 1)) }
+    static var surfaceSelected: Color { dynamic(light: NSColor(calibratedRed: 0.835, green: 0.890, blue: 0.990, alpha: 1), dark: NSColor(calibratedRed: 0.145, green: 0.255, blue: 0.455, alpha: 1)) }
+    static var fieldBackground: Color { dynamic(light: NSColor(calibratedRed: 1, green: 1, blue: 1, alpha: 1), dark: NSColor(calibratedRed: 0.070, green: 0.074, blue: 0.092, alpha: 1)) }
+    static var fieldBorder: Color { dynamic(light: NSColor(calibratedRed: 0.670, green: 0.700, blue: 0.750, alpha: 1), dark: NSColor(calibratedRed: 0.335, green: 0.355, blue: 0.410, alpha: 1)) }
+    static var fieldFocusedBorder: Color { accent }
+    static var borderSubtle: Color { dynamic(light: NSColor(calibratedRed: 0.800, green: 0.820, blue: 0.860, alpha: 1), dark: NSColor(calibratedRed: 0.235, green: 0.250, blue: 0.300, alpha: 1)) }
+    static var borderStrong: Color { dynamic(light: NSColor(calibratedRed: 0.565, green: 0.600, blue: 0.665, alpha: 1), dark: NSColor(calibratedRed: 0.430, green: 0.455, blue: 0.530, alpha: 1)) }
+    static var textPrimary: Color { Color(nsColor: .labelColor) }
+    static var textSecondary: Color { dynamic(light: NSColor(calibratedRed: 0.255, green: 0.275, blue: 0.325, alpha: 1), dark: NSColor(calibratedRed: 0.745, green: 0.765, blue: 0.820, alpha: 1)) }
+    static var textTertiary: Color { dynamic(light: NSColor(calibratedRed: 0.380, green: 0.405, blue: 0.470, alpha: 1), dark: NSColor(calibratedRed: 0.590, green: 0.620, blue: 0.700, alpha: 1)) }
+    static var textDisabled: Color { dynamic(light: NSColor(calibratedRed: 0.530, green: 0.550, blue: 0.600, alpha: 1), dark: NSColor(calibratedRed: 0.410, green: 0.435, blue: 0.500, alpha: 1)) }
     static var accent: Color { Color(nsColor: AppAccentTheme.current.nsPrimary) }
     static var onAccent: Color { AppAccentTheme.current.onPrimary }
-    static var accentSoft: Color { accent.opacity(0.12) }
     static var success: Color { Color(nsColor: .systemGreen) }
     static var warning: Color { Color(nsColor: .systemOrange) }
-    static var danger: Color { Color(nsColor: .systemRed) }
-    static var onDanger: Color {
-        Color(nsColor: LimaContrast.foreground(over: [NSColor.systemRed]))
-    }
-    static var dangerSoft: Color { danger.opacity(0.11) }
+    static var error: Color { Color(nsColor: .systemRed) }
+    static var shadowAmbient: Color { Color.black.opacity(0.18) }
+    static var shadowFloating: Color { Color.black.opacity(0.34) }
+
+    static var accentSoft: Color { accent.opacity(0.16) }
+    static var dangerSoft: Color { error.opacity(0.14) }
+}
+
+/// Compatibility aliases for existing feature views. New shared components use
+/// LimaTheme directly; legacy feature code inherits the stronger hierarchy.
+enum LimaColors {
+    static var windowBackground: Color { LimaTheme.windowBackground }
+    static var floatingWindowBackground: Color { LimaTheme.floatingWindowBackground }
+    static var sidebarBackground: Color { LimaTheme.surfaceSecondary }
+    static var raisedSurface: Color { LimaTheme.surfaceRaised }
+    static var recessedSurface: Color { LimaTheme.surfaceSecondary }
+    static var editorBackground: Color { LimaTheme.fieldBackground }
+    static var hoverFill: Color { LimaTheme.surfaceSecondary }
+    static var selectedFill: Color { LimaTheme.surfaceSelected }
+    static var primaryText: Color { LimaTheme.textPrimary }
+    static var secondaryText: Color { LimaTheme.textSecondary }
+    static var tertiaryText: Color { LimaTheme.textTertiary }
+    static var disabledText: Color { LimaTheme.textDisabled }
+    static var separator: Color { LimaTheme.borderSubtle }
+    static var border: Color { LimaTheme.borderSubtle }
+    static var strongBorder: Color { LimaTheme.borderStrong }
+    static var focusedBorder: Color { LimaTheme.fieldFocusedBorder }
+    static var accent: Color { LimaTheme.accent }
+    static var onAccent: Color { LimaTheme.onAccent }
+    static var accentSoft: Color { LimaTheme.accentSoft }
+    static var success: Color { LimaTheme.success }
+    static var warning: Color { LimaTheme.warning }
+    static var danger: Color { LimaTheme.error }
+    static var onDanger: Color { Color(nsColor: LimaContrast.foreground(over: [NSColor.systemRed])) }
+    static var dangerSoft: Color { LimaTheme.dangerSoft }
     static var info: Color { Color(nsColor: .systemBlue) }
-    static var shadow: Color { Color(nsColor: .shadowColor) }
+    static var shadow: Color { LimaTheme.shadowAmbient }
 
     @MainActor
     static var effectiveAppearance: NSAppearance? {

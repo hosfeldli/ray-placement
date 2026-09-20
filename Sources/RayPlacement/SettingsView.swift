@@ -138,7 +138,7 @@ struct SettingsView: View {
                     selectedContent
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
                 }
-                .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.window, border: LimaColors.border)
+                .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.window, border: LimaTheme.borderSubtle)
             }
             .padding(LimaDesign.windowPadding)
         }
@@ -171,10 +171,10 @@ struct SettingsView: View {
                         .foregroundStyle(settings.accentTheme.onGradient)
                 }
                 .frame(width: 30, height: 30)
-                .overlay(PrismaticPanelShape(cut: 7).stroke(LimaColors.primaryText.opacity(0.34), lineWidth: LimaDesign.borderWidth))
+                .overlay(PrismaticPanelShape(cut: 7).stroke(LimaTheme.borderStrong, lineWidth: LimaDesign.borderWidth))
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
-                    Text("Settings").limaFont(.caption2).foregroundStyle(.secondary)
+                    Text("Settings").limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             .padding(.horizontal, 14)
@@ -183,7 +183,7 @@ struct SettingsView: View {
 
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .font(.system(size: 11, weight: .semibold))
                 TextField("Search settings", text: $settingsSearchQuery)
                     .textFieldStyle(.plain)
@@ -191,15 +191,15 @@ struct SettingsView: View {
                 if !settingsSearchQuery.isEmpty {
                     Button { settingsSearchQuery = "" } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(LimaTheme.textTertiary)
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 9)
             .frame(height: 30)
-            .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
             .padding(.horizontal, 9)
             .padding(.bottom, 10)
 
@@ -208,14 +208,14 @@ struct SettingsView: View {
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .padding(.horizontal, 14)
                     .padding(.top, 12)
             } else {
                 Text("RESULTS")
                     .limaFont(.system(size: 9, weight: .bold))
                     .tracking(1.1)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(LimaTheme.textTertiary)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 4)
                 ForEach(filteredSections) { settingsRow($0) }
@@ -227,7 +227,7 @@ struct SettingsView: View {
                 .padding(.bottom, 11)
         }
         .frame(width: 204)
-        .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.window, border: LimaColors.border)
+        .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.window, border: LimaTheme.borderSubtle)
     }
 
     private var filteredSections: [SettingsSection] {
@@ -239,7 +239,7 @@ struct SettingsView: View {
         Text(title)
             .limaFont(.system(size: 9, weight: .bold))
             .tracking(1.1)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(LimaTheme.textTertiary)
             .padding(.horizontal, 14)
             .padding(.top, 7)
             .padding(.bottom, 3)
@@ -258,7 +258,7 @@ struct SettingsView: View {
                     .lineLimit(1)
                 Spacer()
             }
-            .foregroundStyle(selectedSection == section ? Color.primary : Color.primary.opacity(0.76))
+            .foregroundStyle(selectedSection == section ? Color.primary : LimaTheme.textPrimary.opacity(0.92))
             .padding(.horizontal, 10)
             .frame(height: 32)
             .limaSelection(selectedSection == section, radius: LimaRadius.control)
@@ -274,7 +274,7 @@ struct SettingsView: View {
             Text("STATUS")
                 .limaFont(.system(size: 9, weight: .bold))
                 .tracking(1.1)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(LimaTheme.textTertiary)
             SettingsCompactStatus(title: "Accessibility", value: compactPermission(.accessibility))
             SettingsCompactStatus(title: "Microphone", value: compactPermission(.microphone))
             SettingsCompactStatus(title: "Whisper", value: settings.dictationEngine == .localWhisper ? "Ready" : "Apple Speech")
@@ -287,7 +287,7 @@ struct SettingsView: View {
             SettingsCompactStatus(title: "Extensions", value: "\(viewModel.extensionCommands.count) enabled")
         }
         .padding(9)
-        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
     }
 
     private func compactPermission(_ id: PermissionCenter.PermissionID) -> String {
@@ -338,18 +338,18 @@ struct SettingsView: View {
                 Picker("Contrast", selection: $settings.contrastMode) {
                     ForEach(AppContrastMode.allCases) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
-                Text(settings.contrastMode.detail).limaFont(.caption).foregroundStyle(.secondary)
+                Text(settings.contrastMode.detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Layout") {
                 InterfaceTextSizeControl()
                 Picker("Interface density", selection: $settings.interfaceDensity) {
                     ForEach(AppInterfaceDensity.allCases) { Text($0.title).tag($0) }
                 }
-                Text(settings.interfaceDensity.detail).limaFont(.caption).foregroundStyle(.secondary)
+                Text(settings.interfaceDensity.detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Motion") {
                 Text("Lima follows the macOS Reduce Motion accessibility preference for transitions and animated surfaces.")
-                    .limaFont(.caption).foregroundStyle(.secondary)
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
         }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
     }
@@ -406,7 +406,7 @@ struct SettingsView: View {
                 }
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -415,7 +415,7 @@ struct SettingsView: View {
                 if settings.dictationEngine == .localWhisper {
                     Label("Semi-live · completed segments appear in the conversation while recording", systemImage: "waveform.badge.mic")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 performanceSlider(
                     "Dictation",
@@ -444,7 +444,7 @@ struct SettingsView: View {
                 DisclosureGroup("How limits work") {
                     Text("Dynamic mode lowers each slider when Low Power Mode or heat requires it. Dictation is the only feature that loads a speech model. Extension limits are cooperative, so install only code you trust.")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                         .padding(.top, 4)
                 }
             }
@@ -485,7 +485,7 @@ struct SettingsView: View {
                 Text(settings.dynamicPerformance && active != selection.wrappedValue
                     ? "\(active.title) active · \(selection.wrappedValue.title) max"
                     : selection.wrappedValue.title)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Slider(
                 value: Binding(
@@ -501,7 +501,7 @@ struct SettingsView: View {
                 Text("Unbounded")
             }
             .limaFont(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(LimaTheme.textTertiary)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(title) performance")
@@ -517,7 +517,7 @@ struct SettingsView: View {
             .pickerStyle(.segmented)
             Text(settings.grammarCorrectionMode.detail)
                 .limaFont(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
 
             Picker("Correction engine", selection: $settings.grammarEngineMode) {
                 Text("Local").tag(GrammarEngineMode.local)
@@ -527,7 +527,7 @@ struct SettingsView: View {
             if settings.grammarEngineMode == .externalAPI {
                 Text("External API sends the checked text to the selected provider after protected spans are masked. It never falls back to Local on failure.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Picker("Ensemble", selection: $settings.grammarEnsembleStrategy) {
                     ForEach(GrammarEnsembleStrategy.allCases) { strategy in
                         Text("\(strategy.title) · \(strategy.detail)").tag(strategy)
@@ -535,7 +535,7 @@ struct SettingsView: View {
                 }
                 Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Picker("Provider", selection: Binding(
                     get: { settings.developerGrammarProvider },
                     set: { settings.selectDeveloperGrammarProvider($0) }
@@ -578,12 +578,12 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                     Text("Usually no change is needed. Use this for a custom or OpenAI-compatible provider.")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 if let grammarConnectionMessage {
                     Text(grammarConnectionMessage)
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 HStack(spacing: 10) {
                     Button {
@@ -611,14 +611,14 @@ struct SettingsView: View {
                 if let grammarCompatibilityMessage {
                     Text(grammarCompatibilityMessage)
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
             } else {
                 Label("Everything stays on this Mac", systemImage: "lock.shield.fill")
                     .foregroundStyle(.green)
                 Text("Python spelling and Harper grammar run locally. No API key is required.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
         }
     }
@@ -684,7 +684,7 @@ struct SettingsView: View {
                 }
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -696,7 +696,7 @@ struct SettingsView: View {
                 PrimaryShortcutRow(title: "Dictation", symbol: "mic.fill", enabled: $settings.dictationHotkeyEnabled, shortcut: $settings.dictationShortcut)
                 Text("Recordings and transcripts remain on this Mac. Start Dictation from the launcher or its keyboard shortcut.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Performance") {
                 performanceSlider("Dictation", selection: $settings.dictationPerformance, active: settings.runtimeDictationPerformance)
@@ -723,7 +723,7 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(task.operation).limaFont(.callout.weight(.semibold))
                                 Text("\(task.model ?? task.category.rawValue) · \(task.performance.title) · \(task.threads) threads")
-                                    .limaFont(.caption).foregroundStyle(.secondary)
+                                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                             }
                             Spacer()
                             Text(task.startedAt, style: .timer).limaFont(.caption.monospacedDigit())
@@ -749,13 +749,13 @@ struct SettingsView: View {
 
             Section("Command ranking controls") {
                 Text("Manage pinned commands and learned ranking without opening the Action Panel.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .limaFont(.caption)
                 ForEach(viewModel.commandDescriptors) { descriptor in
                     HStack(spacing: 8) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(descriptor.title).limaFont(.callout.weight(.medium))
-                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(.secondary)
+                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                         }
                         Spacer()
                         Button {
@@ -774,7 +774,7 @@ struct SettingsView: View {
 
             Section("Command aliases") {
                 Text("Aliases are local and are ranked below an exact command title.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .limaFont(.caption)
                 ForEach(viewModel.commandDescriptors) { descriptor in
                     VStack(alignment: .leading, spacing: 5) {
@@ -807,7 +807,7 @@ struct SettingsView: View {
                 }
                 if LauncherPerformanceDiagnostics.shared.samples.isEmpty {
                     Text("No launcher measurements recorded yet.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Button("Clear Diagnostics") { LauncherPerformanceDiagnostics.shared.clear() }
             }
@@ -815,7 +815,7 @@ struct SettingsView: View {
             Section("Recent work") {
                 if usageMonitor.events.isEmpty {
                     Text("Completed dictation, grammar, and executable-extension tasks will appear here.")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 } else {
                     ForEach(usageMonitor.events.prefix(20)) { event in
                         HStack(spacing: 10) {
@@ -824,10 +824,10 @@ struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(event.operation).limaFont(.callout.weight(.medium))
                                 Text("\(event.model ?? event.category.rawValue) · \(event.performance) · \(event.threads) threads · \(durationLabel(event.duration))")
-                                    .limaFont(.caption).foregroundStyle(.secondary)
+                                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                             }
                             Spacer()
-                            Text(event.startedAt, style: .relative).limaFont(.caption2).foregroundStyle(.tertiary)
+                            Text(event.startedAt, style: .relative).limaFont(.caption2).foregroundStyle(LimaTheme.textTertiary)
                         }
                     }
                 }
@@ -838,7 +838,7 @@ struct SettingsView: View {
                         .disabled(usageMonitor.events.isEmpty)
                 }
                 Label("The log stays on this Mac and records task names, limits, duration, counts, and success—not selected text, note contents, or document data.", systemImage: "hand.raised.fill")
-                    .limaFont(.caption).foregroundStyle(.secondary)
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)
@@ -884,7 +884,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Shortcut")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                     Spacer()
                     ShortcutRecorder(
                         shortcut: accessoryMouseShortcutBinding(for: button),
@@ -895,7 +895,7 @@ struct SettingsView: View {
                         settings.setAccessoryMouseBinding(.none, for: button)
                     }
                     .buttonStyle(.borderless)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 }
             }
         }
@@ -1004,7 +1004,7 @@ struct SettingsView: View {
             Section("Accessory mouse buttons") {
                 Text("Bind extra mouse buttons to any Lima action or record a keyboard shortcut, like Mac Mouse Fix. The shortcut is sent to the app that is focused when you press the mouse button.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 ForEach(3...8, id: \.self) { button in
                     accessoryMouseBindingRow(button: button)
                 }
@@ -1012,13 +1012,13 @@ struct SettingsView: View {
 
             Section("Command audit") {
                 Text("Command enablement and shortcuts are independent. Use the recorder on any row to assign a shortcut.")
-                    .limaFont(.caption).foregroundStyle(.secondary)
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 ForEach(viewModel.commandDescriptors) { descriptor in
                     HStack(spacing: 9) {
                         Image(systemName: "command.circle").foregroundStyle(settings.accentTheme.readablePrimary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(descriptor.title).limaFont(.callout.weight(.medium))
-                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(.secondary)
+                            Text(descriptor.subtitle).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                         }
                         Spacer()
                         Toggle("Enable \(descriptor.title)", isOn: Binding(
@@ -1032,7 +1032,7 @@ struct SettingsView: View {
                         Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).limaFont(.caption)
                     }
                 } else {
-                    Label("No shortcut conflicts detected for extension commands.", systemImage: "checkmark.circle").foregroundStyle(.secondary).limaFont(.caption)
+                    Label("No shortcut conflicts detected for extension commands.", systemImage: "checkmark.circle").foregroundStyle(LimaTheme.textSecondary).limaFont(.caption)
                 }
             }
 
@@ -1044,7 +1044,7 @@ struct SettingsView: View {
                 }
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -1064,7 +1064,7 @@ struct SettingsView: View {
                     HStack {
                         Text(permission.title)
                         Spacer()
-                        Text(permissionCenter.statuses[permission]?.rawValue ?? "Checking…").foregroundStyle(.secondary)
+                        Text(permissionCenter.statuses[permission]?.rawValue ?? "Checking…").foregroundStyle(LimaTheme.textSecondary)
                         Button("Review") { permissionCenter.request(permission) }
                     }
                 }
@@ -1111,7 +1111,7 @@ struct SettingsView: View {
             Section("Persistence") {
                 if let error = settings.lastError { Text(error).foregroundStyle(.orange) }
                 Text("Notes, dictation, clipboard, settings, terminal sessions, workflows, and workspace state use private atomic storage with recovery copies.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)
@@ -1127,11 +1127,11 @@ struct SettingsView: View {
                 Stepper("Keep up to \(settings.clipboardLimit) items", value: $settings.clipboardLimit, in: 10...500, step: 10)
                 Text("Off by default. When enabled, Lima checks the macOS clipboard and stores text only in ~/Library/Application Support/Lima. Nothing is sent over the network.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if #available(macOS 15.4, *) {
                     Text("macOS clipboard permission: \(pasteboardAccessDescription())")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Button("Clear Clipboard History", role: .destructive) {
                     confirmClipboardClear = true
@@ -1154,15 +1154,15 @@ struct SettingsView: View {
             Section("Keychain secrets") {
                 Text("Values are stored in the macOS Keychain. Lima saves only names, kinds, and opaque references in workspace data; values are never shown in this list.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if secrets.references.isEmpty {
-                    Text("No secrets saved.").foregroundStyle(.secondary)
+                    Text("No secrets saved.").foregroundStyle(LimaTheme.textSecondary)
                 } else {
                     ForEach(secrets.references) { reference in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(reference.name).limaFont(.callout.weight(.medium))
-                                Text(reference.kind.title).limaFont(.caption).foregroundStyle(.secondary)
+                                Text(reference.kind.title).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                             }
                             Spacer()
                             Button("Edit") {
@@ -1183,7 +1183,7 @@ struct SettingsView: View {
                 }
                 SecureField("Value", text: $secretValue)
                 Text("Editing requires entering the value again; existing secret values are not revealed.")
-                    .limaFont(.caption2).foregroundStyle(.secondary)
+                    .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                 HStack {
                     Button(editingSecretID == nil ? "Add to Keychain" : "Replace value") {
                         do {
@@ -1232,7 +1232,7 @@ struct SettingsView: View {
                     .limaFont(.caption.weight(.medium))
                 Text(updateService.statusText)
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 HStack {
                     Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
                         .disabled(updateService.isBusy || updateService.isInstalling)
@@ -1247,7 +1247,7 @@ struct SettingsView: View {
                             .tint(SettingsColors.readableIndigo)
                         Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
                             .limaFont(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
             }
@@ -1259,7 +1259,7 @@ struct SettingsView: View {
                 }
                 SecureField("Value", text: $secretValue)
                 Text("Editing requires entering the value again; existing secret values are not revealed.")
-                    .limaFont(.caption2).foregroundStyle(.secondary)
+                    .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                 HStack {
                     Button(editingSecretID == nil ? "Add to Keychain" : "Replace value") {
                         do {
@@ -1287,15 +1287,15 @@ struct SettingsView: View {
                 .foregroundStyle(settings.accentTheme.readablePrimary)
             Text("Lima").limaFont(.title.bold())
             Text("A fast macOS command launcher built around local-first workflows and explicit integrations.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
             Text("Local features stay on this Mac. Features configured with external providers may send only the data required for that action.")
                 .limaFont(.callout.weight(.medium))
             Text("Version \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                 .limaFont(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(LimaTheme.textTertiary)
             Text(updateService.statusText)
                 .limaFont(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
             if updateService.isInstalling {
@@ -1304,7 +1304,7 @@ struct SettingsView: View {
                         .tint(SettingsColors.readableIndigo)
                     Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
                         .limaFont(.caption2.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 .frame(maxWidth: 420)
             }
@@ -1317,10 +1317,10 @@ struct SettingsView: View {
             DisclosureGroup("Update details") {
                 Text("Verified prebuilt updates replace this app in place after confirmation. No local compilation is required.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Text("~/Library/Application Support/Lima/Updates/update.log")
                     .limaFont(.caption2.monospaced())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(LimaTheme.textTertiary)
                 Button("Reveal running app in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
                 }
@@ -1359,7 +1359,7 @@ private struct SettingsCompactStatus: View {
             Spacer(minLength: 3)
             Text(value)
                 .limaFont(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .lineLimit(1)
         }
     }
@@ -1388,7 +1388,7 @@ private struct AccentThemePicker: View {
                             .frame(width: 30, height: 30)
                             .overlay(
                                 PrismaticPanelShape(cut: 5)
-                                    .stroke(LimaColors.primaryText.opacity(selection == theme ? 0.76 : 0.22), lineWidth: selection == theme ? LimaDesign.focusWidth : LimaDesign.borderWidth)
+                                    .stroke(selection == theme ? LimaTheme.borderStrong : LimaTheme.borderSubtle, lineWidth: selection == theme ? LimaDesign.focusWidth : LimaDesign.borderWidth)
                             )
                             .background(PrismaticPanelShape(cut: 6).fill(selection == theme ? theme.primary.opacity(0.20) : .clear))
                             .shadow(color: selection == theme ? theme.primary.opacity(0.22) : .clear, radius: 5, y: 2)
@@ -1451,7 +1451,7 @@ private struct ExtensionShortcutRow: View {
             )) {
                 Image(systemName: "command")
                     .limaFont(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .accessibilityHidden(true)
             }
             .toggleStyle(.checkbox)
@@ -1727,8 +1727,8 @@ private struct SimpleWritingSettingsView: View {
                     ForEach(settings.developerGrammarProvider.modelOptions, id: \.id) { option in Text(option.title).tag(option.id) }
                 }
                 Text("Only the selected text is sent for the current AI correction. Harper remains local.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if let message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                if let message { Text(message).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
             }
             Section("Shortcut") {
                 PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: Binding(get: { settings.stealthGrammarShortcut }, set: { settings.stealthGrammarShortcut = $0 }))

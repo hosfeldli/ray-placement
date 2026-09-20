@@ -145,3 +145,206 @@ import Testing
     #expect(usage.totalKnownTokens == 20)
     #expect(usage.displayText == "20 tokens")
 }
+
+// MARK: - Responses event compatibility
+
+private func responseEvent(_ type: String, _ fields: [String: Any] = [:]) -> [AIChatStreamEvent] {
+    var payload = fields
+    payload["type"] = type
+    let data = try! JSONSerialization.data(withJSONObject: payload, options: [])
+    return AIResponsesEventDecoder.events(eventType: type, dataLines: [String(decoding: data, as: UTF8.self)], model: "gpt-5")
+}
+
+private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AIChatStreamEvent] {
+    responseEvent(eventType, ["response_id": "resp_test", "item": item])
+}
+
+@Test func responsesDecoderAcceptsPlainAssistantText() {
+    let events = responseEvent("response.output_text.delta", ["delta": "Hello"])
+    guard case .textDelta(let text) = events.first else {
+        Issue.record("Expected a text delta")
+        return
+    }
+    #expect(text == "Hello")
+}
+
+@Test func responsesDecoderAcceptsReasoningBeforeMessage() {
+    let reasoning = outputItemEvent("response.output_item.added", item: ["type": "reasoning", "id": "reasoning_1"])
+    let text = responseEvent("response.output_text.delta", ["delta": "Answer"])
+    #expect(reasoning.contains { if case .outputItem(let item) = $0 { return item.kind == .reasoning }; return false })
+    #expect(text.contains { if case .textDelta = $0 { return true }; return false })
+}
+
+@Test func responsesDecoderAcceptsMessageBeforeReasoning() {
+    let text = responseEvent("response.output_text.delta", ["delta": "Answer"])
+    let reasoning = outputItemEvent("response.output_item.done", item: ["type": "reasoning", "id": "reasoning_2"])
+    #expect(text.contains { if case .textDelta = $0 { return true }; return false })
+    #expect(reasoning.contains { if case .outputItem(let item) = $0 { return item.kind == .reasoning }; return false })
+}
+
+@Test func responsesDecoderPreservesMultipleOutputItems() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "function_call",
+        "id": "fc_1",
+        "call_id": "call_1",
+        "name": "search_files",
+        "arguments": "{\"query\":\"report\"}"
+    ])
+    guard case .outputItem(let item) = events.first else {
+        Issue.record("Expected an output item")
+        return
+    }
+    #expect(item.kind == .functionCall)
+    #expect(item.callID == "call_1")
+    #expect(item.arguments?.contains("report") == true)
+}
+
+@Test func responsesDecoderAcceptsStreamedReasoningSummary() {
+    let events = responseEvent("response.reasoning_summary_text.delta", ["delta": "I checked the inputs."])
+    guard case .reasoningSummaryDelta(let summary) = events.first else {
+        Issue.record("Expected a reasoning summary delta")
+        return
+    }
+    #expect(summary == "I checked the inputs.")
+}
+
+@Test func responsesDecoderTreatsFunctionCallAsValidNonTextOutput() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "function_call",
+        "id": "fc_2",
+        "call_id": "call_2",
+        "name": "get_lima_status",
+        "arguments": "{}"
+    ])
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .functionCall }; return false })
+}
+
+@Test func responsesDecoderSupportsFunctionCallContinuationInputs() {
+    let output = ["type": "function_call_output", "call_id": "call_3", "output": "{\"ok\":true}"] as [String: Any]
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5",
+        input: [output],
+        previousResponseID: "resp_tools",
+        reasoningEffort: .medium,
+        tools: []
+    )
+    let input = try? #require(body["input"] as? [[String: Any]])
+    #expect(input?.first?["type"] as? String == "function_call_output")
+    #expect(body["previous_response_id"] as? String == "resp_tools")
+}
+
+@Test func responsesDecoderAcceptsMCPToolCall() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "mcp_call",
+        "id": "mcp_1",
+        "name": "search",
+        "server_label": "Docs MCP"
+    ])
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .mcpCall && item.serverLabel == "Docs MCP" }; return false })
+}
+
+@Test func responsesDecoderReportsUnknownOutputItemWithoutFailing() {
+    let events = outputItemEvent("response.output_item.done", item: [
+        "type": "future_output_item",
+        "id": "future_1"
+    ])
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .unknown }; return false })
+    #expect(events.contains { if case .diagnostic(let diagnostic) = $0 { return diagnostic.outputItemType == "future_output_item" }; return false })
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+}
+
+@Test func responsesDecoderReportsUnknownEventWithoutFailing() {
+    let events = responseEvent("response.future_event", ["response_id": "resp_future"])
+    #expect(events.count == 1)
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected an unknown-event diagnostic")
+        return
+    }
+    #expect(diagnostic.eventType == "response.future_event")
+}
+
+@Test func responsesDecoderReportsMalformedJSONSafely() {
+    let events = AIResponsesEventDecoder.events(eventType: "response.output_text.delta", dataLines: ["{not-json"], model: "gpt-5")
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected a malformed JSON diagnostic")
+        return
+    }
+    #expect(diagnostic.stage == .stream)
+    #expect(diagnostic.message.contains("malformed"))
+}
+
+@Test func responsesDecoderPreservesStructuredAPIErrorDetails() {
+    let events = responseEvent("error", [
+        "error": ["code": "invalid_prompt", "param": "input", "message": "The input is invalid."]
+    ])
+    #expect(events.contains { if case .failed(let message) = $0 { return message == "The input is invalid." }; return false })
+    guard case .diagnostic(let diagnostic) = events.first else {
+        Issue.record("Expected an API diagnostic")
+        return
+    }
+    #expect(diagnostic.errorCode == "invalid_prompt")
+    #expect(diagnostic.errorParameter == "input")
+}
+
+@Test func responsesDecoderEmitsCompletionForEmptyValidResponse() {
+    let events = responseEvent("response.completed", ["response": ["id": "resp_empty"]])
+    #expect(events.contains { if case .completed(let id) = $0 { return id == "resp_empty" }; return false })
+    #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
+}
+
+@Test func responsesDecoderAcceptsResponseUsageOnCompletion() {
+    let events = responseEvent("response.completed", [
+        "response": [
+            "id": "resp_usage",
+            "usage": ["input_tokens": 4, "output_tokens": 6]
+        ]
+    ])
+    #expect(events.contains { if case .usage(let usage) = $0 { return usage.totalKnownTokens == 10 }; return false })
+}
+
+@Test func responsesDecoderAcceptsMCPFailureAsActivity() {
+    let events = responseEvent("response.mcp_call.failed", [
+        "name": "write_file",
+        "server_label": "Files",
+        "error": ["message": "Permission denied"]
+    ])
+    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .mcpCall && item.errorMessage == "Permission denied" }; return false })
+}
+
+@Test @MainActor func localToolRiskRequiresApprovalForLocalActions() {
+    let read = LimaAIToolRegistry.definition(for: "get_lima_status")
+    let action = LimaAIToolRegistry.definition(for: "open_lima_settings")
+    #expect(read?.risk.requiresApproval == false)
+    #expect(action?.risk.requiresApproval == true)
+}
+
+@Test func localToolFailureIsReturnedAsToolOutput() async {
+    let call = AIOutputItem(
+        phase: .completed,
+        apiType: "function_call",
+        callID: "call_bad",
+        name: "search_files",
+        arguments: "{\"query\":123}"
+    )
+    let result = await LimaAIToolRegistry.execute(call)
+    #expect(result.isError)
+    #expect(result.output.contains("error"))
+}
+
+@Test func unsupportedModelDoesNotReceiveReasoningConfiguration() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-4o",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["reasoning"] == nil)
+}
+
+@Test func cancellationAndStreamInterruptionRemainNonFatalToDecoder() {
+    #expect(AIResponsesEventDecoder.events(eventType: "", dataLines: ["[DONE]"], model: "gpt-5").isEmpty)
+    let partial = responseEvent("response.output_text.delta", ["delta": "partial"])
+    #expect(partial.contains { if case .textDelta(let text) = $0 { return text == "partial" }; return false })
+}

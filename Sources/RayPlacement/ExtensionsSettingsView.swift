@@ -142,13 +142,13 @@ struct ExtensionsSettingsView: View {
             .padding(12)
 
             HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                Image(systemName: "magnifyingglass").foregroundStyle(LimaTheme.textSecondary)
                 TextField("Search Extensions…", text: $query)
                     .textFieldStyle(.plain)
                 if !query.isEmpty {
                     Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(LimaTheme.textTertiary)
                 }
                 Button { reloadExtensions(); storeModel.load() } label: {
                     Image(systemName: "arrow.clockwise")
@@ -158,7 +158,7 @@ struct ExtensionsSettingsView: View {
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
-            .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
             .padding(.horizontal, 12)
             .padding(.bottom, 8)
 
@@ -214,7 +214,7 @@ struct ExtensionsSettingsView: View {
                     Text(package.name).font(.callout.weight(.semibold))
                     Text("\(package.source) · \(package.lifecycleState.rawValue) · v\(package.version) · \(package.commandCount) command\(package.commandCount == 1 ? "" : "s")")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Spacer()
                 Text(package.enabled ? "Enabled" : "Disabled")
@@ -244,8 +244,8 @@ struct ExtensionsSettingsView: View {
                 extensionDetail(package)
             }
         }
-        .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaColors.border, lineWidth: 1))
+        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: 1))
     }
 
     private func extensionDetail(_ package: InstalledPackage) -> some View {
@@ -267,7 +267,7 @@ struct ExtensionsSettingsView: View {
                     Spacer()
                     Text(command.effectiveShortcutLabel)
                         .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             }
@@ -284,8 +284,8 @@ struct ExtensionsSettingsView: View {
     private func extensionPreferences(_ package: InstalledPackage) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Preferences").font(.headline)
-            Text("Package preferences are stored by extension identifier and remain available after removal.").font(.caption).foregroundStyle(.secondary)
-            Text("Settings key: extension.\(package.id)").font(.caption.monospaced()).foregroundStyle(.secondary)
+            Text("Package preferences are stored by extension identifier and remain available after removal.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            Text("Settings key: extension.\(package.id)").font(.caption.monospaced()).foregroundStyle(LimaTheme.textSecondary)
             Toggle("Enabled", isOn: Binding(get: { package.enabled }, set: { _ in toggle(package) }))
         }
     }
@@ -294,9 +294,9 @@ struct ExtensionsSettingsView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Permissions").font(.headline)
             let capabilities = package.commands.compactMap { Array($0.capabilities) }.reduce(into: Set<ExtensionManifest.Capability>()) { $0.formUnion($1) }
-            if capabilities.isEmpty { Text("No special capabilities requested.").font(.caption).foregroundStyle(.secondary) }
+            if capabilities.isEmpty { Text("No special capabilities requested.").font(.caption).foregroundStyle(LimaTheme.textSecondary) }
             ForEach(Array(capabilities).sorted { $0.rawValue < $1.rawValue }, id: \.rawValue) { capability in Label(capability.rawValue, systemImage: "checkmark.shield") .font(.caption) }
-            Text(package.bundled ? "Bundled extensions are trusted by Lima." : "User extensions require approval when their manifest or capabilities change.").font(.caption).foregroundStyle(.secondary)
+            Text(package.bundled ? "Bundled extensions are trusted by Lima." : "User extensions require approval when their manifest or capabilities change.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
         }
     }
 
@@ -341,10 +341,10 @@ struct ExtensionsSettingsView: View {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(entry.name).font(.callout.weight(.semibold))
-                    Text("v\(entry.version)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    Text("v\(entry.version)").font(.caption.monospacedDigit()).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text(entry.summary).font(.caption).foregroundStyle(.secondary)
-                Text("\(entry.category) · \(entry.author)").font(.caption2).foregroundStyle(.tertiary)
+                Text(entry.summary).font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Text("\(entry.category) · \(entry.author)").font(.caption2).foregroundStyle(LimaTheme.textTertiary)
             }
             Spacer()
             Button(storeModel.isInstalled(entry) ? "Installed" : (storeModel.installingID == entry.id ? "Installing…" : "Install")) {
@@ -355,15 +355,15 @@ struct ExtensionsSettingsView: View {
             .disabled(storeModel.isInstalled(entry) || storeModel.installingID != nil)
         }
         .padding(11)
-        .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaColors.border, lineWidth: 1))
+        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: 1))
     }
 
     private var developerView: some View {
         Form {
             Section("Developer extensions") {
                 Text("Install and inspect local extension packages. Developer tools are intentionally separate from the Store.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Button("Open Extensions Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
                 Button("Reload Installed Extensions") { reloadExtensions() }
             }
@@ -373,10 +373,10 @@ struct ExtensionsSettingsView: View {
                         Image(systemName: package.bundled ? "shippingbox.fill" : "person.crop.circle")
                         VStack(alignment: .leading) {
                             Text(package.name).font(.callout.weight(.medium))
-                            Text("\(package.source) · \(package.id)").font(.caption).foregroundStyle(.secondary)
+                            Text("\(package.source) · \(package.id)").font(.caption).foregroundStyle(LimaTheme.textSecondary)
                         }
                         Spacer()
-                        Text(package.bundled ? "Bundled" : "Local / installed").font(.caption).foregroundStyle(.secondary)
+                        Text(package.bundled ? "Bundled" : "Local / installed").font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
             }
@@ -390,7 +390,7 @@ struct ExtensionsSettingsView: View {
                     emptyState("Everything is up to date", detail: "Refresh Available to check the catalog again.", symbol: "checkmark.circle")
                 } else {
                     HStack {
-                        Text("UPDATES AVAILABLE").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(.secondary)
+                        Text("UPDATES AVAILABLE").font(.caption.weight(.bold)).tracking(1.1).foregroundStyle(LimaTheme.textSecondary)
                         Spacer()
                         Button("Update All") { updateAll() }.buttonStyle(.borderedProminent).controlSize(.small)
                     }
@@ -398,7 +398,7 @@ struct ExtensionsSettingsView: View {
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(update.entry.name).font(.callout.weight(.semibold))
-                                Text("\(update.installed.version) → \(update.entry.version)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                Text("\(update.installed.version) → \(update.entry.version)").font(.caption.monospacedDigit()).foregroundStyle(LimaTheme.textSecondary)
                             }
                             Spacer()
                             Button("Update") { storeModel.install(update.entry) }
@@ -406,7 +406,7 @@ struct ExtensionsSettingsView: View {
                                 .controlSize(.small)
                         }
                         .padding(11)
-                        .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
                     }
                 }
             }
@@ -454,15 +454,15 @@ struct ExtensionsSettingsView: View {
     @ViewBuilder
     private func emptyState(_ title: String, detail: String, symbol: String) -> some View {
         VStack(spacing: 8) {
-            Image(systemName: symbol).font(.system(size: 28)).foregroundStyle(.secondary)
+            Image(systemName: symbol).font(.system(size: 28)).foregroundStyle(LimaTheme.textSecondary)
             Text(title).font(.headline)
-            Text(detail).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+            Text(detail).font(.caption).foregroundStyle(LimaTheme.textSecondary).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 150)
     }
 
     private func statusLine(_ value: String) -> some View {
-        Text(value).font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .leading)
+        Text(value).font(.caption).foregroundStyle(LimaTheme.textSecondary).frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

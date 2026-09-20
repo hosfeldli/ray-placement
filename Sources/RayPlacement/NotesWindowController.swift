@@ -700,7 +700,7 @@ private struct NotesView: View {
             VStack(spacing: LimaDesign.panelGap) {
                 if !presentation.mode.isDocked && !presentation.notesFocusMode {
                     windowChrome
-                        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+                        .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
                 }
                 if presentation.mode.isDocked {
                     VStack(spacing: 0) {
@@ -714,20 +714,20 @@ private struct NotesView: View {
                         GlassHairline()
                         editor
                     }
-                    .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+                    .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
                 } else if presentation.sidebarVisible && presentation.mode != .fullScreen {
                     HStack(spacing: 10) {
                         sidebar
                             .frame(width: 246)
-                            .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.panel, border: LimaColors.border)
+                            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
                         editor
                             .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
-                            .limaNativeSurface(fill: LimaColors.editorBackground, radius: LimaRadius.panel, border: LimaColors.border)
+                            .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
                     }
                 } else {
                     editor
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .limaNativeSurface(fill: LimaColors.editorBackground, radius: LimaRadius.panel, border: LimaColors.border)
+                        .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
                 }
             }
             .padding(.horizontal, presentation.mode.isDocked ? 6 : LimaDesign.windowPadding)
@@ -867,7 +867,7 @@ private struct NotesView: View {
                     .frame(minWidth: 92, maxWidth: 120, minHeight: 28)
                 }
                 .menuStyle(.borderlessButton)
-                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
                 .help("Choose Quick Note section")
 
                 Button {
@@ -880,9 +880,9 @@ private struct NotesView: View {
                 .padding(.horizontal, 7)
                 .frame(minHeight: 28)
                 .limaNativeSurface(
-                    fill: contextShelf.count > 0 ? LimaColors.accentSoft : LimaColors.recessedSurface,
+                    fill: contextShelf.count > 0 ? LimaColors.accentSoft : LimaTheme.surfaceSecondary,
                     radius: LimaRadius.control,
-                    border: LimaColors.border
+                    border: LimaTheme.borderSubtle
                 )
                 .help("Open Context Shelf")
                 .accessibilityLabel("Context Shelf, \(contextShelf.count) items")
@@ -908,7 +908,7 @@ private struct NotesView: View {
                         .frame(width: 30, height: 28)
                 }
                 .menuStyle(.borderlessButton)
-                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
                 .help("Quick Note actions")
                 .accessibilityLabel("Quick Note actions")
             } else {
@@ -972,7 +972,7 @@ private struct NotesView: View {
                         .truncationMode(.tail)
                     Image(systemName: "chevron.down")
                         .limaFont(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -1031,7 +1031,7 @@ private struct NotesView: View {
                     .frame(width: 30, height: 28)
             }
             .menuStyle(.borderlessButton)
-            .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
             .help("Quick Note actions")
             .accessibilityLabel("Quick Note actions")
         }
@@ -1040,7 +1040,7 @@ private struct NotesView: View {
 
     private var sidebar: some View {
         noteBrowser(compact: false)
-            .limaNativeSurface(fill: LimaColors.sidebarBackground, radius: LimaRadius.panel, border: LimaColors.border)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
     }
 
     private var pinnedReferenceBar: some View {
@@ -1055,7 +1055,7 @@ private struct NotesView: View {
                         .buttonStyle(.borderless)
                         .padding(.horizontal, 6)
                         .frame(height: 24)
-                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                     }
                 }
             }
@@ -1081,7 +1081,7 @@ private struct NotesView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
                     HStack(spacing: 6) {
-                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        Image(systemName: "magnifyingglass").foregroundStyle(LimaTheme.textSecondary)
                         TextField("Search notes", text: $searchQuery)
                             .textFieldStyle(.plain)
                         if compact {
@@ -1092,13 +1092,13 @@ private struct NotesView: View {
                                 Image(systemName: "xmark.circle.fill")
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                             .help("Close note search")
                         }
                     }
                     .padding(.horizontal, 9)
                     .frame(height: 30)
-                    .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                    .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
                     .frame(maxWidth: .infinity)
                 }
 
@@ -1134,7 +1134,7 @@ private struct NotesView: View {
                                         Text(template.title)
                                         Text(template.detail)
                                             .limaFont(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(LimaTheme.textSecondary)
                                     }
                                 } icon: {
                                     Image(systemName: template == .blank ? "square.and.pencil" : "doc.text.fill")
@@ -1203,7 +1203,7 @@ private struct NotesView: View {
                     if filteredNotes.isEmpty {
                         Text(searchQuery.isEmpty ? "No notes yet" : "No matching notes")
                             .limaFont(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(12)
                     }
@@ -1223,7 +1223,7 @@ private struct NotesView: View {
                     Text("\(store.notes.count) \(store.notes.count == 1 ? "note" : "notes")")
                 }
                 .limaFont(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .padding(.horizontal, 12)
                 .frame(height: LimaDesign.statusHeight)
             }
@@ -1255,7 +1255,7 @@ private struct NotesView: View {
                 Text("Start a quick thought").limaFont(.title3.bold())
                 Text("Notes save locally as you type.")
                     .limaFont(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Button("Create Note") { store.createNote() }
                     .limaButton(prominent: true)
             }
@@ -1270,7 +1270,7 @@ private struct NotesView: View {
 
                 Text("Dictation is saved here as its own conversation. Notes stay untouched.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1284,7 +1284,7 @@ private struct NotesView: View {
                                     .limaFont(.caption.weight(.semibold))
                                 Text("Start dictation to create a private conversation.")
                                     .limaFont(.caption2)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(LimaTheme.textSecondary)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1305,7 +1305,7 @@ private struct NotesView: View {
                                         }
                                         Text(conversation.preview.isEmpty ? "No transcript yet" : conversation.preview)
                                             .limaFont(.caption2)
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(LimaTheme.textSecondary)
                                             .lineLimit(2)
                                             .truncationMode(.tail)
                                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1392,15 +1392,15 @@ private struct NotesView: View {
                             .accessibilityHidden(true)
                         Text(dictationEditorState(for: conversation))
                             .limaFont(.caption2.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                         if dictation.phase == .recording || dictation.phase == .paused {
                             Text(Self.clockLabel(dictation.recordingElapsed))
                                 .limaFont(.caption2.monospacedDigit())
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(LimaTheme.textPrimary)
                             Text("·")
                             Text(dictation.inputSignalText)
                                 .limaFont(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LimaTheme.textSecondary)
                                 .lineLimit(1)
                         }
                         Spacer(minLength: 4)
@@ -1416,8 +1416,8 @@ private struct NotesView: View {
                         .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
                         .scrollContentBackground(.hidden)
                         .padding(7)
-                        .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+                        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
                         .focused($dictationEditorFocused)
                         .accessibilityLabel("Editable dictation transcript")
                         .accessibilityHint("Correct the transcript directly. Changes are saved locally.")
@@ -1425,7 +1425,7 @@ private struct NotesView: View {
                         if conversation.transcript.isEmpty {
                             Text(dictation.phase == .recording ? "Live transcript will appear here…" : "Transcript will appear here. You can edit it after recording.")
                                 .limaFont(.system(size: presentation.mode.isDocked ? 13 : 15))
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(LimaTheme.textTertiary)
                                 .padding(.horizontal, 15)
                                 .padding(.vertical, 14)
                                 .allowsHitTesting(false)
@@ -1455,7 +1455,7 @@ private struct NotesView: View {
                         Text("Start a dictation conversation")
                             .limaFont(.title3.bold())
                         Text("Your transcript will appear in this tab and will never be appended to a Markdown note.")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                             .fixedSize(horizontal: false, vertical: true)
                         Button("Start Dictation") { dictation.performPrimaryAction() }
                             .limaButton(prominent: true)
@@ -1712,7 +1712,7 @@ private struct NotesView: View {
                         }
                     }
                     .limaFont(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 }
                 if !note.tags.isEmpty {
                     HStack(spacing: 4) {
@@ -1772,8 +1772,8 @@ private struct NotesView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .frame(width: 28, height: 28)
-                    .background(LimaColors.raisedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+                    .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
             }
             .menuStyle(.borderlessButton)
             .frame(width: 30)
@@ -1814,8 +1814,8 @@ private struct NotesView: View {
                     .id(note.id)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
                     .frame(maxWidth: settings.notesContentWidth.maximum)
-                    .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+                    .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
             .background(Color.clear)
@@ -1823,7 +1823,7 @@ private struct NotesView: View {
             markdownEditor
                 .id(note.id)
                 .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
-                .background(LimaColors.editorBackground)
+                .background(LimaTheme.fieldBackground)
         }
     }
 
@@ -1879,7 +1879,7 @@ private struct NotesView: View {
                     MarkdownInsertButton(symbol: "link", help: "Link (Command-K)", action: MarkdownEditorActions.link)
                 }
                 .padding(3)
-                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
 
                 Spacer(minLength: 5)
 
@@ -1921,8 +1921,8 @@ private struct NotesView: View {
                         .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
                         .padding(.horizontal, 8)
                         .frame(height: 26)
-                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+                        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
                         .help("Completed tasks")
                 }
 
@@ -1930,7 +1930,7 @@ private struct NotesView: View {
             .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
             .padding(.vertical, 8)
         }
-        .background(LimaColors.recessedSurface)
+        .background(LimaTheme.surfaceSecondary)
     }
 
     private func appendClipboard() {
@@ -2024,7 +2024,7 @@ private struct NotesView: View {
         Text(title.uppercased())
             .limaFont(.system(size: 9, weight: .bold))
             .tracking(0.8)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(LimaTheme.textSecondary)
     }
 
     private func wordCount(_ text: String) -> Int {
@@ -2115,7 +2115,7 @@ private struct NotesAppearancePanel: View {
         }
         .padding(16)
         .frame(width: 330)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border, shadow: true)
+        .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle, shadow: true)
     }
 }
 
@@ -2129,7 +2129,7 @@ private struct NotesAppearanceSlider: View {
         HStack(spacing: 10) {
             Text(title).frame(width: 52, alignment: .leading)
             Slider(value: $value, in: range)
-            Text(valueLabel).monospacedDigit().foregroundStyle(.secondary).frame(width: 42, alignment: .trailing)
+            Text(valueLabel).monospacedDigit().foregroundStyle(LimaTheme.textSecondary).frame(width: 42, alignment: .trailing)
         }
         .limaFont(.caption)
     }
@@ -2137,7 +2137,7 @@ private struct NotesAppearanceSlider: View {
 
 private extension Text {
     func notesAppearanceLabel() -> some View {
-        limaFont(.system(size: 9, weight: .bold)).tracking(0.8).foregroundStyle(.secondary)
+        limaFont(.system(size: 9, weight: .bold)).tracking(0.8).foregroundStyle(LimaTheme.textSecondary)
     }
 }
 
@@ -2171,12 +2171,12 @@ private struct HeadingOutlineSheet: View {
                             Image(systemName: "text.alignleft")
                             Text(heading.title).lineLimit(1)
                             Spacer()
-                            Text("L\(heading.line + 1)").foregroundStyle(.tertiary)
+                            Text("L\(heading.line + 1)").foregroundStyle(LimaTheme.textTertiary)
                         }
                     }.buttonStyle(.plain)
                 }
             } else {
-                Text("Add Markdown headings to build an outline.").foregroundStyle(.secondary)
+                Text("Add Markdown headings to build an outline.").foregroundStyle(LimaTheme.textSecondary)
             }
             HStack { Spacer(); Button("Close") { dismiss() } }
         }
@@ -2192,9 +2192,9 @@ private struct TaskDashboardSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack { Text("Task Dashboard").limaFont(.title3.bold()); Spacer(); Text("\(tasks.filter(\.checked).count)/\(tasks.count)").foregroundStyle(.secondary) }
+            HStack { Text("Task Dashboard").limaFont(.title3.bold()); Spacer(); Text("\(tasks.filter(\.checked).count)/\(tasks.count)").foregroundStyle(LimaTheme.textSecondary) }
             if tasks.isEmpty {
-                Text("Checklist items from all notes will appear here.").foregroundStyle(.secondary)
+                Text("Checklist items from all notes will appear here.").foregroundStyle(LimaTheme.textSecondary)
             } else {
                 List(tasks) { task in
                     Button { onSelect(task.noteID); dismiss() } label: {
@@ -2203,7 +2203,7 @@ private struct TaskDashboardSheet: View {
                                 .foregroundStyle(task.checked ? .green : .secondary)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(task.text).lineLimit(2)
-                                Text(task.noteTitle).limaFont(.caption2).foregroundStyle(.secondary)
+                                Text(task.noteTitle).limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                             }
                             Spacer()
                         }
@@ -2231,7 +2231,7 @@ private struct TagEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Edit Tags").limaFont(.title3.bold())
-            Text("Separate tags with commas. Tags are stored locally.").foregroundStyle(.secondary)
+            Text("Separate tags with commas. Tags are stored locally.").foregroundStyle(LimaTheme.textSecondary)
             TextField("project, follow-up, personal", text: $text)
                 .limaInputSurface()
             HStack {
@@ -2260,14 +2260,14 @@ private struct RevisionHistorySheet: View {
                     Text("Revision History").limaFont(.title3.bold())
                     Text("\(revisions.count) saved \(revisions.count == 1 ? "version" : "versions")")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Spacer()
                 Image(systemName: "clock.arrow.circlepath")
                     .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             }
             if revisions.isEmpty {
-                Text("Revisions appear after a note has been edited.").foregroundStyle(.secondary)
+                Text("Revisions appear after a note has been edited.").foregroundStyle(LimaTheme.textSecondary)
             } else {
                 List(revisions.reversed()) { revision in
                     HStack(spacing: 10) {
@@ -2276,7 +2276,7 @@ private struct RevisionHistorySheet: View {
                                 .lineLimit(1)
                             Text(revisionPreview(revision.content))
                                 .limaFont(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LimaTheme.textSecondary)
                                 .lineLimit(2)
                             HStack(spacing: 6) {
                                 Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened))
@@ -2284,7 +2284,7 @@ private struct RevisionHistorySheet: View {
                                 Text("\(wordCount(revision.content)) words")
                             }
                             .limaFont(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(LimaTheme.textTertiary)
                         }
                         Spacer(minLength: 8)
                         Button("Restore") { pendingRestore = revision }
@@ -2342,7 +2342,7 @@ private struct NoteSwitcherSheet: View {
             HStack {
                 Text("Switch Note").limaFont(.title3.bold())
                 Spacer()
-                Text("⌘P").limaFont(.caption).foregroundStyle(.secondary)
+                Text("⌘P").limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             TextField("Search notes", text: $query)
                 .limaInputSurface()
@@ -2356,7 +2356,7 @@ private struct NoteSwitcherSheet: View {
                             .foregroundStyle(note.id == selectedID ? SettingsStore.shared.accentTheme.readablePrimary : .secondary)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(note.displayTitle).lineLimit(1)
-                            Text(note.preview).limaFont(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(note.preview).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
                         }
                         Spacer()
                     }
@@ -2392,7 +2392,7 @@ private struct TemplateEditorSheet: View {
             TextEditor(text: $content)
                 .font(.system(.body, design: .monospaced))
                 .padding(7)
-                .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -2418,7 +2418,7 @@ private struct RevisionDiffSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Revision Diff").limaFont(.title3.bold())
-                    Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened)).limaFont(.caption).foregroundStyle(.secondary)
+                    Text(revision.timestamp.formatted(date: .abbreviated, time: .shortened)).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 Spacer()
                 Button("Close") { dismiss() }
@@ -2436,7 +2436,7 @@ private struct RevisionDiffSheet: View {
                 }
                 .padding(6)
             }
-            .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
         }
         .padding(18)
         .frame(width: 720, height: 540)
@@ -2495,7 +2495,7 @@ private struct NoteListRow: View {
                 }
                 Text(excerpt ?? note.preview)
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(1)
                 HStack(spacing: 5) {
                     Text(relativeTimestamp(note.modifiedAt))
@@ -2505,7 +2505,7 @@ private struct NoteListRow: View {
                     }
                 }
                 .limaFont(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(LimaTheme.textTertiary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

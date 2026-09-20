@@ -257,6 +257,8 @@ enum AIToolApprovalDecision: String, Codable, Sendable {
 struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     var id: UUID
     var remoteApprovalID: String?
+    var localCallID: String?
+    var localToolID: String?
     var serverLabel: String
     var toolName: String
     var arguments: String?
@@ -266,6 +268,8 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     init(
         id: UUID = UUID(),
         remoteApprovalID: String? = nil,
+        localCallID: String? = nil,
+        localToolID: String? = nil,
         serverLabel: String,
         toolName: String,
         arguments: String? = nil,
@@ -274,11 +278,165 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     ) {
         self.id = id
         self.remoteApprovalID = remoteApprovalID
+        self.localCallID = localCallID
+        self.localToolID = localToolID
         self.serverLabel = serverLabel
         self.toolName = toolName
         self.arguments = arguments
         self.decision = decision
         self.createdAt = createdAt
+    }
+}
+
+// MARK: - Responses output and diagnostics
+
+enum AIOutputItemKind: String, Codable, Sendable {
+    case message
+    case reasoning
+    case functionCall = "function_call"
+    case mcpCall = "mcp_call"
+    case mcpApprovalRequest = "mcp_approval_request"
+    case toolCall = "tool_call"
+    case unknown
+
+    init(apiType: String) {
+        switch apiType {
+        case "message": self = .message
+        case "reasoning": self = .reasoning
+        case "function_call": self = .functionCall
+        case "mcp_call": self = .mcpCall
+        case "mcp_approval_request": self = .mcpApprovalRequest
+        default:
+            self = apiType.contains("tool") ? .toolCall : .unknown
+        }
+    }
+
+    var isToolActivity: Bool {
+        self == .functionCall || self == .mcpCall || self == .mcpApprovalRequest || self == .toolCall
+    }
+}
+
+enum AIOutputItemPhase: String, Codable, Sendable {
+    case added
+    case completed
+}
+
+struct AIOutputItem: Hashable, Sendable {
+    let phase: AIOutputItemPhase
+    let kind: AIOutputItemKind
+    let apiType: String
+    let id: String?
+    let callID: String?
+    let name: String?
+    let serverLabel: String?
+    let arguments: String?
+    let errorMessage: String?
+
+    init(phase: AIOutputItemPhase, payload: [String: Any]) {
+        let apiType = payload["type"] as? String ?? "unknown"
+        self.phase = phase
+        self.kind = AIOutputItemKind(apiType: apiType)
+        self.apiType = apiType
+        self.id = payload["id"] as? String ?? payload["approval_request_id"] as? String
+        self.callID = payload["call_id"] as? String
+        self.name = payload["name"] as? String ?? payload["tool_name"] as? String
+        self.serverLabel = payload["server_label"] as? String
+        self.arguments = payload["arguments"] as? String
+        self.errorMessage = Self.errorMessage(from: payload["error"])
+    }
+
+    init(
+        phase: AIOutputItemPhase,
+        apiType: String,
+        id: String? = nil,
+        callID: String? = nil,
+        name: String? = nil,
+        serverLabel: String? = nil,
+        arguments: String? = nil,
+        errorMessage: String? = nil
+    ) {
+        self.phase = phase
+        self.kind = AIOutputItemKind(apiType: apiType)
+        self.apiType = apiType
+        self.id = id
+        self.callID = callID
+        self.name = name
+        self.serverLabel = serverLabel
+        self.arguments = arguments
+        self.errorMessage = errorMessage
+    }
+
+    private static func errorMessage(from value: Any?) -> String? {
+        if let error = value as? [String: Any] { return error["message"] as? String }
+        return value as? String
+    }
+}
+
+struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
+    enum Stage: String, Codable, Sendable {
+        case api
+        case stream
+        case outputItem
+        case tool
+        case transport
+    }
+
+    var id: UUID
+    var stage: Stage
+    var endpoint: String
+    var httpStatus: Int?
+    var model: String?
+    var responseID: String?
+    var eventType: String?
+    var outputItemType: String?
+    var toolName: String?
+    var errorCode: String?
+    var errorParameter: String?
+    var message: String
+    var createdAt: Date
+
+    init(
+        id: UUID = UUID(),
+        stage: Stage,
+        endpoint: String = "/v1/responses",
+        httpStatus: Int? = nil,
+        model: String? = nil,
+        responseID: String? = nil,
+        eventType: String? = nil,
+        outputItemType: String? = nil,
+        toolName: String? = nil,
+        errorCode: String? = nil,
+        errorParameter: String? = nil,
+        message: String,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.stage = stage
+        self.endpoint = endpoint
+        self.httpStatus = httpStatus
+        self.model = model
+        self.responseID = responseID
+        self.eventType = eventType
+        self.outputItemType = outputItemType
+        self.toolName = toolName
+        self.errorCode = errorCode
+        self.errorParameter = errorParameter
+        self.message = message
+        self.createdAt = createdAt
+    }
+
+    var developerSummary: String {
+        var fields = ["Endpoint: \(endpoint)"]
+        if let httpStatus { fields.append("HTTP: \(httpStatus)") }
+        if let model { fields.append("Model: \(model)") }
+        if let responseID { fields.append("Response: \(responseID)") }
+        if let eventType { fields.append("Event: \(eventType)") }
+        if let outputItemType { fields.append("Item: \(outputItemType)") }
+        if let toolName { fields.append("Tool: \(toolName)") }
+        if let errorCode { fields.append("Code: \(errorCode)") }
+        if let errorParameter { fields.append("Parameter: \(errorParameter)") }
+        fields.append(message)
+        return fields.joined(separator: " · ")
     }
 }
 
@@ -556,16 +714,14 @@ struct MCPHTTPClient {
         guard initializeObject["result"] != nil else { throw ClientError.invalidToolList }
 
         let sessionID = initialize.response.value(forHTTPHeaderField: "MCP-Session-Id")
-        if let sessionID {
-            _ = try await post(
-                to: endpoint,
-                server: server,
-                method: "notifications/initialized",
-                params: [:],
-                sessionID: sessionID,
-                requestID: nil
-            )
-        }
+        _ = try await post(
+            to: endpoint,
+            server: server,
+            method: "notifications/initialized",
+            params: [:],
+            sessionID: sessionID,
+            requestID: nil
+        )
 
         let listed = try await post(
             to: endpoint,
@@ -682,6 +838,312 @@ struct MCPHTTPClient {
            let error = object["error"] as? [String: Any],
            let message = error["message"] as? String { return message }
         return String(decoding: data.prefix(1_000), as: UTF8.self)
+    }
+}
+
+// MARK: - Native Lima tools
+
+enum AILocalToolRisk: String, Codable, Sendable {
+    case read
+    case localAction
+    case write
+    case destructive
+
+    var requiresApproval: Bool { self != .read }
+    var title: String {
+        switch self {
+        case .read: return "Read"
+        case .localAction: return "Local action"
+        case .write: return "Write"
+        case .destructive: return "Destructive"
+        }
+    }
+}
+
+struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
+    let id: String
+    let name: String
+    let description: String
+    let parameters: [String: Any]
+    let risk: AILocalToolRisk
+
+    var responsePayload: [String: Any] {
+        [
+            "type": "function",
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+            "strict": true
+        ]
+    }
+}
+
+struct LimaAIToolExecution: Sendable {
+    let output: String
+    let isError: Bool
+
+    static func json(_ object: Any, isError: Bool = false) -> Self {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return Self(output: "{\\\"error\\\":\\\"Lima could not encode the tool result.\\\"}", isError: true)
+        }
+        return Self(output: text, isError: isError)
+    }
+}
+
+@MainActor
+enum LimaAIToolRegistry {
+    private static let fileSearch = FileSearchService()
+
+    static let definitions: [LimaAIToolDefinition] = [
+        LimaAIToolDefinition(
+            id: "search_files",
+            name: "search_files",
+            description: "Search file names in the user’s existing Spotlight index. Returns up to 20 file paths and never reads file contents.",
+            parameters: [
+                "type": "object",
+                "properties": ["query": ["type": "string", "description": "A concise file-name query."]],
+                "required": ["query"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "get_lima_status",
+            name: "get_lima_status",
+            description: "Get non-sensitive Lima application status, including version and enabled tool counts. Never returns credentials, prompts, selections, or Keychain data.",
+            parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "open_lima_settings",
+            name: "open_lima_settings",
+            description: "Open Lima’s Settings window on this Mac. This changes the local user interface but does not change settings.",
+            parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
+            risk: .localAction
+        )
+    ]
+
+    static var defaultEnabledToolIDs: Set<String> { Set(definitions.filter { $0.risk == .read }.map { $0.id }) }
+
+    static func definition(for name: String?) -> LimaAIToolDefinition? {
+        guard let name else { return nil }
+        return definitions.first { $0.name == name || $0.id == name }
+    }
+
+    static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
+        definitions.filter { ids.contains($0.id) }
+    }
+
+    static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
+        guard let definition = definition(for: call.name) else {
+            return .json(["error": "Unknown Lima tool."], isError: true)
+        }
+        switch definition.id {
+        case "search_files":
+            guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
+                return .json(["error": "search_files requires a non-empty query."], isError: true)
+            }
+            let urls = await searchFiles(named: String(query.prefix(160)))
+            return .json([
+                "matches": urls.prefix(20).map { ["name": $0.lastPathComponent, "path": $0.path] },
+                "truncated": urls.count > 20
+            ])
+        case "get_lima_status":
+            return .json([
+                "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
+                "native_tools_enabled": LimaAIToolStore.shared.enabledToolIDs.count,
+                "mcp_servers_enabled": MCPServerStore.shared.servers.filter { $0.enabled }.count
+            ])
+        case "open_lima_settings":
+            let opened = NSApp.sendAction(#selector(AppDelegate.showSettings), to: nil, from: nil)
+            return .json(["opened": opened])
+        default:
+            return .json(["error": "The requested Lima tool is unavailable."], isError: true)
+        }
+    }
+
+    private static func stringArgument(named key: String, from arguments: String?) -> String? {
+        guard let arguments,
+              let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func searchFiles(named query: String) async -> [URL] {
+        await withCheckedContinuation { continuation in
+            fileSearch.search(query) { urls in
+                continuation.resume(returning: urls)
+            }
+        }
+    }
+}
+
+@MainActor
+final class LimaAIToolStore: ObservableObject {
+    static let shared = LimaAIToolStore()
+
+    @Published private(set) var enabledToolIDs: Set<String>
+    private let defaultsKey = "lima.ai.enabled-native-tools"
+
+    private init() {
+        let saved = UserDefaults.standard.stringArray(forKey: defaultsKey)
+        enabledToolIDs = saved.map(Set.init) ?? LimaAIToolRegistry.defaultEnabledToolIDs
+    }
+
+    func isEnabled(_ definition: LimaAIToolDefinition) -> Bool {
+        enabledToolIDs.contains(definition.id)
+    }
+
+    func setEnabled(_ definition: LimaAIToolDefinition, enabled: Bool) {
+        if enabled { enabledToolIDs.insert(definition.id) }
+        else { enabledToolIDs.remove(definition.id) }
+        UserDefaults.standard.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+    }
+}
+
+// MARK: - Responses event decoding
+
+enum AIResponsesEventDecoder {
+    static func events(eventType: String, dataLines: [String], model: String?) -> [AIChatStreamEvent] {
+        let data = dataLines.joined(separator: "\\n")
+        guard !data.isEmpty, data != "[DONE]" else { return [] }
+        guard let payload = data.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
+            return [.diagnostic(AIChatDiagnostic(
+                stage: .stream,
+                model: model,
+                eventType: eventType.isEmpty ? nil : eventType,
+                message: "Ignored malformed JSON in a streaming event."
+            ))]
+        }
+
+        let type = (value["type"] as? String) ?? eventType
+        let response = value["response"] as? [String: Any]
+        let responseID = response?["id"] as? String ?? value["response_id"] as? String
+        switch type {
+        case "response.created", "response.in_progress":
+            return responseID.map { [.responseCreated($0)] } ?? []
+        case "response.output_text.delta":
+            return (value["delta"] as? String).map { [.textDelta($0)] } ?? []
+        case "response.output_text.done":
+            return []
+        case "response.reasoning_summary_text.delta", "response.reasoning_summary.delta":
+            return (value["delta"] as? String).map { [.reasoningSummaryDelta($0)] } ?? []
+        case "response.reasoning_summary_part.added":
+            guard let part = value["part"] as? [String: Any], let text = part["text"] as? String, !text.isEmpty else { return [] }
+            return [.reasoningSummaryDelta(text)]
+        case "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
+            return []
+        case "response.content_part.added":
+            guard let part = value["part"] as? [String: Any],
+                  part["type"] as? String == "output_text",
+                  let text = part["text"] as? String,
+                  !text.isEmpty else { return [] }
+            return [.textDelta(text)]
+        case "response.content_part.done":
+            return []
+        case "response.output_item.added":
+            return outputItemEvents(value["item"] as? [String: Any], phase: .added, model: model, responseID: responseID, eventType: type)
+        case "response.output_item.done":
+            return outputItemEvents(value["item"] as? [String: Any], phase: .completed, model: model, responseID: responseID, eventType: type)
+        case "response.function_call_arguments.delta", "response.mcp_call.arguments.delta", "response.mcp_call_arguments.delta":
+            return []
+        case "response.function_call_arguments.done":
+            let item = AIOutputItem(
+                phase: .completed,
+                apiType: "function_call",
+                id: value["item_id"] as? String,
+                callID: value["call_id"] as? String,
+                name: value["name"] as? String,
+                arguments: value["arguments"] as? String
+            )
+            return [.outputItem(item)]
+        case "response.mcp_call.completed", "response.mcp_call.done":
+            if let item = value["item"] as? [String: Any] {
+                return outputItemEvents(item, phase: .completed, model: model, responseID: responseID, eventType: type)
+            }
+            return [.outputItem(AIOutputItem(
+                phase: .completed,
+                apiType: "mcp_call",
+                name: value["name"] as? String,
+                serverLabel: value["server_label"] as? String,
+                errorMessage: errorMessage(from: value["error"])
+            ))]
+        case "response.mcp_call.failed", "response.mcp_call.error":
+            return [.outputItem(AIOutputItem(
+                phase: .completed,
+                apiType: "mcp_call",
+                name: value["name"] as? String,
+                serverLabel: value["server_label"] as? String,
+                errorMessage: errorMessage(from: value["error"]) ?? "The MCP tool failed."
+            ))]
+        case "response.completed":
+            var result: [AIChatStreamEvent] = []
+            if let usage = response?["usage"] as? [String: Any] { result.append(.usage(AIUsageMetrics.from(responseUsage: usage))) }
+            result.append(.completed(responseID))
+            return result
+        case "response.failed", "error":
+            let error = value["error"] as? [String: Any]
+            let message = (error?["message"] as? String) ?? (value["message"] as? String) ?? "The provider reported a failed response."
+            return [
+                .diagnostic(AIChatDiagnostic(
+                    stage: .api,
+                    model: model,
+                    responseID: responseID,
+                    eventType: type,
+                    errorCode: error?["code"] as? String,
+                    errorParameter: error?["param"] as? String,
+                    message: message
+                )),
+                .failed(message)
+            ]
+        default:
+            return [.diagnostic(AIChatDiagnostic(
+                stage: .stream,
+                model: model,
+                responseID: responseID,
+                eventType: type.isEmpty ? nil : type,
+                message: "Ignored an unsupported but well-formed Responses event."
+            ))]
+        }
+    }
+
+    private static func outputItemEvents(
+        _ payload: [String: Any]?,
+        phase: AIOutputItemPhase,
+        model: String?,
+        responseID: String?,
+        eventType: String
+    ) -> [AIChatStreamEvent] {
+        guard let payload else {
+            return [.diagnostic(AIChatDiagnostic(
+                stage: .outputItem,
+                model: model,
+                responseID: responseID,
+                eventType: eventType,
+                message: "Ignored an output-item event without an item payload."
+            ))]
+        }
+        let item = AIOutputItem(phase: phase, payload: payload)
+        var events: [AIChatStreamEvent] = [.outputItem(item)]
+        if item.kind == .unknown {
+            events.append(.diagnostic(AIChatDiagnostic(
+                stage: .outputItem,
+                model: model,
+                responseID: responseID,
+                eventType: eventType,
+                outputItemType: item.apiType,
+                message: "Ignored an unsupported Responses output item."
+            )))
+        }
+        return events
+    }
+
+    private static func errorMessage(from value: Any?) -> String? {
+        if let error = value as? [String: Any] { return error["message"] as? String }
+        return value as? String
     }
 }
 

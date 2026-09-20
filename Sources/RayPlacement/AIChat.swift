@@ -286,8 +286,10 @@ enum AIChatStreamEvent: Sendable {
     case responseCreated(String)
     case textDelta(String)
     case reasoningSummaryDelta(String)
+    case outputItem(AIOutputItem)
     case activity(AIAgentActivity)
     case approval(AIToolApprovalRequest)
+    case diagnostic(AIChatDiagnostic)
     case usage(AIUsageMetrics)
     case completed(String?)
     case failed(String)
@@ -344,7 +346,8 @@ struct AIChatResponsesClient {
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
-        mcpServers: [MCPServer]
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
             let inputContent = try AIInputEncoder.content(text: input, attachments: attachments)
@@ -354,7 +357,7 @@ struct AIChatResponsesClient {
                 input: [userInput],
                 previousResponseID: previousResponseID,
                 reasoningEffort: reasoningEffort,
-                tools: mcpToolPayload(for: mcpServers)
+                tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
             )
             return stream(body: body, apiKey: apiKey)
         } catch {
@@ -373,7 +376,8 @@ struct AIChatResponsesClient {
         approve: Bool,
         reason: String?,
         reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer]
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         var approval: [String: Any] = [
             "type": "mcp_approval_response",
@@ -386,7 +390,26 @@ struct AIChatResponsesClient {
             input: [approval],
             previousResponseID: previousResponseID,
             reasoningEffort: reasoningEffort,
-            tools: mcpToolPayload(for: mcpServers)
+            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
+        )
+        return stream(body: body, apiKey: apiKey)
+    }
+
+    func streamToolOutputs(
+        apiKey: String,
+        model: String,
+        previousResponseID: String,
+        outputs: [[String: Any]],
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        let body = Self.replyBody(
+            model: model,
+            input: outputs,
+            previousResponseID: previousResponseID,
+            reasoningEffort: reasoningEffort,
+            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
         )
         return stream(body: body, apiKey: apiKey)
     }
@@ -447,6 +470,7 @@ struct AIChatResponsesClient {
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
+                let model = body["model"] as? String
                 do {
                     var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
                     request.httpMethod = "POST"
@@ -472,7 +496,7 @@ struct AIChatResponsesClient {
                     for try await line in bytes.lines {
                         if Task.isCancelled { break }
                         if line.isEmpty {
-                            try emit(eventType: eventType, dataLines: dataLines, continuation: continuation)
+                            emit(eventType: eventType, dataLines: dataLines, model: model, continuation: continuation)
                             eventType = ""
                             dataLines = []
                         } else if line.hasPrefix("event:") {
@@ -481,11 +505,12 @@ struct AIChatResponsesClient {
                             dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
                         }
                     }
-                    try emit(eventType: eventType, dataLines: dataLines, continuation: continuation)
+                    emit(eventType: eventType, dataLines: dataLines, model: model, continuation: continuation)
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
                 } catch {
+                    continuation.yield(.diagnostic(Self.diagnostic(for: error, model: model)))
                     continuation.yield(.failed(error.localizedDescription))
                     continuation.finish(throwing: error)
                 }
@@ -496,89 +521,32 @@ struct AIChatResponsesClient {
 
     private static func safeErrorMessage(from data: Data) -> String {
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return String(decoding: data.prefix(1_000), as: UTF8.self)
+            return "The provider returned an unreadable error response."
         }
-        if let error = object["error"] as? [String: Any], let message = error["message"] as? String {
-            return message
+        let error = (object["error"] as? [String: Any]) ?? object
+        let message = (error["message"] as? String) ?? "The provider returned an error."
+        let code = error["code"] as? String
+        let parameter = error["param"] as? String
+        return [message, code.map { "code: \($0)" }, parameter.map { "param: \($0)" }]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
+
+    private static func diagnostic(for error: Error, model: String?) -> AIChatDiagnostic {
+        if case ClientError.requestFailed(let status, let message) = error {
+            return AIChatDiagnostic(stage: .transport, httpStatus: status, model: model, message: message)
         }
-        return (object["message"] as? String) ?? "The provider returned an error."
+        return AIChatDiagnostic(stage: .transport, model: model, message: error.localizedDescription)
     }
 
     private func emit(
         eventType: String,
         dataLines: [String],
+        model: String?,
         continuation: AsyncThrowingStream<AIChatStreamEvent, Error>.Continuation
-    ) throws {
-        let data = dataLines.joined(separator: "\n")
-        guard !data.isEmpty, data != "[DONE]" else { return }
-        guard let payload = data.data(using: .utf8),
-              let value = try JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
-            throw ClientError.malformedStream
-        }
-        let type = (value["type"] as? String) ?? eventType
-        switch type {
-        case "response.created":
-            let response = value["response"] as? [String: Any]
-            if let id = response?["id"] as? String { continuation.yield(.responseCreated(id)) }
-        case "response.output_text.delta":
-            if let delta = value["delta"] as? String { continuation.yield(.textDelta(delta)) }
-        case "response.reasoning_summary_text.delta", "response.reasoning_summary.delta":
-            if let delta = value["delta"] as? String { continuation.yield(.reasoningSummaryDelta(delta)) }
-        case "response.reasoning_summary_part.added":
-            if let part = value["part"] as? [String: Any], let text = part["text"] as? String {
-                continuation.yield(.reasoningSummaryDelta(text))
-            }
-        case "response.output_item.added":
-            if let item = value["item"] as? [String: Any], let itemType = item["type"] as? String, itemType.contains("mcp") || itemType.contains("tool") {
-                let name = (item["name"] as? String) ?? "Tool call"
-                continuation.yield(.activity(AIAgentActivity(kind: .toolStarted, title: name, detail: item["server_label"] as? String)))
-            }
-            if let item = value["item"] as? [String: Any], (item["type"] as? String) == "mcp_approval_request" {
-                let request = AIToolApprovalRequest(
-                    remoteApprovalID: item["id"] as? String ?? item["approval_request_id"] as? String,
-                    serverLabel: item["server_label"] as? String ?? "Remote MCP",
-                    toolName: item["name"] as? String ?? item["tool_name"] as? String ?? "MCP tool",
-                    arguments: item["arguments"] as? String
-                )
-                continuation.yield(.approval(request))
-            }
-        case "response.mcp_call.arguments.delta", "response.mcp_call_arguments.delta":
-            break
-        case "response.mcp_call.completed", "response.mcp_call.done":
-            if let item = value["item"] as? [String: Any] {
-                continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: item["name"] as? String ?? "Tool call", completed: true)))
-            } else {
-                continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: value["name"] as? String ?? "Tool call", completed: true)))
-            }
-        case "response.mcp_call.failed", "response.mcp_call.error":
-            let detail = (value["error"] as? [String: Any])?["message"] as? String
-                ?? value["error"] as? String
-                ?? "The MCP tool failed."
-            continuation.yield(.activity(AIAgentActivity(kind: .toolFailed, title: "MCP tool failed", detail: detail, completed: true)))
-        case "response.output_item.done":
-            if let item = value["item"] as? [String: Any], let itemType = item["type"] as? String, itemType.contains("mcp") || itemType.contains("tool") {
-                let name = (item["name"] as? String) ?? "Tool call"
-                if let error = item["error"] as? [String: Any] {
-                    continuation.yield(.activity(AIAgentActivity(kind: .toolFailed, title: name, detail: error["message"] as? String, completed: true)))
-                } else {
-                    continuation.yield(.activity(AIAgentActivity(kind: .toolCompleted, title: name, completed: true)))
-                }
-            }
-        case "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
-            break
-        case "response.completed":
-            if let response = value["response"] as? [String: Any], let usage = response["usage"] as? [String: Any] {
-                continuation.yield(.usage(AIUsageMetrics.from(responseUsage: usage)))
-            }
-            let response = value["response"] as? [String: Any]
-            continuation.yield(.completed(response?["id"] as? String))
-        case "error", "response.failed":
-            let detail = (value["error"] as? [String: Any])?["message"] as? String
-                ?? (value["message"] as? String)
-                ?? "The AI request failed."
-            continuation.yield(.failed(detail))
-        default:
-            break
+    ) {
+        for event in AIResponsesEventDecoder.events(eventType: eventType, dataLines: dataLines, model: model) {
+            continuation.yield(event)
         }
     }
 }
@@ -595,11 +563,14 @@ final class AIChatViewModel: ObservableObject {
     @Published var showActivity = true
     @Published private(set) var isStreaming = false
     @Published private(set) var streamError: String?
+    @Published private(set) var streamDiagnostics: [AIChatDiagnostic] = []
+    @Published var showDiagnostics = false
     @Published private(set) var pendingApproval: AIToolApprovalRequest?
 
     let store: AIConversationStore
     let credentials: AIChatCredentialStore
     private var streamTask: Task<Void, Never>?
+    private var pendingLocalFunctionCall: AIOutputItem?
 
     init() {
         store = .shared
@@ -635,6 +606,10 @@ final class AIChatViewModel: ObservableObject {
 
     var supportedReasoningEfforts: [AIReasoningEffort] {
         selectedModelOption.supportedReasoningEfforts
+    }
+
+    private var enabledNativeTools: [LimaAIToolDefinition] {
+        LimaAIToolRegistry.enabledDefinitions(LimaAIToolStore.shared.enabledToolIDs)
     }
 
     func refreshModels() {
@@ -726,32 +701,37 @@ final class AIChatViewModel: ObservableObject {
         store.update(conversation)
         draft = ""
         streamError = nil
+        streamDiagnostics = []
+        showDiagnostics = false
         pendingApproval = nil
+        pendingLocalFunctionCall = nil
         isStreaming = true
 
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            var responseID: String?
-            let stream = AIChatResponsesClient().streamReply(
+            let client = AIChatResponsesClient()
+            let mcpServers = MCPServerStore.shared.servers.filter(\.enabled)
+            let responseID = await self.runToolLoop(
+                initialStream: client.streamReply(
+                    apiKey: apiKey,
+                    model: conversation.model,
+                    input: text,
+                    previousResponseID: conversation.lastResponseID,
+                    reasoningEffort: conversation.reasoningEffort,
+                    attachments: conversation.attachments,
+                    mcpServers: mcpServers,
+                    localTools: self.enabledNativeTools
+                ),
+                client: client,
                 apiKey: apiKey,
-                model: self.model,
-                input: text,
-                previousResponseID: conversation.lastResponseID,
+                conversationID: conversation.id,
+                assistantID: assistantID,
+                model: conversation.model,
                 reasoningEffort: conversation.reasoningEffort,
-                attachments: conversation.attachments,
-                mcpServers: MCPServerStore.shared.servers.filter(\.enabled)
+                mcpServers: mcpServers,
+                initialResponseID: nil
             )
-            do {
-                for try await event in stream {
-                    guard !Task.isCancelled else { return }
-                    self.apply(event, conversationID: conversation.id, assistantID: assistantID, responseID: &responseID)
-                }
-            } catch {
-                if !Task.isCancelled, self.streamError == nil {
-                    self.streamError = error.localizedDescription
-                }
-            }
             self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
         }
     }
@@ -760,6 +740,7 @@ final class AIChatViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = nil
         pendingApproval = nil
+        pendingLocalFunctionCall = nil
         if let id = selectedConversationID {
             updateConversation(id) { $0.activities.append(AIAgentActivity(kind: .completed, title: "Stopped", detail: "Generation stopped by user", completed: true)) }
         }
@@ -797,22 +778,185 @@ final class AIChatViewModel: ObservableObject {
         NotificationCenter.default.post(name: .limaOpenAIMCPManager, object: nil)
     }
 
+    private struct StreamCycle {
+        var responseID: String?
+        var functionCalls: [AIOutputItem]
+    }
+
+    private func runToolLoop(
+        initialStream: AsyncThrowingStream<AIChatStreamEvent, Error>,
+        client: AIChatResponsesClient,
+        apiKey: String,
+        conversationID: UUID,
+        assistantID: UUID,
+        model: String,
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        initialResponseID: String?
+    ) async -> String? {
+        var stream = initialStream
+        var latestResponseID = initialResponseID
+        var handledCallIDs = Set<String>()
+
+        while !Task.isCancelled {
+            let cycle = await consume(
+                stream: stream,
+                conversationID: conversationID,
+                assistantID: assistantID,
+                initialResponseID: latestResponseID
+            )
+            latestResponseID = cycle.responseID ?? latestResponseID
+            if let latestResponseID {
+                persistResponseID(latestResponseID, conversationID: conversationID)
+            }
+            guard pendingApproval == nil,
+                  let responseID = latestResponseID else { break }
+
+            let calls = cycle.functionCalls.filter {
+                guard let callID = $0.callID, !handledCallIDs.contains(callID) else { return false }
+                handledCallIDs.insert(callID)
+                return true
+            }
+            guard !calls.isEmpty else { break }
+
+            if let approvalCall = calls.first(where: {
+                LimaAIToolRegistry.definition(for: $0.name)?.risk.requiresApproval == true
+            }) {
+                queueLocalApproval(for: approvalCall, conversationID: conversationID)
+                break
+            }
+
+            var outputs: [[String: Any]] = []
+            for call in calls {
+                if let output = await executeLocalTool(call, conversationID: conversationID) {
+                    outputs.append(output)
+                }
+            }
+            guard !outputs.isEmpty else { break }
+            stream = client.streamToolOutputs(
+                apiKey: apiKey,
+                model: model,
+                previousResponseID: responseID,
+                outputs: outputs,
+                reasoningEffort: reasoningEffort,
+                mcpServers: mcpServers,
+                localTools: enabledNativeTools
+            )
+        }
+        return latestResponseID
+    }
+
+    private func consume(
+        stream: AsyncThrowingStream<AIChatStreamEvent, Error>,
+        conversationID: UUID,
+        assistantID: UUID,
+        initialResponseID: String?
+    ) async -> StreamCycle {
+        var responseID = initialResponseID
+        var functionCalls: [AIOutputItem] = []
+        do {
+            for try await event in stream {
+                guard !Task.isCancelled else { break }
+                if let call = apply(event, conversationID: conversationID, assistantID: assistantID, responseID: &responseID) {
+                    functionCalls.append(call)
+                }
+            }
+        } catch {
+            if !Task.isCancelled, streamError == nil {
+                streamError = "AI Chat couldn’t complete this request."
+            }
+        }
+        return StreamCycle(responseID: responseID, functionCalls: functionCalls)
+    }
+
+    private func queueLocalApproval(for call: AIOutputItem, conversationID: UUID) {
+        guard let definition = LimaAIToolRegistry.definition(for: call.name),
+              let callID = call.callID else {
+            _ = localToolFailureOutput(for: call, conversationID: conversationID, message: "The function call did not include a usable call identifier.")
+            return
+        }
+        pendingLocalFunctionCall = call
+        pendingApproval = AIToolApprovalRequest(
+            localCallID: callID,
+            localToolID: definition.id,
+            serverLabel: "Lima",
+            toolName: definition.name,
+            arguments: call.arguments
+        )
+        updateConversation(conversationID) {
+            $0.activities.append(AIAgentActivity(
+                kind: .toolApproval,
+                title: "Approval needed",
+                detail: "Lima · \(definition.name)",
+                requiresApproval: true
+            ))
+        }
+    }
+
+    private func executeLocalTool(_ call: AIOutputItem, conversationID: UUID) async -> [String: Any]? {
+        guard let definition = LimaAIToolRegistry.definition(for: call.name) else {
+            return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is not registered.")
+        }
+        guard enabledNativeTools.contains(where: { $0.id == definition.id }) else {
+            return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is disabled for this chat.")
+        }
+        guard let callID = call.callID else {
+            updateConversation(conversationID) {
+                $0.activities.append(AIAgentActivity(kind: .toolFailed, title: definition.name, detail: "Missing function call ID.", completed: true))
+            }
+            streamDiagnostics.append(AIChatDiagnostic(stage: .tool, toolName: definition.name, message: "The function call omitted call_id."))
+            return nil
+        }
+
+        updateConversation(conversationID) {
+            $0.activities.append(AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima", completed: false))
+        }
+        let result = await LimaAIToolRegistry.execute(call)
+        updateConversation(conversationID) {
+            $0.activities.append(AIAgentActivity(
+                kind: result.isError ? .toolFailed : .toolCompleted,
+                title: definition.name,
+                detail: result.isError ? "Lima tool returned an error." : nil,
+                completed: true
+            ))
+        }
+        return ["type": "function_call_output", "call_id": callID, "output": result.output]
+    }
+
+    private func localToolFailureOutput(
+        for call: AIOutputItem,
+        conversationID: UUID,
+        message: String
+    ) -> [String: Any]? {
+        let name = call.name ?? "Lima tool"
+        updateConversation(conversationID) {
+            $0.activities.append(AIAgentActivity(kind: .toolFailed, title: name, detail: message, completed: true))
+        }
+        streamDiagnostics.append(AIChatDiagnostic(stage: .tool, toolName: call.name, message: message))
+        guard let callID = call.callID else { return nil }
+        let result = LimaAIToolExecution.json(["error": message], isError: true)
+        return ["type": "function_call_output", "call_id": callID, "output": result.output]
+    }
+
     func dismissPendingApproval() {
         pendingApproval = nil
+        pendingLocalFunctionCall = nil
     }
 
     func resolvePendingApproval(allow: Bool) {
         guard let approval = pendingApproval,
-              let remoteApprovalID = approval.remoteApprovalID,
               let conversation = selectedConversation,
               let previousResponseID = conversation.lastResponseID,
               let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
             pendingApproval = nil
-            streamError = "The MCP approval could not be continued because the response session is unavailable."
+            pendingLocalFunctionCall = nil
+            streamError = "AI Chat couldn’t continue this tool request because its response session is unavailable."
             return
         }
 
+        let localCall = pendingLocalFunctionCall
         pendingApproval = nil
+        pendingLocalFunctionCall = nil
         updateConversation(conversation.id) {
             $0.activities.append(AIAgentActivity(
                 kind: .toolApproval,
@@ -836,35 +980,84 @@ final class AIChatViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            var responseID: String?
-            let stream = AIChatResponsesClient().streamApproval(
-                apiKey: apiKey,
-                model: conversation.model,
-                previousResponseID: previousResponseID,
-                requestID: remoteApprovalID,
-                approve: allow,
-                reason: allow ? nil : "Denied in Lima",
-                reasoningEffort: conversation.reasoningEffort,
-                mcpServers: MCPServerStore.shared.servers.filter(\.enabled)
-            )
-            do {
-                for try await event in stream {
-                    guard !Task.isCancelled else { return }
-                    self.apply(event, conversationID: conversation.id, assistantID: assistantID, responseID: &responseID)
+            let client = AIChatResponsesClient()
+            let mcpServers = MCPServerStore.shared.servers.filter(\.enabled)
+
+            if let localCall {
+                let output: [String: Any]?
+                if allow {
+                    output = await self.executeLocalTool(localCall, conversationID: conversation.id)
+                } else if let callID = localCall.callID {
+                    let denied = LimaAIToolExecution.json(["denied": true, "message": "Denied by the user in Lima."])
+                    output = ["type": "function_call_output", "call_id": callID, "output": denied.output]
+                } else {
+                    output = self.localToolFailureOutput(for: localCall, conversationID: conversation.id, message: "The local tool request did not include a usable call identifier.")
                 }
-            } catch {
-                if !Task.isCancelled, self.streamError == nil { self.streamError = error.localizedDescription }
+
+                guard let output else {
+                    self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: previousResponseID)
+                    return
+                }
+                let responseID = await self.runToolLoop(
+                    initialStream: client.streamToolOutputs(
+                        apiKey: apiKey,
+                        model: conversation.model,
+                        previousResponseID: previousResponseID,
+                        outputs: [output],
+                        reasoningEffort: conversation.reasoningEffort,
+                        mcpServers: mcpServers,
+                        localTools: self.enabledNativeTools
+                    ),
+                    client: client,
+                    apiKey: apiKey,
+                    conversationID: conversation.id,
+                    assistantID: assistantID,
+                    model: conversation.model,
+                    reasoningEffort: conversation.reasoningEffort,
+                    mcpServers: mcpServers,
+                    initialResponseID: previousResponseID
+                )
+                self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
+                return
             }
+
+            guard let remoteApprovalID = approval.remoteApprovalID else {
+                self.streamError = "AI Chat couldn’t identify the MCP approval request."
+                self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: previousResponseID)
+                return
+            }
+            let responseID = await self.runToolLoop(
+                initialStream: client.streamApproval(
+                    apiKey: apiKey,
+                    model: conversation.model,
+                    previousResponseID: previousResponseID,
+                    requestID: remoteApprovalID,
+                    approve: allow,
+                    reason: allow ? nil : "Denied in Lima",
+                    reasoningEffort: conversation.reasoningEffort,
+                    mcpServers: mcpServers,
+                    localTools: self.enabledNativeTools
+                ),
+                client: client,
+                apiKey: apiKey,
+                conversationID: conversation.id,
+                assistantID: assistantID,
+                model: conversation.model,
+                reasoningEffort: conversation.reasoningEffort,
+                mcpServers: mcpServers,
+                initialResponseID: previousResponseID
+            )
             self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
         }
     }
 
+    @discardableResult
     private func apply(
         _ event: AIChatStreamEvent,
         conversationID: UUID,
         assistantID: UUID,
         responseID: inout String?
-    ) {
+    ) -> AIOutputItem? {
         switch event {
         case .responseCreated(let id):
             responseID = id
@@ -874,6 +1067,52 @@ final class AIChatViewModel: ObservableObject {
             }
         case .reasoningSummaryDelta(let delta):
             updateConversation(conversationID) { $0.reasoningSummary = ($0.reasoningSummary ?? "") + delta }
+        case .outputItem(let item):
+            switch item.kind {
+            case .mcpApprovalRequest:
+                guard item.phase == .added || pendingApproval == nil else { return nil }
+                let request = AIToolApprovalRequest(
+                    remoteApprovalID: item.id,
+                    serverLabel: item.serverLabel ?? "Remote MCP",
+                    toolName: item.name ?? "MCP tool",
+                    arguments: item.arguments
+                )
+                pendingApproval = request
+                updateConversation(conversationID) {
+                    $0.activities.append(AIAgentActivity(
+                        kind: .toolApproval,
+                        title: "Approval needed",
+                        detail: "\(request.serverLabel) · \(request.toolName)",
+                        requiresApproval: true
+                    ))
+                }
+            case .functionCall:
+                if item.phase == .added {
+                    updateConversation(conversationID) {
+                        $0.activities.append(AIAgentActivity(kind: .toolStarted, title: item.name ?? "Lima tool", detail: "Lima"))
+                    }
+                } else {
+                    return item
+                }
+            case .mcpCall, .toolCall:
+                let title = item.name ?? "Tool call"
+                if item.phase == .added {
+                    updateConversation(conversationID) {
+                        $0.activities.append(AIAgentActivity(kind: .toolStarted, title: title, detail: item.serverLabel))
+                    }
+                } else {
+                    updateConversation(conversationID) {
+                        $0.activities.append(AIAgentActivity(
+                            kind: item.errorMessage == nil ? .toolCompleted : .toolFailed,
+                            title: title,
+                            detail: item.errorMessage,
+                            completed: true
+                        ))
+                    }
+                }
+            case .message, .reasoning, .unknown:
+                break
+            }
         case .activity(let activity):
             updateConversation(conversationID) { $0.activities.append(activity) }
         case .approval(let request):
@@ -886,13 +1125,31 @@ final class AIChatViewModel: ObservableObject {
                     requiresApproval: true
                 ))
             }
+        case .diagnostic(let diagnostic):
+            recordDiagnostic(diagnostic)
         case .usage(let usage):
             updateConversation(conversationID) { $0.activities.append(AIAgentActivity(kind: .completed, title: "Usage", usage: usage, completed: true)) }
         case .completed(let id):
             responseID = id ?? responseID
         case .failed(let message):
-            streamError = message
-            updateConversation(conversationID) { $0.activities.append(AIAgentActivity(kind: .error, title: "Request failed", detail: message, completed: true)) }
+            streamError = "AI Chat couldn’t complete this request."
+            updateConversation(conversationID) {
+                $0.activities.append(AIAgentActivity(kind: .error, title: "Request failed", detail: message, completed: true))
+            }
+        }
+        return nil
+    }
+
+    private func recordDiagnostic(_ diagnostic: AIChatDiagnostic) {
+        streamDiagnostics.append(diagnostic)
+        if streamDiagnostics.count > 40 {
+            streamDiagnostics.removeFirst(streamDiagnostics.count - 40)
+        }
+    }
+
+    private func persistResponseID(_ responseID: String, conversationID: UUID) {
+        updateConversation(conversationID) { conversation in
+            conversation.lastResponseID = responseID
         }
     }
 
@@ -974,6 +1231,7 @@ final class AIChatWindowController: NSWindowController {
 private struct AIChatWorkspaceView: View {
     @ObservedObject var model: AIChatViewModel
     @ObservedObject private var mcpStore = MCPServerStore.shared
+    @ObservedObject private var nativeToolStore = LimaAIToolStore.shared
     @State private var apiKey = ""
     @State private var showKey = false
     @State private var keyMessage: String?
@@ -985,7 +1243,7 @@ private struct AIChatWorkspaceView: View {
             conversation
         }
         .frame(minWidth: 760, minHeight: 520)
-        .background(LimaColors.raisedSurface)
+        .background(LimaTheme.floatingWindowBackground)
     }
 
     private var sidebar: some View {
@@ -1006,7 +1264,7 @@ private struct AIChatWorkspaceView: View {
             if model.store.conversations.isEmpty {
                 Text("Your chats stay on this Mac.")
                     .limaFont(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .padding(.horizontal, 14)
             } else {
                 ScrollView {
@@ -1022,13 +1280,13 @@ private struct AIChatWorkspaceView: View {
                                     Text(conversation.preview)
                                         .lineLimit(2)
                                         .limaFont(.caption)
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(LimaTheme.textSecondary)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(9)
                                 .background(
                                     model.selectedConversationID == conversation.id
-                                        ? LimaColors.recessedSurface
+                                        ? LimaTheme.surfaceSelected
                                         : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                                 )
@@ -1050,11 +1308,11 @@ private struct AIChatWorkspaceView: View {
             Spacer()
             Text(mcpStore.servers.filter(\.enabled).isEmpty ? "OpenAI Responses API · tools off" : "OpenAI Responses API · MCP tools enabled")
                 .limaFont(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(LimaTheme.textTertiary)
                 .padding(12)
         }
         .frame(width: 260)
-        .background(LimaColors.sidebarBackground)
+        .background(LimaTheme.surfaceSecondary)
     }
 
     @ViewBuilder
@@ -1072,7 +1330,7 @@ private struct AIChatWorkspaceView: View {
                         .lineLimit(1)
                     Text(model.credentials.hasAPIKey ? "Streaming responses" : "Setup required")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 Spacer()
                 Menu {
@@ -1119,6 +1377,16 @@ private struct AIChatWorkspaceView: View {
                 }
                 .buttonStyle(.borderless)
                 .help("Show work activity")
+                if !model.streamDiagnostics.isEmpty {
+                    Button {
+                        model.showDiagnostics.toggle()
+                    } label: {
+                        Image(systemName: model.showDiagnostics ? "ladybug.fill" : "ladybug")
+                            .foregroundStyle(model.showDiagnostics ? LimaTheme.error : LimaTheme.textSecondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Show safe developer diagnostics")
+                }
                 if model.selectedConversation != nil {
                     Button(role: .destructive, action: model.deleteSelectedConversation) {
                         Image(systemName: "trash")
@@ -1129,6 +1397,12 @@ private struct AIChatWorkspaceView: View {
             }
             .padding(16)
             Divider()
+
+            if model.showDiagnostics, !model.streamDiagnostics.isEmpty {
+                diagnosticsPanel
+                    .padding(.horizontal, 16)
+                    .padding(.top, 10)
+            }
 
             if !model.credentials.hasAPIKey {
                 setupPanel
@@ -1147,6 +1421,35 @@ private struct AIChatWorkspaceView: View {
         }
     }
 
+    private var diagnosticsPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 7) {
+                Label("Developer diagnostics", systemImage: "ladybug.fill")
+                    .limaFont(.caption.weight(.semibold))
+                    .foregroundStyle(LimaTheme.textPrimary)
+                Spacer()
+                Button("Hide") { model.showDiagnostics = false }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(model.streamDiagnostics) { diagnostic in
+                        Text(diagnostic.developerSummary)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(LimaTheme.textSecondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+            .frame(maxHeight: 112)
+        }
+        .padding(10)
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderStrong, lineWidth: LimaDesign.borderWidth))
+    }
+
     private var setupPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             Spacer()
@@ -1156,7 +1459,7 @@ private struct AIChatWorkspaceView: View {
             Text("Connect OpenAI")
                 .limaFont(.title2.weight(.semibold))
             Text("Your API key is saved only in your macOS Keychain. Lima sends messages directly to the OpenAI Responses API. Tools and attachments are opt-in; read tools can run automatically, while write and destructive tools ask before running.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             SecureField("OpenAI API key", text: $apiKey)
                 .textFieldStyle(.roundedBorder)
@@ -1174,7 +1477,7 @@ private struct AIChatWorkspaceView: View {
                 if let keyMessage {
                     Text(keyMessage)
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             Spacer()
@@ -1193,7 +1496,7 @@ private struct AIChatWorkspaceView: View {
                             Text("Start a conversation")
                                 .limaFont(.title3.weight(.semibold))
                             Text("Responses stream directly into this chat. Conversation metadata and message history remain local to Lima.")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(LimaTheme.textSecondary)
                         }
                         .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
                     } else {
@@ -1228,7 +1531,17 @@ private struct AIChatWorkspaceView: View {
                     Button("Add Clipboard", action: model.addClipboard)
                     Button("Add Current Selection", action: model.addSelection)
                     Divider()
-                    Text("Tools for this chat")
+                    Text("Lima tools")
+                    ForEach(LimaAIToolRegistry.definitions) { tool in
+                        Toggle(isOn: Binding(
+                            get: { nativeToolStore.isEnabled(tool) },
+                            set: { nativeToolStore.setEnabled(tool, enabled: $0) }
+                        )) {
+                            Label("\(tool.name) · \(tool.risk.title)", systemImage: "desktopcomputer")
+                        }
+                    }
+                    Divider()
+                    Text("MCP servers")
                     ForEach(mcpStore.servers) { server in
                         Toggle(isOn: Binding(
                             get: { server.enabled },
@@ -1243,7 +1556,7 @@ private struct AIChatWorkspaceView: View {
                     Divider()
                     Button("Manage MCP Servers…") { model.openMCPManager() }
                 } label: {
-                    Label("Tools \(mcpStore.servers.filter(\.enabled).count)", systemImage: "wrench.and.screwdriver")
+                    Label("Tools \(nativeToolStore.enabledToolIDs.count + mcpStore.servers.filter(\.enabled).count)", systemImage: "wrench.and.screwdriver")
                 }
                 .menuStyle(.borderlessButton)
                 .help("Choose MCP servers and manage individual tools")
@@ -1252,7 +1565,8 @@ private struct AIChatWorkspaceView: View {
                     .frame(minHeight: 44, maxHeight: 110)
                     .scrollContentBackground(.hidden)
                     .padding(5)
-                    .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth))
                     .disabled(model.isStreaming)
                 if model.isStreaming {
                     Button(action: model.cancel) {
@@ -1272,9 +1586,12 @@ private struct AIChatWorkspaceView: View {
             }
             Text("Markdown and code are supported. API keys, attachments, and chat history stay out of diagnostics.")
                 .limaFont(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(LimaTheme.textTertiary)
         }
         .padding(14)
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+        .padding(10)
     }
 }
 
@@ -1305,10 +1622,10 @@ private struct ActivityDisclosureView: View {
                             .frame(width: 14)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(activity.title).limaFont(.caption.weight(.medium))
-                            if let detail = activity.detail { Text(detail).limaFont(.caption2).foregroundStyle(LimaColors.secondaryText) }
+                            if let detail = activity.detail { Text(detail).limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary) }
                         }
                         Spacer()
-                        if let usage = activity.usage, let value = usage.displayText { Text(value).limaFont(.caption2).foregroundStyle(LimaColors.tertiaryText) }
+                        if let usage = activity.usage, let value = usage.displayText { Text(value).limaFont(.caption2).foregroundStyle(LimaTheme.textTertiary) }
                     }
                 }
             }
@@ -1317,10 +1634,10 @@ private struct ActivityDisclosureView: View {
             Label("Worked for \(elapsed, specifier: "%.1f")s", systemImage: "waveform.path.ecg")
                 .limaFont(.caption.weight(.semibold))
         }
-        .tint(LimaColors.primaryText)
+        .tint(LimaTheme.textPrimary)
         .padding(10)
-        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaColors.border, lineWidth: 1))
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
     }
 }
 
@@ -1339,7 +1656,7 @@ private struct AIChatMessageRow: View {
                 Spacer(minLength: 60)
                 messageBody
                 Image(systemName: "person.fill")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .frame(width: 22)
             }
         }
@@ -1357,8 +1674,14 @@ private struct AIChatMessageRow: View {
             .fixedSize(horizontal: false, vertical: true)
             .padding(11)
             .background(
-                message.role == .user ? SettingsStore.shared.accentTheme.readablePrimary.opacity(0.15) : LimaColors.recessedSurface,
+                message.role == .user ? LimaTheme.surfaceSelected : Color.clear,
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
+            .overlay {
+                if message.role == .user {
+                    RoundedRectangle(cornerRadius: 11, style: .continuous)
+                        .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth)
+                }
+            }
     }
 }

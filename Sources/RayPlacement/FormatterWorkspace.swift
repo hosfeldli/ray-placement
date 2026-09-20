@@ -295,7 +295,7 @@ struct FormatterWorkspaceView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .padding(.vertical, 7)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+        .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
@@ -309,7 +309,7 @@ struct FormatterWorkspaceView: View {
                         .frame(width: 150)
                     if !model.searchQuery.isEmpty {
                         Text(model.searchLines.isEmpty ? "No matches" : "Lines \(model.searchLines.prefix(6).map(String.init).joined(separator: ", "))")
-                            .limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
                     }
                     Button { model.copyOutput() } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(LimaToolbarIconButtonStyle(tint: SettingsStore.shared.accentTheme.primary))
@@ -341,9 +341,9 @@ struct FormatterWorkspaceView: View {
             }
         }
         .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-        .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
     }
 
     private var inspector: some View {
@@ -359,7 +359,7 @@ struct FormatterWorkspaceView: View {
                 Spacer()
                 if let edi = model.result?.edi {
                     Text("Elements \(edi.elementDelimiter.description) · Segments \(delimiterName(edi.segmentDelimiter)) · \(edi.segmentCount) segments")
-                        .limaFont(.caption.monospaced()).foregroundStyle(.secondary)
+                        .limaFont(.caption.monospaced()).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             .padding(.horizontal, LimaDesign.toolbarPadding)
@@ -388,7 +388,7 @@ struct FormatterWorkspaceView: View {
                                 Text(field.path).limaFont(.caption.monospaced().bold()).frame(width: 64, alignment: .leading)
                                 Text(field.value.isEmpty ? "(empty)" : field.value).limaFont(.caption.monospaced()).textSelection(.enabled)
                                 Spacer()
-                                Text("segment \(field.segmentIndex)").limaFont(.caption2).foregroundStyle(.tertiary)
+                                Text("segment \(field.segmentIndex)").limaFont(.caption2).foregroundStyle(LimaTheme.textTertiary)
                             }
                         }
                     }

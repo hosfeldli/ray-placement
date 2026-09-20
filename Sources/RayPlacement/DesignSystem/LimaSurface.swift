@@ -46,10 +46,10 @@ struct LiquidGlassBackdrop: View {
 
     var body: some View {
         ZStack {
-            if reduceTransparency {
-                LimaColors.windowBackground
-            } else {
+            LimaTheme.floatingWindowBackground
+            if !reduceTransparency {
                 VisualEffectView(material: material, blendingMode: blendingMode)
+                    .opacity(0.18)
                 if identityLayer {
                     LinearGradient(
                         colors: [settings.accentTheme.primary.opacity(0.035), .clear, settings.accentTheme.tertiary.opacity(0.018)],
@@ -73,7 +73,7 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
         switch depth {
         case .recessed: return LimaDesign.recessedFill
         case .raised: return LimaDesign.controlFill
-        case .floating: return LimaDesign.sidebarBackground
+        case .floating: return LimaTheme.floatingWindowBackground
         }
     }
 
@@ -153,6 +153,6 @@ struct LimaSurfaceModifier: ViewModifier {
                     shape.strokeBorder(border, lineWidth: LimaDesign.borderWidth)
                 }
             }
-            .shadow(color: shadow ? LimaColors.shadow.opacity(0.28) : .clear, radius: shadow ? 10 : 0, y: shadow ? 3 : 0)
+            .shadow(color: shadow ? LimaTheme.shadowFloating : .clear, radius: shadow ? 12 : 0, y: shadow ? 4 : 0)
     }
 }

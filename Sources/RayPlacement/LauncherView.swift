@@ -55,6 +55,7 @@ struct LauncherView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow, identityLayer: true)
+            LimaTheme.floatingWindowBackground.opacity(0.86)
             VStack(spacing: 5) {
                 searchHeader
                 content
@@ -85,15 +86,15 @@ struct LauncherView: View {
         // applied after the clip so it remains outside the perimeter and does
         // not become a fuzzy second border.
         .background(
-            LimaColors.windowBackground.opacity(0.90),
+            LimaTheme.floatingWindowBackground,
             in: RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
         )
         .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
-                .strokeBorder(LimaColors.border.opacity(0.92), lineWidth: LimaDesign.focusWidth)
+                .strokeBorder(LimaTheme.borderStrong, lineWidth: LimaDesign.focusWidth)
         }
-        .shadow(color: .black.opacity(0.14), radius: 12, y: 5)
+        .shadow(color: LimaTheme.shadowFloating, radius: 14, y: 6)
         .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {
@@ -131,7 +132,7 @@ struct LauncherView: View {
                 } label: {
                     Image(systemName: "chevron.left")
                         .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(LimaTheme.textPrimary)
                         .frame(width: 29, height: 29)
                 }
                 .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
@@ -142,10 +143,10 @@ struct LauncherView: View {
             if let title = viewModel.mode.title, viewModel.mode != .root {
                 Text(title)
                     .limaFont(.system(size: 14, weight: .bold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(LimaTheme.textPrimary)
                 Image(systemName: "chevron.right")
                     .limaFont(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(LimaTheme.textTertiary)
             }
 
             if viewModel.isTimezonePicker {
@@ -154,7 +155,7 @@ struct LauncherView: View {
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(1)
             } else if viewModel.mode != .terminal {
                 TextField(viewModel.placeholder, text: $viewModel.query)
@@ -173,10 +174,10 @@ struct LauncherView: View {
             } else if viewModel.mode != .terminal, !viewModel.query.isEmpty {
                 Text("esc")
                     .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .padding(.horizontal, 7)
                     .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
+                    .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
             }
 
             if isSurfaceMenuVisible {
@@ -256,7 +257,7 @@ struct LauncherView: View {
         } label: {
             Image(systemName: "ellipsis")
                 .limaFont(.system(size: 13, weight: .bold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(LimaTheme.textPrimary)
                 .frame(width: 29, height: 29)
         }
         .menuStyle(.borderlessButton)
@@ -385,7 +386,7 @@ struct LauncherView: View {
                     .accessibilityLabel("Previous emoji page")
                     Text(viewModel.emojiPageLabel)
                         .limaFont(.system(size: 9.5, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                         .frame(minWidth: 36)
                     Button { viewModel.moveEmojiPage(by: 1) } label: {
                         Image(systemName: "chevron.right")
@@ -458,9 +459,9 @@ struct LauncherView: View {
                         .limaFont(.system(size: 13, weight: .semibold))
                     Text("Try another name or clear the search")
                         .limaFont(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.tertiary)
+                    .foregroundStyle(LimaTheme.textTertiary)
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -474,7 +475,7 @@ struct LauncherView: View {
                 Spacer()
                 Text("esc")
                     .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Divider()
             if let item = viewModel.actionPanelItem {
@@ -484,7 +485,7 @@ struct LauncherView: View {
                             Image(systemName: action.symbol).frame(width: 18)
                             Text(action.title)
                             Spacer()
-                            if let shortcut = action.shortcut { Text(shortcut).foregroundStyle(.secondary) }
+                            if let shortcut = action.shortcut { Text(shortcut).foregroundStyle(LimaTheme.textSecondary) }
                         }
                         .padding(.horizontal, 9).padding(.vertical, 7)
                     }
@@ -563,10 +564,10 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Ready when you are")
                 .limaFont(LimaTypography.sectionTitle)
-                .foregroundStyle(LimaColors.primaryText)
+                .foregroundStyle(LimaTheme.textPrimary)
             Text("Recent and favorite actions")
                 .limaFont(LimaTypography.body)
-                .foregroundStyle(LimaColors.secondaryText)
+                .foregroundStyle(LimaTheme.textSecondary)
         }
         .padding(.horizontal, 11)
         .padding(.top, 8)
@@ -593,10 +594,10 @@ struct LauncherView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("For Your Selection")
                     .limaFont(.system(size: 11.5, weight: .bold, design: .rounded))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(LimaTheme.textPrimary)
                 Text(clippedPreview.isEmpty ? "Selected text" : clippedPreview + (preview.count > clippedPreview.count ? "…" : ""))
                     .limaFont(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -607,7 +608,7 @@ struct LauncherView: View {
                 Text("\(lineCount) \(lineCount == 1 ? "line" : "lines")")
             }
             .limaFont(.system(size: 9.5, weight: .semibold, design: .monospaced))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(LimaTheme.textSecondary)
         }
         .padding(.horizontal, 11)
         .frame(minHeight: 52)
@@ -629,7 +630,7 @@ struct LauncherView: View {
                         }
                         Text(text.isEmpty ? "Working…" : text)
                             .limaFont(.system(size: 13, weight: .medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                             .lineLimit(2)
                     }
                     Spacer(minLength: 0)
@@ -650,7 +651,7 @@ struct LauncherView: View {
                         Text(title).limaFont(.system(size: 16, weight: .bold))
                         Text(state == .error ? "Lima needs your attention" : "Finished successfully")
                             .limaFont(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                     Spacer()
                     StatusCapsule(text: outputStateLabel(state), color: outputStateColor(state))
@@ -756,7 +757,7 @@ struct LauncherView: View {
                     .limaFont(.system(size: 29, weight: .semibold, design: .rounded))
                 Text(date.map { "\($0) · \(viewModel.timezoneConversion?.destinationZone ?? "")" } ?? "Converted time appears here")
                     .limaFont(.caption.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Spacer(minLength: 0)
         }
@@ -781,7 +782,7 @@ struct LauncherView: View {
                         .limaFont(.system(size: 16, weight: .bold))
                     Text("\(review.sourceText.count) selected characters · \(activeWritingModelTitle)")
                         .limaFont(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                     if let status = review.status {
                         Text(status)
                             .limaFont(.caption2)
@@ -825,7 +826,7 @@ struct LauncherView: View {
                             Text("REVIEW EACH CHANGE")
                                 .limaFont(.system(size: 9, weight: .bold))
                                 .tracking(1.0)
-                                .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                             ForEach(review.issues) { issue in
                                 WritingIssueDecisionRow(
                                     issue: issue,
@@ -1046,10 +1047,10 @@ private struct EmojiPageButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .limaFont(.system(size: 9, weight: .bold))
-            .foregroundStyle(disabled ? Color.secondary.opacity(0.38) : Color.primary.opacity(0.85))
+            .foregroundStyle(disabled ? LimaTheme.textDisabled : LimaTheme.textPrimary)
             .frame(width: 20, height: 20)
-            .background(configuration.isPressed ? LimaColors.hoverFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+            .background(configuration.isPressed ? LimaTheme.surfaceSecondary : LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
             .scaleEffect(configuration.isPressed ? 0.92 : 1)
     }
 }
@@ -1069,18 +1070,18 @@ private struct WritingIssueRow: View {
                         .limaFont(.system(size: 13, weight: .semibold))
                     Text(issue.kind.rawValue)
                         .limaFont(.caption2.weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.primary.opacity(0.07), in: PrismaticPanelShape(cut: 4))
+                        .background(LimaTheme.fieldBackground, in: PrismaticPanelShape(cut: 4))
                 }
                 Text(issue.message)
                     .limaFont(.system(size: 12))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 if !issue.suggestions.isEmpty {
                     Text("Suggestions: \(issue.suggestions.joined(separator: ", "))")
                         .limaFont(.system(size: 12))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             Spacer(minLength: 0)
@@ -1111,7 +1112,7 @@ private struct WritingIssueDecisionRow: View {
                         .limaFont(.system(size: 12.5, weight: .medium))
                         .foregroundStyle(accepted ? .green : .secondary)
                 }
-                Text(issue.message).limaFont(.caption).foregroundStyle(.secondary)
+                Text(issue.message).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Spacer(minLength: 4)
             Button("Keep") { onAccept() }
@@ -1122,8 +1123,8 @@ private struct WritingIssueDecisionRow: View {
                 .foregroundStyle(!accepted ? .orange : .secondary)
         }
         .padding(9)
-        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
     }
 }
 
@@ -1141,12 +1142,12 @@ private struct ResultRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.title)
                     .limaFont(.system(size: 13.5, weight: selected ? .semibold : .medium))
-                    .foregroundStyle(LimaColors.primaryText)
+                    .foregroundStyle(LimaTheme.textPrimary)
                     .lineLimit(1)
                 if !item.subtitle.isEmpty {
                     Text(item.subtitle)
                         .limaFont(.system(size: 11.25))
-                        .foregroundStyle(LimaColors.secondaryText)
+                        .foregroundStyle(LimaTheme.textSecondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
@@ -1155,7 +1156,7 @@ private struct ResultRow: View {
             if let accessory = item.accessory {
                 Text(accessory)
                     .limaFont(.system(size: 10.5, weight: .medium))
-                    .foregroundStyle(LimaColors.secondaryText)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             if let shortcut = item.shortcut { LimaShortcutBadge(text: shortcut) }
             if selected, let actionLabel {
@@ -1172,7 +1173,14 @@ private struct ResultRow: View {
         }
         .padding(.horizontal, 11)
         .frame(height: settings.interfaceDensity.resultRowHeight)
-        .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
+        .background(selected ? LimaTheme.surfaceSelected : (hovered ? LimaTheme.surfaceSecondary : .clear), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                    .strokeBorder(LimaTheme.fieldFocusedBorder, lineWidth: LimaDesign.focusWidth)
+            }
+        }
+        .limaSelection(false, hovered: false, radius: LimaRadius.control)
         .animation(nil, value: selected)
     }
 }
@@ -1189,12 +1197,12 @@ private struct LauncherIconView: View {
                     .resizable()
                     .scaledToFit()
                     .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.readablePrimary : Color.secondary)
+                    .foregroundStyle(selected ? SettingsStore.shared.accentTheme.readablePrimary : LimaTheme.textSecondary)
                     .padding(7.5)
-                    .background(selected ? LimaColors.selectedFill : LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                    .background(selected ? LimaTheme.surfaceSelected : LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
                     .overlay {
                         RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous)
-                            .stroke(selected ? LimaColors.focusedBorder : LimaColors.border, lineWidth: LimaDesign.borderWidth)
+                            .stroke(selected ? LimaTheme.fieldFocusedBorder : LimaTheme.borderSubtle, lineWidth: selected ? LimaDesign.focusWidth : LimaDesign.borderWidth)
                     }
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url))
@@ -1220,7 +1228,7 @@ private struct EmojiGridTile: View {
             .frame(maxWidth: .infinity)
             .frame(minHeight: 48)
             .contentShape(Rectangle())
-            .background(selected ? LimaColors.selectedFill : (hovered ? LimaColors.hoverFill : .clear), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .background(selected ? LimaTheme.surfaceSelected : (hovered ? LimaTheme.surfaceSecondary : .clear), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
             .overlay {
                 if selected {
                     RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
@@ -1255,9 +1263,9 @@ private struct KeyHint: View {
                 .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
-                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
-            Text(label).limaFont(.system(size: 10.5)).foregroundStyle(.secondary)
+                .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+            Text(label).limaFont(.system(size: 10.5)).foregroundStyle(LimaTheme.textSecondary)
         }
     }
 }
@@ -1337,25 +1345,25 @@ private struct ActivityTimeline: View {
                 HStack(spacing: 7) {
                     ZStack {
                         Circle()
-                            .fill(index <= activeStep ? LimaLauncherPalette.indigo : Color.primary.opacity(0.09))
+                            .fill(index <= activeStep ? LimaLauncherPalette.indigo : LimaTheme.borderSubtle)
                             .frame(width: 14, height: 14)
                         if index < activeStep {
                             Image(systemName: "checkmark")
                                 .limaFont(.system(size: 7, weight: .bold))
-                                .foregroundStyle(LimaColors.primaryText)
+                                .foregroundStyle(LimaTheme.textPrimary)
                         } else {
                             Circle()
-                                .fill(index == activeStep ? LimaColors.primaryText : Color.secondary.opacity(0.45))
+                                .fill(index == activeStep ? LimaTheme.textPrimary : LimaTheme.textDisabled)
                                 .frame(width: 4, height: 4)
                         }
                     }
                     Text(label)
                         .limaFont(.system(size: 10, weight: index == activeStep ? .semibold : .medium))
-                        .foregroundStyle(index <= activeStep ? Color.primary : .secondary)
+                        .foregroundStyle(index <= activeStep ? LimaTheme.textPrimary : LimaTheme.textSecondary)
                 }
                 if index < labels.count - 1 {
                     Rectangle()
-                        .fill(index < activeStep ? LimaLauncherPalette.indigo.opacity(0.6) : Color.primary.opacity(0.08))
+                        .fill(index < activeStep ? LimaLauncherPalette.indigo.opacity(0.6) : LimaTheme.fieldBackground)
                         .frame(height: 1)
                 }
             }
@@ -1399,7 +1407,7 @@ private struct InlineLauncherSurfacePlaceholder: View {
             Text(session.surface.title).limaFont(.headline.weight(.semibold))
             Text("This tool is running inside Lima's central launcher.")
                 .limaFont(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
         }
         .frame(maxWidth: .infinity, minHeight: max(180, session.surface.preferredSize.height - 130))
         .padding(20)
@@ -1418,7 +1426,7 @@ private struct InlineExtensionSurfacePlaceholder: View {
                 .limaFont(.headline.weight(.semibold))
             Text("This inline extension surface is ready for its form or output specification.")
                 .limaFont(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: max(180, session.preferredHeight - 130))
