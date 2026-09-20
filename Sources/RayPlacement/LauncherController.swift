@@ -2601,6 +2601,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openSettings:
             showSettings()
 
+        case .checkForUpdates:
+            hide()
+            updateService.checkForUpdates(manual: true)
+
         case .openDeveloperGrammarSettings:
             showDeveloperGrammarSettings()
 

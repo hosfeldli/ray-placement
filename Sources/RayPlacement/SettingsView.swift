@@ -1227,6 +1227,31 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
+            Section("Software Updates") {
+                Text("Lima \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
+                    .limaFont(.caption.weight(.medium))
+                Text(updateService.statusText)
+                    .limaFont(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
+                        .disabled(updateService.isBusy || updateService.isInstalling)
+                    Button("View Releases") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
+                }
+                if updateService.isBusy && !updateService.isInstalling {
+                    ProgressView().controlSize(.small)
+                }
+                if updateService.isInstalling {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ProgressView(value: updateService.installationProgress)
+                            .tint(SettingsColors.readableIndigo)
+                        Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
+                            .limaFont(.caption2.weight(.medium))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
             Section(editingSecretID == nil ? "Add secret" : "Replace secret") {
                 TextField("Name", text: $secretName)
                 Picker("Kind", selection: $secretKind) {

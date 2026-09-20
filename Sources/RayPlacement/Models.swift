@@ -253,6 +253,7 @@ enum SystemAction {
     case exportDiagnostics
     case openWorkflows
     case openSettings
+    case checkForUpdates
     case openDeveloperGrammarSettings
     case openGrammarDebugger
     case quit
