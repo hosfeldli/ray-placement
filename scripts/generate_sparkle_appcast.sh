@@ -13,9 +13,10 @@ OUTPUT=""
 ARCHIVE=""
 KEY_FILE="${SPARKLE_EDDSA_PRIVATE_KEY_FILE:-}"
 PRIVATE_KEY="${SPARKLE_EDDSA_PRIVATE_KEY:-}"
+KEYCHAIN_ACCOUNT=""
 
 usage() {
-    print 'Usage: generate_sparkle_appcast.sh --metadata dist/Lima-release.json --output dist/appcast.xml --archive dist/Lima-Sparkle.zip [--key-file file]'
+    print 'Usage: generate_sparkle_appcast.sh --metadata dist/Lima-release.json --output dist/appcast.xml --archive dist/Lima-Sparkle.zip [--key-file file | --keychain-account account]'
 }
 
 while (( $# > 0 )); do
@@ -24,6 +25,7 @@ while (( $# > 0 )); do
         --output) OUTPUT="${2:?--output requires a file}"; shift 2;;
         --archive) ARCHIVE="${2:?--archive requires a file}"; shift 2;;
         --key-file) KEY_FILE="${2:?--key-file requires a file}"; shift 2;;
+        --keychain-account) KEYCHAIN_ACCOUNT="${2:?--keychain-account requires a value}"; shift 2;;
         -h|--help) usage; exit 0;;
         *) print -u2 "Unknown option: $1"; usage >&2; exit 2;;
     esac
@@ -53,9 +55,9 @@ sparkle_update_name="$(jq -er '.sparkleUpdate.name' "$METADATA")"
 }
 [[ "$build" =~ '^[0-9]+$' ]] || { print -u2 "Invalid Sparkle build number: $build"; exit 1; }
 
-if [[ -z "$KEY_FILE" && -z "$PRIVATE_KEY" ]]; then
+if [[ -z "$KEY_FILE" && -z "$PRIVATE_KEY" && -z "$KEYCHAIN_ACCOUNT" ]]; then
     print -u2 'A real Sparkle EdDSA private key is required; refusing to emit an unsigned or placeholder appcast.'
-    print -u2 'Use --key-file locally or SPARKLE_EDDSA_PRIVATE_KEY in CI.'
+    print -u2 'Use --key-file, --keychain-account, or SPARKLE_EDDSA_PRIVATE_KEY.'
     exit 1
 fi
 
@@ -74,8 +76,10 @@ run_with_key() {
     shift
     if [[ -n "$KEY_FILE" ]]; then
         "$tool" --ed-key-file "$KEY_FILE" "$@"
-    else
+    elif [[ -n "$PRIVATE_KEY" ]]; then
         printf '%s' "$PRIVATE_KEY" | "$tool" --ed-key-file - "$@"
+    else
+        "$tool" --account "$KEYCHAIN_ACCOUNT" "$@"
     fi
 }
 

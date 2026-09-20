@@ -205,8 +205,7 @@ release_generate_distribution_metadata() {
     if [[ -n "${SPARKLE_EDDSA_PRIVATE_KEY_FILE:-}" ]]; then
         appcast_args+=(--key-file "$SPARKLE_EDDSA_PRIVATE_KEY_FILE")
     elif [[ -z "${SPARKLE_EDDSA_PRIVATE_KEY:-}" ]]; then
-        print -u2 'SPARKLE_EDDSA_PRIVATE_KEY or SPARKLE_EDDSA_PRIVATE_KEY_FILE is required to generate a signed Sparkle appcast.'
-        return 1
+        appcast_args+=(--keychain-account "${SPARKLE_EDDSA_KEYCHAIN_ACCOUNT:-lima-sparkle}")
     fi
     "$RELEASE_COMMON_DIRECTORY/generate_sparkle_appcast.sh" "${appcast_args[@]}"
     chmod 600 "$dist/latest.json" "$dist/appcast.xml"
