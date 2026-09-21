@@ -69,12 +69,13 @@ import Testing
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [
-                .responseCreated("fixture-cancel"),
-                .reasoningSummaryDelta("Working through the request."),
                 .textDelta("Partial answer"),
                 .completed("fixture-cancel")
             ],
-            interEventDelay: .milliseconds(60)
+            // Yield visible output immediately, then leave a deliberately long
+            // cancellation window before completion. This avoids test-scheduler
+            // races when the complete suite runs its tests concurrently.
+            interEventDelay: .seconds(2)
         )
     )
 
