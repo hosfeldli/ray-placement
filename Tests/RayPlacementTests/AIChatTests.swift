@@ -107,11 +107,9 @@ import Testing
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .responseCreated("fixture-approval"),
-            .outputItem(AIOutputItem(
-                phase: .completed,
-                apiType: "function_call",
-                callID: "call-settings",
-                name: "open_lima_settings",
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
                 arguments: "{}"
             ))
         ])
@@ -407,6 +405,23 @@ import Testing
     #expect(server.enabledTools.isEmpty)
 }
 
+@Test func remoteMCPPayloadOmitsWriteAndDestructiveTools() throws {
+    let serverID = UUID()
+    let server = MCPServer(
+        name: "Files",
+        url: "https://example.com/mcp",
+        tools: [
+            MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true),
+            MCPToolDescriptor(serverID: serverID, name: "write_file", risk: .write, enabled: true),
+            MCPToolDescriptor(serverID: serverID, name: "delete_file", risk: .destructive, enabled: true)
+        ]
+    )
+    let payload = try #require(AIChatResponsesClient.remoteMCPToolPayload(server: server, credential: nil))
+    #expect(payload["allowed_tools"] as? [String] == ["read_file"])
+    let approval = try #require(payload["require_approval"] as? [String: [String: [String]]])
+    #expect(approval["never"]?["tool_names"] == ["read_file"])
+}
+
 @Test func markdownRendererSeparatesFencedCodeBlocks() {
     let markdown = "Intro\n```swift\nlet answer = 42\n```\nDone"
     let mirror = AIMarkdownView(markdown: markdown)
@@ -612,11 +627,11 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .mcpCall && item.errorMessage == "Permission denied" }; return false })
 }
 
-@Test @MainActor func localToolRiskRequiresApprovalForLocalActions() {
-    let read = LimaAIToolRegistry.definition(for: "get_lima_status")
-    let action = LimaAIToolRegistry.definition(for: "open_lima_settings")
-    #expect(read?.risk.requiresApproval == false)
-    #expect(action?.risk.requiresApproval == true)
+@Test @MainActor func advertisedNativeToolsAreReadOnly() {
+    #expect(LimaAIToolRegistry.definitions.allSatisfy { !$0.risk.requiresApproval })
+    #expect(LimaAIToolRegistry.definition(for: "open_lima_settings") == nil)
+    #expect(LimaAIToolRegistry.definition(for: "read_screen_context")?.displayName == "Screen context")
+    #expect(LimaAIToolRegistry.definition(for: "search_web")?.displayName == "Search the web")
 }
 
 @Test func localToolFailureIsReturnedAsToolOutput() async {

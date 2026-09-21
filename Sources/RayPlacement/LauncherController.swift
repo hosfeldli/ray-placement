@@ -606,14 +606,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             finalOrigin = NSPoint(x: x, y: y)
         }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        panel.alphaValue = 0
-        panel.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y + (reduceMotion ? 0 : 8)))
+        // Every screen starts from the same calculated origin. Animating a second
+        // frame-origin change can accumulate when surfaces open in quick succession,
+        // leaving the launcher progressively lower and farther right.
+        panel.setFrameOrigin(finalOrigin)
+        panel.alphaValue = reduceMotion ? 1 : 0
         panel.makeKeyAndOrderFront(nil)
+        guard !reduceMotion else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? 0.01 : 0.22
+            context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
-            panel.animator().setFrameOrigin(finalOrigin)
         }
     }
 
@@ -633,6 +636,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         lastExternalApplication = frontmost
         previousApplication = frontmost
+        LimaScreenContextStore.shared.capture(application: frontmost)
         focusedTextContext = try? SelectedTextService.editableContext(in: frontmost.processIdentifier)
         selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
         keyboardSelectionContext = nil

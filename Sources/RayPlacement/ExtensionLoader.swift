@@ -147,8 +147,11 @@ final class ExtensionLoader {
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
     }
 
-    func load() -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
-        prepareFolder()
+    /// The default loader prepares and registers extension packages for the launcher.
+    /// AI catalog inspection passes both flags as false so it only reads existing
+    /// manifests and cannot create, update, approve, or otherwise alter a pack.
+    func load(prepare: Bool = true, registerPackages: Bool = true) -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
+        if prepare { prepareFolder() }
         let fileManager = FileManager.default
         guard let contents = try? fileManager.contentsOfDirectory(
             at: ApplicationPaths.extensions,
@@ -193,7 +196,9 @@ final class ExtensionLoader {
                 let manifestData = try Data(contentsOf: file)
                 let manifestHash = ExtensionSecurityPolicy.manifestHash(manifestData)
                 let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
-                ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (manifest.provenance == .unsigned ? .localDeveloper : .userInstalled), manifestHash: manifestHash)
+                if registerPackages {
+                    ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (manifest.provenance == .unsigned ? .localDeveloper : .userInstalled), manifestHash: manifestHash)
+                }
                 if isBundled {
                     // Bundled packs are shipped and verified with Lima; they do not
                     // require the interactive approval flow used by user extensions.

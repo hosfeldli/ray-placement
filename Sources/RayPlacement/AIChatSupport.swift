@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import Foundation
 import Security
 import SwiftUI
@@ -266,6 +267,18 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case .toolApproval: return "hand.raised.fill"
         case .completed, .toolCompleted: return "checkmark"
         default: return "circle.fill"
+        }
+    }
+
+    var displayTitle: String {
+        switch title {
+        case "read_screen_context": return "Screen context"
+        case "search_files": return "Find files"
+        case "read_file": return "Read a file"
+        case "search_web": return "Search the web"
+        case "list_extensions": return "Browse extensions"
+        case "get_lima_status": return "Lima status"
+        default: return title.replacingOccurrences(of: "_", with: " ")
         }
     }
 }
@@ -929,15 +942,81 @@ struct LimaAIToolExecution: Sendable {
     }
 }
 
+enum AIReadOnlyPolicy {
+    static let assistantInstructions = """
+    You are Lima’s private assistant. Every tool is read-only: never write, delete, rename, install, execute, launch, submit, or otherwise change local or remote content. Do not attempt to use tools outside the supplied read-only list. You may inspect files, public web search results, screen context, and extension metadata. You may draft extension code or manifests in the chat for the user to review, but never save, install, or run an extension.
+    """
+
+    static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
+        server.enabledTools.filter { !$0.risk.requiresApproval }
+    }
+}
+
+@MainActor
+final class LimaScreenContextStore {
+    static let shared = LimaScreenContextStore()
+
+    private var snapshot: [String: Any] = [:]
+
+    func capture(application: NSRunningApplication) {
+        guard application.bundleIdentifier != Bundle.main.bundleIdentifier else { return }
+        var context: [String: Any] = [
+            "application": application.localizedName ?? application.bundleIdentifier ?? "Unknown app",
+            "captured_at": ISO8601DateFormatter().string(from: Date())
+        ]
+        if let title = focusedWindowTitle(for: application.processIdentifier), !title.isEmpty {
+            context["window_title"] = title
+        }
+        if let selection = try? SelectedTextService.selectedText(in: application.processIdentifier),
+           !selection.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            context["selected_text"] = String(selection.prefix(6_000))
+            context["selection_truncated"] = selection.count > 6_000
+        }
+        snapshot = context
+    }
+
+    func read() -> [String: Any] {
+        guard !snapshot.isEmpty else {
+            return [
+                "note": "No previous-app screen context is available yet. Open Lima from the app you want to inspect, then ask again.",
+                "screen_capture": false
+            ]
+        }
+        var context = snapshot
+        context["screen_capture"] = false
+        context["note"] = "This is a read-only snapshot of the app and selected text that were active before Lima opened. Lima does not click or change that app."
+        return context
+    }
+
+    private func focusedWindowTitle(for processIdentifier: pid_t) -> String? {
+        guard AXIsProcessTrusted() else { return nil }
+        let application = AXUIElementCreateApplication(processIdentifier)
+        var rawWindow: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedWindowAttribute as CFString, &rawWindow) == .success,
+              let window = rawWindow else { return nil }
+        var rawTitle: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &rawTitle) == .success else { return nil }
+        return rawTitle as? String
+    }
+}
+
 @MainActor
 enum LimaAIToolRegistry {
     private static let fileSearch = FileSearchService()
+    private static let maximumTextFileBytes = 96 * 1_024
 
     static let definitions: [LimaAIToolDefinition] = [
         LimaAIToolDefinition(
+            id: "read_screen_context",
+            name: "read_screen_context",
+            description: "Read the previously active app’s name, window title, and selected text when macOS Accessibility permits it. It never captures pixels, clicks, types, or changes another app.",
+            parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
             id: "search_files",
             name: "search_files",
-            description: "Search file names in the user’s existing Spotlight index. Returns up to 20 file paths and never reads file contents.",
+            description: "Search file names in the user’s existing Spotlight index. Returns up to 20 paths and never reads file contents.",
             parameters: [
                 "type": "object",
                 "properties": ["query": ["type": "string", "description": "A concise file-name query."]],
@@ -947,22 +1026,46 @@ enum LimaAIToolRegistry {
             risk: .read
         ),
         LimaAIToolDefinition(
-            id: "get_lima_status",
-            name: "get_lima_status",
-            description: "Get non-sensitive Lima application status, including version and enabled tool counts. Never returns credentials, prompts, selections, or Keychain data.",
+            id: "read_file",
+            name: "read_file",
+            description: "Read a bounded text or source-code file. Sensitive credential locations, non-text files, and files larger than 96 KB are blocked. This tool never changes a file.",
+            parameters: [
+                "type": "object",
+                "properties": ["path": ["type": "string", "description": "An absolute path returned by Search Files or supplied by the user."]],
+                "required": ["path"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "search_web",
+            name: "search_web",
+            description: "Search public web results and return concise titles, URLs, and snippets. It never signs in, submits forms, follows private links, or changes web content.",
+            parameters: [
+                "type": "object",
+                "properties": ["query": ["type": "string", "description": "A concise public-web search query."]],
+                "required": ["query"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "list_extensions",
+            name: "list_extensions",
+            description: "List installed Lima extension commands and their declared capabilities. It only reads manifests; it does not run, install, modify, or approve extensions.",
             parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
             risk: .read
         ),
         LimaAIToolDefinition(
-            id: "open_lima_settings",
-            name: "open_lima_settings",
-            description: "Open Lima’s Settings window on this Mac. This changes the local user interface but does not change settings.",
+            id: "get_lima_status",
+            name: "get_lima_status",
+            description: "Get non-sensitive Lima application status, including version and enabled read-only tool counts. Never returns credentials, prompts, selections, or Keychain data.",
             parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
-            risk: .localAction
+            risk: .read
         )
     ]
 
-    static var defaultEnabledToolIDs: Set<String> { Set(definitions.filter { $0.risk == .read }.map { $0.id }) }
+    static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)) }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
         guard let name else { return nil }
@@ -970,32 +1073,44 @@ enum LimaAIToolRegistry {
     }
 
     static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        definitions.filter { ids.contains($0.id) }
+        definitions.filter { ids.contains($0.id) && $0.risk == .read }
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
-        guard let definition = definition(for: call.name) else {
-            return .json(["error": "Unknown Lima tool."], isError: true)
+        guard let definition = definition(for: call.name), definition.risk == .read else {
+            return .json(["error": "Lima AI Chat only permits registered read-only tools."], isError: true)
         }
         switch definition.id {
+        case "read_screen_context":
+            return .json(LimaScreenContextStore.shared.read())
         case "search_files":
             guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
-                return .json(["error": "search_files requires a non-empty query."], isError: true)
+                return .json(["error": "Search Files needs a non-empty query."], isError: true)
             }
             let urls = await searchFiles(named: String(query.prefix(160)))
             return .json([
                 "matches": urls.prefix(20).map { ["name": $0.lastPathComponent, "path": $0.path] },
                 "truncated": urls.count > 20
             ])
+        case "read_file":
+            guard let path = stringArgument(named: "path", from: call.arguments), !path.isEmpty else {
+                return .json(["error": "Read File needs an absolute path."], isError: true)
+            }
+            return readTextFile(at: path)
+        case "search_web":
+            guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
+                return .json(["error": "Search Web needs a non-empty query."], isError: true)
+            }
+            return await searchWeb(query: String(query.prefix(200)))
+        case "list_extensions":
+            return extensionCatalog()
         case "get_lima_status":
             return .json([
                 "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
-                "native_tools_enabled": LimaAIToolStore.shared.enabledToolIDs.count,
-                "mcp_servers_enabled": MCPServerStore.shared.servers.filter { $0.enabled }.count
+                "native_read_only_tools_enabled": enabledDefinitions(LimaAIToolStore.shared.enabledToolIDs).count,
+                "mcp_read_only_tools_enabled": MCPServerStore.shared.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count },
+                "write_access": false
             ])
-        case "open_lima_settings":
-            let opened = NSApp.sendAction(#selector(AppDelegate.showSettings), to: nil, from: nil)
-            return .json(["opened": opened])
         default:
             return .json(["error": "The requested Lima tool is unavailable."], isError: true)
         }
@@ -1013,6 +1128,164 @@ enum LimaAIToolRegistry {
             fileSearch.search(query) { urls in
                 continuation.resume(returning: urls)
             }
+        }
+    }
+
+    private static func readTextFile(at path: String) -> LimaAIToolExecution {
+        let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        guard url.path.hasPrefix("/") else {
+            return .json(["error": "Read File only accepts absolute paths."], isError: true)
+        }
+        guard !isSensitivePath(url) else {
+            return .json(["error": "Lima does not share credentials, system files, or hidden secret locations with AI Chat."], isError: true)
+        }
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentTypeKey])
+            guard values.isRegularFile == true else {
+                return .json(["error": "Read File only supports regular files."], isError: true)
+            }
+            let byteCount = values.fileSize ?? 0
+            guard byteCount <= maximumTextFileBytes else {
+                return .json(["error": "That file is larger than Lima’s 96 KB read-only limit."], isError: true)
+            }
+            guard isTextFile(url: url, contentType: values.contentType) else {
+                return .json(["error": "Read File supports text and source-code files only."], isError: true)
+            }
+            let data = try Data(contentsOf: url)
+            guard let text = String(data: data, encoding: .utf8) else {
+                return .json(["error": "Lima could not decode that file as UTF-8 text."], isError: true)
+            }
+            let limitedText = String(text.prefix(32_000))
+            return .json([
+                "path": url.path,
+                "content": limitedText,
+                "truncated": text.count > limitedText.count
+            ])
+        } catch {
+            return .json(["error": "Lima could not read that file."], isError: true)
+        }
+    }
+
+    private static func isSensitivePath(_ url: URL) -> Bool {
+        let components = Set(url.pathComponents.map { $0.lowercased() })
+        let blockedComponents: Set<String> = [".ssh", ".aws", ".gnupg", ".docker", "keychains", "secrets"]
+        if !components.intersection(blockedComponents).isEmpty { return true }
+        let path = url.path.lowercased()
+        return path.hasPrefix("/system/")
+            || path.hasPrefix("/private/")
+            || path.hasPrefix("/etc/")
+            || path.contains("/library/application support/lima/ai/")
+            || url.lastPathComponent.lowercased().contains("credential")
+            || url.lastPathComponent.lowercased().contains("token")
+            || url.lastPathComponent.lowercased().contains("secret")
+    }
+
+    private static func isTextFile(url: URL, contentType: UTType?) -> Bool {
+        if contentType?.conforms(to: .text) == true || contentType?.conforms(to: .sourceCode) == true { return true }
+        let extensions: Set<String> = ["csv", "env.example", "json", "log", "md", "plist", "py", "rb", "sh", "sql", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml", "zsh"]
+        return extensions.contains(url.pathExtension.lowercased())
+    }
+
+    private static func searchWeb(query: String) async -> LimaAIToolExecution {
+        var components = URLComponents(string: "https://api.duckduckgo.com/")
+        components?.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "format", value: "json"),
+            URLQueryItem(name: "no_html", value: "1"),
+            URLQueryItem(name: "skip_disambig", value: "1")
+        ]
+        guard let url = components?.url else {
+            return .json(["error": "Lima could not form a public web search request."], isError: true)
+        }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        request.setValue("Lima/1.0 (read-only search)", forHTTPHeaderField: "User-Agent")
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return .json(["error": "Public web search was unavailable."], isError: true)
+            }
+            var results: [[String: String]] = []
+            if let abstract = object["AbstractText"] as? String, !abstract.isEmpty {
+                results.append([
+                    "title": (object["Heading"] as? String) ?? query,
+                    "url": (object["AbstractURL"] as? String) ?? "",
+                    "snippet": abstract
+                ])
+            }
+            func collect(_ topics: [Any]) {
+                for topic in topics where results.count < 6 {
+                    if let item = topic as? [String: Any],
+                       let text = item["Text"] as? String,
+                       let firstURL = item["FirstURL"] as? String {
+                        results.append(["title": String(text.prefix(160)), "url": firstURL, "snippet": text])
+                    } else if let item = topic as? [String: Any], let nested = item["Topics"] as? [Any] {
+                        collect(nested)
+                    }
+                }
+            }
+            collect(object["RelatedTopics"] as? [Any] ?? [])
+            return .json(["query": query, "results": results, "source": "DuckDuckGo public instant answers"])
+        } catch {
+            return .json(["error": "Public web search could not be reached."], isError: true)
+        }
+    }
+
+    private static func extensionCatalog() -> LimaAIToolExecution {
+        let commands = ExtensionLoader().load(prepare: false, registerPackages: false).commands
+        let entries = commands.prefix(80).map { loaded in
+            [
+                "extension": loaded.extensionName,
+                "command": loaded.command.title,
+                "summary": loaded.command.subtitle ?? "No summary provided.",
+                "capabilities": loaded.capabilities.map(\.rawValue).sorted(),
+                "action_type": loaded.command.action.type.rawValue,
+                "can_execute_from_ai": false
+            ] as [String: Any]
+        }
+        return .json([
+            "commands": entries,
+            "truncated": commands.count > entries.count,
+            "policy": "AI Chat can inspect this catalog and draft extension code in chat, but never installs, executes, approves, or changes an extension."
+        ])
+    }
+}
+
+extension LimaAIToolDefinition {
+    var displayName: String {
+        switch id {
+        case "read_screen_context": return "Screen context"
+        case "search_files": return "Find files"
+        case "read_file": return "Read a file"
+        case "search_web": return "Search the web"
+        case "list_extensions": return "Browse extensions"
+        case "get_lima_status": return "Lima status"
+        default: return name.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+
+    var userSummary: String {
+        switch id {
+        case "read_screen_context": return "App, window, and selected text"
+        case "search_files": return "Names and paths only"
+        case "read_file": return "Text and code, never changes"
+        case "search_web": return "Public results only"
+        case "list_extensions": return "Catalog only, never runs"
+        case "get_lima_status": return "Private app details"
+        default: return description
+        }
+    }
+
+    var symbol: String {
+        switch id {
+        case "read_screen_context": return "rectangle.on.rectangle"
+        case "search_files": return "folder"
+        case "read_file": return "doc.text"
+        case "search_web": return "globe"
+        case "list_extensions": return "square.grid.2x2"
+        case "get_lima_status": return "checkmark.shield"
+        default: return "eye"
         }
     }
 }

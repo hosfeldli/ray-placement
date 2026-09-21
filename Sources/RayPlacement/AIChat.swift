@@ -634,7 +634,8 @@ struct AIChatResponsesClient: AIChatTransport {
             "model": model,
             "input": input,
             "stream": true,
-            "store": true
+            "store": true,
+            "instructions": AIReadOnlyPolicy.assistantInstructions
         ]
         if option.supportsReasoning {
             let effort = option.supportedReasoningEfforts.contains(reasoningEffort)
@@ -659,21 +660,16 @@ struct AIChatResponsesClient: AIChatTransport {
     }
 
     static func remoteMCPToolPayload(server: MCPServer, credential: String?) -> [String: Any]? {
-        let enabledTools = server.enabledTools
-        guard !enabledTools.isEmpty, server.validHTTPURL != nil else { return nil }
+        let readOnlyTools = AIReadOnlyPolicy.readableMCPTools(for: server)
+        guard !readOnlyTools.isEmpty, server.validHTTPURL != nil else { return nil }
 
         var tool: [String: Any] = [
             "type": "mcp",
             "server_label": server.apiLabel,
             "server_url": server.validHTTPURL?.absoluteString ?? server.url,
-            "allowed_tools": enabledTools.map(\.name)
+            "allowed_tools": readOnlyTools.map(\.name),
+            "require_approval": ["never": ["tool_names": readOnlyTools.map(\.name)]]
         ]
-        let readTools = enabledTools.filter { !$0.risk.requiresApproval }.map(\.name)
-        if readTools.isEmpty {
-            tool["require_approval"] = "always"
-        } else {
-            tool["require_approval"] = ["never": ["tool_names": readTools]]
-        }
 
         if let credential, !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             tool["authorization"] = MCPCredentialStore.authorizationHeaderValue(credential)
@@ -862,7 +858,7 @@ final class AIChatViewModel: ObservableObject {
         if isStreaming {
             if let activity, activity.kind == .toolStarted {
                 return AIChatTaskState(
-                    title: "Using \(activity.title)",
+                    title: "Using \(activity.displayTitle)",
                     detail: activity.detail ?? "Running a requested tool",
                     symbol: "wrench.and.screwdriver.fill",
                     tone: .active,
@@ -1387,12 +1383,15 @@ final class AIChatViewModel: ObservableObject {
         }
 
         let localCall = pendingLocalFunctionCall
+        // Remote MCP requests are never allowed, even if a malformed or legacy
+        // response manages to reach this continuation path.
+        let allowed = approval.remoteApprovalID == nil && allow
         pendingApproval = nil
         pendingLocalFunctionCall = nil
         appendTurnActivity(
             AIAgentActivity(
                 kind: .toolApproval,
-                title: allow ? "Tool allowed once" : "Tool denied",
+                title: allowed ? "Tool allowed once" : "Tool denied",
                 detail: "\(approval.serverLabel) · \(approval.toolName)",
                 requiresApproval: true,
                 completed: true
@@ -1420,7 +1419,7 @@ final class AIChatViewModel: ObservableObject {
 
             if let localCall {
                 let output: [String: Any]?
-                if allow {
+                if allowed {
                     output = await self.executeLocalTool(localCall, conversationID: conversation.id)
                 } else if let callID = localCall.callID {
                     let denied = LimaAIToolExecution.json(["denied": true, "message": "Denied by the user in Lima."])
@@ -1467,8 +1466,8 @@ final class AIChatViewModel: ObservableObject {
                     model: conversation.model,
                     previousResponseID: previousResponseID,
                     requestID: remoteApprovalID,
-                    approve: allow,
-                    reason: allow ? nil : "Denied in Lima",
+                    approve: allowed,
+                    reason: allowed ? nil : "Lima AI Chat is read-only",
                     reasoningEffort: conversation.reasoningEffort,
                     mcpServers: mcpServers,
                     localTools: self.enabledNativeTools
@@ -1505,20 +1504,18 @@ final class AIChatViewModel: ObservableObject {
         case .outputItem(let item):
             switch item.kind {
             case .mcpApprovalRequest:
-                guard item.phase == .added || pendingApproval == nil else { return nil }
-                let request = AIToolApprovalRequest(
-                    remoteApprovalID: item.id,
-                    serverLabel: item.serverLabel ?? "Remote MCP",
-                    toolName: item.name ?? "MCP tool",
-                    arguments: item.arguments
-                )
-                pendingApproval = request
+                // The outgoing allowlist contains read tools only. Treat any
+                // approval request as a protocol mismatch rather than offering a
+                // path to run an unclassified remote action.
+                let server = item.serverLabel ?? "Remote MCP"
+                let tool = item.name ?? "tool"
+                streamError = "Lima blocked \(server)’s \(tool) request because AI Chat is read-only."
                 appendTurnActivity(
                     AIAgentActivity(
-                        kind: .toolApproval,
-                        title: "Approval needed",
-                        detail: "\(request.serverLabel) · \(request.toolName)",
-                        requiresApproval: true
+                        kind: .toolFailed,
+                        title: "Blocked non-read-only tool",
+                        detail: "\(server) · \(tool)",
+                        completed: true
                     ),
                     conversationID: conversationID
                 )
@@ -2000,7 +1997,8 @@ struct AIChatWorkspaceView: View {
             endTask: model.endTask
         )
         .padding(.horizontal, 16)
-        .padding(.vertical, 8)
+        .padding(.top, 8)
+        .padding(.bottom, 5)
     }
 
     private var diagnosticsPanel: some View {
@@ -2040,7 +2038,7 @@ struct AIChatWorkspaceView: View {
                 .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             Text("Connect OpenAI")
                 .limaFont(.title2.weight(.semibold))
-            Text("Your API key is saved only in your macOS Keychain. Lima sends messages directly to the OpenAI Responses API. Tools and attachments are opt-in; read tools can run automatically, while write and destructive tools ask before running.")
+            Text("Your API key is saved only in your macOS Keychain. Lima sends messages directly to the OpenAI Responses API. Tools and attachments are opt-in. Every AI tool is read-only: Lima never lets AI write, delete, run, install, or approve anything.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             SecureField("OpenAI API key", text: $apiKey)
@@ -2099,113 +2097,121 @@ struct AIChatWorkspaceView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 9) {
             AIAttachmentStrip(attachments: model.attachments, remove: model.remove)
 
-            HStack(alignment: .bottom, spacing: 8) {
-                attachmentAndToolMenu
-
-                ZStack(alignment: .topLeading) {
-                    if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(model.canEndTask ? "End the current task before sending another message" : "Ask anything…")
-                            .limaFont(.callout)
-                            .foregroundStyle(LimaTheme.textTertiary)
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 10)
-                            .allowsHitTesting(false)
-                    }
-
-                    TextEditor(text: $model.draft)
-                        .font(.system(size: 14))
-                        .frame(height: 52)
-                        .scrollContentBackground(.hidden)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 3)
-                        .disabled(model.canEndTask)
-                        .accessibilityLabel("Message")
-                }
-                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth))
-
-                if model.canEndTask {
-                    Button(action: model.endTask) {
-                        Label("End Task", systemImage: "stop.fill")
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(LimaColors.danger)
-                    .help("End the current task")
-                    .accessibilityLabel("End current task")
-                } else {
-                    Button(action: model.send) {
-                        Label("Send", systemImage: "arrow.up")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .help("Send message")
-                    .accessibilityLabel("Send message")
-                }
-            }
-
             HStack(spacing: 8) {
+                attachmentAndToolMenu
                 modelPicker
                 reasoningPicker
                 Spacer(minLength: 8)
-                Label("Tools \(enabledToolCount)", systemImage: "wrench.and.screwdriver")
-                    .limaFont(.caption2)
-                    .foregroundStyle(LimaTheme.textTertiary)
+                Label("\(enabledToolCount) read-only", systemImage: "eye")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .accessibilityLabel("\(enabledToolCount) read-only tools enabled")
+            }
+            .frame(minHeight: 28)
+
+            HStack(alignment: .bottom, spacing: 9) {
+                ZStack(alignment: .topLeading) {
+                    if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(model.canEndTask ? "Task in progress — use End Task above" : "Ask anything…")
+                            .limaFont(.callout)
+                            .foregroundStyle(LimaTheme.textTertiary)
+                            .padding(.horizontal, 13)
+                            .padding(.vertical, 13)
+                            .allowsHitTesting(false)
+                    }
+
+                    AIChatComposerEditor(text: $model.draft, editable: !model.canEndTask)
+                        .frame(height: 66)
+                        .accessibilityLabel("Message")
+                }
+                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.searchField, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: LimaRadius.searchField, style: .continuous)
+                        .stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth)
+                )
+
+                if !model.canEndTask {
+                    Button(action: model.send) {
+                        Image(systemName: "arrow.up")
+                            .limaFont(.system(size: 14, weight: .bold))
+                            .frame(width: 42, height: 42)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .clipShape(Circle())
+                    .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Send message")
+                    .accessibilityLabel("Send message")
+                    .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                }
             }
         }
-        .padding(10)
+        .padding(12)
         .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+        .animation(.easeInOut(duration: 0.16), value: model.canEndTask)
         .padding(.horizontal, 16)
-        .padding(.bottom, 10)
+        .padding(.bottom, 12)
     }
 
     private var enabledToolCount: Int {
-        nativeToolStore.enabledToolIDs.count
-            + mcpStore.servers.filter(\.enabled).reduce(0) { $0 + $1.enabledTools.count }
+        LimaAIToolRegistry.enabledDefinitions(nativeToolStore.enabledToolIDs).count
+            + mcpStore.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count }
     }
 
     private var attachmentAndToolMenu: some View {
         Menu {
+            Text("Add context")
             Button("Attach Files…", action: model.addFiles)
             Button("Add Clipboard", action: model.addClipboard)
             Button("Add Current Selection", action: model.addSelection)
             Divider()
-            Text("Lima tools")
+            Text("Lima tools — read-only")
             ForEach(LimaAIToolRegistry.definitions) { tool in
                 Toggle(isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
                     set: { nativeToolStore.setEnabled(tool, enabled: $0) }
                 )) {
-                    Label("\(tool.name) · \(tool.risk.title)", systemImage: "desktopcomputer")
+                    Label {
+                        Text("\(tool.displayName) — \(tool.userSummary)")
+                    } icon: {
+                        Image(systemName: tool.symbol)
+                    }
                 }
             }
             Divider()
-            Text("MCP servers")
+            Text("Connected services — read-only")
             ForEach(mcpStore.servers) { server in
+                let readableTools = AIReadOnlyPolicy.readableMCPTools(for: server)
                 Toggle(isOn: Binding(
                     get: { server.enabled },
                     set: { mcpStore.setEnabled(server.id, enabled: $0) }
                 )) {
-                    Label("\(server.name) (\(server.enabledTools.count))", systemImage: "server.rack")
+                    Label("\(server.name) — \(readableTools.count) safe tool\(readableTools.count == 1 ? "" : "s")", systemImage: "server.rack")
+                }
+                if readableTools.isEmpty {
+                    Text("No read-only tools are available from \(server.name).")
                 }
             }
             if mcpStore.servers.isEmpty {
-                Text("No MCP servers configured")
+                Text("No connected services yet")
             }
             Divider()
-            Button("Manage MCP Servers…") { model.openMCPManager() }
+            Text("AI Chat never writes, installs, runs, or approves tools.")
+            Button("Manage Connected Services…") { model.openMCPManager() }
         } label: {
-            Image(systemName: "plus")
-                .frame(width: 28, height: 28)
+            Label("Add context", systemImage: "plus")
+                .limaFont(.caption.weight(.semibold))
+                .foregroundStyle(LimaTheme.textPrimary)
+                .frame(minWidth: 98, minHeight: 28)
         }
         .menuStyle(.borderlessButton)
         .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
-        .frame(width: 32, height: 52)
         .disabled(model.canEndTask)
-        .help("Add context or choose tools")
+        .help("Add context or choose read-only tools")
+        .accessibilityLabel("Add context and choose read-only tools")
     }
 
     private var modelPicker: some View {
@@ -2258,24 +2264,30 @@ private struct AIChatTaskStatusBar: View {
     let toggleTurnDetails: () -> Void
     let endTask: () -> Void
 
+    private var activeFlowStep: Int {
+        if state.title.hasPrefix("Using ") || state.title == "Approval needed" { return 1 }
+        if state.title == "Writing response" || state.title == "Response complete" { return 2 }
+        return 0
+    }
+
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(state.tone.color.opacity(0.14))
+            ZStack(alignment: .bottomTrailing) {
+                Circle()
+                    .fill(state.tone.color.opacity(state.isActive ? 0.16 : 0.11))
                 Image(systemName: state.symbol)
-                    .limaFont(.system(size: 13, weight: .bold))
+                    .limaFont(.system(size: 12, weight: .bold))
                     .foregroundStyle(state.tone.color)
                 if state.isActive {
                     ProgressView()
                         .controlSize(.mini)
                         .tint(state.tone.color)
-                        .offset(x: 12, y: 12)
+                        .padding(1)
                 }
             }
-            .frame(width: 34, height: 34)
+            .frame(width: 30, height: 30)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 1) {
                 Text(state.title)
                     .limaFont(.caption.weight(.semibold))
                     .foregroundStyle(LimaTheme.textPrimary)
@@ -2285,11 +2297,14 @@ private struct AIChatTaskStatusBar: View {
                     .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(1)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
+
+            AIChatFlowTrack(activeStep: activeFlowStep, isActive: state.isActive, tint: state.tone.color)
+                .layoutPriority(1)
 
             Button(action: toggleTurnDetails) {
                 Image(systemName: showsTurnDetails ? "list.bullet.rectangle.portrait.fill" : "list.bullet.rectangle.portrait")
-                    .frame(width: 27, height: 27)
+                    .frame(width: 28, height: 28)
             }
             .buttonStyle(.borderless)
             .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.compactControl, border: LimaTheme.borderSubtle)
@@ -2298,32 +2313,71 @@ private struct AIChatTaskStatusBar: View {
 
             if state.canEnd {
                 Button(action: endTask) {
-                    Label("End Task", systemImage: "stop.fill")
+                    Label("End", systemImage: "stop.fill")
                         .limaFont(.caption.weight(.semibold))
                 }
                 .buttonStyle(.bordered)
                 .tint(LimaColors.danger)
                 .help("End the current task")
                 .accessibilityLabel("End current task")
+                .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
         }
-        .padding(.horizontal, 10)
-        .frame(minHeight: 54)
+        .padding(.horizontal, 11)
+        .padding(.vertical, 8)
         .limaNativeSurface(
-            fill: LimaTheme.surfaceRaised,
-            radius: LimaRadius.searchField,
-            border: state.tone.color.opacity(state.isActive ? 0.42 : 0.22)
+            fill: state.isActive ? state.tone.color.opacity(0.065) : LimaTheme.surfaceRaised,
+            radius: LimaRadius.control,
+            border: state.tone.color.opacity(state.isActive ? 0.34 : 0.18)
         )
-        .overlay(alignment: .bottom) {
-            Capsule()
-                .fill(state.tone.color.opacity(state.isActive ? 0.92 : 0.55))
-                .frame(height: 2)
-                .padding(.horizontal, 11)
-                .padding(.bottom, 3)
-        }
+        .animation(.easeInOut(duration: 0.18), value: state.title)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(state.title). \(state.detail)")
+        .accessibilityLabel("Task status: \(state.title). \(state.detail)")
         .accessibilityIdentifier("ai-task-status")
+    }
+}
+
+private struct AIChatFlowTrack: View {
+    let activeStep: Int
+    let isActive: Bool
+    let tint: Color
+    private let steps = ["Plan", "Read", "Answer"]
+
+    var body: some View {
+        HStack(spacing: 5) {
+            flowStep("Plan", index: 0)
+            flowConnector(after: 0)
+            flowStep("Read", index: 1)
+            flowConnector(after: 1)
+            flowStep("Answer", index: 2)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(LimaTheme.surfaceSecondary.opacity(0.72), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Flow: \(steps[activeStep])")
+    }
+
+    private func flowStep(_ title: String, index: Int) -> some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(index <= activeStep ? tint : LimaTheme.borderSubtle)
+                .frame(width: 6, height: 6)
+                .overlay {
+                    if isActive && index == activeStep {
+                        Circle().stroke(tint.opacity(0.28), lineWidth: 4)
+                    }
+                }
+            Text(title)
+                .limaFont(.caption2.weight(index == activeStep ? .semibold : .regular))
+                .foregroundStyle(index <= activeStep ? LimaTheme.textPrimary : LimaTheme.textTertiary)
+        }
+    }
+
+    private func flowConnector(after index: Int) -> some View {
+        Capsule()
+            .fill(index < activeStep ? tint.opacity(0.72) : LimaTheme.borderSubtle)
+            .frame(width: 12, height: 1)
     }
 }
 
@@ -2353,7 +2407,7 @@ private struct ActivityDisclosureView: View {
                             .foregroundStyle(activity.kind == .error || activity.kind == .toolFailed ? LimaColors.danger : LimaColors.success)
                             .frame(width: 14)
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(activity.title).limaFont(.caption.weight(.medium))
+                            Text(activity.displayTitle).limaFont(.caption.weight(.medium))
                             if let detail = activity.detail { Text(detail).limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary) }
                         }
                         Spacer()
@@ -2422,5 +2476,87 @@ private struct AIChatMessageRow: View {
                         .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth)
                 }
             }
+    }
+}
+
+private struct AIChatComposerEditor: NSViewRepresentable {
+    @Binding var text: String
+    let editable: Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.borderType = .noBorder
+        scrollView.hasVerticalScroller = false
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        textView.isEditable = editable
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.importsGraphics = false
+        textView.allowsUndo = true
+        textView.isAutomaticQuoteSubstitutionEnabled = false
+        textView.isAutomaticDashSubstitutionEnabled = false
+        textView.isAutomaticTextReplacementEnabled = false
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        textView.isContinuousSpellCheckingEnabled = false
+        textView.isGrammarCheckingEnabled = false
+        textView.drawsBackground = false
+        textView.backgroundColor = .clear
+        textView.textContainerInset = NSSize(width: 5, height: 7)
+        textView.minSize = .zero
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
+        textView.setAccessibilityLabel("Message")
+        applyAppearance(to: textView)
+        textView.string = text
+        scrollView.documentView = textView
+        context.coordinator.textView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView else { return }
+        context.coordinator.text = $text
+        textView.isEditable = editable
+        applyAppearance(to: textView)
+        if textView.string != text { textView.string = text }
+    }
+
+    private func applyAppearance(to textView: NSTextView) {
+        let font = NSFont.systemFont(ofSize: 14)
+        // NSTextView does not reliably inherit SwiftUI foregroundStyle after an
+        // appearance change. Set both the view color and typing attributes.
+        textView.font = font
+        textView.textColor = .labelColor
+        textView.insertionPointColor = .labelColor
+        textView.typingAttributes = [
+            .font: font,
+            .foregroundColor: NSColor.labelColor
+        ]
+        textView.selectedTextAttributes = [
+            .foregroundColor: NSColor.selectedTextColor,
+            .backgroundColor: NSColor.selectedTextBackgroundColor
+        ]
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var text: Binding<String>
+        weak var textView: NSTextView?
+
+        init(text: Binding<String>) { self.text = text }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView, text.wrappedValue != textView.string else { return }
+            text.wrappedValue = textView.string
+        }
     }
 }
