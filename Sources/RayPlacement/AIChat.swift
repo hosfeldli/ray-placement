@@ -19,19 +19,25 @@ struct AIChatMessage: Codable, Identifiable, Hashable, Sendable {
     var text: String
     var createdAt: Date
     var responseID: String?
+    var reasoningSummary: String?
+    var activities: [AIAgentActivity]?
 
     init(
         id: UUID = UUID(),
         role: AIChatRole,
         text: String,
         createdAt: Date = Date(),
-        responseID: String? = nil
+        responseID: String? = nil,
+        reasoningSummary: String? = nil,
+        activities: [AIAgentActivity]? = nil
     ) {
         self.id = id
         self.role = role
         self.text = text
         self.createdAt = createdAt
         self.responseID = responseID
+        self.reasoningSummary = reasoningSummary
+        self.activities = activities
     }
 }
 
@@ -103,16 +109,64 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
+struct AIChatCredentialConfiguration: Equatable, Sendable {
+    static let testAPIKeyVariable = "LIMA_TEST_OPENAI_API_KEY"
+
+    let service: String
+    let account: String
+    let environmentAPIKey: String?
+    let fixtureAPIKey: String?
+    let usesKeychain: Bool
+    let isTestCredential: Bool
+
+    static func current(environment: [String: String] = ProcessInfo.processInfo.environment) -> Self {
+        let isTestMode = LimaTestEnvironment.isEnabled(environment: environment)
+        return Self(
+            service: isTestMode ? "dev.liam.lima.ai.test" : "dev.liam.lima.ai",
+            account: "openai-api-key",
+            environmentAPIKey: isTestMode ? environment[testAPIKeyVariable]?.nonEmptyTrimmed : nil,
+            fixtureAPIKey: nil,
+            usesKeychain: true,
+            isTestCredential: isTestMode
+        )
+    }
+
+    static let fixture = Self(
+        service: "dev.liam.lima.ai.test",
+        account: "fixture-openai-api-key",
+        environmentAPIKey: nil,
+        fixtureAPIKey: "fixture-openai-api-key",
+        usesKeychain: false,
+        isTestCredential: true
+    )
+
+    static let missingFixture = Self(
+        service: "dev.liam.lima.ai.test",
+        account: "fixture-openai-api-key",
+        environmentAPIKey: nil,
+        fixtureAPIKey: nil,
+        usesKeychain: false,
+        isTestCredential: true
+    )
+}
+
+private extension String {
+    var nonEmptyTrimmed: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 @MainActor
 final class AIChatCredentialStore: ObservableObject {
     static let shared = AIChatCredentialStore()
 
     @Published private(set) var hasAPIKey = false
 
-    private let service = "dev.liam.lima.ai"
-    private let account = "openai-api-key"
+    let configuration: AIChatCredentialConfiguration
 
-    private init() {
+    init(configuration: AIChatCredentialConfiguration = .current()) {
+        self.configuration = configuration
         refresh()
     }
 
@@ -126,10 +180,12 @@ final class AIChatCredentialStore: ObservableObject {
             )
         }
 
+        guard configuration.fixtureAPIKey == nil, configuration.usesKeychain else { return }
+
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrService as String: configuration.service,
+            kSecAttrAccount as String: configuration.account,
             kSecValueData as String: Data(key.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
@@ -137,8 +193,8 @@ final class AIChatCredentialStore: ObservableObject {
         if status == errSecDuplicateItem {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
-                kSecAttrService as String: service,
-                kSecAttrAccount as String: account
+                kSecAttrService as String: configuration.service,
+                kSecAttrAccount as String: configuration.account
             ]
             let update = SecItemUpdate(
                 query as CFDictionary,
@@ -152,10 +208,13 @@ final class AIChatCredentialStore: ObservableObject {
     }
 
     func apiKey() -> String? {
+        if let fixtureAPIKey = configuration.fixtureAPIKey { return fixtureAPIKey }
+        if let environmentAPIKey = configuration.environmentAPIKey { return environmentAPIKey }
+        guard configuration.usesKeychain else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
+            kSecAttrService as String: configuration.service,
+            kSecAttrAccount as String: configuration.account,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -168,13 +227,14 @@ final class AIChatCredentialStore: ObservableObject {
     }
 
     func removeAPIKey() {
+        guard configuration.fixtureAPIKey == nil, configuration.usesKeychain else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrService as String: configuration.service,
+            kSecAttrAccount as String: configuration.account
         ]
         SecItemDelete(query as CFDictionary)
-        hasAPIKey = false
+        hasAPIKey = configuration.environmentAPIKey != nil
     }
 
     func refresh() {
@@ -185,7 +245,9 @@ final class AIChatCredentialStore: ObservableObject {
         NSError(
             domain: NSOSStatusErrorDomain,
             code: Int(status),
-            userInfo: [NSLocalizedDescriptionKey: "Lima could not access the OpenAI API key in Keychain."]
+                userInfo: [NSLocalizedDescriptionKey: configuration.isTestCredential
+                    ? "Lima could not access the test OpenAI API key in Keychain."
+                    : "Lima could not access the OpenAI API key in Keychain."]
         )
     }
 }
@@ -200,11 +262,18 @@ final class AIConversationStore: ObservableObject {
     @Published private(set) var conversations: [AIConversation] = []
     @Published private(set) var lastError: String?
 
+    private let persistsChanges: Bool
     private let persistenceQueue = DispatchQueue(label: "dev.liam.lima.ai-chat-persistence", qos: .utility)
     private var pendingSave: DispatchWorkItem?
 
     private init() {
+        persistsChanges = true
         load()
+    }
+
+    init(fixtures: [AIConversation]) {
+        persistsChanges = false
+        conversations = fixtures
     }
 
     func conversation(id: UUID) -> AIConversation? {
@@ -249,6 +318,7 @@ final class AIConversationStore: ObservableObject {
     }
 
     private func scheduleSave() {
+        guard persistsChanges else { return }
         pendingSave?.cancel()
         let snapshot = conversations
         let url = storageURL
@@ -265,6 +335,9 @@ final class AIConversationStore: ObservableObject {
     }
 
     private var storageURL: URL {
+        if let testURL = LimaTestEnvironment.storageURL(relativePath: "AI/conversations.json") {
+            return testURL
+        }
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
         return base
             .appendingPathComponent("Lima", isDirectory: true)
@@ -295,7 +368,142 @@ enum AIChatStreamEvent: Sendable {
     case failed(String)
 }
 
-struct AIChatResponsesClient {
+/// A concise, presentation-safe description of the active assistant turn.
+/// It intentionally exposes progress, not private provider reasoning.
+enum AIChatTaskTone {
+    case neutral
+    case active
+    case success
+    case warning
+    case danger
+
+    @MainActor
+    var color: Color {
+        switch self {
+        case .neutral: return LimaTheme.textSecondary
+        case .active: return SettingsStore.shared.accentTheme.readablePrimary
+        case .success: return LimaColors.success
+        case .warning: return LimaTheme.warning
+        case .danger: return LimaColors.danger
+        }
+    }
+}
+
+struct AIChatTaskState {
+    let title: String
+    let detail: String
+    let symbol: String
+    let tone: AIChatTaskTone
+    let isActive: Bool
+    let canEnd: Bool
+}
+
+protocol AIChatTransport {
+    func listModels(apiKey: String) async throws -> [AIModelOption]
+    func streamReply(
+        apiKey: String,
+        model: String,
+        input: String,
+        previousResponseID: String?,
+        reasoningEffort: AIReasoningEffort,
+        attachments: [AIAttachment],
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
+    func streamApproval(
+        apiKey: String,
+        model: String,
+        previousResponseID: String,
+        requestID: String,
+        approve: Bool,
+        reason: String?,
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
+    func streamToolOutputs(
+        apiKey: String,
+        model: String,
+        previousResponseID: String,
+        outputs: [[String: Any]],
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
+}
+
+/// A deterministic transport for visual and UI tests. It contains no endpoint,
+/// credential, or network implementation.
+struct FixtureAITransport: AIChatTransport {
+    var events: [AIChatStreamEvent]
+    /// Optional replay pacing for deterministic streaming and cancellation tests.
+    var interEventDelay: Duration? = nil
+    var models: [AIModelOption] = [AIModelOption(id: "gpt-5.6-terra")]
+
+    static let standard = FixtureAITransport(events: [
+        .responseCreated("fixture-response"),
+        .reasoningSummaryDelta("Replayed a deterministic fixture stream."),
+        .textDelta("Lima works"),
+        .usage(AIUsageMetrics(inputTokens: 8, outputTokens: 3)),
+        .completed("fixture-response")
+    ])
+
+    func listModels(apiKey: String) async throws -> [AIModelOption] { models }
+
+    func streamReply(
+        apiKey: String,
+        model: String,
+        input: String,
+        previousResponseID: String?,
+        reasoningEffort: AIReasoningEffort,
+        attachments: [AIAttachment],
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
+
+    func streamApproval(
+        apiKey: String,
+        model: String,
+        previousResponseID: String,
+        requestID: String,
+        approve: Bool,
+        reason: String?,
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
+
+    func streamToolOutputs(
+        apiKey: String,
+        model: String,
+        previousResponseID: String,
+        outputs: [[String: Any]],
+        reasoningEffort: AIReasoningEffort,
+        mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition]
+    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
+
+    private func stream() -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        guard let interEventDelay else {
+            return AsyncThrowingStream { continuation in
+                for event in events { continuation.yield(event) }
+                continuation.finish()
+            }
+        }
+        return AsyncThrowingStream { continuation in
+            Task {
+                for event in events {
+                    guard !Task.isCancelled else { break }
+                    continuation.yield(event)
+                    try? await Task.sleep(for: interEventDelay)
+                }
+                continuation.finish()
+            }
+        }
+    }
+}
+
+struct AIChatResponsesClient: AIChatTransport {
     enum ClientError: LocalizedError {
         case invalidResponse
         case requestFailed(Int, String)
@@ -431,7 +639,7 @@ struct AIChatResponsesClient {
         if option.supportsReasoning {
             let effort = option.supportedReasoningEfforts.contains(reasoningEffort)
                 ? reasoningEffort
-                : (option.supportedReasoningEfforts.last ?? .medium)
+                : (option.defaultReasoningEffort ?? .medium)
             body["reasoning"] = ["effort": effort.rawValue, "summary": "auto"]
         }
         if !tools.isEmpty { body["tools"] = tools }
@@ -443,25 +651,34 @@ struct AIChatResponsesClient {
 
     private func mcpToolPayload(for servers: [MCPServer]) -> [[String: Any]] {
         servers.filter(\.enabled).compactMap { server in
-            let enabledTools = server.enabledTools
-            guard !enabledTools.isEmpty, server.validHTTPURL != nil else { return nil }
-            var tool: [String: Any] = [
-                "type": "mcp",
-                "server_label": server.apiLabel,
-                "server_url": server.validHTTPURL?.absoluteString ?? server.url,
-                "allowed_tools": enabledTools.map(\.name)
-            ]
-            let readTools = enabledTools.filter { !$0.risk.requiresApproval }.map(\.name)
-            if readTools.isEmpty {
-                tool["require_approval"] = "always"
-            } else {
-                tool["require_approval"] = ["never": ["tool_names": readTools]]
-            }
-            if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
-                tool["headers"] = ["Authorization": MCPCredentialStore.authorizationHeaderValue(credential)]
-            }
-            return tool
+            Self.remoteMCPToolPayload(
+                server: server,
+                credential: MCPCredentialStore.value(serverID: server.id)
+            )
         }
+    }
+
+    static func remoteMCPToolPayload(server: MCPServer, credential: String?) -> [String: Any]? {
+        let enabledTools = server.enabledTools
+        guard !enabledTools.isEmpty, server.validHTTPURL != nil else { return nil }
+
+        var tool: [String: Any] = [
+            "type": "mcp",
+            "server_label": server.apiLabel,
+            "server_url": server.validHTTPURL?.absoluteString ?? server.url,
+            "allowed_tools": enabledTools.map(\.name)
+        ]
+        let readTools = enabledTools.filter { !$0.risk.requiresApproval }.map(\.name)
+        if readTools.isEmpty {
+            tool["require_approval"] = "always"
+        } else {
+            tool["require_approval"] = ["never": ["tool_names": readTools]]
+        }
+
+        if let credential, !credential.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            tool["authorization"] = MCPCredentialStore.authorizationHeaderValue(credential)
+        }
+        return tool
     }
 
     private func stream(
@@ -491,21 +708,16 @@ struct AIChatResponsesClient {
                         throw ClientError.requestFailed(http.statusCode, Self.safeErrorMessage(from: Data(errorText.utf8)))
                     }
 
-                    var eventType = ""
-                    var dataLines: [String] = []
-                    for try await line in bytes.lines {
+                    var parser = AIResponsesSSEParser(model: model)
+                    for try await byte in bytes {
                         if Task.isCancelled { break }
-                        if line.isEmpty {
-                            emit(eventType: eventType, dataLines: dataLines, model: model, continuation: continuation)
-                            eventType = ""
-                            dataLines = []
-                        } else if line.hasPrefix("event:") {
-                            eventType = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-                        } else if line.hasPrefix("data:") {
-                            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+                        for event in parser.append(byte: byte) {
+                            continuation.yield(event)
                         }
                     }
-                    emit(eventType: eventType, dataLines: dataLines, model: model, continuation: continuation)
+                    for event in parser.finish() {
+                        continuation.yield(event)
+                    }
                     continuation.finish()
                 } catch is CancellationError {
                     continuation.finish()
@@ -539,16 +751,6 @@ struct AIChatResponsesClient {
         return AIChatDiagnostic(stage: .transport, model: model, message: error.localizedDescription)
     }
 
-    private func emit(
-        eventType: String,
-        dataLines: [String],
-        model: String?,
-        continuation: AsyncThrowingStream<AIChatStreamEvent, Error>.Continuation
-    ) {
-        for event in AIResponsesEventDecoder.events(eventType: eventType, dataLines: dataLines, model: model) {
-            continuation.yield(event)
-        }
-    }
 }
 
 @MainActor
@@ -569,12 +771,29 @@ final class AIChatViewModel: ObservableObject {
 
     let store: AIConversationStore
     let credentials: AIChatCredentialStore
+    let mcpStore: MCPServerStore
+    let nativeToolStore: LimaAIToolStore
+    let transport: any AIChatTransport
     private var streamTask: Task<Void, Never>?
     private var pendingLocalFunctionCall: AIOutputItem?
+    private var activeAssistantID: UUID?
+    private var activeConversationID: UUID?
+    private var cancelledAssistantIDs = Set<UUID>()
 
-    init() {
-        store = .shared
-        credentials = .shared
+    init(
+        store: AIConversationStore? = nil,
+        credentials: AIChatCredentialStore? = nil,
+        mcpStore: MCPServerStore? = nil,
+        nativeToolStore: LimaAIToolStore? = nil,
+        transport: (any AIChatTransport)? = nil
+    ) {
+        let store = store ?? .shared
+        let credentials = credentials ?? .shared
+        self.store = store
+        self.credentials = credentials
+        self.mcpStore = mcpStore ?? .shared
+        self.nativeToolStore = nativeToolStore ?? .shared
+        self.transport = transport ?? AIChatResponsesClient()
         selectedConversationID = store.conversations.first?.id
         if let selected = store.conversations.first {
             model = selected.model
@@ -609,11 +828,149 @@ final class AIChatViewModel: ObservableObject {
     }
 
     private var enabledNativeTools: [LimaAIToolDefinition] {
-        LimaAIToolRegistry.enabledDefinitions(LimaAIToolStore.shared.enabledToolIDs)
+        LimaAIToolRegistry.enabledDefinitions(nativeToolStore.enabledToolIDs)
+    }
+
+    var canEndTask: Bool {
+        isStreaming || pendingApproval != nil
+    }
+
+    var currentTaskState: AIChatTaskState {
+        let assistant = selectedConversation?.messages.last(where: { $0.role == .assistant })
+        let activity = assistant?.activities?.last
+
+        if let approval = pendingApproval {
+            return AIChatTaskState(
+                title: "Approval needed",
+                detail: "\(approval.serverLabel) · \(approval.toolName)",
+                symbol: "hand.raised.fill",
+                tone: .warning,
+                isActive: true,
+                canEnd: true
+            )
+        }
+        if let streamError {
+            return AIChatTaskState(
+                title: "Request needs attention",
+                detail: streamError,
+                symbol: "exclamationmark.triangle.fill",
+                tone: .danger,
+                isActive: false,
+                canEnd: false
+            )
+        }
+        if isStreaming {
+            if let activity, activity.kind == .toolStarted {
+                return AIChatTaskState(
+                    title: "Using \(activity.title)",
+                    detail: activity.detail ?? "Running a requested tool",
+                    symbol: "wrench.and.screwdriver.fill",
+                    tone: .active,
+                    isActive: true,
+                    canEnd: true
+                )
+            }
+            if let assistant, !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return AIChatTaskState(
+                    title: "Writing response",
+                    detail: "Streaming visible answer",
+                    symbol: "text.line.first.and.arrowtriangle.forward",
+                    tone: .active,
+                    isActive: true,
+                    canEnd: true
+                )
+            }
+            if let assistant, !(assistant.reasoningSummary ?? "").isEmpty || activity?.kind == .reasoningSummary {
+                return AIChatTaskState(
+                    title: "Reasoning",
+                    detail: "Working through the request",
+                    symbol: "brain.head.profile",
+                    tone: .active,
+                    isActive: true,
+                    canEnd: true
+                )
+            }
+            return AIChatTaskState(
+                title: "Thinking",
+                detail: "Preparing a response",
+                symbol: "sparkles",
+                tone: .active,
+                isActive: true,
+                canEnd: true
+            )
+        }
+
+        guard let activity else {
+            return AIChatTaskState(
+                title: "Ready",
+                detail: "Ask a question or add context",
+                symbol: "sparkles",
+                tone: .neutral,
+                isActive: false,
+                canEnd: false
+            )
+        }
+
+        switch activity.kind {
+        case .error, .toolFailed:
+            return AIChatTaskState(
+                title: activity.title,
+                detail: activity.detail ?? "The task did not complete.",
+                symbol: "exclamationmark.triangle.fill",
+                tone: .danger,
+                isActive: false,
+                canEnd: false
+            )
+        case .completed, .toolCompleted:
+            let stopped = activity.title == "Stopped" || activity.title == "Task ended"
+            return AIChatTaskState(
+                title: stopped ? activity.title : "Response complete",
+                detail: activity.detail ?? activity.usage?.displayText ?? (stopped ? "You ended this task." : "Ready for a follow-up"),
+                symbol: stopped ? "stop.fill" : "checkmark.circle.fill",
+                tone: stopped ? .warning : .success,
+                isActive: false,
+                canEnd: false
+            )
+        case .toolApproval:
+            return AIChatTaskState(
+                title: activity.title,
+                detail: activity.detail ?? "A tool decision was recorded",
+                symbol: "hand.raised.fill",
+                tone: .warning,
+                isActive: false,
+                canEnd: false
+            )
+        case .toolStarted:
+            return AIChatTaskState(
+                title: activity.title,
+                detail: activity.detail ?? "Tool activity recorded",
+                symbol: "wrench.and.screwdriver.fill",
+                tone: .neutral,
+                isActive: false,
+                canEnd: false
+            )
+        case .reasoningSummary, .thinking, .started, .attachment:
+            return AIChatTaskState(
+                title: activity.title,
+                detail: activity.detail ?? "Task activity recorded",
+                symbol: activity.kind == .attachment ? "paperclip" : "sparkles",
+                tone: .neutral,
+                isActive: false,
+                canEnd: false
+            )
+        }
     }
 
     func refreshModels() {
         guard !isLoadingModels else { return }
+        guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
+            streamError = "This fixture scenario does not make provider requests."
+            return
+        }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI || transport is FixtureAITransport else {
+            streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
+            return
+        }
         guard let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
             streamError = "Save an OpenAI API key before loading available models."
             return
@@ -623,7 +980,7 @@ final class AIChatViewModel: ObservableObject {
             guard let self else { return }
             defer { self.isLoadingModels = false }
             do {
-                let models = try await AIChatResponsesClient().listModels(apiKey: apiKey)
+                let models = try await self.transport.listModels(apiKey: apiKey)
                 self.availableModels = models
                 self.ensureModelIsAvailable()
             } catch {
@@ -635,7 +992,7 @@ final class AIChatViewModel: ObservableObject {
     func selectModel(_ option: AIModelOption) {
         model = option.id
         if !option.supportedReasoningEfforts.contains(reasoningEffort) {
-            reasoningEffort = option.supportedReasoningEfforts.last ?? .medium
+            reasoningEffort = option.defaultReasoningEffort ?? .medium
         }
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
             conversation.model = model
@@ -658,7 +1015,7 @@ final class AIChatViewModel: ObservableObject {
             model = first.id
         }
         if !selectedModelOption.supportedReasoningEfforts.contains(reasoningEffort) {
-            reasoningEffort = selectedModelOption.supportedReasoningEfforts.last ?? .medium
+            reasoningEffort = selectedModelOption.defaultReasoningEffort ?? .medium
         }
     }
 
@@ -677,7 +1034,15 @@ final class AIChatViewModel: ObservableObject {
 
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+        guard !text.isEmpty, !isStreaming, pendingApproval == nil else { return }
+        guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
+            streamError = "This fixture scenario does not make provider requests."
+            return
+        }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI || transport is FixtureAITransport else {
+            streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
+            return
+        }
         guard let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
             streamError = "Add an OpenAI API key in the setup panel before sending a message."
             return
@@ -694,10 +1059,15 @@ final class AIChatViewModel: ObservableObject {
 
         conversation.reasoningEffort = reasoningEffort
         conversation.attachments = attachments
-        conversation.activities = [AIAgentActivity(kind: .started, title: "Started", completed: false)]
-        conversation.reasoningSummary = nil
         let assistantID = UUID()
-        conversation.messages.append(AIChatMessage(id: assistantID, role: .assistant, text: ""))
+        conversation.messages.append(AIChatMessage(
+            id: assistantID,
+            role: .assistant,
+            text: "",
+            activities: [AIAgentActivity(kind: .started, title: "Started", completed: false)]
+        ))
+        activeAssistantID = assistantID
+        activeConversationID = conversation.id
         store.update(conversation)
         draft = ""
         streamError = nil
@@ -710,8 +1080,8 @@ final class AIChatViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            let client = AIChatResponsesClient()
-            let mcpServers = MCPServerStore.shared.servers.filter(\.enabled)
+            let client = transport
+            let mcpServers = mcpStore.servers.filter(\.enabled)
             let responseID = await self.runToolLoop(
                 initialStream: client.streamReply(
                     apiKey: apiKey,
@@ -737,14 +1107,62 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func cancel() {
+        guard isStreaming else {
+            endTask()
+            return
+        }
         streamTask?.cancel()
         streamTask = nil
         pendingApproval = nil
         pendingLocalFunctionCall = nil
-        if let id = selectedConversationID {
-            updateConversation(id) { $0.activities.append(AIAgentActivity(kind: .completed, title: "Stopped", detail: "Generation stopped by user", completed: true)) }
+        if let assistantID = activeAssistantID {
+            cancelledAssistantIDs.insert(assistantID)
+        }
+        if let conversationID = activeConversationID ?? selectedConversationID {
+            appendTurnActivity(
+                AIAgentActivity(
+                    kind: .completed,
+                    title: "Stopped",
+                    detail: "Generation stopped by user",
+                    completed: true
+                ),
+                conversationID: conversationID
+            )
         }
         isStreaming = false
+    }
+
+    /// End an active stream or dismiss an approval that has paused the task.
+    /// The assistant turn remains in the local transcript with a visible end state.
+    func endTask() {
+        if isStreaming {
+            cancel()
+            return
+        }
+        guard let conversationID = activeConversationID ?? selectedConversationID,
+              let assistantID = activeAssistantID else {
+            pendingApproval = nil
+            pendingLocalFunctionCall = nil
+            return
+        }
+
+        pendingApproval = nil
+        pendingLocalFunctionCall = nil
+        updateAssistant(conversationID: conversationID, assistantID: assistantID) { assistant in
+            if assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                assistant.text = "Task ended before the requested tool was run."
+            }
+            assistant.activities = (assistant.activities ?? []) + [
+                AIAgentActivity(
+                    kind: .completed,
+                    title: "Task ended",
+                    detail: "Ended by user before approval",
+                    completed: true
+                )
+            ]
+        }
+        activeAssistantID = nil
+        activeConversationID = nil
     }
 
     func add(_ attachment: AIAttachment) {
@@ -785,7 +1203,7 @@ final class AIChatViewModel: ObservableObject {
 
     private func runToolLoop(
         initialStream: AsyncThrowingStream<AIChatStreamEvent, Error>,
-        client: AIChatResponsesClient,
+        client: any AIChatTransport,
         apiKey: String,
         conversationID: UUID,
         assistantID: UUID,
@@ -883,14 +1301,15 @@ final class AIChatViewModel: ObservableObject {
             toolName: definition.name,
             arguments: call.arguments
         )
-        updateConversation(conversationID) {
-            $0.activities.append(AIAgentActivity(
+        appendTurnActivity(
+            AIAgentActivity(
                 kind: .toolApproval,
                 title: "Approval needed",
                 detail: "Lima · \(definition.name)",
                 requiresApproval: true
-            ))
-        }
+            ),
+            conversationID: conversationID
+        )
     }
 
     private func executeLocalTool(_ call: AIOutputItem, conversationID: UUID) async -> [String: Any]? {
@@ -901,25 +1320,28 @@ final class AIChatViewModel: ObservableObject {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is disabled for this chat.")
         }
         guard let callID = call.callID else {
-            updateConversation(conversationID) {
-                $0.activities.append(AIAgentActivity(kind: .toolFailed, title: definition.name, detail: "Missing function call ID.", completed: true))
-            }
+            appendTurnActivity(
+                AIAgentActivity(kind: .toolFailed, title: definition.name, detail: "Missing function call ID.", completed: true),
+                conversationID: conversationID
+            )
             streamDiagnostics.append(AIChatDiagnostic(stage: .tool, toolName: definition.name, message: "The function call omitted call_id."))
             return nil
         }
 
-        updateConversation(conversationID) {
-            $0.activities.append(AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima", completed: false))
-        }
+        appendTurnActivity(
+            AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima", completed: false),
+            conversationID: conversationID
+        )
         let result = await LimaAIToolRegistry.execute(call)
-        updateConversation(conversationID) {
-            $0.activities.append(AIAgentActivity(
+        appendTurnActivity(
+            AIAgentActivity(
                 kind: result.isError ? .toolFailed : .toolCompleted,
                 title: definition.name,
                 detail: result.isError ? "Lima tool returned an error." : nil,
                 completed: true
-            ))
-        }
+            ),
+            conversationID: conversationID
+        )
         return ["type": "function_call_output", "call_id": callID, "output": result.output]
     }
 
@@ -929,9 +1351,10 @@ final class AIChatViewModel: ObservableObject {
         message: String
     ) -> [String: Any]? {
         let name = call.name ?? "Lima tool"
-        updateConversation(conversationID) {
-            $0.activities.append(AIAgentActivity(kind: .toolFailed, title: name, detail: message, completed: true))
-        }
+        appendTurnActivity(
+            AIAgentActivity(kind: .toolFailed, title: name, detail: message, completed: true),
+            conversationID: conversationID
+        )
         streamDiagnostics.append(AIChatDiagnostic(stage: .tool, toolName: call.name, message: message))
         guard let callID = call.callID else { return nil }
         let result = LimaAIToolExecution.json(["error": message], isError: true)
@@ -939,11 +1362,20 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func dismissPendingApproval() {
-        pendingApproval = nil
-        pendingLocalFunctionCall = nil
+        endTask()
     }
 
     func resolvePendingApproval(allow: Bool) {
+        guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
+            pendingApproval = nil
+            pendingLocalFunctionCall = nil
+            streamError = "This fixture scenario does not make provider requests."
+            return
+        }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI || transport is FixtureAITransport else {
+            streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
+            return
+        }
         guard let approval = pendingApproval,
               let conversation = selectedConversation,
               let previousResponseID = conversation.lastResponseID,
@@ -957,15 +1389,16 @@ final class AIChatViewModel: ObservableObject {
         let localCall = pendingLocalFunctionCall
         pendingApproval = nil
         pendingLocalFunctionCall = nil
-        updateConversation(conversation.id) {
-            $0.activities.append(AIAgentActivity(
+        appendTurnActivity(
+            AIAgentActivity(
                 kind: .toolApproval,
                 title: allow ? "Tool allowed once" : "Tool denied",
                 detail: "\(approval.serverLabel) · \(approval.toolName)",
                 requiresApproval: true,
                 completed: true
-            ))
-        }
+            ),
+            conversationID: conversation.id
+        )
 
         let assistantID: UUID
         if let existing = conversation.messages.last(where: { $0.role == .assistant }) {
@@ -975,13 +1408,15 @@ final class AIChatViewModel: ObservableObject {
             updateConversation(conversation.id) { $0.messages.append(AIChatMessage(id: assistantID, role: .assistant, text: "")) }
         }
 
+        activeAssistantID = assistantID
+        activeConversationID = conversation.id
         streamError = nil
         isStreaming = true
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            let client = AIChatResponsesClient()
-            let mcpServers = MCPServerStore.shared.servers.filter(\.enabled)
+            let client = transport
+            let mcpServers = mcpStore.servers.filter(\.enabled)
 
             if let localCall {
                 let output: [String: Any]?
@@ -1066,7 +1501,7 @@ final class AIChatViewModel: ObservableObject {
                 $0.text += delta
             }
         case .reasoningSummaryDelta(let delta):
-            updateConversation(conversationID) { $0.reasoningSummary = ($0.reasoningSummary ?? "") + delta }
+            appendTurnReasoning(delta, conversationID: conversationID, assistantID: assistantID)
         case .outputItem(let item):
             switch item.kind {
             case .mcpApprovalRequest:
@@ -1078,64 +1513,73 @@ final class AIChatViewModel: ObservableObject {
                     arguments: item.arguments
                 )
                 pendingApproval = request
-                updateConversation(conversationID) {
-                    $0.activities.append(AIAgentActivity(
+                appendTurnActivity(
+                    AIAgentActivity(
                         kind: .toolApproval,
                         title: "Approval needed",
                         detail: "\(request.serverLabel) · \(request.toolName)",
                         requiresApproval: true
-                    ))
-                }
+                    ),
+                    conversationID: conversationID
+                )
             case .functionCall:
                 if item.phase == .added {
-                    updateConversation(conversationID) {
-                        $0.activities.append(AIAgentActivity(kind: .toolStarted, title: item.name ?? "Lima tool", detail: "Lima"))
-                    }
+                    appendTurnActivity(
+                        AIAgentActivity(kind: .toolStarted, title: item.name ?? "Lima tool", detail: "Lima"),
+                        conversationID: conversationID
+                    )
                 } else {
                     return item
                 }
             case .mcpCall, .toolCall:
                 let title = item.name ?? "Tool call"
                 if item.phase == .added {
-                    updateConversation(conversationID) {
-                        $0.activities.append(AIAgentActivity(kind: .toolStarted, title: title, detail: item.serverLabel))
-                    }
+                    appendTurnActivity(
+                        AIAgentActivity(kind: .toolStarted, title: title, detail: item.serverLabel),
+                        conversationID: conversationID
+                    )
                 } else {
-                    updateConversation(conversationID) {
-                        $0.activities.append(AIAgentActivity(
+                    appendTurnActivity(
+                        AIAgentActivity(
                             kind: item.errorMessage == nil ? .toolCompleted : .toolFailed,
                             title: title,
                             detail: item.errorMessage,
                             completed: true
-                        ))
-                    }
+                        ),
+                        conversationID: conversationID
+                    )
                 }
             case .message, .reasoning, .unknown:
                 break
             }
         case .activity(let activity):
-            updateConversation(conversationID) { $0.activities.append(activity) }
+            appendTurnActivity(activity, conversationID: conversationID)
         case .approval(let request):
             pendingApproval = request
-            updateConversation(conversationID) {
-                $0.activities.append(AIAgentActivity(
+            appendTurnActivity(
+                AIAgentActivity(
                     kind: .toolApproval,
                     title: "Approval needed",
                     detail: "\(request.serverLabel) · \(request.toolName)",
                     requiresApproval: true
-                ))
-            }
+                ),
+                conversationID: conversationID
+            )
         case .diagnostic(let diagnostic):
             recordDiagnostic(diagnostic)
         case .usage(let usage):
-            updateConversation(conversationID) { $0.activities.append(AIAgentActivity(kind: .completed, title: "Usage", usage: usage, completed: true)) }
+            appendTurnActivity(AIAgentActivity(kind: .completed, title: "Usage", usage: usage, completed: true), conversationID: conversationID)
         case .completed(let id):
             responseID = id ?? responseID
         case .failed(let message):
-            streamError = "AI Chat couldn’t complete this request."
-            updateConversation(conversationID) {
-                $0.activities.append(AIAgentActivity(kind: .error, title: "Request failed", detail: message, completed: true))
+            let summary = userFacingFailureMessage(message)
+            streamError = "AI Chat couldn’t complete this request. \(summary)"
+            updateAssistant(conversationID: conversationID, assistantID: assistantID) { assistant in
+                if assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    assistant.text = "⚠︎ Couldn't complete this response.\n\n\(summary)"
+                }
             }
+            appendTurnActivity(AIAgentActivity(kind: .error, title: "Request failed", detail: summary, completed: true), conversationID: conversationID)
         }
         return nil
     }
@@ -1147,26 +1591,71 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
+    private func userFacingFailureMessage(_ message: String) -> String {
+        let compact = message
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let sensitiveMarkers = ["authorization", "bearer ", "api key", "sk-"]
+        guard !compact.isEmpty, !sensitiveMarkers.contains(where: { compact.localizedCaseInsensitiveContains($0) }) else {
+            return "The provider rejected the request. Open Developer Diagnostics for safe details."
+        }
+        return String(compact.prefix(420))
+    }
+
     private func persistResponseID(_ responseID: String, conversationID: UUID) {
         updateConversation(conversationID) { conversation in
             conversation.lastResponseID = responseID
         }
     }
 
+    private func appendTurnActivity(_ activity: AIAgentActivity, conversationID: UUID) {
+        guard let assistantID = activeAssistantID else {
+            updateConversation(conversationID) { $0.activities.append(activity) }
+            return
+        }
+        updateAssistant(conversationID: conversationID, assistantID: assistantID) {
+            $0.activities = ($0.activities ?? []) + [activity]
+        }
+    }
+
+    private func appendTurnReasoning(_ delta: String, conversationID: UUID, assistantID: UUID) {
+        updateAssistant(conversationID: conversationID, assistantID: assistantID) {
+            $0.reasoningSummary = ($0.reasoningSummary ?? "") + delta
+        }
+    }
+
     private func finishStream(conversationID: UUID, assistantID: UUID, responseID: String?) {
+        let wasCancelled = cancelledAssistantIDs.remove(assistantID) != nil
         defer {
             isStreaming = false
             streamTask = nil
+            if activeAssistantID == assistantID, pendingApproval == nil {
+                activeAssistantID = nil
+                activeConversationID = nil
+            }
         }
         guard var conversation = store.conversation(id: conversationID) else { return }
         if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
             conversation.messages[index].responseID = responseID
             if pendingApproval == nil && conversation.messages[index].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                conversation.messages.remove(at: index)
+                conversation.messages[index].text = wasCancelled
+                    ? "Generation stopped."
+                    : "The AI service completed without returning visible text. You can retry this request."
+            }
+            if pendingApproval == nil && !wasCancelled {
+                let start = conversation.messages[index].activities?.first?.startedAt ?? Date()
+                conversation.messages[index].activities = (conversation.messages[index].activities ?? []) + [
+                    AIAgentActivity(
+                        kind: streamError == nil ? .completed : .error,
+                        title: streamError == nil ? "Completed" : "Request failed",
+                        detail: streamError,
+                        duration: Date().timeIntervalSince(start),
+                        completed: true
+                    )
+                ]
             }
         }
         if let responseID { conversation.lastResponseID = responseID }
-        conversation.activities.append(AIAgentActivity(kind: .completed, title: "Completed", duration: Date().timeIntervalSince(conversation.activities.first?.startedAt ?? Date()), completed: true))
         conversation.updatedAt = Date()
         store.update(conversation)
     }
@@ -1191,128 +1680,230 @@ final class AIChatViewModel: ObservableObject {
         conversation.updatedAt = Date()
         store.update(conversation)
     }
+
+    #if DEBUG
+    func applyVisualFixture(
+        isStreaming: Bool = false,
+        streamError: String? = nil,
+        diagnostics: [AIChatDiagnostic] = [],
+        showsDiagnostics: Bool = false,
+        pendingApproval: AIToolApprovalRequest? = nil
+    ) {
+        self.isStreaming = isStreaming
+        self.streamError = streamError
+        streamDiagnostics = diagnostics
+        showDiagnostics = showsDiagnostics
+        self.pendingApproval = pendingApproval
+    }
+    #endif
 }
 
-@MainActor
-final class AIChatWindowController: NSWindowController {
-    private let model = AIChatViewModel()
-    private var mcpManagerWindow: MCPManagerWindowController?
-
-    init() {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_060, height: 700),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "AI Chat"
-        window.minSize = NSSize(width: 760, height: 520)
-        window.center()
-        window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: AIChatWorkspaceView(model: model)))
-        super.init(window: window)
-        NotificationCenter.default.addObserver(forName: .limaOpenAIMCPManager, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor in
-                guard let self else { return }
-                if self.mcpManagerWindow == nil { self.mcpManagerWindow = MCPManagerWindowController() }
-                self.mcpManagerWindow?.present()
-            }
-        }
-    }
-
-    required init?(coder: NSCoder) { nil }
-
-    func present() {
-        NSApp.activate(ignoringOtherApps: true)
-        window?.makeKeyAndOrderFront(nil)
-    }
-}
-
-private struct AIChatWorkspaceView: View {
+struct AIChatWorkspaceView: View {
     @ObservedObject var model: AIChatViewModel
-    @ObservedObject private var mcpStore = MCPServerStore.shared
-    @ObservedObject private var nativeToolStore = LimaAIToolStore.shared
+    @ObservedObject private var conversationStore: AIConversationStore
+    @ObservedObject private var mcpStore: MCPServerStore
+    @ObservedObject private var nativeToolStore: LimaAIToolStore
+    let isEmbedded: Bool
     @State private var apiKey = ""
+
+    init(model: AIChatViewModel, isEmbedded: Bool = false) {
+        self.model = model
+        self.isEmbedded = isEmbedded
+        _conversationStore = ObservedObject(wrappedValue: model.store)
+        _mcpStore = ObservedObject(wrappedValue: model.mcpStore)
+        _nativeToolStore = ObservedObject(wrappedValue: model.nativeToolStore)
+    }
     @State private var showKey = false
     @State private var keyMessage: String?
 
-    var body: some View {
-        HStack(spacing: 0) {
-            sidebar
-            Divider()
-            conversation
+    @State private var conversationSearchQuery = ""
+
+    private var filteredConversations: [AIConversation] {
+        let query = conversationSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return model.store.conversations }
+        return model.store.conversations.filter { conversation in
+            conversation.title.localizedCaseInsensitiveContains(query)
+                || conversation.preview.localizedCaseInsensitiveContains(query)
         }
-        .frame(minWidth: 760, minHeight: 520)
-        .background(LimaTheme.floatingWindowBackground)
+    }
+
+    private var todayConversations: [AIConversation] {
+        filteredConversations.filter { Calendar.current.isDateInToday($0.updatedAt) }
+    }
+
+    private var earlierConversations: [AIConversation] {
+        filteredConversations.filter { !Calendar.current.isDateInToday($0.updatedAt) }
+    }
+
+    var body: some View {
+        Group {
+            if isEmbedded {
+                workspacePanes
+                    .padding(.horizontal, 8)
+                    .padding(.bottom, 5)
+            } else {
+                ZStack {
+                    LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+                    VStack(spacing: LimaDesign.panelGap) {
+                        windowChrome
+                            .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+                        workspacePanes
+                    }
+                    .padding(.horizontal, LimaDesign.windowPadding)
+                    .padding(.bottom, LimaDesign.windowPadding)
+                    .padding(.top, 7)
+                }
+                .frame(minWidth: 760, minHeight: 520)
+            }
+        }
+        .tint(SettingsStore.shared.accentTheme.readablePrimary)
+    }
+
+    private var workspacePanes: some View {
+        HStack(spacing: isEmbedded ? 8 : 10) {
+            sidebar
+                .frame(width: isEmbedded ? 220 : 246)
+                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+
+            conversation
+                .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+                .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+        }
+    }
+
+    private var windowChrome: some View {
+        HStack(spacing: 10) {
+            LimaToolbarTitle(
+                symbol: "sparkles",
+                title: "AI Chat",
+                subtitle: "Local Responses workspace"
+            )
+            .frame(maxWidth: 280, alignment: .leading)
+
+            Spacer(minLength: 8)
+
+            Button(action: model.newConversation) {
+                Label("New Chat", systemImage: "square.and.pencil")
+            }
+            .buttonStyle(.borderless)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 28)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+            .keyboardShortcut("n", modifiers: .command)
+            .help("New chat")
+
+            Menu {
+                Button(model.showActivity ? "Hide Latest Activity" : "Show Latest Activity") {
+                    model.showActivity.toggle()
+                }
+                if !model.streamDiagnostics.isEmpty {
+                    Button(model.showDiagnostics ? "Hide Developer Diagnostics" : "Show Developer Diagnostics") {
+                        model.showDiagnostics.toggle()
+                    }
+                }
+                if model.selectedConversation != nil {
+                    Divider()
+                    Button("Delete Conversation", role: .destructive, action: model.deleteSelectedConversation)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 30, height: 28)
+            }
+            .menuStyle(.borderlessButton)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+            .help("Conversation actions")
+        }
+        .padding(.leading, 78)
+        .padding(.trailing, 10)
+        .frame(height: LimaDesign.toolbarHeight)
     }
 
     private var sidebar: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("AI Chat", systemImage: "sparkles")
-                    .limaFont(.headline)
-                Spacer()
-                Button(action: model.newConversation) {
-                    Image(systemName: "square.and.pencil")
-                }
-                .buttonStyle(.borderless)
-                .help("New chat")
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 14)
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Search chats", text: $conversationSearchQuery)
+                .textFieldStyle(.plain)
+                .limaFont(.callout)
+                .padding(.horizontal, 10)
+                .frame(height: 32)
+                .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.control, border: LimaTheme.fieldBorder)
+                .padding(.horizontal, 10)
+                .padding(.top, 10)
 
-            if model.store.conversations.isEmpty {
-                Text("Your chats stay on this Mac.")
-                    .limaFont(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .padding(.horizontal, 14)
+            if filteredConversations.isEmpty {
+                VStack(alignment: .leading, spacing: 7) {
+                    Image(systemName: "sparkles")
+                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                    Text(conversationSearchQuery.isEmpty ? "No conversations yet" : "No matching chats")
+                        .limaFont(.callout.weight(.semibold))
+                    Text(conversationSearchQuery.isEmpty ? "Start a private chat stored on this Mac." : "Try another title or phrase.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 3) {
-                        ForEach(model.store.conversations) { conversation in
-                            Button {
-                                model.select(conversation.id)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(conversation.title)
-                                        .lineLimit(1)
-                                        .limaFont(.callout.weight(.medium))
-                                    Text(conversation.preview)
-                                        .lineLimit(2)
-                                        .limaFont(.caption)
-                                        .foregroundStyle(LimaTheme.textSecondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(9)
-                                .background(
-                                    model.selectedConversationID == conversation.id
-                                        ? LimaTheme.surfaceSelected
-                                        : Color.clear,
-                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                )
-                            }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button("Delete Chat", role: .destructive) {
-                                    model.store.delete(id: conversation.id)
-                                    if model.selectedConversationID == conversation.id {
-                                        model.select(model.store.conversations.first?.id ?? conversation.id)
-                                    }
-                                }
-                            }
-                        }
+                    LazyVStack(alignment: .leading, spacing: 7) {
+                        conversationGroup("TODAY", conversations: todayConversations)
+                        conversationGroup(todayConversations.isEmpty ? "CONVERSATIONS" : "EARLIER", conversations: earlierConversations)
                     }
                     .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
                 }
             }
-            Spacer()
-            Text(mcpStore.servers.filter(\.enabled).isEmpty ? "OpenAI Responses API · tools off" : "OpenAI Responses API · MCP tools enabled")
-                .limaFont(.caption2)
-                .foregroundStyle(LimaTheme.textTertiary)
-                .padding(12)
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 5) {
+                Image(systemName: "lock.fill")
+                Text("Local history · \(model.store.conversations.count) chats")
+            }
+            .limaFont(.caption2)
+            .foregroundStyle(LimaTheme.textTertiary)
+            .padding(12)
         }
-        .frame(width: 260)
-        .background(LimaTheme.surfaceSecondary)
+    }
+
+    @ViewBuilder
+    private func conversationGroup(_ title: String, conversations: [AIConversation]) -> some View {
+        if !conversations.isEmpty {
+            Text(title)
+                .limaFont(.system(size: 9, weight: .bold))
+                .tracking(1.1)
+                .foregroundStyle(LimaTheme.textTertiary)
+                .padding(.horizontal, 9)
+                .padding(.top, 5)
+
+            ForEach(conversations) { conversation in
+                Button {
+                    model.select(conversation.id)
+                } label: {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(conversation.title)
+                            .lineLimit(1)
+                            .limaFont(.callout.weight(model.selectedConversationID == conversation.id ? .semibold : .medium))
+                            .foregroundStyle(LimaTheme.textPrimary)
+                        Text(conversation.preview)
+                            .lineLimit(2)
+                            .limaFont(.caption)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(9)
+                    .limaSelection(model.selectedConversationID == conversation.id, radius: LimaRadius.control)
+                }
+                .buttonStyle(.plain)
+                .disabled(model.canEndTask)
+                .contextMenu {
+                    Button("Delete Chat", role: .destructive) {
+                        model.store.delete(id: conversation.id)
+                        if model.selectedConversationID == conversation.id {
+                            model.select(model.store.conversations.first?.id ?? conversation.id)
+                        }
+                    }
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -1323,80 +1914,8 @@ private struct AIChatWorkspaceView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 12)
             }
-            HStack(spacing: 10) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(model.selectedConversation?.title ?? "New Chat")
-                        .limaFont(.headline)
-                        .lineLimit(1)
-                    Text(model.credentials.hasAPIKey ? "Streaming responses" : "Setup required")
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                }
-                Spacer()
-                Menu {
-                    ForEach(model.supportedReasoningEfforts) { effort in
-                        Button {
-                            model.selectReasoningEffort(effort)
-                        } label: {
-                            Label("\(effort.title) · \(effort.detail)", systemImage: model.reasoningEffort == effort ? "checkmark" : "circle")
-                        }
-                    }
-                    if model.supportedReasoningEfforts.isEmpty {
-                        Text("This model does not expose reasoning controls")
-                    }
-                } label: {
-                    Label(model.selectedModelOption.supportsReasoning ? "Think: \(model.reasoningEffort.title)" : "Think: Off", systemImage: "brain.head.profile")
-                }
-                .menuStyle(.borderlessButton)
-                Menu {
-                    ForEach(model.availableModels) { option in
-                        Button {
-                            model.selectModel(option)
-                        } label: {
-                            Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
-                        }
-                    }
-                    Divider()
-                    Button("Refresh Available Models", action: model.refreshModels)
-                } label: {
-                    Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
-                }
-                .menuStyle(.borderlessButton)
-                .disabled(model.isStreaming || model.isLoadingModels)
-                .help("Choose an OpenAI Responses model")
-                Button(action: model.refreshModels) {
-                    Image(systemName: model.isLoadingModels ? "arrow.triangle.2.circlepath" : "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .disabled(model.isLoadingModels || model.isStreaming)
-                .help("Load models available to this API key")
-                Button {
-                    model.showActivity.toggle()
-                } label: {
-                    Image(systemName: model.showActivity ? "clock.badge.checkmark" : "clock")
-                }
-                .buttonStyle(.borderless)
-                .help("Show work activity")
-                if !model.streamDiagnostics.isEmpty {
-                    Button {
-                        model.showDiagnostics.toggle()
-                    } label: {
-                        Image(systemName: model.showDiagnostics ? "ladybug.fill" : "ladybug")
-                            .foregroundStyle(model.showDiagnostics ? LimaTheme.error : LimaTheme.textSecondary)
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Show safe developer diagnostics")
-                }
-                if model.selectedConversation != nil {
-                    Button(role: .destructive, action: model.deleteSelectedConversation) {
-                        Image(systemName: "trash")
-                    }
-                    .buttonStyle(.borderless)
-                    .help("Delete chat")
-                }
-            }
-            .padding(16)
-            Divider()
+            conversationHeader
+            GlassHairline()
 
             if model.showDiagnostics, !model.streamDiagnostics.isEmpty {
                 diagnosticsPanel
@@ -1410,15 +1929,78 @@ private struct AIChatWorkspaceView: View {
                 messages
             }
 
-            if model.showActivity, let conversation = model.selectedConversation, !conversation.activities.isEmpty {
-                ActivityDisclosureView(activities: conversation.activities, reasoningSummary: conversation.reasoningSummary)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 10)
-            }
-
-            Divider()
+            taskStatusBar
             composer
         }
+    }
+
+    private var conversationHeader: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "sparkles")
+                .limaFont(.system(size: 14, weight: .bold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                .frame(width: 30, height: 30)
+                .background(SettingsStore.shared.accentTheme.readablePrimary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.selectedConversation?.title ?? "New Chat")
+                    .limaFont(.headline)
+                    .foregroundStyle(LimaTheme.textPrimary)
+                    .lineLimit(1)
+                Text(model.credentials.hasAPIKey ? "Private · local history" : "Setup required")
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+
+            Spacer(minLength: 8)
+
+            Button(action: model.newConversation) {
+                Image(systemName: "square.and.pencil")
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+            .keyboardShortcut("n", modifiers: .command)
+            .disabled(model.canEndTask)
+            .help("New chat")
+            .accessibilityLabel("New chat")
+
+            Menu {
+                Button(model.showActivity ? "Hide turn details" : "Show turn details") {
+                    model.showActivity.toggle()
+                }
+                if !model.streamDiagnostics.isEmpty {
+                    Button(model.showDiagnostics ? "Hide developer diagnostics" : "Show developer diagnostics") {
+                        model.showDiagnostics.toggle()
+                    }
+                }
+                if model.selectedConversation != nil {
+                    Divider()
+                    Button("Delete conversation", role: .destructive, action: model.deleteSelectedConversation)
+                        .disabled(model.canEndTask)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .frame(width: 28, height: 28)
+            }
+            .menuStyle(.borderlessButton)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+            .help("Conversation actions")
+            .accessibilityLabel("Conversation actions")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var taskStatusBar: some View {
+        AIChatTaskStatusBar(
+            state: model.currentTaskState,
+            showsTurnDetails: model.showActivity,
+            toggleTurnDetails: { model.showActivity.toggle() },
+            endTask: model.endTask
+        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
     }
 
     private var diagnosticsPanel: some View {
@@ -1501,7 +2083,7 @@ private struct AIChatWorkspaceView: View {
                         .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
                     } else {
                         ForEach(model.selectedConversation?.messages ?? []) { message in
-                            AIChatMessageRow(message: message)
+                            AIChatMessageRow(message: message, showActivity: model.showActivity)
                                 .id(message.id)
                         }
                     }
@@ -1517,81 +2099,231 @@ private struct AIChatWorkspaceView: View {
     }
 
     private var composer: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let error = model.streamError {
-                Label(error, systemImage: "exclamationmark.triangle.fill")
-                    .limaFont(.caption)
-                    .foregroundStyle(.orange)
-            }
+        VStack(alignment: .leading, spacing: 7) {
             AIAttachmentStrip(attachments: model.attachments, remove: model.remove)
-            HStack(alignment: .bottom, spacing: 10) {
-                HStack(spacing: 8) {
-                Menu {
-                    Button("Attach Files…", action: model.addFiles)
-                    Button("Add Clipboard", action: model.addClipboard)
-                    Button("Add Current Selection", action: model.addSelection)
-                    Divider()
-                    Text("Lima tools")
-                    ForEach(LimaAIToolRegistry.definitions) { tool in
-                        Toggle(isOn: Binding(
-                            get: { nativeToolStore.isEnabled(tool) },
-                            set: { nativeToolStore.setEnabled(tool, enabled: $0) }
-                        )) {
-                            Label("\(tool.name) · \(tool.risk.title)", systemImage: "desktopcomputer")
-                        }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                attachmentAndToolMenu
+
+                ZStack(alignment: .topLeading) {
+                    if model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(model.canEndTask ? "End the current task before sending another message" : "Ask anything…")
+                            .limaFont(.callout)
+                            .foregroundStyle(LimaTheme.textTertiary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 10)
+                            .allowsHitTesting(false)
                     }
-                    Divider()
-                    Text("MCP servers")
-                    ForEach(mcpStore.servers) { server in
-                        Toggle(isOn: Binding(
-                            get: { server.enabled },
-                            set: { mcpStore.setEnabled(server.id, enabled: $0) }
-                        )) {
-                            Label("\(server.name) (\(server.enabledTools.count))", systemImage: "server.rack")
-                        }
-                    }
-                    if mcpStore.servers.isEmpty {
-                        Text("No MCP servers configured")
-                    }
-                    Divider()
-                    Button("Manage MCP Servers…") { model.openMCPManager() }
-                } label: {
-                    Label("Tools \(nativeToolStore.enabledToolIDs.count + mcpStore.servers.filter(\.enabled).count)", systemImage: "wrench.and.screwdriver")
+
+                    TextEditor(text: $model.draft)
+                        .font(.system(size: 14))
+                        .frame(height: 52)
+                        .scrollContentBackground(.hidden)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 3)
+                        .disabled(model.canEndTask)
+                        .accessibilityLabel("Message")
                 }
-                .menuStyle(.borderlessButton)
-                .help("Choose MCP servers and manage individual tools")
-                TextEditor(text: $model.draft)
-                    .font(.system(size: 14))
-                    .frame(minHeight: 44, maxHeight: 110)
-                    .scrollContentBackground(.hidden)
-                    .padding(5)
-                    .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth))
-                    .disabled(model.isStreaming)
-                if model.isStreaming {
-                    Button(action: model.cancel) {
-                        Image(systemName: "stop.fill")
+                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth))
+
+                if model.canEndTask {
+                    Button(action: model.endTask) {
+                        Label("End Task", systemImage: "stop.fill")
                     }
                     .buttonStyle(.bordered)
-                    .help("Stop generating")
+                    .tint(LimaColors.danger)
+                    .help("End the current task")
+                    .accessibilityLabel("End current task")
                 } else {
                     Button(action: model.send) {
-                        Image(systemName: "arrow.up")
+                        Label("Send", systemImage: "arrow.up")
                     }
                     .buttonStyle(.borderedProminent)
                     .disabled(model.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Send message")
-                }
+                    .accessibilityLabel("Send message")
                 }
             }
-            Text("Markdown and code are supported. API keys, attachments, and chat history stay out of diagnostics.")
-                .limaFont(.caption2)
-                .foregroundStyle(LimaTheme.textTertiary)
+
+            HStack(spacing: 8) {
+                modelPicker
+                reasoningPicker
+                Spacer(minLength: 8)
+                Label("Tools \(enabledToolCount)", systemImage: "wrench.and.screwdriver")
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textTertiary)
+            }
         }
-        .padding(14)
-        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
         .padding(10)
+        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    private var enabledToolCount: Int {
+        nativeToolStore.enabledToolIDs.count
+            + mcpStore.servers.filter(\.enabled).reduce(0) { $0 + $1.enabledTools.count }
+    }
+
+    private var attachmentAndToolMenu: some View {
+        Menu {
+            Button("Attach Files…", action: model.addFiles)
+            Button("Add Clipboard", action: model.addClipboard)
+            Button("Add Current Selection", action: model.addSelection)
+            Divider()
+            Text("Lima tools")
+            ForEach(LimaAIToolRegistry.definitions) { tool in
+                Toggle(isOn: Binding(
+                    get: { nativeToolStore.isEnabled(tool) },
+                    set: { nativeToolStore.setEnabled(tool, enabled: $0) }
+                )) {
+                    Label("\(tool.name) · \(tool.risk.title)", systemImage: "desktopcomputer")
+                }
+            }
+            Divider()
+            Text("MCP servers")
+            ForEach(mcpStore.servers) { server in
+                Toggle(isOn: Binding(
+                    get: { server.enabled },
+                    set: { mcpStore.setEnabled(server.id, enabled: $0) }
+                )) {
+                    Label("\(server.name) (\(server.enabledTools.count))", systemImage: "server.rack")
+                }
+            }
+            if mcpStore.servers.isEmpty {
+                Text("No MCP servers configured")
+            }
+            Divider()
+            Button("Manage MCP Servers…") { model.openMCPManager() }
+        } label: {
+            Image(systemName: "plus")
+                .frame(width: 28, height: 28)
+        }
+        .menuStyle(.borderlessButton)
+        .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+        .frame(width: 32, height: 52)
+        .disabled(model.canEndTask)
+        .help("Add context or choose tools")
+    }
+
+    private var modelPicker: some View {
+        Menu {
+            ForEach(model.availableModels) { option in
+                Button {
+                    model.selectModel(option)
+                } label: {
+                    Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+                }
+            }
+            Divider()
+            Button("Refresh Available Models", action: model.refreshModels)
+        } label: {
+            Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.canEndTask || model.isLoadingModels)
+        .help("Choose an OpenAI Responses model")
+    }
+
+    private var reasoningPicker: some View {
+        Menu {
+            ForEach(model.supportedReasoningEfforts) { effort in
+                Button {
+                    model.selectReasoningEffort(effort)
+                } label: {
+                    Label("\(effort.title) · \(effort.detail)", systemImage: model.reasoningEffort == effort ? "checkmark" : "circle")
+                }
+            }
+            if model.supportedReasoningEfforts.isEmpty {
+                Text("This model does not expose reasoning controls")
+            }
+        } label: {
+            Label(
+                model.selectedModelOption.supportsReasoning ? model.reasoningEffort.title : "Think: Off",
+                systemImage: "brain.head.profile"
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(!model.selectedModelOption.supportsReasoning || model.canEndTask)
+        .help("Choose reasoning effort")
+    }
+}
+
+private struct AIChatTaskStatusBar: View {
+    let state: AIChatTaskState
+    let showsTurnDetails: Bool
+    let toggleTurnDetails: () -> Void
+    let endTask: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(state.tone.color.opacity(0.14))
+                Image(systemName: state.symbol)
+                    .limaFont(.system(size: 13, weight: .bold))
+                    .foregroundStyle(state.tone.color)
+                if state.isActive {
+                    ProgressView()
+                        .controlSize(.mini)
+                        .tint(state.tone.color)
+                        .offset(x: 12, y: 12)
+                }
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(state.title)
+                    .limaFont(.caption.weight(.semibold))
+                    .foregroundStyle(LimaTheme.textPrimary)
+                    .lineLimit(1)
+                Text(state.detail)
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button(action: toggleTurnDetails) {
+                Image(systemName: showsTurnDetails ? "list.bullet.rectangle.portrait.fill" : "list.bullet.rectangle.portrait")
+                    .frame(width: 27, height: 27)
+            }
+            .buttonStyle(.borderless)
+            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.compactControl, border: LimaTheme.borderSubtle)
+            .help(showsTurnDetails ? "Hide turn details" : "Show turn details")
+            .accessibilityLabel(showsTurnDetails ? "Hide turn details" : "Show turn details")
+
+            if state.canEnd {
+                Button(action: endTask) {
+                    Label("End Task", systemImage: "stop.fill")
+                        .limaFont(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(LimaColors.danger)
+                .help("End the current task")
+                .accessibilityLabel("End current task")
+            }
+        }
+        .padding(.horizontal, 10)
+        .frame(minHeight: 54)
+        .limaNativeSurface(
+            fill: LimaTheme.surfaceRaised,
+            radius: LimaRadius.searchField,
+            border: state.tone.color.opacity(state.isActive ? 0.42 : 0.22)
+        )
+        .overlay(alignment: .bottom) {
+            Capsule()
+                .fill(state.tone.color.opacity(state.isActive ? 0.92 : 0.55))
+                .frame(height: 2)
+                .padding(.horizontal, 11)
+                .padding(.bottom, 3)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(state.title). \(state.detail)")
+        .accessibilityIdentifier("ai-task-status")
     }
 }
 
@@ -1611,7 +2343,7 @@ private struct ActivityDisclosureView: View {
                 if let reasoningSummary, !reasoningSummary.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Reasoning summary").limaFont(.caption.weight(.semibold))
-                        AIMarkdownView(markdown: reasoningSummary)
+                        LimaMarkdownDocumentView(markdown: reasoningSummary)
                     }
                     .padding(.bottom, 4)
                 }
@@ -1643,6 +2375,7 @@ private struct ActivityDisclosureView: View {
 
 private struct AIChatMessageRow: View {
     let message: AIChatMessage
+    let showActivity: Bool
 
     var body: some View {
         HStack(alignment: .top) {
@@ -1650,7 +2383,13 @@ private struct AIChatMessageRow: View {
                 Image(systemName: "sparkles")
                     .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                     .frame(width: 22)
-                messageBody
+                VStack(alignment: .leading, spacing: 8) {
+                    messageBody
+                    if showActivity, let activities = message.activities, !activities.isEmpty {
+                        ActivityDisclosureView(activities: activities, reasoningSummary: message.reasoningSummary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 60)
             } else {
                 Spacer(minLength: 60)
@@ -1665,7 +2404,7 @@ private struct AIChatMessageRow: View {
     private var messageBody: some View {
         Group {
             if message.role == .assistant, !message.text.isEmpty {
-                AIMarkdownView(markdown: message.text)
+                LimaMarkdownDocumentView(markdown: message.text)
             } else {
                 Text(message.text.isEmpty && message.role == .assistant ? "Thinking…" : message.text)
                     .textSelection(.enabled)

@@ -7,31 +7,37 @@ import UniformTypeIdentifiers
 // MARK: - Chat controls and persisted metadata
 
 enum AIReasoningEffort: String, Codable, CaseIterable, Identifiable, Sendable {
+    case none
     case minimal
     case low
     case medium
     case high
     case xhigh
+    case max
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
+        case .none: return "Off"
         case .minimal: return "Quick"
         case .low: return "Light"
         case .medium: return "Standard"
         case .high: return "Deep"
-        case .xhigh: return "Max"
+        case .xhigh: return "Extra Deep"
+        case .max: return "Max"
         }
     }
 
     var detail: String {
         switch self {
+        case .none: return "No reasoning"
         case .minimal: return "Lowest latency"
         case .low: return "Fast reasoning"
         case .medium: return "Balanced quality and speed"
         case .high: return "More deliberate analysis"
-        case .xhigh: return "Maximum supported effort"
+        case .xhigh: return "Extended reasoning"
+        case .max: return "Maximum supported effort"
         }
     }
 }
@@ -60,6 +66,12 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
         !Self.isKnownModel(id)
     }
 
+    var defaultReasoningEffort: AIReasoningEffort? {
+        supportedReasoningEfforts.contains(.medium)
+            ? .medium
+            : supportedReasoningEfforts.first
+    }
+
     static func isChatModel(_ id: String) -> Bool {
         let value = id.lowercased()
         let nonChatMarkers = ["embedding", "moderation", "whisper", "tts", "dall-e", "image", "search-preview", "transcribe", "realtime", "audio", "search"]
@@ -84,6 +96,15 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
 
     static func reasoningEfforts(for id: String) -> [AIReasoningEffort] {
         let value = id.lowercased()
+        if value.hasPrefix("gpt-5.6") {
+            return [.none, .low, .medium, .high, .xhigh, .max]
+        }
+        // Verified against the Responses API on 2026-09-20. GPT-5.4 rejects
+        // both legacy `minimal` and `max`; keep the UI from constructing
+        // either invalid request.
+        if value.hasPrefix("gpt-5.4") {
+            return [.none, .low, .medium, .high, .xhigh]
+        }
         if value.contains("pro") {
             return [.high]
         }
@@ -106,6 +127,7 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
     }
 
     static let fallbackModels: [AIModelOption] = [
+        AIModelOption(id: "gpt-5.4", displayName: "GPT-5.4"),
         AIModelOption(id: "gpt-5", displayName: "GPT-5"),
         AIModelOption(id: "gpt-5-mini", displayName: "GPT-5 mini"),
         AIModelOption(id: "o4-mini", displayName: "o4-mini")
@@ -540,13 +562,25 @@ final class MCPServerStore: ObservableObject {
     @Published private(set) var lastError: String?
 
     private let fileURL: URL
+    private let persistsChanges: Bool
     private let queue = DispatchQueue(label: "dev.liam.lima.mcp-persistence", qos: .utility)
     private var pendingSave: DispatchWorkItem?
 
     private init() {
-        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        fileURL = base.appendingPathComponent("Lima/AI/mcp-servers.json")
+        if let testURL = LimaTestEnvironment.storageURL(relativePath: "AI/mcp-servers.json") {
+            fileURL = testURL
+        } else {
+            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            fileURL = base.appendingPathComponent("Lima/AI/mcp-servers.json")
+        }
+        persistsChanges = true
         load()
+    }
+
+    init(fixtures: [MCPServer]) {
+        fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("LimaMCPFixtures.json")
+        persistsChanges = false
+        servers = fixtures
     }
 
     func addOrUpdate(_ server: MCPServer) {
@@ -618,6 +652,7 @@ final class MCPServerStore: ObservableObject {
     }
 
     private func scheduleSave() {
+        guard persistsChanges else { return }
         pendingSave?.cancel()
         let snapshot = servers
         let url = fileURL
@@ -635,7 +670,9 @@ final class MCPServerStore: ObservableObject {
 }
 
 enum MCPCredentialStore {
-    private static let service = "dev.liam.lima.mcp"
+    private static var service: String {
+        LimaTestEnvironment.isEnabled ? "dev.liam.lima.mcp.test" : "dev.liam.lima.mcp"
+    }
 
     static func save(serverID: UUID, value: String) throws {
         let data = Data(value.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
@@ -986,10 +1023,18 @@ final class LimaAIToolStore: ObservableObject {
 
     @Published private(set) var enabledToolIDs: Set<String>
     private let defaultsKey = "lima.ai.enabled-native-tools"
+    private let defaults: UserDefaults?
 
     private init() {
-        let saved = UserDefaults.standard.stringArray(forKey: defaultsKey)
+        let defaults = LimaTestEnvironment.userDefaults
+        self.defaults = defaults
+        let saved = defaults.stringArray(forKey: defaultsKey)
         enabledToolIDs = saved.map(Set.init) ?? LimaAIToolRegistry.defaultEnabledToolIDs
+    }
+
+    init(fixtures: Set<String>) {
+        defaults = nil
+        enabledToolIDs = fixtures
     }
 
     func isEnabled(_ definition: LimaAIToolDefinition) -> Bool {
@@ -999,7 +1044,7 @@ final class LimaAIToolStore: ObservableObject {
     func setEnabled(_ definition: LimaAIToolDefinition, enabled: Bool) {
         if enabled { enabledToolIDs.insert(definition.id) }
         else { enabledToolIDs.remove(definition.id) }
-        UserDefaults.standard.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+        defaults?.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
     }
 }
 
@@ -1007,7 +1052,7 @@ final class LimaAIToolStore: ObservableObject {
 
 enum AIResponsesEventDecoder {
     static func events(eventType: String, dataLines: [String], model: String?) -> [AIChatStreamEvent] {
-        let data = dataLines.joined(separator: "\\n")
+        let data = dataLines.joined(separator: "\n")
         guard !data.isEmpty, data != "[DONE]" else { return [] }
         guard let payload = data.data(using: .utf8),
               let value = try? JSONSerialization.jsonObject(with: payload) as? [String: Any] else {
@@ -1147,6 +1192,67 @@ enum AIResponsesEventDecoder {
     }
 }
 
+/// Incrementally reconstructs Responses Server-Sent Events without delaying
+/// streamed output. Keeping framing separate from semantic decoding makes the
+/// raw line-boundary behavior directly testable.
+struct AIResponsesSSEParser {
+    private let model: String?
+    private var eventType = ""
+    private var dataLines: [String] = []
+    private var rawLineBytes: [UInt8] = []
+
+    init(model: String?) {
+        self.model = model
+    }
+
+    /// Feed one decoded line when a caller already preserves blank SSE delimiters.
+    mutating func append(line: String) -> [AIChatStreamEvent] {
+        if line.isEmpty {
+            return flush()
+        }
+        if line.hasPrefix("event:") {
+            eventType = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+        } else if line.hasPrefix("data:") {
+            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+        }
+        return []
+    }
+
+    /// Feed raw response bytes. The URLSession line iterator can omit empty
+    /// lines, which are the SSE event boundary; byte framing retains them.
+    mutating func append(byte: UInt8) -> [AIChatStreamEvent] {
+        guard byte == 0x0A else {
+            rawLineBytes.append(byte)
+            return []
+        }
+
+        let line = String(decoding: rawLineBytes, as: UTF8.self)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+        rawLineBytes.removeAll(keepingCapacity: true)
+        return append(line: line)
+    }
+
+    mutating func finish() -> [AIChatStreamEvent] {
+        var events: [AIChatStreamEvent] = []
+        if !rawLineBytes.isEmpty {
+            let line = String(decoding: rawLineBytes, as: UTF8.self)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
+            rawLineBytes.removeAll(keepingCapacity: true)
+            events += append(line: line)
+        }
+        events += flush()
+        return events
+    }
+
+    private mutating func flush() -> [AIChatStreamEvent] {
+        defer {
+            eventType = ""
+            dataLines = []
+        }
+        return AIResponsesEventDecoder.events(eventType: eventType, dataLines: dataLines, model: model)
+    }
+}
+
 // MARK: - Local context and attachment encoding
 
 @MainActor
@@ -1195,34 +1301,287 @@ struct AIInputEncoder {
 
 // MARK: - Markdown rendering
 
+/// A reusable read-only Markdown document renderer for Lima workspaces.
+struct LimaMarkdownDocumentView: View {
+    let markdown: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                markdownBlock(block)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func markdownBlock(_ block: Block) -> some View {
+        switch block {
+        case .paragraph(let value):
+            inlineText(value)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        case .heading(let level, let value):
+            inlineText(value)
+                .font(headingFont(for: level))
+                .foregroundStyle(LimaTheme.textPrimary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, level == 1 ? 4 : 1)
+        case .list(let ordered, let items):
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        listMarker(item, index: index, ordered: ordered)
+                            .frame(width: ordered ? 22 : 14, alignment: .trailing)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                        inlineText(cleanListItem(item))
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .quote(let value):
+            HStack(alignment: .top, spacing: 10) {
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(SettingsStore.shared.accentTheme.readablePrimary)
+                    .frame(width: 3)
+                inlineText(value)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.vertical, 3)
+            .padding(.leading, 2)
+        case .code(let language, let value):
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text(language.isEmpty ? "CODE" : language.uppercased())
+                        .limaFont(.caption2.weight(.semibold))
+                        .foregroundStyle(LimaTheme.textTertiary)
+                    Spacer()
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(value, forType: .string)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                            .limaFont(.caption2)
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                }
+                Text(value)
+                    .font(.system(size: 12.5, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+        case .table(let headers, let rows):
+            ScrollView(.horizontal, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 0) {
+                    tableRow(headers, header: true)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                        tableRow(row, header: false)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+            }
+        case .rule:
+            Rectangle()
+                .fill(LimaTheme.borderStrong)
+                .frame(height: LimaDesign.borderWidth)
+                .padding(.vertical, 4)
+        }
+    }
+
+    private func inlineText(_ value: String) -> Text {
+        if let attributed = try? AttributedString(markdown: value, options: .init(interpretedSyntax: .full)) {
+            return Text(attributed)
+        }
+        return Text(value)
+    }
+
+    @ViewBuilder
+    private func listMarker(_ item: String, index: Int, ordered: Bool) -> some View {
+        let trimmed = item.trimmingCharacters(in: .whitespaces)
+        if trimmed.hasPrefix("[ ]") {
+            Image(systemName: "square")
+        } else if trimmed.lowercased().hasPrefix("[x]") {
+            Image(systemName: "checkmark.square.fill")
+        } else {
+            Text(ordered ? "\(index + 1)." : "•")
+                .limaFont(.body.weight(.medium))
+        }
+    }
+
+    private func tableRow(_ cells: [String], header: Bool) -> some View {
+        HStack(spacing: 0) {
+            ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                inlineText(cell)
+                    .limaFont(.callout.weight(header ? .semibold : .regular))
+                    .textSelection(.enabled)
+                    .frame(width: 150, alignment: .leading)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(header ? LimaTheme.surfaceSecondary : LimaTheme.surfaceRaised)
+                    .overlay(alignment: .trailing) {
+                        Rectangle().fill(LimaTheme.borderSubtle).frame(width: LimaDesign.borderWidth)
+                    }
+            }
+        }
+    }
+
+    private func cleanListItem(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespaces)
+        guard trimmed.hasPrefix("[ ]") || trimmed.lowercased().hasPrefix("[x]") else { return value }
+        return String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+    }
+
+    private func headingFont(for level: Int) -> Font {
+        switch level {
+        case 1: return .title2.weight(.semibold)
+        case 2: return .title3.weight(.semibold)
+        default: return .headline
+        }
+    }
+
+    private enum Block {
+        case heading(Int, String)
+        case paragraph(String)
+        case list(Bool, [String])
+        case quote(String)
+        case code(String, String)
+        case table([String], [[String]])
+        case rule
+    }
+
+    private var blocks: [Block] {
+        let lines = markdown.components(separatedBy: .newlines)
+        let codeFence = String(repeating: "\u{60}", count: 3)
+        var result: [Block] = []
+        var paragraph: [String] = []
+        var index = 0
+
+        func flushParagraph() {
+            let value = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty { result.append(.paragraph(value)) }
+            paragraph = []
+        }
+
+        while index < lines.count {
+            let line = lines[index]
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+            if trimmed.isEmpty {
+                flushParagraph()
+                index += 1
+            } else if trimmed.hasPrefix(codeFence) {
+                flushParagraph()
+                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                index += 1
+                var code: [String] = []
+                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(codeFence) {
+                    code.append(lines[index])
+                    index += 1
+                }
+                if index < lines.count { index += 1 }
+                result.append(.code(language, code.joined(separator: "\n")))
+            } else if let heading = heading(from: trimmed) {
+                flushParagraph()
+                result.append(.heading(heading.level, heading.value))
+                index += 1
+            } else if isRule(trimmed) {
+                flushParagraph()
+                result.append(.rule)
+                index += 1
+            } else if trimmed.hasPrefix(">") {
+                flushParagraph()
+                var quote: [String] = []
+                while index < lines.count {
+                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
+                    guard candidate.hasPrefix(">") else { break }
+                    quote.append(String(candidate.dropFirst()).trimmingCharacters(in: .whitespaces))
+                    index += 1
+                }
+                result.append(.quote(quote.joined(separator: "\n")))
+            } else if let list = listStart(trimmed) {
+                flushParagraph()
+                var items: [String] = []
+                while index < lines.count {
+                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
+                    guard let next = listStart(candidate), next.ordered == list.ordered else { break }
+                    items.append(next.value)
+                    index += 1
+                }
+                result.append(.list(list.ordered, items))
+            } else if index + 1 < lines.count, trimmed.contains("|"), isTableSeparator(lines[index + 1]) {
+                flushParagraph()
+                let headers = tableCells(trimmed)
+                index += 2
+                var rows: [[String]] = []
+                while index < lines.count, lines[index].contains("|"), !lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
+                    rows.append(tableCells(lines[index]))
+                    index += 1
+                }
+                result.append(.table(headers, rows))
+            } else {
+                paragraph.append(line)
+                index += 1
+            }
+        }
+
+        flushParagraph()
+        return result.isEmpty ? [.paragraph("")] : result
+    }
+
+    private func heading(from line: String) -> (level: Int, value: String)? {
+        let hashes = line.prefix { $0 == "#" }
+        guard !hashes.isEmpty, hashes.count <= 6 else { return nil }
+        let remainder = line.dropFirst(hashes.count)
+        guard remainder.first == " " else { return nil }
+        return (hashes.count, remainder.trimmingCharacters(in: .whitespaces))
+    }
+
+    private func listStart(_ line: String) -> (ordered: Bool, value: String)? {
+        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
+            return (false, String(line.dropFirst(2)))
+        }
+        guard let period = line.firstIndex(of: "."), period > line.startIndex else { return nil }
+        let prefix = line[..<period]
+        let afterPeriod = line.index(after: period)
+        guard prefix.allSatisfy(\.isNumber), line[afterPeriod...].first == " " else { return nil }
+        return (true, String(line[line.index(after: afterPeriod)...]).trimmingCharacters(in: .whitespaces))
+    }
+
+    private func isRule(_ line: String) -> Bool {
+        let compact = line.replacingOccurrences(of: " ", with: "")
+        return compact.count >= 3 && (Set(compact) == ["-"] || Set(compact) == ["*"] || Set(compact) == ["_"])
+    }
+
+    private func isTableSeparator(_ line: String) -> Bool {
+        let cells = tableCells(line)
+        return !cells.isEmpty && cells.allSatisfy { cell in
+            let compact = cell.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "-", with: "")
+            return compact.isEmpty && cell.contains("-")
+        }
+    }
+
+    private func tableCells(_ line: String) -> [String] {
+        line
+            .trimmingCharacters(in: .whitespaces)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "|"))
+            .split(separator: "|", omittingEmptySubsequences: false)
+            .map { String($0).trimmingCharacters(in: .whitespaces) }
+    }
+}
+
 struct AIMarkdownView: View {
     let markdown: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                switch block {
-                case .text(let value):
-                    if let attributed = try? AttributedString(markdown: value, options: .init(interpretedSyntax: .full)) {
-                        Text(attributed).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    } else {
-                        Text(value).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                    }
-                case .code(let language, let value):
-                    VStack(alignment: .leading, spacing: 4) {
-                        if !language.isEmpty { Text(language).limaFont(.caption2).foregroundStyle(LimaColors.tertiaryText) }
-                        Text(value)
-                            .font(.system(size: 12.5, design: .monospaced))
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(11)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(LimaColors.border, lineWidth: 1))
-                }
-            }
-        }
+        LimaMarkdownDocumentView(markdown: markdown)
     }
 
     private enum Block { case text(String); case code(String, String) }

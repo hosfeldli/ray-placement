@@ -5,6 +5,7 @@ import SwiftUI
 struct LauncherView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var terminalModel: DeveloperTerminalModel
+    @ObservedObject var aiChatModel: AIChatViewModel
     @ObservedObject var passwordGeneratorModel: PasswordGeneratorModel
     @ObservedObject var inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
     @ObservedObject var formatterModel: FormatterWorkspaceModel
@@ -27,6 +28,7 @@ struct LauncherView: View {
     init(
         viewModel: LauncherViewModel,
         terminalModel: DeveloperTerminalModel,
+        aiChatModel: AIChatViewModel,
         passwordGeneratorModel: PasswordGeneratorModel,
         inlineExtensionSurfaceModel: InlineExtensionSurfaceModel,
         formatterModel: FormatterWorkspaceModel,
@@ -40,6 +42,7 @@ struct LauncherView: View {
     ) {
         self.viewModel = viewModel
         self.terminalModel = terminalModel
+        self.aiChatModel = aiChatModel
         self.passwordGeneratorModel = passwordGeneratorModel
         self.inlineExtensionSurfaceModel = inlineExtensionSurfaceModel
         self.formatterModel = formatterModel
@@ -136,8 +139,9 @@ struct LauncherView: View {
                         .frame(width: 29, height: 29)
                 }
                 .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
+                .disabled(isAIChatSurface && aiChatModel.canEndTask)
                 .accessibilityLabel("Back")
-                .help("Back to search")
+                .help(isAIChatSurface && aiChatModel.canEndTask ? "End the current AI task before leaving" : "Back to search")
             }
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
@@ -152,6 +156,11 @@ struct LauncherView: View {
             if viewModel.isTimezonePicker {
                 Spacer()
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
+            } else if isAIChatSurface {
+                Spacer(minLength: 0)
+                Label("Live Responses · local history", systemImage: "lock.fill")
+                    .limaFont(.caption.weight(.medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
             } else if isOutputMode {
                 Text(outputHeaderText)
                     .limaFont(.system(size: 15, weight: .medium))
@@ -191,6 +200,11 @@ struct LauncherView: View {
         .padding(.top, 8)
     }
 
+    private var isAIChatSurface: Bool {
+        guard case .surface(let session) = viewModel.mode else { return false }
+        return session.surface.handler == .aiChat
+    }
+
     private var isDedicatedSurfaceMode: Bool {
         switch viewModel.mode {
         case .surface, .extensionSurface, .output, .writingReview:
@@ -228,6 +242,7 @@ struct LauncherView: View {
                 onSurfaceInteraction()
                 viewModel.enter(.root)
             }
+            .disabled(isAIChatSurface && aiChatModel.canEndTask)
             if isPinEligible {
                 Button(surfaceSessionController.isPinned ? "Unpin Surface" : "Keep Open") {
                     onSurfaceInteraction()
@@ -368,6 +383,9 @@ struct LauncherView: View {
         case .grammarDebugger:
             GrammarDebuggerView(settings: settings)
                 .onSurfaceInteraction(onSurfaceInteraction)
+        case .aiChat:
+            AIChatWorkspaceView(model: aiChatModel, isEmbedded: true)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
             InlineLauncherSurfacePlaceholder(session: session)
         }
@@ -903,6 +921,18 @@ struct LauncherView: View {
                 }
                 KeyHint(keys: "↩", label: primaryActionLabel)
                 KeyHint(keys: "esc", label: "Close")
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 27)
+            .padding(.bottom, 5)
+        } else if isAIChatSurface {
+            HStack {
+                Spacer()
+                if aiChatModel.canEndTask {
+                    KeyHint(keys: "esc", label: "End task")
+                } else {
+                    KeyHint(keys: "⌘N", label: "New chat")
+                }
             }
             .padding(.horizontal, 13)
             .frame(height: 27)

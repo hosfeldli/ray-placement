@@ -139,6 +139,7 @@ enum LauncherSurfaceHandlerKey: String, Codable, Sendable {
     case workflows
     case extensionDevelopment
     case grammarDebugger
+    case aiChat
 }
 
 enum ExtensionSurfaceHandlerKey: String, Codable, Sendable {

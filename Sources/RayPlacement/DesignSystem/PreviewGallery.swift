@@ -25,6 +25,13 @@ enum LimaUIPreviewMode: String, CaseIterable {
     case settingsPrivacy = "settings-privacy"
     case confirmation
     case toast
+    case aiEmpty = "ai-empty"
+    case aiConversation = "ai-conversation"
+    case aiMarkdown = "ai-markdown"
+    case aiStreaming = "ai-streaming"
+    case aiApproval = "ai-approval"
+    case aiFailure = "ai-failure"
+    case aiManyChats = "ai-many-chats"
 
     var title: String {
         switch self {
@@ -39,6 +46,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .settingsGeneral, .settingsWritingLocal, .settingsWritingEnhanced, .settingsPrivacy: return "Settings Preview"
         case .confirmation: return "Confirmation Preview"
         case .toast: return "Toast Preview"
+        case .aiEmpty, .aiConversation, .aiMarkdown, .aiStreaming, .aiApproval, .aiFailure, .aiManyChats: return "Lima UI Lab — TEST DATA"
         }
     }
 
@@ -55,6 +63,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .settingsGeneral, .settingsWritingLocal, .settingsWritingEnhanced, .settingsPrivacy: return NSSize(width: 820, height: 590)
         case .confirmation: return NSSize(width: 520, height: 330)
         case .toast: return NSSize(width: 520, height: 300)
+        case .aiEmpty, .aiConversation, .aiMarkdown, .aiStreaming, .aiApproval, .aiFailure, .aiManyChats: return NSSize(width: 1_060, height: 700)
         }
     }
 }
@@ -99,6 +108,20 @@ struct LimaUIPreviewGallery: View {
             PreviewConfirmation()
         case .toast:
             PreviewToast()
+        case .aiEmpty:
+            AIChatVisualPreview(scenario: .empty)
+        case .aiConversation:
+            AIChatVisualPreview(scenario: .conversation)
+        case .aiMarkdown:
+            AIChatVisualPreview(scenario: .markdown)
+        case .aiStreaming:
+            AIChatVisualPreview(scenario: .streaming)
+        case .aiApproval:
+            AIChatVisualPreview(scenario: .approval)
+        case .aiFailure:
+            AIChatVisualPreview(scenario: .failure)
+        case .aiManyChats:
+            AIChatVisualPreview(scenario: .manyChats)
         }
     }
 }

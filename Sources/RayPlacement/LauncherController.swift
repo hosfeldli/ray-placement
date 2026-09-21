@@ -35,6 +35,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let terminalModel: DeveloperTerminalModel
     private let passwordGeneratorModel: PasswordGeneratorModel
     private let inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
+    private let aiChatModel: AIChatViewModel
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
@@ -46,6 +47,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var quickLookTimeoutHeld = false
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
+    private var aiMCPManagerObserver: NSObjectProtocol?
     private var modeSubscription: AnyCancellable?
     private var surfaceModeSubscription: AnyCancellable?
     private var queryInteractionSubscription: AnyCancellable?
@@ -59,8 +61,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var retainedSurfaceWindows: [NSWindowController] = []
     private let surfaceSessionController = LauncherSurfaceSessionController()
     private let updateService: UpdateService
+    private lazy var mcpManagerWindow = MCPManagerWindowController()
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
-    private lazy var aiChatWindow = AIChatWindowController()
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
@@ -80,9 +82,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.terminalModel = DeveloperTerminalModel()
         self.passwordGeneratorModel = PasswordGeneratorModel()
         self.inlineExtensionSurfaceModel = InlineExtensionSurfaceModel()
+        self.aiChatModel = AIChatViewModel()
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
+        aiMCPManagerObserver = NotificationCenter.default.addObserver(
+            forName: .limaOpenAIMCPManager,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.mcpManagerWindow.present()
+            }
+        }
         extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
         workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
 
@@ -91,6 +103,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(
                 viewModel: viewModel,
                 terminalModel: terminalModel,
+                aiChatModel: aiChatModel,
                 passwordGeneratorModel: passwordGeneratorModel,
                 inlineExtensionSurfaceModel: inlineExtensionSurfaceModel,
                 formatterModel: formatterModel,
@@ -192,6 +205,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         if let applicationActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(applicationActivationObserver)
         }
+        if let aiMCPManagerObserver {
+            NotificationCenter.default.removeObserver(aiMCPManagerObserver)
+        }
     }
 
     func toggle(from sourceApplication: NSRunningApplication? = nil) {
@@ -252,8 +268,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showAIChat() {
-        hide()
-        aiChatWindow.present()
+        let descriptor = LauncherSurfaceDescriptor(
+            id: "ai-chat",
+            title: "AI Chat",
+            kind: .live,
+            preferredSize: CGSize(width: 1_060, height: 700),
+            timeoutPolicy: .never,
+            canPopOut: false,
+            preservesState: true,
+            reopeningPolicy: .resume,
+            handler: .aiChat,
+            supportsSearch: false
+        )
+        viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
+        presentPanel()
     }
 
     func showExtensionStore() {
@@ -666,6 +694,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if viewModel.mode == .terminal {
                 if event.keyCode == 53 {
                     viewModel.enter(.root)
+                    return nil
+                }
+                return event
+            }
+
+            // AI Chat owns ordinary typing, navigation, Return, and copy/paste.
+            // Escape ends an active streamed or approval-paused task without
+            // closing the workspace; its visible End Task controls remain the
+            // primary affordance.
+            if case .surface(let session) = viewModel.mode,
+               session.surface.handler == .aiChat {
+                if event.keyCode == 53, aiChatModel.canEndTask {
+                    aiChatModel.endTask()
                     return nil
                 }
                 return event
