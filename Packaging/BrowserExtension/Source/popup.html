@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lima Browser Bridge</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="mark">L</div>
+      <div>
+        <h1>Lima Browser Bridge</h1>
+        <p id="connection">Checking Lima…</p>
+      </div>
+    </header>
+
+    <section>
+      <div class="label">CURRENT SITE</div>
+      <div id="siteTitle" class="site-title">No supported page</div>
+      <div id="siteURL" class="site-url"></div>
+      <button id="grant" disabled>Allow Lima on this site</button>
+      <p id="permissionDetail" class="detail"></p>
+    </section>
+
+    <footer>
+      Lima reads only sites you approve. Password, one-time-code and payment-field values are never exposed.
+    </footer>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
