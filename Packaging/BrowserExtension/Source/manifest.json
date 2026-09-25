@@ -1,0 +1,31 @@
+{
+  "manifest_version": 2,
+  "name": "Lima Browser Bridge",
+  "version": "0.1.0",
+  "description": "Connects explicitly approved Zen/Firefox pages to Lima through a constrained native-messaging bridge.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lima-browser-bridge@liamhosfeld.com",
+      "strict_min_version": "109.0"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "storage"
+  ],
+  "optional_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "scripts": [
+      "background.js"
+    ],
+    "persistent": true
+  },
+  "browser_action": {
+    "default_title": "Lima Browser Bridge",
+    "default_popup": "popup.html"
+  }
+}
