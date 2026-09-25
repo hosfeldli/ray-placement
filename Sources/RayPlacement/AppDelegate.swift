@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
         try? ApplicationPaths.prepare()
+        CrashRecoveryStore.shared.beginLaunch()
         let launchPath = Bundle.main.bundleURL.path
         if launchPath.hasPrefix("/Volumes/") || launchPath.contains("/AppTranslocation/") {
             let alert = NSAlert()
@@ -100,6 +101,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         launcher?.shutdown()
         UsageMonitor.shared.flush()
+        CrashRecoveryStore.shared.markCleanShutdown()
         hotKeys.unregisterAll()
         accessoryMouse.stop()
         observers.forEach(NotificationCenter.default.removeObserver)

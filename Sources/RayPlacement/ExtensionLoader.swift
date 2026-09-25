@@ -88,6 +88,20 @@ final class ExtensionLoader {
         }
     }
 
+    /// A package's declarative v3 metadata. It is intentionally separate from
+    /// `LoadedExtensionCommand`: reading this catalog never prepares folders,
+    /// registers packages, runs commands, installs content, or changes approval.
+    struct ContributionCatalogEntry: Identifiable {
+        let extensionID: String
+        let extensionName: String
+        let capabilities: Set<ExtensionManifest.Capability>
+        let tools: [ExtensionToolDefinition]
+        let skills: [ExtensionSkillDefinition]
+        let agents: [ExtensionAgentDefinition]
+
+        var id: String { extensionID }
+    }
+
     /// Reinstalls the copies shipped inside Lima without touching unrelated
     /// user extensions. Existing bundled copies are moved to a timestamped
     /// backup first, so repairing an extension is reversible instead of a
@@ -147,6 +161,64 @@ final class ExtensionLoader {
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
     }
 
+    /// Read schema-v3 contribution metadata from packages that would be eligible
+    /// to load. This intentionally avoids `prepareFolder()` and package
+    /// registration so callers such as AI catalog inspection remain read-only.
+    func contributionCatalog() -> [ContributionCatalogEntry] {
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: ApplicationPaths.extensions,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let manifestFiles = contents.compactMap { url -> URL? in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return nil }
+            if isDirectory.boolValue {
+                let manifest = url.appendingPathComponent("manifest.json")
+                return fileManager.fileExists(atPath: manifest.path) ? manifest : nil
+            }
+            return url.pathExtension.lowercased() == "json" ? url : nil
+        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+
+        let decoder = JSONDecoder()
+        var catalog: [ContributionCatalogEntry] = []
+        var seenIDs = Set<String>()
+        for file in manifestFiles {
+            guard let data = try? Data(contentsOf: file),
+                  let manifest = try? decoder.decode(ExtensionManifest.self, from: data),
+                  (1...3).contains(manifest.schemaVersion),
+                  (try? manifest.validateLifecycleMetadata()) != nil else { continue }
+
+            let isBundled = manifest.bundled
+                || manifest.provenance == .bundled
+                || manifest.trust == .bundled
+                || manifest.trust == .builtIn
+            guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) else { continue }
+            if !isBundled {
+                let hash = ExtensionSecurityPolicy.manifestHash(data)
+                guard let approval = ExtensionApprovalStore.record(for: manifest.id),
+                      approval.manifestHash == hash,
+                      approval.capabilities.isSuperset(of: manifest.capabilities) else { continue }
+            }
+            guard seenIDs.insert(manifest.id).inserted else { continue }
+            let contributions = manifest.contributions
+            guard !contributions.tools.isEmpty || !contributions.skills.isEmpty || !contributions.agents.isEmpty else { continue }
+            catalog.append(
+                ContributionCatalogEntry(
+                    extensionID: manifest.id,
+                    extensionName: manifest.name,
+                    capabilities: manifest.capabilities,
+                    tools: contributions.tools,
+                    skills: contributions.skills,
+                    agents: contributions.agents
+                )
+            )
+        }
+        return catalog
+    }
+
     /// The default loader prepares and registers extension packages for the launcher.
     /// AI catalog inspection passes both flags as false so it only reads existing
     /// manifests and cannot create, update, approve, or otherwise alter a pack.
@@ -182,6 +254,7 @@ final class ExtensionLoader {
         for (file, directory) in manifestFiles {
             do {
                 let manifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: file))
+                try manifest.validateLifecycleMetadata()
                 if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
                     continue
                 }

@@ -319,15 +319,30 @@ enum MusicHUDPresentation: String, Codable, CaseIterable, Identifiable {
 }
 
 enum HUDDockPosition: String, Codable, CaseIterable, Identifiable {
-    case bottomCenter
+    case topLeft
+    case topCenter
+    case topRight
     case bottomLeft
+    case bottomCenter
     case bottomRight
+
     var id: String { rawValue }
+
     var title: String {
         switch self {
-        case .bottomCenter: return "Bottom Center"
+        case .topLeft: return "Top Left"
+        case .topCenter: return "Top Center"
+        case .topRight: return "Top Right"
         case .bottomLeft: return "Bottom Left"
+        case .bottomCenter: return "Bottom Center"
         case .bottomRight: return "Bottom Right"
+        }
+    }
+
+    var isTop: Bool {
+        switch self {
+        case .topLeft, .topCenter, .topRight: return true
+        case .bottomLeft, .bottomCenter, .bottomRight: return false
         }
     }
 }
@@ -410,6 +425,7 @@ final class SettingsStore: ObservableObject {
         static let dynamicPerformance = "dynamicPerformance"
         static let launcherSurfaceTimeout = "launcherSurfaceTimeout"
         static let terminalUsesLauncherTimeout = "terminalUsesLauncherTimeout"
+        static let terminalWrapLines = "terminalWrapLines"
         static let musicHUDPresentation = "musicHUDPresentation"
         static let musicShowArtwork = "musicShowArtwork"
         static let musicShowPlaybackControls = "musicShowPlaybackControls"
@@ -890,6 +906,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(terminalUsesLauncherTimeout, forKey: Key.terminalUsesLauncherTimeout) }
     }
 
+    @Published var terminalWrapLines: Bool {
+        didSet { defaults.set(terminalWrapLines, forKey: Key.terminalWrapLines) }
+    }
+
     @Published var musicHUDPresentation: MusicHUDPresentation {
         didSet { defaults.set(musicHUDPresentation.rawValue, forKey: Key.musicHUDPresentation) }
     }
@@ -1023,6 +1043,7 @@ final class SettingsStore: ObservableObject {
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
         launcherSurfaceTimeout = defaults.object(forKey: Key.launcherSurfaceTimeout) as? Double ?? 30
         terminalUsesLauncherTimeout = defaults.object(forKey: Key.terminalUsesLauncherTimeout) as? Bool ?? false
+        terminalWrapLines = defaults.object(forKey: Key.terminalWrapLines) as? Bool ?? true
         musicHUDPresentation = MusicHUDPresentation(rawValue: defaults.string(forKey: Key.musicHUDPresentation) ?? "") ?? .compact
         musicShowArtwork = defaults.object(forKey: Key.musicShowArtwork) as? Bool ?? true
         musicShowPlaybackControls = defaults.object(forKey: Key.musicShowPlaybackControls) as? Bool ?? true

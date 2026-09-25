@@ -10,7 +10,7 @@ final class FormatterWindowController: NSWindowController {
         self.model = model
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_020, height: 690),
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -19,15 +19,13 @@ final class FormatterWindowController: NSWindowController {
             window,
             title: "Document Formatter",
             accessibilityLabel: "Lima document formatter",
-            minSize: NSSize(width: 760, height: 520)
+            minSize: NSSize(width: 900, height: 580)
         )
         super.init(window: window)
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
-            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content:
             FormatterWorkspaceView(model: model)
-                .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                .padding(10)
-        }))
+                .background(LimaColors.windowBackground)
+        ))
     }
 
     required init?(coder: NSCoder) { nil }

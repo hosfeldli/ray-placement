@@ -1,37 +1,48 @@
 import AppKit
 
-/// Keeps Lima tools as independent, resizable workspaces. This avoids
-/// macOS tab bars while still letting the launcher act as the central navigator.
+/// Compatibility facade for workspace controllers that have not yet adopted a
+/// typed surface ID. New code should call LimaSurfaceCoordinator directly.
 @MainActor
 final class WorkspaceWindowCoordinator {
     static let shared = WorkspaceWindowCoordinator()
 
-    private struct WeakWindow {
-        weak var value: NSWindow?
-    }
-
-    private var windows: [WeakWindow] = []
     func present(_ window: NSWindow, joinWorkspace: Bool = true) {
-        register(window, rememberFrame: joinWorkspace)
-        window.makeKeyAndOrderFront(nil)
+        let surface = surfaceID(for: window)
+        LimaSurfaceCoordinator.shared.present(
+            surface,
+            window: window,
+            module: module(for: surface),
+            activate: false,
+            remembersFrame: joinWorkspace
+        )
     }
 
     func popOut(_ window: NSWindow?) {
-        window?.makeKeyAndOrderFront(nil)
+        guard let window else { return }
+        let surface = surfaceID(for: window)
+        LimaSurfaceCoordinator.shared.present(
+            surface,
+            window: window,
+            module: module(for: surface),
+            activate: false
+        )
     }
 
-    private func register(_ window: NSWindow, rememberFrame: Bool = true) {
-        windows.removeAll { $0.value == nil }
-        if !windows.contains(where: { $0.value === window }) { windows.append(WeakWindow(value: window)) }
-        window.tabbingIdentifier = ""
-        window.tabbingMode = .disallowed
-        window.isReleasedWhenClosed = false
-        if rememberFrame, !window.title.isEmpty, window.frameAutosaveName.isEmpty {
-            let safeTitle = window.title
-                .lowercased()
-                .replacingOccurrences(of: " ", with: "-")
-                .filter { $0.isLetter || $0.isNumber || $0 == "-" }
-            window.setFrameAutosaveName("Lima.Workspace.\(safeTitle)")
+    private func surfaceID(for window: NSWindow) -> LimaSurfaceID {
+        let title = window.title.lowercased()
+        if title.contains("formatter") { return .formatter }
+        if title.contains("terminal") { return .terminal }
+        if title.contains("setting") { return .settings }
+        if title.contains("extension") || title.contains("command") { return .commandCenter }
+        return .workspace
+    }
+
+    private func module(for surface: LimaSurfaceID) -> LimaWorkspaceModule? {
+        switch surface {
+        case .workspace: return .notes
+        case .formatter: return .formatter
+        case .terminal: return .terminal
+        default: return nil
         }
     }
 }

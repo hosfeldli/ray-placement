@@ -775,6 +775,8 @@ final class AIChatViewModel: ObservableObject {
     private var activeAssistantID: UUID?
     private var activeConversationID: UUID?
     private var cancelledAssistantIDs = Set<UUID>()
+    private var registeredTaskID: UUID?
+    private var performanceMeasurementID: UUID?
 
     init(
         store: AIConversationStore? = nil,
@@ -1072,6 +1074,19 @@ final class AIChatViewModel: ObservableObject {
         pendingApproval = nil
         pendingLocalFunctionCall = nil
         isStreaming = true
+        registeredTaskID = TaskRegistry.shared.begin(
+            kind: .aiGeneration,
+            title: "AI is working",
+            detail: "Preparing a response",
+            isCancellable: true,
+            onCancel: { [weak self] in self?.cancel() }
+        )
+        performanceMeasurementID = PerformanceMonitor.shared.begin("AI request")
+        CrashRecoveryStore.shared.update { snapshot in
+            snapshot.activeSurface = LimaSurfaceID.workspace.rawValue
+            snapshot.activeWorkspaceModule = LimaWorkspaceModule.ai.rawValue
+            snapshot.selectedConversationID = conversation.id
+        }
 
         streamTask?.cancel()
         streamTask = Task { [weak self] in
@@ -1126,6 +1141,7 @@ final class AIChatViewModel: ObservableObject {
             )
         }
         isStreaming = false
+        finishSharedTask(state: .cancelled, detail: "Generation stopped by user")
     }
 
     /// End an active stream or dismiss an approval that has paused the task.
@@ -1159,6 +1175,7 @@ final class AIChatViewModel: ObservableObject {
         }
         activeAssistantID = nil
         activeConversationID = nil
+        finishSharedTask(state: .cancelled, detail: "Task ended before approval")
     }
 
     func add(_ attachment: AIAttachment) {
@@ -1553,6 +1570,14 @@ final class AIChatViewModel: ObservableObject {
             appendTurnActivity(activity, conversationID: conversationID)
         case .approval(let request):
             pendingApproval = request
+            if let registeredTaskID {
+                TaskRegistry.shared.update(
+                    registeredTaskID,
+                    title: "AI needs attention",
+                    detail: "Awaiting tool decision",
+                    state: .waiting
+                )
+            }
             appendTurnActivity(
                 AIAgentActivity(
                     kind: .toolApproval,
@@ -1624,6 +1649,10 @@ final class AIChatViewModel: ObservableObject {
     private func finishStream(conversationID: UUID, assistantID: UUID, responseID: String?) {
         let wasCancelled = cancelledAssistantIDs.remove(assistantID) != nil
         defer {
+            if pendingApproval == nil {
+                let state: LimaTaskState = wasCancelled ? .cancelled : (streamError == nil ? .completed : .failed)
+                finishSharedTask(state: state, detail: streamError == nil ? nil : "Request needs attention")
+            }
             isStreaming = false
             streamTask = nil
             if activeAssistantID == assistantID, pendingApproval == nil {
@@ -1655,6 +1684,17 @@ final class AIChatViewModel: ObservableObject {
         if let responseID { conversation.lastResponseID = responseID }
         conversation.updatedAt = Date()
         store.update(conversation)
+    }
+
+    private func finishSharedTask(state: LimaTaskState, detail: String? = nil) {
+        if let registeredTaskID {
+            TaskRegistry.shared.finish(registeredTaskID, state: state, detail: detail)
+            self.registeredTaskID = nil
+        }
+        if let performanceMeasurementID {
+            PerformanceMonitor.shared.end(performanceMeasurementID, succeeded: state == .completed)
+            self.performanceMeasurementID = nil
+        }
     }
 
     private func updateConversation(_ conversationID: UUID, _ update: (inout AIConversation) -> Void) {

@@ -33,6 +33,10 @@ public struct ExtensionManifest: Codable, Sendable {
     public var bundled: Bool
     public var provenance: Provenance
     public var commands: [ExtensionCommand]
+    /// Schema v3 metadata for capabilities contributed by this package. The host
+    /// may index this metadata, but an extension declaration never grants an
+    /// execution path to AI.
+    public var contributions: ExtensionContributions
     public var capabilities: Set<Capability>
     public var trust: Trust
     /// Where commands from this manifest should present by default. Explicit
@@ -40,7 +44,7 @@ public struct ExtensionManifest: Codable, Sendable {
     public var presentation: Presentation
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, id, name, version, description, pack, category, bundled, provenance, commands, capabilities, trust, presentation
+        case schemaVersion, id, name, version, description, pack, category, bundled, provenance, commands, contributions, capabilities, trust, presentation
     }
 
     public init(
@@ -54,6 +58,7 @@ public struct ExtensionManifest: Codable, Sendable {
         bundled: Bool = false,
         provenance: Provenance = .unsigned,
         commands: [ExtensionCommand],
+        contributions: ExtensionContributions = .init(),
         capabilities: Set<Capability> = [],
         trust: Trust = .unsigned,
         presentation: Presentation = .inline
@@ -68,6 +73,7 @@ public struct ExtensionManifest: Codable, Sendable {
         self.bundled = bundled
         self.provenance = provenance
         self.commands = commands
+        self.contributions = contributions
         self.capabilities = capabilities
         self.trust = trust
         self.presentation = presentation
@@ -76,6 +82,7 @@ public struct ExtensionManifest: Codable, Sendable {
     public enum ValidationError: Error, Equatable, Sendable {
         case bundledRequiresBundledProvenance
         case nonBundledCannotUseBundledTrust
+        case contributionRequiresUndeclaredCapabilities(toolID: String)
     }
 
     /// Validates lifecycle metadata independently from JSON decoding. This is
@@ -86,6 +93,10 @@ public struct ExtensionManifest: Codable, Sendable {
             guard provenance == .bundled, trust == .bundled || trust == .builtIn else { throw ValidationError.bundledRequiresBundledProvenance }
         } else if provenance == .bundled || trust == .bundled || trust == .builtIn {
             throw ValidationError.nonBundledCannotUseBundledTrust
+        }
+        try contributions.validate()
+        for tool in contributions.tools where !tool.capabilities.isSubset(of: capabilities) {
+            throw ValidationError.contributionRequiresUndeclaredCapabilities(toolID: tool.id)
         }
     }
 
@@ -102,10 +113,184 @@ public struct ExtensionManifest: Codable, Sendable {
         provenance = try container.decodeIfPresent(Provenance.self, forKey: .provenance)
             ?? (bundled ? .bundled : .unsigned)
         commands = try container.decodeIfPresent([ExtensionCommand].self, forKey: .commands) ?? []
+        contributions = try container.decodeIfPresent(ExtensionContributions.self, forKey: .contributions) ?? .init()
         capabilities = try container.decodeIfPresent(Set<Capability>.self, forKey: .capabilities) ?? []
         trust = try container.decodeIfPresent(Trust.self, forKey: .trust)
             ?? (bundled ? .bundled : .unsigned)
         presentation = try container.decodeIfPresent(Presentation.self, forKey: .presentation) ?? .inline
+    }
+}
+
+/// JSON-compatible values used by extension-supplied tool input schemas.
+/// The manifest remains data-only: decoding a schema cannot evaluate code.
+public indirect enum JSONValue: Codable, Equatable, Sendable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            throw DecodingError.typeMismatch(
+                JSONValue.self,
+                .init(codingPath: decoder.codingPath, debugDescription: "Expected a JSON-compatible value.")
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value): try container.encode(value)
+        case .number(let value): try container.encode(value)
+        case .bool(let value): try container.encode(value)
+        case .object(let value): try container.encode(value)
+        case .array(let value): try container.encode(value)
+        case .null: try container.encodeNil()
+        }
+    }
+}
+
+public typealias JSONSchema = [String: JSONValue]
+
+/// Schema-v3 contribution declarations. They describe what a package offers;
+/// command execution and AI tool execution remain separate host responsibilities.
+public struct ExtensionContributions: Codable, Equatable, Sendable {
+    public var tools: [ExtensionToolDefinition]
+    public var skills: [ExtensionSkillDefinition]
+    public var agents: [ExtensionAgentDefinition]
+
+    public init(
+        tools: [ExtensionToolDefinition] = [],
+        skills: [ExtensionSkillDefinition] = [],
+        agents: [ExtensionAgentDefinition] = []
+    ) {
+        self.tools = tools
+        self.skills = skills
+        self.agents = agents
+    }
+
+    public enum ValidationError: Error, Equatable, Sendable {
+        case emptyIdentifier(kind: String)
+        case duplicateIdentifier(kind: String, id: String)
+    }
+
+    public func validate() throws {
+        try validate(tools.map(\.id), kind: "tool")
+        try validate(skills.map(\.id), kind: "skill")
+        try validate(agents.map(\.id), kind: "agent")
+    }
+
+    private func validate(_ identifiers: [String], kind: String) throws {
+        var seen = Set<String>()
+        for identifier in identifiers {
+            let trimmed = identifier.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { throw ValidationError.emptyIdentifier(kind: kind) }
+            guard seen.insert(trimmed).inserted else {
+                throw ValidationError.duplicateIdentifier(kind: kind, id: trimmed)
+            }
+        }
+    }
+}
+
+public enum ExtensionToolExecution: String, Codable, CaseIterable, Sendable {
+    /// A declaration that can be shown in a catalog but cannot be invoked.
+    case metadataOnly
+    /// A future host-provided, typed read-only adapter. This is intentionally not
+    /// an extension script or command execution mechanism.
+    case hostReadOnly
+}
+
+public struct ExtensionToolDefinition: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var title: String
+    public var description: String
+    public var inputSchema: JSONSchema
+    public var capabilities: Set<ExtensionManifest.Capability>
+    public var isReadOnly: Bool
+    public var execution: ExtensionToolExecution
+
+    public init(
+        id: String,
+        title: String,
+        description: String,
+        inputSchema: JSONSchema = [:],
+        capabilities: Set<ExtensionManifest.Capability> = [],
+        isReadOnly: Bool = true,
+        execution: ExtensionToolExecution = .metadataOnly
+    ) {
+        self.id = id
+        self.title = title
+        self.description = description
+        self.inputSchema = inputSchema
+        self.capabilities = capabilities
+        self.isReadOnly = isReadOnly
+        self.execution = execution
+    }
+
+    /// The declaration satisfies the minimum safety contract for an eventual
+    /// host adapter. It is not, by itself, an executable AI tool.
+    public var isEligibleForReadOnlyHostAdapter: Bool {
+        isReadOnly && execution == .hostReadOnly
+    }
+}
+
+public struct ExtensionSkillDefinition: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var instructions: String
+    public var preferredToolIDs: [String]
+
+    public init(id: String, name: String, instructions: String, preferredToolIDs: [String] = []) {
+        self.id = id
+        self.name = name
+        self.instructions = instructions
+        self.preferredToolIDs = preferredToolIDs
+    }
+}
+
+/// Agent configuration is declarative. It selects a model and references skills
+/// and read-only tools, but does not create a separate agent execution subsystem.
+public struct ExtensionAgentDefinition: Codable, Equatable, Identifiable, Sendable {
+    public var id: String
+    public var name: String
+    public var instructions: String
+    public var modelProviderID: String?
+    public var modelID: String?
+    public var skillIDs: [String]
+    public var toolIDs: [String]
+
+    public init(
+        id: String,
+        name: String,
+        instructions: String,
+        modelProviderID: String? = nil,
+        modelID: String? = nil,
+        skillIDs: [String] = [],
+        toolIDs: [String] = []
+    ) {
+        self.id = id
+        self.name = name
+        self.instructions = instructions
+        self.modelProviderID = modelProviderID
+        self.modelID = modelID
+        self.skillIDs = skillIDs
+        self.toolIDs = toolIDs
     }
 }
 

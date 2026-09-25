@@ -276,6 +276,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
         case "search_web": return "Search the web"
+        case "read_web": return "Read a web page"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
         default: return title.replacingOccurrences(of: "_", with: " ")
@@ -1004,6 +1005,7 @@ final class LimaScreenContextStore {
 enum LimaAIToolRegistry {
     private static let fileSearch = FileSearchService()
     private static let maximumTextFileBytes = 96 * 1_024
+    private static let maximumWebPageBytes = 1 * 1_024 * 1_024
 
     static let definitions: [LimaAIToolDefinition] = [
         LimaAIToolDefinition(
@@ -1050,9 +1052,21 @@ enum LimaAIToolRegistry {
             risk: .read
         ),
         LimaAIToolDefinition(
+            id: "read_web",
+            name: "read_web",
+            description: "Read the main text and public links from a public web page. It blocks local and private hosts, does not send cookies or credentials, does not follow redirects, and never submits or changes web content.",
+            parameters: [
+                "type": "object",
+                "properties": ["url": ["type": "string", "description": "A public HTTP or HTTPS URL returned by Search Web or supplied by the user."]],
+                "required": ["url"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
             id: "list_extensions",
             name: "list_extensions",
-            description: "List installed Lima extension commands and their declared capabilities. It only reads manifests; it does not run, install, modify, or approve extensions.",
+            description: "List installed Lima extension commands, declared read-only tools, skills, agents, and capabilities. It only reads manifests; it never runs, installs, modifies, or approves extensions.",
             parameters: ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false],
             risk: .read
         ),
@@ -1102,6 +1116,11 @@ enum LimaAIToolRegistry {
                 return .json(["error": "Search Web needs a non-empty query."], isError: true)
             }
             return await searchWeb(query: String(query.prefix(200)))
+        case "read_web":
+            guard let rawURL = stringArgument(named: "url", from: call.arguments), !rawURL.isEmpty else {
+                return .json(["error": "Read Web needs a public URL."], isError: true)
+            }
+            return await readPublicWebPage(rawURL)
         case "list_extensions":
             return extensionCatalog()
         case "get_lima_status":
@@ -1232,9 +1251,174 @@ enum LimaAIToolRegistry {
         }
     }
 
+    private final class NoRedirectWebReaderDelegate: NSObject, URLSessionTaskDelegate {
+        func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            completionHandler(nil)
+        }
+    }
+
+    private static func readPublicWebPage(_ rawURL: String) async -> LimaAIToolExecution {
+        guard let url = publicWebURL(rawURL) else {
+            return .json(["error": "Read Web only accepts a public HTTP or HTTPS URL without credentials."], isError: true)
+        }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.urlCredentialStorage = nil
+        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        let session = URLSession(configuration: configuration, delegate: NoRedirectWebReaderDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("Lima/1.0 (read-only web reader)", forHTTPHeaderField: "User-Agent")
+        request.setValue("text/html, text/plain, application/xhtml+xml, application/json;q=0.8", forHTTPHeaderField: "Accept")
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+                return .json(["error": "The public web page could not be read."], isError: true)
+            }
+            guard publicWebURL(http.url?.absoluteString ?? "") != nil else {
+                return .json(["error": "The page resolved to a non-public URL."], isError: true)
+            }
+            guard http.expectedContentLength < 0 || http.expectedContentLength <= Int64(maximumWebPageBytes),
+                  data.count <= maximumWebPageBytes else {
+                return .json(["error": "The page is larger than Lima’s 1 MB read-only limit."], isError: true)
+            }
+            let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
+            guard contentType.isEmpty
+                    || contentType.contains("text/html")
+                    || contentType.contains("text/plain")
+                    || contentType.contains("application/xhtml+xml")
+                    || contentType.contains("application/json") else {
+                return .json(["error": "Read Web supports public HTML, plain-text, and JSON pages only."], isError: true)
+            }
+
+            let rawText = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
+            let result: (title: String?, content: String, links: [String])
+            if contentType.contains("html") || rawText.range(of: "<html", options: .caseInsensitive) != nil {
+                result = readableWebContent(fromHTML: rawText, baseURL: url)
+            } else {
+                result = (nil, normalizedWebText(rawText), [])
+            }
+            guard !result.content.isEmpty else {
+                return .json(["error": "The page did not contain readable public text."], isError: true)
+            }
+            let limitedContent = String(result.content.prefix(32_000))
+            return .json([
+                "url": url.absoluteString,
+                "title": result.title ?? "",
+                "content": limitedContent,
+                "links": Array(result.links.prefix(20)),
+                "truncated": result.content.count > limitedContent.count,
+                "source": "Public page read without cookies, credentials, redirects, or form submission"
+            ])
+        } catch {
+            return .json(["error": "The public web page could not be reached."], isError: true)
+        }
+    }
+
+    static func publicWebURL(_ rawValue: String) -> URL? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count <= 2_048,
+              let components = URLComponents(string: trimmed),
+              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              components.user == nil, components.password == nil,
+              let host = components.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")),
+              !host.isEmpty,
+              host != "localhost",
+              !host.hasSuffix(".localhost"),
+              !host.hasSuffix(".local"),
+              !host.hasSuffix(".internal"),
+              !isPrivateIPAddress(host),
+              let url = components.url else { return nil }
+        return url
+    }
+
+    private static func isPrivateIPAddress(_ host: String) -> Bool {
+        // Reject literal IPv6 addresses rather than risk exposing local network
+        // services. Public DNS names remain supported.
+        if host.contains(":") { return true }
+        let parts = host.split(separator: ".")
+        let octets = parts.compactMap { Int($0) }
+        guard parts.count == 4, octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else {
+            return false
+        }
+        switch octets[0] {
+        case 0, 10, 127:
+            return true
+        case 169:
+            return octets[1] == 254
+        case 172:
+            return (16...31).contains(octets[1])
+        case 192:
+            return octets[1] == 168
+        default:
+            return false
+        }
+    }
+
+    static func readableWebContent(fromHTML html: String, baseURL: URL) -> (title: String?, content: String, links: [String]) {
+        let title = firstCapture(in: html, pattern: #"(?is)<title[^>]*>(.*?)</title>"#).map(normalizedWebText)
+        let links = captures(in: html, pattern: #"(?is)<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>"#)
+            .compactMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL.absoluteString }
+            .filter { publicWebURL($0) != nil }
+            .reduce(into: [String]()) { values, value in
+                if !values.contains(value) { values.append(value) }
+            }
+        var body = html
+        body = replacing(body, pattern: #"(?is)<(script|style|noscript|svg|nav|footer|header|aside|form)[^>]*>.*?</\1>"#, with: " ")
+        body = replacing(body, pattern: #"(?i)<br\s*/?>|</(p|div|li|h[1-6]|tr|section|article)>"#, with: "\n")
+        body = replacing(body, pattern: #"(?is)<[^>]+>"#, with: " ")
+        return (title, normalizedWebText(body), links)
+    }
+
+    private static func normalizedWebText(_ value: String) -> String {
+        let entities = value
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&lt;", with: "<")
+            .replacingOccurrences(of: "&gt;", with: ">")
+        return replacing(entities, pattern: #"\s+"#, with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func replacing(_ value: String, pattern: String, with replacement: String) -> String {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return value }
+        return expression.stringByReplacingMatches(
+            in: value,
+            range: NSRange(value.startIndex..., in: value),
+            withTemplate: replacement
+        )
+    }
+
+    private static func firstCapture(in value: String, pattern: String) -> String? {
+        captures(in: value, pattern: pattern).first
+    }
+
+    private static func captures(in value: String, pattern: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        return expression.matches(in: value, range: NSRange(value.startIndex..., in: value)).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let range = Range(match.range(at: 1), in: value) else { return nil }
+            return String(value[range])
+        }
+    }
+
     private static func extensionCatalog() -> LimaAIToolExecution {
-        let commands = ExtensionLoader().load(prepare: false, registerPackages: false).commands
-        let entries = commands.prefix(80).map { loaded in
+        let loader = ExtensionLoader()
+        let commands = loader.load(prepare: false, registerPackages: false).commands
+        let commandEntries = commands.prefix(80).map { loaded in
             [
                 "extension": loaded.extensionName,
                 "command": loaded.command.title,
@@ -1244,10 +1428,42 @@ enum LimaAIToolRegistry {
                 "can_execute_from_ai": false
             ] as [String: Any]
         }
+        let contributions = loader.contributionCatalog()
+        let contributionEntries = contributions.prefix(40).map { package in
+            [
+                "extension": package.extensionName,
+                "capabilities": package.capabilities.map(\.rawValue).sorted(),
+                "tools": package.tools.map { tool in
+                    [
+                        "id": tool.id,
+                        "title": tool.title,
+                        "description": tool.description,
+                        "declared_read_only": tool.isReadOnly,
+                        "host_adapter_declared": tool.isEligibleForReadOnlyHostAdapter,
+                        "can_execute_from_ai": false
+                    ] as [String: Any]
+                },
+                "skills": package.skills.map { skill in
+                    ["id": skill.id, "name": skill.name, "preferred_tools": skill.preferredToolIDs]
+                },
+                "agents": package.agents.map { agent in
+                    [
+                        "id": agent.id,
+                        "name": agent.name,
+                        "model_provider": agent.modelProviderID ?? NSNull(),
+                        "model": agent.modelID ?? NSNull(),
+                        "skills": agent.skillIDs,
+                        "tools": agent.toolIDs,
+                        "can_execute_from_ai": false
+                    ] as [String: Any]
+                }
+            ] as [String: Any]
+        }
         return .json([
-            "commands": entries,
-            "truncated": commands.count > entries.count,
-            "policy": "AI Chat can inspect this catalog and draft extension code in chat, but never installs, executes, approves, or changes an extension."
+            "commands": commandEntries,
+            "contributions": contributionEntries,
+            "truncated": commands.count > commandEntries.count || contributions.count > contributionEntries.count,
+            "policy": "AI Chat can inspect this catalog and draft extension code in chat, but never installs, executes, approves, or changes an extension. Declared tools are metadata only unless a future typed host adapter explicitly implements a read-only operation."
         ])
     }
 }
@@ -1259,6 +1475,7 @@ extension LimaAIToolDefinition {
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
         case "search_web": return "Search the web"
+        case "read_web": return "Read a web page"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
         default: return name.replacingOccurrences(of: "_", with: " ").capitalized
@@ -1271,6 +1488,7 @@ extension LimaAIToolDefinition {
         case "search_files": return "Names and paths only"
         case "read_file": return "Text and code, never changes"
         case "search_web": return "Public results only"
+        case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
         default: return description
@@ -1283,6 +1501,7 @@ extension LimaAIToolDefinition {
         case "search_files": return "folder"
         case "read_file": return "doc.text"
         case "search_web": return "globe"
+        case "read_web": return "doc.text.magnifyingglass"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
         default: return "eye"

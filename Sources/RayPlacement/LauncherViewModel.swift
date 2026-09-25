@@ -1167,7 +1167,13 @@ final class LauncherViewModel: ObservableObject {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matching: [EmojiEntry]
         if cleanQuery.isEmpty {
-            matching = EmojiCatalog.entries
+            let entriesByID = Dictionary(uniqueKeysWithValues: EmojiCatalog.entries.map { ($0.id, $0) })
+            let recent = usage.recentIdentifiers(limit: 80).compactMap { identifier -> EmojiEntry? in
+                guard identifier.hasPrefix("emoji.") else { return nil }
+                return entriesByID[String(identifier.dropFirst("emoji.".count))]
+            }
+            let recentIDs = Set(recent.map(\.id))
+            matching = recent + EmojiCatalog.entries.filter { !recentIDs.contains($0.id) }
         } else {
             let exact = EmojiCatalog.search(cleanQuery)
             if !exact.isEmpty {

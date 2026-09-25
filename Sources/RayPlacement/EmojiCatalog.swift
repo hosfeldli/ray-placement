@@ -27,6 +27,7 @@ enum EmojiCatalog {
         return entries.compactMap { entry -> (EmojiEntry, Int)? in
             let name = entry.name.lowercased()
             let words = entry.searchWords
+            if phraseAliasEmojis[clean]?.contains(entry.emoji) == true { return (entry, 2_000) }
             if entry.emoji.contains(clean) { return (entry, 1_000) }
             var score = name == clean ? 900 : (name.hasPrefix(clean) ? 820 : 0)
             for token in tokens {
@@ -50,6 +51,17 @@ enum EmojiCatalog {
         .prefix(360)
         .map(\.0)
     }
+
+    /// Common multi-word intent aliases are evaluated before token aliases
+    /// so phrases such as “laugh crying” do not depend on fuzzy matching.
+    private static let phraseAliasEmojis: [String: Set<String>] = [
+        "laugh crying": ["😂"],
+        "crying laughing": ["😂"],
+        "laugh tears": ["😂"],
+        "tears laughing": ["😂"],
+        "lol": ["😂"],
+        "lmao": ["😂"]
+    ]
 
     private static let queryAliases: [String: [String]] = [
         "happy": ["smile", "grin", "joy"], "smiley": ["smile", "grinning"],

@@ -139,9 +139,8 @@ struct LauncherView: View {
                         .frame(width: 29, height: 29)
                 }
                 .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
-                .disabled(isAIChatSurface && aiChatModel.canEndTask)
                 .accessibilityLabel("Back")
-                .help(isAIChatSurface && aiChatModel.canEndTask ? "End the current AI task before leaving" : "Back to search")
+                .help("Back to search; active work continues in the Activity Shelf")
             }
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
@@ -242,7 +241,6 @@ struct LauncherView: View {
                 onSurfaceInteraction()
                 viewModel.enter(.root)
             }
-            .disabled(isAIChatSurface && aiChatModel.canEndTask)
             if isPinEligible {
                 Button(surfaceSessionController.isPinned ? "Unpin Surface" : "Keep Open") {
                     onSurfaceInteraction()

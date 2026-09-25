@@ -37,19 +37,21 @@ struct LimaDictationSearchProvider: LimaSearchProvider {
 }
 
 struct LimaTerminalSearchProvider: LimaSearchProvider {
-    let sessions: [TerminalSession]
     var kind: LimaSearchKind { .terminal }
 
     func search(query: String) async -> [LimaSearchResult] {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return sessions.compactMap { session in
-            guard let score = FuzzyMatcher.score("\(session.name) \(session.cwd) \(session.history.joined(separator: " "))", query: clean) else { return nil }
-            return LimaSearchResult(
-                id: "terminal:\(session.id.uuidString)", kind: .terminal,
-                title: session.name, subtitle: session.cwd,
-                keywords: session.history, score: score
+        guard let score = FuzzyMatcher.score("terminal shell command line developer", query: clean) else { return [] }
+        return [
+            LimaSearchResult(
+                id: "terminal",
+                kind: .terminal,
+                title: "Terminal",
+                subtitle: "Open Lima’s single shell",
+                keywords: ["shell", "command line", "developer"],
+                score: score
             )
-        }.sorted { $0.score > $1.score }.prefix(20).map { $0 }
+        ]
     }
 }
 
@@ -80,7 +82,7 @@ final class UniversalSearchCoordinator {
         let (prefix, query) = Self.parse(rawQuery)
         let notes = LimaNotesSearchProvider(notes: NotesStore.shared.notes)
         let dictation = LimaDictationSearchProvider(conversations: DictationConversationStore.shared.conversations)
-        let terminal = LimaTerminalSearchProvider(sessions: TerminalSessionStore.shared.sessions)
+        let terminal = LimaTerminalSearchProvider()
         let workflows = LimaWorkflowSearchProvider(workflows: WorkflowStore.shared.workflows)
         let providers: [any LimaSearchProvider]
         switch prefix {

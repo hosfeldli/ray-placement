@@ -131,6 +131,50 @@ private func packageRoot() -> URL {
     #expect(manifest.commands.first?.action.type == .url)
 }
 
+@Test func manifestV3ContributionMetadataDecodesWithoutExecution() throws {
+    let data = #"""
+    {
+      "schemaVersion": 3,
+      "id": "local.review-tools",
+      "name": "Review Tools",
+      "capabilities": ["filesystem"],
+      "commands": [],
+      "contributions": {
+        "tools": [{
+          "id": "read_diff",
+          "title": "Read Diff",
+          "description": "Read a selected diff.",
+          "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } },
+          "capabilities": ["filesystem"],
+          "isReadOnly": true,
+          "execution": "hostReadOnly"
+        }],
+        "skills": [{
+          "id": "review",
+          "name": "Code Review",
+          "instructions": "Review changes carefully.",
+          "preferredToolIDs": ["read_diff"]
+        }],
+        "agents": [{
+          "id": "reviewer",
+          "name": "Reviewer",
+          "instructions": "Use the review skill.",
+          "modelProviderID": "anthropic",
+          "modelID": "claude-sonnet",
+          "skillIDs": ["review"],
+          "toolIDs": ["read_diff"]
+        }]
+      }
+    }
+    """#.data(using: .utf8)!
+
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    try manifest.validateLifecycleMetadata()
+    #expect(manifest.contributions.tools.first?.isEligibleForReadOnlyHostAdapter == true)
+    #expect(manifest.contributions.skills.first?.preferredToolIDs == ["read_diff"])
+    #expect(manifest.contributions.agents.first?.modelProviderID == "anthropic")
+}
+
 @Test func exampleManifestDecodes() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()

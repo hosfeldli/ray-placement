@@ -90,6 +90,8 @@ struct SettingsView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var updateService: UpdateService
     @ObservedObject private var usageMonitor = UsageMonitor.shared
+    @ObservedObject private var taskRegistry = TaskRegistry.shared
+    @ObservedObject private var performanceMonitor = PerformanceMonitor.shared
     @ObservedObject private var commandManager = CommandManager.shared
     @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
     @ObservedObject private var permissionCenter = PermissionCenter.shared
@@ -729,6 +731,56 @@ struct SettingsView: View {
                             Text(task.startedAt, style: .timer).limaFont(.caption.monospacedDigit())
                         }
                     }
+                }
+            }
+
+            Section("Activity Shelf") {
+                if taskRegistry.activeTasks.isEmpty {
+                    Text("No shared tasks are active. AI and extension work remains available here when you leave its surface.")
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    ForEach(taskRegistry.activeTasks) { task in
+                        HStack(spacing: 10) {
+                            Image(systemName: task.kind.symbol)
+                                .foregroundStyle(settings.accentTheme.primary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(task.title).limaFont(.callout.weight(.semibold))
+                                Text(task.detail ?? task.state.rawValue.capitalized)
+                                    .limaFont(.caption)
+                                    .foregroundStyle(LimaTheme.textSecondary)
+                            }
+                            Spacer()
+                            Text(task.startedAt, style: .timer)
+                                .limaFont(.caption.monospacedDigit())
+                            if task.isCancellable {
+                                Button("Stop", role: .destructive) { taskRegistry.cancel(task.id) }
+                                    .controlSize(.small)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Section("Recent performance") {
+                if performanceMonitor.samples.isEmpty {
+                    Text("No cross-surface measurements recorded yet.")
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    ForEach(performanceMonitor.samples.prefix(12)) { sample in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(sample.operation)
+                                if let detail = sample.detail {
+                                    Text(detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                                }
+                            }
+                            Spacer()
+                            Text("\(sample.milliseconds) ms")
+                                .limaFont(.caption.monospacedDigit())
+                                .foregroundStyle(sample.succeeded ? LimaTheme.textSecondary : .orange)
+                        }
+                    }
+                    Button("Clear performance history") { performanceMonitor.clear() }
                 }
             }
 

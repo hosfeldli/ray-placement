@@ -45,6 +45,8 @@ final class ActivityHUDController {
     private let music = MusicNowPlayingService()
     private let focus = ShelfFocusCoordinator()
     private let settings = SettingsStore.shared
+    private let tasks = TaskRegistry.shared
+    private var taskObserver: AnyCancellable?
     private var stateObserver: AnyCancellable?
     private var settingsObserver: AnyCancellable?
     private var expansionObserver: AnyCancellable?
@@ -61,6 +63,9 @@ final class ActivityHUDController {
             self?.hudState.scheduleCollapse(after: self?.settings.musicExpandedTimeout ?? 0)
             self?.focus.restoreSoon()
         }
+        panel.onDragEnded = { [weak self] point in
+            self?.snapShelf(to: point)
+        }
         panel.onVolumeScroll = { [weak self] delta in
             self?.music.adjustOutputVolume(by: delta)
             self?.hudState.scheduleCollapse(after: self?.settings.musicExpandedTimeout ?? 0)
@@ -72,6 +77,7 @@ final class ActivityHUDController {
             focus: focus,
             hudState: hudState,
             settings: settings,
+            tasks: tasks,
             openDictation: { [weak self] in
                 guard let id = conversations.currentConversationID else { return }
                 openConversation(id)
@@ -85,6 +91,9 @@ final class ActivityHUDController {
             settings.$musicShowWhenPaused
         )
         .sink { [weak self] _, _, _ in self?.updateLayout(dictation: dictation) }
+        taskObserver = tasks.objectWillChange.sink { [weak self] _ in
+            Task { @MainActor in self?.updateLayout(dictation: dictation) }
+        }
         settingsObserver = settings.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.updateLayout(dictation: dictation) }
         }
@@ -99,19 +108,24 @@ final class ActivityHUDController {
     private func updateLayout(dictation: NoteDictationService) {
         let dictationVisible = shouldShowRecordingHUD(for: dictation.phase)
         let musicVisible = shouldShowMusicHUD(music.nowPlaying)
-        guard dictationVisible || musicVisible else {
+        let taskVisible = !tasks.activeTasks.isEmpty
+        guard dictationVisible || musicVisible || taskVisible else {
             panel.orderOut(nil)
             return
         }
 
         let requestedMusicWidth = requestedMusicPresentation(dictationVisible: dictationVisible).hudWidth
-        let preferredWidth = dictationVisible && musicVisible
+        let taskCount = min(2, tasks.activeTasks.count)
+        let taskWidth: CGFloat = taskVisible ? CGFloat(taskCount * 254 + max(0, taskCount - 1) * 8) : 0
+        let basePreferredWidth = dictationVisible && musicVisible
             ? 210 + 8 + requestedMusicWidth
-            : (dictationVisible ? 210 : requestedMusicWidth)
+            : (dictationVisible ? 210 : (musicVisible ? requestedMusicWidth : 0))
+        let preferredWidth = basePreferredWidth + (basePreferredWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
         let miniMusicWidth = MusicHUDPresentation.mini.hudWidth
-        let miniWidth = dictationVisible && musicVisible
+        let baseMiniWidth = dictationVisible && musicVisible
             ? 210 + 8 + miniMusicWidth
-            : (dictationVisible ? 210 : miniMusicWidth)
+            : (dictationVisible ? 210 : (musicVisible ? miniMusicWidth : 0))
+        let miniWidth = baseMiniWidth + (baseMiniWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
 
         if !hudState.collisionMini,
            miniWidth < preferredWidth,
@@ -212,12 +226,15 @@ final class ActivityHUDController {
               height <= visibleFrame.height - 16 else { return nil }
         let preferredX: CGFloat
         switch settings.hudDockPosition {
-        case .bottomCenter: preferredX = visibleFrame.midX - width / 2
-        case .bottomLeft: preferredX = visibleFrame.minX + 18
-        case .bottomRight: preferredX = visibleFrame.maxX - width - 18
+        case .topCenter, .bottomCenter: preferredX = visibleFrame.midX - width / 2
+        case .topLeft, .bottomLeft: preferredX = visibleFrame.minX + 18
+        case .topRight, .bottomRight: preferredX = visibleFrame.maxX - width - 18
         }
+        let preferredY = settings.hudDockPosition.isTop
+            ? visibleFrame.maxY - height - 18
+            : visibleFrame.minY + 18
         let safeX = max(visibleFrame.minX + 8, min(preferredX, visibleFrame.maxX - width - 8))
-        let desired = NSRect(x: safeX, y: visibleFrame.minY + 18, width: width, height: height)
+        let desired = NSRect(x: safeX, y: preferredY, width: width, height: height)
         let blockers = blockers(in: visibleFrame)
 
         func fits(_ origin: NSPoint) -> Bool {
@@ -265,6 +282,26 @@ final class ActivityHUDController {
         return nil
     }
 
+    private func snapShelf(to origin: NSPoint) {
+        guard let screen = panel.screen ?? preferredScreen() else { return }
+        let frame = screen.visibleFrame
+        let center = NSPoint(x: origin.x + panel.frame.width / 2, y: origin.y + panel.frame.height / 2)
+        let horizontal: Int
+        if center.x < frame.minX + frame.width / 3 { horizontal = 0 }
+        else if center.x > frame.minX + frame.width * 2 / 3 { horizontal = 2 }
+        else { horizontal = 1 }
+
+        let top = center.y >= frame.midY
+        switch (top, horizontal) {
+        case (true, 0): settings.hudDockPosition = .topLeft
+        case (true, 1): settings.hudDockPosition = .topCenter
+        case (true, _): settings.hudDockPosition = .topRight
+        case (false, 0): settings.hudDockPosition = .bottomLeft
+        case (false, 1): settings.hudDockPosition = .bottomCenter
+        case (false, _): settings.hudDockPosition = .bottomRight
+        }
+    }
+
 }
 
 /// Compatibility name retained for existing Notes-window callers while the
@@ -278,6 +315,9 @@ private final class ShelfHostingView<Content: View>: NSHostingView<Content> {
 private final class ActivityHUDPanel: NSPanel {
     var onMiddleClick: (() -> Void)?
     var onVolumeScroll: ((Double) -> Void)?
+    var onDragEnded: ((NSPoint) -> Void)?
+    private var dragAnchor: NSPoint?
+    private var didDrag = false
 
     override var canBecomeKey: Bool { false }
     override var canBecomeMain: Bool { false }
@@ -296,6 +336,7 @@ private final class ActivityHUDPanel: NSPanel {
         )
         ignoresMouseEvents = false
         acceptsMouseMovedEvents = true
+        isMovableByWindowBackground = false
         becomesKeyOnlyIfNeeded = false
         level = .statusBar
         isFloatingPanel = true
@@ -309,6 +350,26 @@ private final class ActivityHUDPanel: NSPanel {
     }
 
     override func sendEvent(_ event: NSEvent) {
+        switch event.type {
+        case .leftMouseDown:
+            dragAnchor = event.locationInWindow
+            didDrag = false
+        case .leftMouseDragged:
+            if let dragAnchor {
+                let pointer = NSEvent.mouseLocation
+                setFrameOrigin(NSPoint(x: pointer.x - dragAnchor.x, y: pointer.y - dragAnchor.y))
+                didDrag = true
+                return
+            }
+        case .leftMouseUp:
+            if didDrag {
+                onDragEnded?(frame.origin)
+            }
+            dragAnchor = nil
+            didDrag = false
+        default:
+            break
+        }
         if event.type == .otherMouseDown && event.buttonNumber == 2 {
             onMiddleClick?()
             return
@@ -366,6 +427,7 @@ private struct ActivityHUDView: View {
     let focus: ShelfFocusCoordinator
     @ObservedObject var hudState: ActivityHUDState
     @ObservedObject var settings: SettingsStore
+    @ObservedObject var tasks: TaskRegistry
     let openDictation: () -> Void
     @State private var volumePopoverVisible = false
 
@@ -380,11 +442,55 @@ private struct ActivityHUDView: View {
                 musicPill(track, presentation: presentation)
                     .frame(width: presentation.hudWidth)
             }
+            ForEach(Array(tasks.activeTasks.prefix(2))) { task in
+                taskPill(task)
+                    .frame(width: 254)
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .limaAnimation(LimaDesign.spring(0.24), value: dictation.phase)
         .limaAnimation(LimaDesign.spring(0.24), value: music.nowPlaying)
         .onDisappear { hudState.cancelCollapse() }
+    }
+
+    private func taskPill(_ task: LimaTask) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: task.kind.symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(settings.accentTheme.primary)
+                .frame(width: 24, height: 24)
+                .background(settings.accentTheme.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(task.title)
+                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
+                    .lineLimit(1)
+                Text(task.detail ?? (task.state == .waiting ? "Needs attention" : "Working"))
+                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if task.isCancellable {
+                Button {
+                    tasks.cancel(task.id)
+                    focus.restoreSoon()
+                } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 8, weight: .bold))
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(LimaColors.danger)
+                        .background(LimaColors.dangerSoft, in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .help("Stop \(task.title)")
+                .accessibilityLabel("Stop \(task.title)")
+            }
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 56)
+        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: settings.accentTheme.primary.opacity(0.25), shadow: true)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(task.title): \(task.detail ?? "Working")")
     }
 
     private func effectivePresentation(dictationVisible: Bool) -> MusicHUDPresentation {

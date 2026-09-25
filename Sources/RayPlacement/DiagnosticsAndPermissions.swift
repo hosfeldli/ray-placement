@@ -124,7 +124,16 @@ final class DiagnosticsService {
             "dictation": ["count": DictationConversationStore.shared.conversations.count, "persistenceError": DictationConversationStore.shared.lastError ?? ""],
             "clipboard": ["count": ClipboardHistoryService.shared.entries.count, "persistenceError": ClipboardHistoryService.shared.lastError ?? ""],
             "extensions": ["issues": ExtensionLoader().load().issues.count],
-            "privacy": "Note contents, transcripts, clipboard contents, selected text, and secret values are intentionally omitted."
+            "tasks": [
+                "active": TaskRegistry.shared.activeTasks.map {
+                    ["kind": $0.kind.rawValue, "state": $0.state.rawValue, "startedAt": ISO8601DateFormatter().string(from: $0.startedAt)]
+                },
+                "recentCount": TaskRegistry.shared.recentTasks.count
+            ],
+            "performance": PerformanceMonitor.shared.samples.prefix(40).map {
+                ["operation": $0.operation, "durationMilliseconds": $0.milliseconds, "succeeded": $0.succeeded]
+            },
+            "privacy": "Note contents, transcripts, clipboard contents, selected text, shell input and output, provider prompts and responses, and secret values are intentionally omitted."
         ]
         let data = try JSONSerialization.data(withJSONObject: values, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: target, options: [.atomic])

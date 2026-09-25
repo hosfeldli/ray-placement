@@ -36,6 +36,28 @@ import Testing
     #expect(missing.apiKey() == nil)
 }
 
+@Test @MainActor func publicWebReaderBlocksPrivateHostsAndExtractsReadableContent() {
+    #expect(LimaAIToolRegistry.publicWebURL("https://example.com/docs") != nil)
+    #expect(LimaAIToolRegistry.publicWebURL("http://127.0.0.1:8080") == nil)
+    #expect(LimaAIToolRegistry.publicWebURL("https://192.168.1.1") == nil)
+    #expect(LimaAIToolRegistry.publicWebURL("https://localhost") == nil)
+    #expect(LimaAIToolRegistry.publicWebURL("https://user:pass@example.com") == nil)
+
+    let extracted = LimaAIToolRegistry.readableWebContent(
+        fromHTML: """
+        <html><head><title>Example &amp; Guide</title><style>body { color: red; }</style></head>
+        <body><nav>Ignore navigation</nav><main><h1>Useful guide</h1><p>Read this public text.</p>
+        <a href=\"/next\">Next page</a><a href=\"http://127.0.0.1/private\">Private</a></main></body></html>
+        """,
+        baseURL: URL(string: "https://example.com/docs")!
+    )
+    #expect(extracted.title == "Example & Guide")
+    #expect(extracted.content.contains("Useful guide"))
+    #expect(extracted.content.contains("Read this public text."))
+    #expect(!extracted.content.contains("Ignore navigation"))
+    #expect(extracted.links == ["https://example.com/next"])
+}
+
 @Test @MainActor func fixtureTransportCarriesPromptToVisibleAssistantTurn() async {
     let store = AIConversationStore(fixtures: [])
     let model = AIChatViewModel(

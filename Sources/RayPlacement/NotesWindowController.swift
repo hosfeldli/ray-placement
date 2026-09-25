@@ -121,8 +121,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.spaceChangeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main
         ) { [weak self] notification in
-            guard let panel = notification.object as? NSPanel, panel === self?.quickNotePanel else { return }
-            self?.rememberQuickNoteFrame(panel)
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let panel = notification.object as? NSPanel,
+                      panel === self.quickNotePanel else { return }
+                self.rememberQuickNoteFrame(panel)
+            }
         }
         self.dictationHUD = DictationHUDController(
             dictation: dictation,

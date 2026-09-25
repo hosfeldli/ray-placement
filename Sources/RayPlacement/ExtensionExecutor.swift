@@ -17,15 +17,22 @@ final class ExtensionExecutor {
     private var timedOutProcesses = Set<UUID>()
     private var timeoutWorkItems: [UUID: DispatchWorkItem] = [:]
     private var usageTasks: [UUID: UUID] = [:]
+    private var registryTasks: [UUID: UUID] = [:]
 
     func cancelAll() {
-        for (identifier, process) in activeProcesses {
-            cancelledProcesses.insert(identifier)
-            timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
-            if process.isRunning { process.terminate() }
-            if let usage = usageTasks.removeValue(forKey: identifier) {
-                UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
-            }
+        Array(activeProcesses.keys).forEach { cancelProcess($0) }
+    }
+
+    private func cancelProcess(_ identifier: UUID, finishRegistryTask: Bool = true) {
+        guard let process = activeProcesses[identifier] else { return }
+        cancelledProcesses.insert(identifier)
+        timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
+        if process.isRunning { process.terminate() }
+        if let usage = usageTasks.removeValue(forKey: identifier) {
+            UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
+        }
+        if finishRegistryTask, let task = registryTasks.removeValue(forKey: identifier) {
+            TaskRegistry.shared.finish(task, state: .cancelled, detail: "Stopped by user")
         }
     }
 
@@ -270,6 +277,13 @@ final class ExtensionExecutor {
                 operation: executable.lastPathComponent,
                 performance: performance
             )
+            registryTasks[identifier] = TaskRegistry.shared.begin(
+                kind: .extensionTask,
+                title: "Extension is working",
+                detail: executable.lastPathComponent,
+                isCancellable: true,
+                onCancel: { [weak self] in self?.cancelProcess(identifier, finishRegistryTask: false) }
+            )
         } catch {
             completion(.failure(error))
             return
@@ -314,6 +328,7 @@ final class ExtensionExecutor {
                     self.timeoutWorkItems.removeValue(forKey: identifier)?.cancel()
                     if self.cancelledProcesses.remove(identifier) != nil {
                         self.timedOutProcesses.remove(identifier)
+                        self.registryTasks.removeValue(forKey: identifier)
                         if reportCancellation { completion(.failure(ExecutionError.cancelled)) }
                         return
                     }
@@ -321,16 +336,20 @@ final class ExtensionExecutor {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Timed out")
                         }
-                        completion(.failure(ExecutionError.timedOut(Int(performance.extensionTimeout))))
+                                                self.finishRegistryTask(identifier, state: .failed, detail: "Timed out")
+                        completion(.failure(ExecutionError.timedOut(Int(performance.extensionTimeout)))
+)
                     } else if task.terminationStatus == 0 {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: true, outputCharacters: outputText.count)
                         }
+                        self.finishRegistryTask(identifier)
                         completion(.success(outputText.isEmpty ? nil : outputText))
                     } else {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: false, outputCharacters: outputText.count, detail: "Exit \(task.terminationStatus)")
                         }
+                        self.finishRegistryTask(identifier, state: .failed, detail: "Exited with status \(task.terminationStatus)")
                         completion(.failure(ExecutionError.processFailed(task.terminationStatus, outputText)))
                     }
                 }
@@ -343,6 +362,7 @@ final class ExtensionExecutor {
                         if let usage = self.usageTasks.removeValue(forKey: identifier) {
                             UsageMonitor.shared.finish(usage, succeeded: false, detail: error.localizedDescription)
                         }
+                        self.finishRegistryTask(identifier, state: .failed, detail: "Could not read command output")
                         completion(.failure(error))
                     } else {
                         self.timedOutProcesses.remove(identifier)
@@ -350,6 +370,15 @@ final class ExtensionExecutor {
                 }
             }
         }
+    }
+
+    private func finishRegistryTask(
+        _ identifier: UUID,
+        state: LimaTaskState = .completed,
+        detail: String? = nil
+    ) {
+        guard let task = registryTasks.removeValue(forKey: identifier) else { return }
+        TaskRegistry.shared.finish(task, state: state, detail: detail)
     }
 
     enum ExecutionError: LocalizedError {

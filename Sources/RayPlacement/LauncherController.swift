@@ -524,10 +524,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             notesWindow.showQuickNote()
             hide()
         case .terminal(let path):
-            let expanded = (path as NSString).expandingTildeInPath
-            let session = TerminalSessionStore.shared.create(name: "Terminal · \(URL(fileURLWithPath: expanded).lastPathComponent)")
-            TerminalSessionStore.shared.updateDirectory(expanded, for: session.id)
-            terminalModel.selectSession(session.id)
+            terminalModel.setInitialDirectory(path)
             viewModel.enter(.terminal)
             presentPanel()
         case .format(let kind):
@@ -546,7 +543,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        if panel.isVisible { hide() }
+        guard panel.isVisible else { return }
+        // Focus can move briefly to a child sheet, popover, or system control
+        // while the launcher remains the user’s active surface. Defer one run
+        // loop and dismiss only for a real handoff outside Lima’s hierarchy.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            guard let keyWindow = NSApp.keyWindow else {
+                if !NSApp.isActive { self.hide() }
+                return
+            }
+            if keyWindow.parent === self.panel || keyWindow.sheetParent === self.panel { return }
+            if keyWindow is NSPanel, keyWindow.isVisible { return }
+            self.hide()
+        }
     }
 
     func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int {
@@ -876,14 +886,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.viewModel.closeActionPanel()
                     return nil
                 }
-                if case .output(_, _, .running(let canCancel)) = self.viewModel.mode, canCancel {
-                    self.extensionExecutor.cancelAll()
-                    self.surfaceSessionController.resumeTimeout(for: "extension-execution")
-                }
-                if self.writingOperationToken != nil {
-                    self.writingChecker.cancel()
-                    self.cancelWritingOperation()
-                }
+                // Escape is navigation, not cancellation. Long-running work
+                // stays visible in the Activity Shelf and ends only through an
+                // explicit Stop control owned by that task.
                 self.viewModel.handleEscape()
                 return nil
             }
@@ -1110,9 +1115,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             toast.show("Copied file path")
         case .openTerminalHere:
             let directory = url.hasDirectoryPath ? url.path : url.deletingLastPathComponent().path
-            let session = TerminalSessionStore.shared.create(name: "Terminal · \(url.lastPathComponent)")
-            TerminalSessionStore.shared.updateDirectory(directory, for: session.id)
-            terminalModel.selectSession(session.id)
+            terminalModel.setInitialDirectory(directory)
             viewModel.enter(.terminal)
             presentPanel()
             DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
@@ -1779,7 +1782,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
-                self.toast.showStealth("No changes needed", style: .success, duration: 1.6)
+                // A normal no-op correction needs no notification.
             case .success(let corrected):
                 self.replaceStealthText(corrected, operationToken: operationToken)
             case .failure(let error):
@@ -1897,7 +1900,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             switch result {
             case .success(let review):
                 self.completeWritingOperation(operationToken)
-                self.toast.show("Correction verified · opening review", style: .success)
                 self.viewModel.showWritingReview(review)
                 if !self.panel.isVisible { self.presentPanel() }
             case .failure(let error):
@@ -1990,7 +1992,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 }
                 self.focusedTextContext = nil
                 self.completeWritingOperation(operationToken)
-                self.toast.show(successMessage)
                 completion()
             } catch {
                 self.pasteTextWithKeyboard(
@@ -2240,16 +2241,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         switch outcome {
         case .verified:
-            if stealth {
-                toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
-            } else {
-                toast.show("Correction pasted and verified", style: .success, duration: 2.4)
-            }
+            // Successful replacement is intentionally silent.
+            break
         case .sentUnverified:
+            // This fallback may matter to the user because the target could not
+            // be read back, so retain a short neutral warning rather than a
+            // misleading success confirmation.
             if stealth {
-                toast.showStealth("Replacement sent · target could not confirm it", style: .success, duration: 2.8)
+                toast.showStealth("Replacement sent · target could not confirm it", style: .working, duration: 2.8)
             } else {
-                toast.show("Replacement sent · target could not confirm it", style: .success, duration: 3.2)
+                toast.show("Replacement sent · target could not confirm it", style: .working, duration: 3.2)
             }
         case .targetChanged:
             clipboard.copy(text)
@@ -2481,12 +2482,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             notesWindow.present()
 
         case .terminal:
-            guard let id = UUID(uuidString: String(result.id.dropFirst("terminal:".count))) else {
-                presentError(title: result.title, message: "The terminal session identifier is invalid.")
-                return
-            }
-            TerminalSessionStore.shared.select(id)
-            terminalModel.selectSession(id)
             viewModel.enter(.terminal)
             presentPanel()
             terminalModel.startIfNeeded()
