@@ -1,0 +1,83 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-width: 330px;
+  background: Canvas;
+  color: CanvasText;
+}
+main { padding: 14px; }
+header {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding-bottom: 12px;
+}
+.mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-weight: 750;
+  background: color-mix(in srgb, AccentColor 16%, Canvas);
+  color: AccentColor;
+}
+h1 { font-size: 14px; margin: 0 0 2px; }
+p { margin: 0; }
+#connection { font-size: 11px; opacity: .72; }
+#connection.ok { color: #239a55; opacity: 1; }
+#connection.warn { color: #b87914; opacity: 1; }
+section {
+  border: 1px solid color-mix(in srgb, CanvasText 13%, transparent);
+  border-radius: 11px;
+  padding: 11px;
+  background: color-mix(in srgb, CanvasText 3%, Canvas);
+}
+.label {
+  font-size: 9px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  opacity: .55;
+  margin-bottom: 7px;
+}
+.site-title {
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.site-url {
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+  opacity: .55;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin: 3px 0 10px;
+}
+button {
+  width: 100%;
+  min-height: 30px;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, CanvasText 14%, transparent);
+  background: AccentColor;
+  color: AccentColorText;
+  font-weight: 650;
+}
+button:disabled { opacity: .55; }
+.detail {
+  margin-top: 7px;
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: .62;
+}
+footer {
+  padding-top: 10px;
+  font-size: 9.5px;
+  line-height: 1.4;
+  opacity: .5;
+}
