@@ -24,6 +24,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "RayPlacement", targets: ["RayPlacement"]),
+        .executable(name: "LimaBrowserBridgeHost", targets: ["LimaBrowserBridgeHost"]),
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
     ],
@@ -36,6 +37,7 @@ let package = Package(
             dependencies: appDependencies,
             swiftSettings: enableSparkleMigration ? [.define("LIMA_SPARKLE_MIGRATION")] : []
         ),
+        .executableTarget(name: "LimaBrowserBridgeHost"),
         .testTarget(
             name: "RayPlacementCoreTests",
             dependencies: ["RayPlacementCore"]
