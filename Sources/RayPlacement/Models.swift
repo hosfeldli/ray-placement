@@ -135,6 +135,7 @@ enum SystemAction {
     case openWorkflows
     case openSettings
     case openDeveloperGrammarSettings
+    case openBrowserBridge
     case quit
 }
 
