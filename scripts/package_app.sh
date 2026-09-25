@@ -22,6 +22,8 @@ MODEL_FREE_UPDATE_BUILD="${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}"
 HARPER_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/Harper"
 PYTHON_GRAMMAR_DIRECTORY="$PROJECT_DIRECTORY/Packaging/Vendor/PythonGrammar"
 BUNDLED_EXTENSIONS_DIRECTORY="$PROJECT_DIRECTORY/Extensions"
+BROWSER_EXTENSION_SOURCE="$PROJECT_DIRECTORY/Packaging/BrowserExtension/Source"
+BROWSER_BRIDGE_RESOURCE_DIRECTORY="$CONTENTS_DIRECTORY/Resources/BrowserBridge"
 USER_HOME_DIRECTORY="${HOME:?The current user home folder is unavailable}"
 LOCAL_SIGNING_DIRECTORY="$LIMA_RELEASE_LOCAL_SIGNING_DIRECTORY"
 LOCAL_SIGNING_KEYCHAIN="$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN"
@@ -49,6 +51,26 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources"
 
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
+
+# Bundle the constrained Zen/Firefox WebExtension and native messaging relay.
+# Normal Firefox/Zen releases require a Mozilla-signed XPI for permanent installation.
+# Set LIMA_BROWSER_EXTENSION_SIGNED_XPI to a pre-signed XPI during release packaging.
+mkdir -p "$BROWSER_BRIDGE_RESOURCE_DIRECTORY"
+cp "$BIN_DIRECTORY/LimaBrowserBridgeHost" "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/LimaBrowserBridgeHost"
+chmod 755 "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/LimaBrowserBridgeHost"
+if [[ -n "${LIMA_BROWSER_EXTENSION_SIGNED_XPI:-}" ]]; then
+    [[ -f "$LIMA_BROWSER_EXTENSION_SIGNED_XPI" ]] || { echo "Signed browser extension XPI not found: $LIMA_BROWSER_EXTENSION_SIGNED_XPI" >&2; exit 1; }
+    cp "$LIMA_BROWSER_EXTENSION_SIGNED_XPI" "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/LimaBrowserBridge.xpi"
+    echo "signed" > "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/extension-build.txt"
+else
+    [[ -d "$BROWSER_EXTENSION_SOURCE" ]] || { echo "Browser extension source is missing." >&2; exit 1; }
+    (
+        cd "$BROWSER_EXTENSION_SOURCE"
+        /usr/bin/zip -q -r "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/LimaBrowserBridge.xpi" .
+    )
+    echo "unsigned-development" > "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/extension-build.txt"
+fi
+ditto "$BROWSER_EXTENSION_SOURCE" "$BROWSER_BRIDGE_RESOURCE_DIRECTORY/Source"
 
 # Keep the uninstaller inside the bundle so the packaged app is self-contained
 # and the release verifier checks the same artifact users receive.
