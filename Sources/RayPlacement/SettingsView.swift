@@ -28,7 +28,6 @@ private struct PendingShortcutAssignment: Identifiable {
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case commands
-    case extensions
     case writing
     case appearance
     case advanced
@@ -38,8 +37,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
-        case .commands: return "Commands & Shortcuts"
-        case .extensions: return "Extensions"
+        case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
@@ -49,8 +47,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
-        case .commands: return "command"
-        case .extensions: return "puzzlepiece.extension.fill"
+        case .commands: return "square.grid.2x2"
         case .writing: return "text.badge.checkmark"
         case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
@@ -62,9 +59,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general:
             return ["startup", "launcher", "updates", "login", "behavior", "default"]
         case .commands:
-            return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "conflict", "key"]
-        case .extensions:
-            return ["extensions", "installed", "store", "developer", "packs", "reload", "install", "uninstall"]
+            return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "tools", "skills", "agents", "conflict", "key", "store", "updates"]
         case .writing:
             return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
         case .appearance:
@@ -314,7 +309,7 @@ struct SettingsView: View {
             .padding(.bottom, 10)
 
             if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                sidebarGroup("SETTINGS", sections: [.general, .commands, .extensions, .writing, .appearance, .advanced])
+                sidebarGroup("SETTINGS", sections: [.general, .commands, .writing, .appearance, .advanced])
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
                     .limaFont(.caption)
@@ -413,8 +408,7 @@ struct SettingsView: View {
     private var selectedContent: some View {
         switch selectedSection {
         case .general: generalTab
-        case .commands: shortcutsTab
-        case .extensions: extensionsTab
+        case .commands: commandCenterTab
         case .writing: writingSettingsTab
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
@@ -1390,8 +1384,15 @@ struct SettingsView: View {
         .controlSize(.small)
     }
 
-    private var extensionsTab: some View {
-        ExtensionsSettingsView(viewModel: viewModel, storeModel: extensionStoreModel, reloadExtensions: reloadExtensions)
+    private var commandCenterTab: some View {
+        CommandCenterView(
+            viewModel: viewModel,
+            settings: settings,
+            commandManager: commandManager,
+            extensionStoreModel: extensionStoreModel,
+            reloadExtensions: reloadExtensions,
+            makeShortcutBinding: { shortcutBinding(for: $0) }
+        )
     }
 
     private var extensionGroups: [SettingsExtensionGroup] {
@@ -1671,7 +1672,7 @@ private struct ExtensionShortcutRow: View {
     }
 }
 
-private struct ShortcutRecorder: NSViewRepresentable {
+struct ShortcutRecorder: NSViewRepresentable {
     @Binding var shortcut: String
     var label = "Activation shortcut"
 
@@ -1696,7 +1697,7 @@ private struct ShortcutRecorder: NSViewRepresentable {
     }
 }
 
-private final class ShortcutCaptureView: NSView {
+final class ShortcutCaptureView: NSView {
     var shortcut = "" {
         didSet {
             needsDisplay = true

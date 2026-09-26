@@ -162,3 +162,51 @@ import Testing
         #expect(coordinator.currentModule(for: .workspace) == module)
     }
 }
+
+@Test func commandCenterFiltersDisabledConflictingAndSearchableEntries() {
+    func entry(
+        id: String,
+        title: String,
+        kind: CommandCenterEntryKind,
+        source: String = "Built-in",
+        enabled: Bool = true,
+        conflict: Bool = false,
+        detail: String = "",
+        model: String? = nil
+    ) -> CommandCenterEntry {
+        CommandCenterEntry(
+            id: id,
+            title: title,
+            subtitle: detail,
+            kind: kind,
+            source: source,
+            isEnabled: enabled,
+            isFavorite: false,
+            shortcut: "",
+            isConflict: conflict,
+            capabilities: [],
+            presentation: nil,
+            version: nil,
+            detail: detail,
+            risk: nil,
+            availableToAI: nil,
+            schema: nil,
+            provider: nil,
+            model: model,
+            skills: [],
+            tools: [],
+            reasoning: nil
+        )
+    }
+
+    let entries = [
+        entry(id: "builtin.notes", title: "Notes", kind: .command, enabled: false, conflict: true),
+        entry(id: "extension.review", title: "Review", kind: .extensionCommand, source: "Extension", detail: "Code review"),
+        entry(id: "agent.research", title: "Research", kind: .agent, model: "Claude Sonnet")
+    ]
+
+    #expect(CommandCenterCatalog.visibleEntries(entries, filter: .disabled, query: "").map(\.id) == ["builtin.notes"])
+    #expect(CommandCenterCatalog.visibleEntries(entries, filter: .conflicts, query: "").map(\.id) == ["builtin.notes"])
+    #expect(CommandCenterCatalog.visibleEntries(entries, filter: .extensions, query: "").map(\.id) == ["extension.review"])
+    #expect(CommandCenterCatalog.visibleEntries(entries, filter: .all, query: "research claude").map(\.id) == ["agent.research"])
+}
