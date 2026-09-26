@@ -35,6 +35,8 @@ import Testing
     store.update {
         $0.activeSurface = LimaSurfaceID.workspace.rawValue
         $0.activeWorkspaceModule = LimaWorkspaceModule.ai.rawValue
+        $0.workspaceWasOpen = true
+        $0.workWasActive = true
         $0.selectedNoteID = UUID()
         $0.selectedConversationID = UUID()
         $0.formatterWasOpen = true
@@ -45,11 +47,74 @@ import Testing
     #expect(restarted.pendingRestoration?.activeSurface == "workspace")
     #expect(restarted.pendingRestoration?.activeWorkspaceModule == "ai")
     #expect(restarted.pendingRestoration?.formatterWasOpen == true)
+    #expect(restarted.pendingRestoration?.workspaceWasOpen == true)
+    #expect(restarted.pendingRestoration?.workWasActive == true)
 
     restarted.markCleanShutdown()
     let cleanLaunch = CrashRecoveryStore(defaults: defaults)
     cleanLaunch.beginLaunch()
     #expect(cleanLaunch.pendingRestoration == nil)
+}
+
+@Test func crashRecoveryPlanRestoresOnlyValidSafeWorkspaceState() {
+    let noteID = UUID()
+    let aiConversationID = UUID()
+    let snapshot = LimaRecoverySnapshot(
+        activeSurface: LimaSurfaceID.workspace.rawValue,
+        activeWorkspaceModule: LimaWorkspaceModule.ai.rawValue,
+        selectedNoteID: noteID,
+        selectedConversationID: aiConversationID,
+        workspaceWasOpen: true,
+        workWasActive: true
+    )
+    let plan = CrashRecoveryPlan.make(
+        from: snapshot,
+        availableNoteIDs: [noteID],
+        availableAIConversationIDs: [aiConversationID]
+    )
+
+    #expect(plan?.module == .ai)
+    #expect(plan?.selectedNoteID == noteID)
+    #expect(plan?.selectedAIConversationID == aiConversationID)
+    #expect(plan?.hadInterruptedWork == true)
+
+    let missing = CrashRecoveryPlan.make(
+        from: snapshot,
+        availableNoteIDs: [],
+        availableAIConversationIDs: []
+    )
+    #expect(missing?.selectedNoteID == nil)
+    #expect(missing?.selectedAIConversationID == nil)
+
+    let terminalSnapshot = LimaRecoverySnapshot(
+        activeSurface: LimaSurfaceID.workspace.rawValue,
+        activeWorkspaceModule: LimaWorkspaceModule.terminal.rawValue,
+        workspaceWasOpen: true
+    )
+    #expect(CrashRecoveryPlan.make(
+        from: terminalSnapshot,
+        availableNoteIDs: [],
+        availableAIConversationIDs: []
+    )?.module == .notes)
+}
+
+@Test @MainActor func crashRecoveryDoesNotReopenHiddenWorkspaceAndMarksWorkInterrupted() {
+    let hidden = LimaRecoverySnapshot(
+        activeSurface: nil,
+        formatterWasOpen: false,
+        workspaceWasOpen: false
+    )
+    #expect(CrashRecoveryPlan.make(
+        from: hidden,
+        availableNoteIDs: [],
+        availableAIConversationIDs: []
+    ) == nil)
+
+    let taskRegistry = TaskRegistry()
+    taskRegistry.recordInterruptedWork()
+    #expect(taskRegistry.activeTasks.isEmpty)
+    #expect(taskRegistry.recentTasks.first?.kind == .interrupted)
+    #expect(taskRegistry.recentTasks.first?.state == .failed)
 }
 
 @Test func activityShelfSupportsSixStableAnchors() {

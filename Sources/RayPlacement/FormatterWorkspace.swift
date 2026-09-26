@@ -3,7 +3,7 @@ import RayPlacementCore
 import SwiftUI
 
 @MainActor
-final class FormatterWindowController: NSWindowController {
+final class FormatterWindowController: NSWindowController, NSWindowDelegate {
     let model: FormatterWorkspaceModel
 
     init(model: FormatterWorkspaceModel) {
@@ -22,6 +22,7 @@ final class FormatterWindowController: NSWindowController {
             minSize: NSSize(width: 900, height: 580)
         )
         super.init(window: window)
+        window.delegate = self
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content:
             FormatterWorkspaceView(model: model)
                 .background(LimaColors.windowBackground)
@@ -34,6 +35,11 @@ final class FormatterWindowController: NSWindowController {
         window?.center()
         if let window { WorkspaceWindowCoordinator.shared.present(window) }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closingWindow = notification.object as? NSWindow, closingWindow === window else { return }
+        LimaSurfaceCoordinator.shared.dismiss(.formatter)
     }
 
     func shutdown() { model.reset() }

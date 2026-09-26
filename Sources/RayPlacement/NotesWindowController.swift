@@ -501,6 +501,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         store.flush()
+        guard let closingWindow = notification.object as? NSWindow, closingWindow === window else { return }
+        LimaSurfaceCoordinator.shared.dismiss(.workspace)
     }
 
     func windowDidMove(_ notification: Notification) {

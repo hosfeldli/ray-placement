@@ -70,13 +70,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.windows.forEach { $0.appearance = SettingsStore.shared.appearance.nsAppearance }
             }
         }
+        let pendingRecovery = CrashRecoveryStore.shared.pendingRestoration
         let isShowingUpdateResult = configureUpdates()
+        if pendingRecovery?.workWasActive == true {
+            TaskRegistry.shared.recordInterruptedWork()
+        }
+        let restoredWorkspace = !isShowingUpdateResult && launcher.restoreAfterUnexpectedExit(pendingRecovery)
+        CrashRecoveryStore.shared.discardPendingRestoration()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
         let launchedAsLoginItem = launchEvent?
             .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))?
             .booleanValue ?? false
-        if !launchedAsLoginItem, !isShowingUpdateResult {
+        if !launchedAsLoginItem, !isShowingUpdateResult, !restoredWorkspace {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 self?.launcher.show()
             }

@@ -335,6 +335,30 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.present(module: .terminal)
         DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
     }
+
+    @discardableResult
+    func restoreAfterUnexpectedExit(_ snapshot: LimaRecoverySnapshot?) -> Bool {
+        guard let snapshot else { return false }
+        let availableNoteIDs = Set(NotesStore.shared.notes.map(\.id))
+        let availableAIConversationIDs = Set(aiChatModel.store.conversations.map(\.id))
+        guard let plan = CrashRecoveryPlan.make(
+            from: snapshot,
+            availableNoteIDs: availableNoteIDs,
+            availableAIConversationIDs: availableAIConversationIDs
+        ) else { return false }
+
+        WorkspaceStateRegistry.shared.update { state in
+            state.activeWorkspace = LimaSurfaceID.workspace.rawValue
+            state.activeModule = plan.module.rawValue
+            if let noteID = plan.selectedNoteID { state.selectedNoteID = noteID }
+            if let conversationID = plan.selectedAIConversationID {
+                state.selectedAIConversationID = conversationID
+            }
+        }
+        notesWindow.present(module: plan.module)
+        return true
+    }
+
     func showFocusedFileLauncher() { viewModel.enter(.files); presentPanel() }
 
     func captureSelectionToShelf(from sourceApplication: NSRunningApplication?) {

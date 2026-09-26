@@ -90,9 +90,14 @@ final class LimaSurfaceCoordinator: NSObject, NSWindowDelegate {
             CrashRecoveryStore.shared.update { snapshot in
                 snapshot.activeSurface = id.rawValue
                 snapshot.activeWorkspaceModule = module.rawValue
+                if id == .workspace { snapshot.workspaceWasOpen = true }
             }
         } else {
-            CrashRecoveryStore.shared.update { $0.activeSurface = id.rawValue }
+            CrashRecoveryStore.shared.update { snapshot in
+                snapshot.activeSurface = id.rawValue
+                if id == .workspace { snapshot.workspaceWasOpen = true }
+                if id == .formatter { snapshot.formatterWasOpen = true }
+            }
         }
         window.makeKeyAndOrderFront(nil)
         if activate { NSApp.activate(ignoringOtherApps: true) }
@@ -100,6 +105,13 @@ final class LimaSurfaceCoordinator: NSObject, NSWindowDelegate {
 
     func dismiss(_ id: LimaSurfaceID) {
         windows[id]?.value?.orderOut(nil)
+        CrashRecoveryStore.shared.update { snapshot in
+            if snapshot.activeSurface == id.rawValue {
+                snapshot.activeSurface = nil
+            }
+            if id == .workspace { snapshot.workspaceWasOpen = false }
+            if id == .formatter { snapshot.formatterWasOpen = false }
+        }
     }
 
     func toggle(

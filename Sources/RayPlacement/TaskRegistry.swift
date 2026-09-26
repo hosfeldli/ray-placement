@@ -11,6 +11,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
     case workflow
     case update
     case formatter
+    case interrupted
 
     var title: String {
         switch self {
@@ -21,6 +22,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
         case .workflow: return "Workflow"
         case .update: return "Update"
         case .formatter: return "Formatter"
+        case .interrupted: return "Work interrupted"
         }
     }
 
@@ -33,6 +35,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
         case .workflow: return "point.3.connected.trianglepath.dotted"
         case .update: return "arrow.down.circle.fill"
         case .formatter: return "doc.text.magnifyingglass"
+        case .interrupted: return "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
         }
     }
 }
@@ -72,15 +75,18 @@ struct LimaTask: Identifiable, Codable, Hashable, Sendable {
 
 @MainActor
 final class TaskRegistry: ObservableObject {
-    static let shared = TaskRegistry()
+    static let shared = TaskRegistry(recordingRecoveryState: true)
     static let maximumHistory = 100
 
     @Published private(set) var activeTasks: [LimaTask] = []
     @Published private(set) var recentTasks: [LimaTask] = []
 
     private var cancellationHandlers: [UUID: () -> Void] = [:]
+    private let recordingRecoveryState: Bool
 
-    init() {}
+    init(recordingRecoveryState: Bool = false) {
+        self.recordingRecoveryState = recordingRecoveryState
+    }
 
     @discardableResult
     func begin(
@@ -106,6 +112,9 @@ final class TaskRegistry: ObservableObject {
         )
         activeTasks.append(task)
         if let onCancel { cancellationHandlers[task.id] = onCancel }
+        if recordingRecoveryState {
+            CrashRecoveryStore.shared.update { $0.workWasActive = true }
+        }
         return task.id
     }
 
@@ -137,6 +146,9 @@ final class TaskRegistry: ObservableObject {
         task.finishedAt = task.updatedAt
         task.progress = state == .completed ? 1 : task.progress
         cancellationHandlers.removeValue(forKey: id)
+        if recordingRecoveryState, activeTasks.isEmpty {
+            CrashRecoveryStore.shared.update { $0.workWasActive = false }
+        }
         recentTasks.insert(task, at: 0)
         if recentTasks.count > Self.maximumHistory {
             recentTasks.removeLast(recentTasks.count - Self.maximumHistory)
@@ -157,6 +169,26 @@ final class TaskRegistry: ObservableObject {
 
     func task(id: UUID) -> LimaTask? {
         activeTasks.first(where: { $0.id == id }) ?? recentTasks.first(where: { $0.id == id })
+    }
+
+    func recordInterruptedWork() {
+        let now = Date()
+        let task = LimaTask(
+            id: UUID(),
+            kind: .interrupted,
+            title: "Work interrupted",
+            detail: "Stopped after an unexpected exit",
+            state: .failed,
+            progress: nil,
+            startedAt: now,
+            updatedAt: now,
+            finishedAt: now,
+            isCancellable: false
+        )
+        recentTasks.insert(task, at: 0)
+        if recentTasks.count > Self.maximumHistory {
+            recentTasks.removeLast(recentTasks.count - Self.maximumHistory)
+        }
     }
 
     private static func bounded(_ value: String, limit: Int) -> String {

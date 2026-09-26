@@ -8,6 +8,10 @@ struct LimaRecoverySnapshot: Codable, Equatable, Sendable {
     var selectedNoteID: UUID?
     var selectedConversationID: UUID?
     var formatterWasOpen: Bool
+    /// Optional for compatibility with snapshots written before visibility tracking.
+    var workspaceWasOpen: Bool?
+    /// Metadata only: in-flight operations are never restored or resumed.
+    var workWasActive: Bool?
     var capturedAt: Date
 
     init(
@@ -16,6 +20,8 @@ struct LimaRecoverySnapshot: Codable, Equatable, Sendable {
         selectedNoteID: UUID? = nil,
         selectedConversationID: UUID? = nil,
         formatterWasOpen: Bool = false,
+        workspaceWasOpen: Bool? = nil,
+        workWasActive: Bool? = nil,
         capturedAt: Date = Date()
     ) {
         self.activeSurface = activeSurface
@@ -23,7 +29,47 @@ struct LimaRecoverySnapshot: Codable, Equatable, Sendable {
         self.selectedNoteID = selectedNoteID
         self.selectedConversationID = selectedConversationID
         self.formatterWasOpen = formatterWasOpen
+        self.workspaceWasOpen = workspaceWasOpen
+        self.workWasActive = workWasActive
         self.capturedAt = capturedAt
+    }
+}
+
+struct CrashRecoveryPlan: Equatable {
+    let module: LimaWorkspaceModule
+    let selectedNoteID: UUID?
+    let selectedAIConversationID: UUID?
+    let hadInterruptedWork: Bool
+
+    static func make(
+        from snapshot: LimaRecoverySnapshot,
+        availableNoteIDs: Set<UUID>,
+        availableAIConversationIDs: Set<UUID>
+    ) -> Self? {
+        let workspaceWasOpen = snapshot.workspaceWasOpen ?? (snapshot.activeSurface == LimaSurfaceID.workspace.rawValue)
+        let formatterWasOpen = snapshot.formatterWasOpen || snapshot.activeSurface == LimaSurfaceID.formatter.rawValue
+        guard workspaceWasOpen || formatterWasOpen else { return nil }
+
+        let savedModule = snapshot.activeWorkspaceModule.flatMap(LimaWorkspaceModule.init(rawValue:))
+        // Restoring the Terminal module would start a shell process; keep
+        // recovery limited to passive UI state and switch it back to Notes.
+        let module: LimaWorkspaceModule
+        if formatterWasOpen {
+            module = .formatter
+        } else if let savedModule, savedModule != .terminal {
+            module = savedModule
+        } else {
+            module = .notes
+        }
+
+        return Self(
+            module: module,
+            selectedNoteID: snapshot.selectedNoteID.flatMap { availableNoteIDs.contains($0) ? $0 : nil },
+            selectedAIConversationID: snapshot.selectedConversationID.flatMap {
+                availableAIConversationIDs.contains($0) ? $0 : nil
+            },
+            hadInterruptedWork: snapshot.workWasActive == true
+        )
     }
 }
 
@@ -51,6 +97,9 @@ final class CrashRecoveryStore: ObservableObject {
         let previousWasRunning = defaults.bool(forKey: Key.running)
         snapshot = Self.load(defaults) ?? LimaRecoverySnapshot()
         pendingRestoration = previousWasRunning ? snapshot : nil
+        // The prior value remains in pendingRestoration for interruption
+        // reporting; the new process starts with no active work.
+        snapshot.workWasActive = false
         defaults.set(true, forKey: Key.running)
         persist()
     }
@@ -66,6 +115,7 @@ final class CrashRecoveryStore: ObservableObject {
     }
 
     func markCleanShutdown() {
+        snapshot.workWasActive = false
         defaults.set(false, forKey: Key.running)
         pendingRestoration = nil
         persist()
