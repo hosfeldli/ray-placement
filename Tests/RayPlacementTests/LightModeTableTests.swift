@@ -41,16 +41,60 @@ import Testing
     let actualBody = try #require(view.debugPixel(in: image, at: bodyFrame.maxX - 5, y: bodyFrame.midY))
     let expectedHeader = resolved(palette.elevatedSurface, appearance: lightAppearance)
     let expectedBody = resolved(palette.background, appearance: lightAppearance)
+    let focusedCellHasIndicator = view.debugCellHasVisibleFocusIndicator(row: 1, column: 0)
+    let paddedCellAreaIsEditable = view.debugCellFieldCoversPoint(
+        row: 1,
+        column: 0,
+        at: CGPoint(x: bodyFrame.midX, y: bodyFrame.minY + 4)
+    )
+    let clickReachesEditableField = view.debugHitTestTargetsEditableField(
+        at: CGPoint(x: bodyFrame.midX, y: bodyFrame.midY)
+    )
 
-    // The off-screen AppKit compositor may flatten sibling cell layers. Keep
-    // the screenshot useful as a renderability check, while contrast is
-    // asserted against the semantic foreground/background roles below.
+    // Keep a real interaction affordance in the table: a click just inside
+    // the cell edge must reach its NSTextField, and the selected cell's border
+    // must be visible in the rendered layer output.
     #expect(actualHeader.alphaComponent > 0)
     #expect(actualBody.alphaComponent > 0)
+    #expect(paddedCellAreaIsEditable)
+    #expect(clickReachesEditableField)
+    #expect(focusedCellHasIndicator)
     #expect(headerFrame.height >= 34)
     #expect(bodyFrame.height >= 34)
     #expect(contrastRatio(palette.textPrimary, expectedBody, appearance: lightAppearance) >= 4.5)
     #expect(contrastRatio(palette.textPrimary, expectedHeader, appearance: lightAppearance) >= 4.5)
+
+    window.contentView = nil
+}
+
+@MainActor
+@Test func markdownTableTabAndReturnCommandsMoveBetweenEditableCells() {
+    let table = MarkdownTableData(
+        headers: ["Task", "Owner"],
+        alignments: [.leading, .leading],
+        rows: [["Review table", "Liam"], ["Verify dictation", "Morgan"]]
+    )
+    let view = MarkdownNativeTableView(table: table)
+    view.frame = NSRect(x: 0, y: 0, width: 520, height: view.preferredHeight)
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 520, height: view.preferredHeight),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    window.contentView = view
+    window.layoutIfNeeded()
+    view.layoutSubtreeIfNeeded()
+
+    #expect(view.debugFocusCell(row: 1, column: 0))
+    #expect(view.debugDispatchCellCommand(#selector(NSResponder.insertTab(_:)), row: 1, column: 0))
+    #expect(view.debugCellIsFocused(row: 1, column: 1))
+
+    #expect(view.debugDispatchCellCommand(#selector(NSResponder.insertBacktab(_:)), row: 1, column: 1))
+    #expect(view.debugCellIsFocused(row: 1, column: 0))
+
+    #expect(view.debugDispatchCellCommand(#selector(NSResponder.insertNewline(_:)), row: 1, column: 0))
+    #expect(view.debugCellIsFocused(row: 2, column: 0))
 
     window.contentView = nil
 }

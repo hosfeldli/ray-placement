@@ -2528,15 +2528,14 @@ struct AIChatWorkspaceView: View {
                 attachmentAndToolMenu
                 if model.hasProviderAPIKey && !showingProviderSetup {
                     agentPicker
-                    skillPicker
-                    providerPicker
                     modelPicker
-                    reasoningPicker
+                    aiOptionsMenu
                 }
-                Spacer(minLength: 8)
-                Label("\(enabledToolCount) read-only", systemImage: "eye")
+                Spacer(minLength: 4)
+                Label("\(enabledToolCount)", systemImage: "eye")
                     .limaFont(.caption2.weight(.medium))
                     .foregroundStyle(LimaTheme.textSecondary)
+                    .help("\(enabledToolCount) read-only tools enabled")
                     .accessibilityLabel("\(enabledToolCount) read-only tools enabled")
             }
             .frame(minHeight: 28)
@@ -2604,6 +2603,20 @@ struct AIChatWorkspaceView: View {
     private var enabledToolCount: Int {
         LimaAIToolRegistry.enabledDefinitions(nativeToolStore.enabledToolIDs).count
             + mcpStore.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count }
+    }
+
+    private var aiOptionsMenu: some View {
+        Menu {
+            providerPicker
+            skillPicker
+            reasoningPicker
+        } label: {
+            Image(systemName: "slider.horizontal.3")
+                .frame(width: 28, height: 28)
+        }
+        .menuStyle(.borderlessButton)
+        .help("Provider, skills, and reasoning settings")
+        .accessibilityLabel("AI options")
     }
 
     private var attachmentAndToolMenu: some View {

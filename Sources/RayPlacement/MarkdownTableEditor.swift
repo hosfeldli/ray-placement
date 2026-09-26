@@ -206,7 +206,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         wantsLayer = true
         layer?.cornerRadius = LimaDesign.standardCorner
         layer?.cornerCurve = .continuous
-        layer?.borderWidth = 1.0
+        layer?.borderWidth = 0.65
         layer?.masksToBounds = true
         setAccessibilityElement(true)
         setAccessibilityRole(.group)
@@ -329,9 +329,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         title.layer?.borderColor = NotesAppearancePalette
             .resolved(palette.separator, appearance: appearance)
             .cgColor
-        title.placeholderString = "Untitled table"
+        title.placeholderString = "Table title…"
         title.font = .systemFont(ofSize: AppTypography.size(12), weight: .semibold)
         title.textColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: appearance)
+        title.layer?.borderWidth = 0
         title.setAccessibilityLabel("Table name")
         title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
@@ -405,8 +406,10 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
 
         let grid = NSGridView(views: visualRows)
         grid.translatesAutoresizingMaskIntoConstraints = true
-        grid.rowSpacing = 1
-        grid.columnSpacing = 1
+        // A sub-point gutter keeps the cells distinct without the dark,
+        // heavy spreadsheet grid that made the editor feel boxed in.
+        grid.rowSpacing = 0.6
+        grid.columnSpacing = 0.6
         grid.xPlacement = .fill
         grid.yPlacement = .fill
         grid.wantsLayer = true
@@ -503,7 +506,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         NSLayoutConstraint.activate([
             field.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
             field.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -9),
-            field.centerYAnchor.constraint(equalTo: container.centerYAnchor)
+            // Let the text field fill the cell's vertical hit area. With only
+            // centerY constrained, clicks above/below the text landed on the
+            // noninteractive container and appeared to do nothing.
+            field.topAnchor.constraint(equalTo: container.topAnchor, constant: 3),
+            field.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -3)
         ])
         fields.append(field)
         cellAppearances.append(container)
@@ -574,7 +581,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let border = NotesAppearancePalette.resolved(palette.tableOuterBorder, appearance: appearance)
         layer?.backgroundColor = background.cgColor
         layer?.borderColor = border.cgColor
-        layer?.borderWidth = 1.0
+        layer?.borderWidth = 0.65
         gridView?.layer?.backgroundColor = NotesAppearancePalette.resolved(palette.tableGrid, appearance: appearance).cgColor
         titleField?.layer?.borderColor = NotesAppearancePalette
             .resolved(palette.separator, appearance: appearance)
@@ -660,6 +667,44 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         let index = row * table.columnCount + column
         guard cellAppearances.indices.contains(index) else { return nil }
         return cellAppearances[index].convert(cellAppearances[index].bounds, to: self)
+    }
+
+    func debugCellFieldCoversPoint(row: Int, column: Int, at point: CGPoint) -> Bool {
+        let index = row * table.columnCount + column
+        guard cellAppearances.indices.contains(index), fields.indices.contains(index) else { return false }
+        let cell = cellAppearances[index]
+        return fields[index].frame.contains(cell.convert(point, from: self))
+    }
+
+    func debugHitTestTargetsEditableField(at point: CGPoint) -> Bool {
+        guard let hitView = hitTest(point) else { return false }
+        if hitView is MarkdownTableField { return true }
+        guard let editor = hitView as? NSTextView else { return false }
+        return fields.contains { $0.currentEditor() === editor }
+    }
+
+    func debugDispatchCellCommand(_ selector: Selector, row: Int, column: Int) -> Bool {
+        let index = row * table.columnCount + column
+        guard fields.indices.contains(index) else { return false }
+        let field = fields[index]
+        let editor = (field.currentEditor() as? NSTextView) ?? NSTextView()
+        return control(field, textView: editor, doCommandBy: selector)
+    }
+
+    func debugCellIsFocused(row: Int, column: Int) -> Bool {
+        let index = row * table.columnCount + column
+        guard fields.indices.contains(index) else { return false }
+        let field = fields[index]
+        return window?.firstResponder === field || window?.firstResponder === field.currentEditor()
+    }
+
+    func debugCellHasVisibleFocusIndicator(row: Int, column: Int) -> Bool {
+        let index = row * table.columnCount + column
+        guard cellAppearances.indices.contains(index) else { return false }
+        let cell = cellAppearances[index]
+        return cell.isFocused
+            && (cell.layer?.borderWidth ?? 0) >= 1.5
+            && (cell.layer?.borderColor?.alpha ?? 0) > 0
     }
 
     func debugRenderedBitmap() -> NSBitmapImageRep? {
@@ -936,12 +981,14 @@ private final class MarkdownTableCellView: NSView {
 
     override func updateLayer() {
         let surface = role == .header ? palette.elevatedSurface : palette.background
-        layer?.backgroundColor = NotesAppearancePalette.resolved(surface, appearance: resolvedAppearance).cgColor
-        layer?.borderWidth = isFocused ? 1.5 : 0
+        layer?.backgroundColor = NotesAppearancePalette
+            .resolved(isFocused ? palette.accentSoft : surface, appearance: resolvedAppearance)
+            .cgColor
+        layer?.borderWidth = isFocused ? 2 : 0
         layer?.borderColor = isFocused
-            ? NotesAppearancePalette.resolved(palette.accent, appearance: resolvedAppearance).cgColor
+            ? NotesAppearancePalette.resolved(palette.focusRing, appearance: resolvedAppearance).cgColor
             : NSColor.clear.cgColor
-        layer?.cornerRadius = 0
+        layer?.cornerRadius = isFocused ? 2 : 0
     }
 
     override func draw(_ dirtyRect: NSRect) {

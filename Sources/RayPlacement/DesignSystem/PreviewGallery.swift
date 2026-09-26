@@ -584,10 +584,21 @@ private struct PreviewExtensionPack: View {
 }
 
 private struct PreviewNotes: View {
+    @State private var markdown = """
+    Track each release workstream here. Click a cell to edit; **Tab** moves across and **Return** moves down.
+
+    | Workstream | Owner | Status | Next action |
+    | :--- | :---: | :--- | :--- |
+    | Notes editor | Liam | In progress | Verify table keyboard flow |
+    | Dictation | Morgan | Ready | Test live partial insertion |
+    | AI workspace | Liam | Review | Check provider and tool states |
+    | Extension store | Team | Pending | Validate install and update |
+    """
+
     var body: some View {
         PreviewWindowSurface {
             VStack(spacing: 0) {
-                PreviewToolbar(symbol: "note.text", title: "Notes", detail: "Local Markdown workspace")
+                PreviewToolbar(symbol: "note.text", title: "Workspace", detail: "Notes · AI · Dictation")
                 HStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -597,7 +608,7 @@ private struct PreviewNotes: View {
                         .padding(9)
                         .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
                         Text("PINNED").limaFont(.system(size: 9, weight: .bold)).foregroundStyle(LimaColors.tertiaryText).padding(.top, 9)
-                        PreviewNoteRow(title: "Weekly plan", detail: "Today · 12:40 PM", selected: true)
+                        PreviewNoteRow(title: "Release readiness", detail: "Today · 12:40 PM", selected: true)
                         Text("RECENT").limaFont(.system(size: 9, weight: .bold)).foregroundStyle(LimaColors.tertiaryText).padding(.top, 7)
                         PreviewNoteRow(title: "Garden notes", detail: "Yesterday", selected: false)
                         PreviewNoteRow(title: "Incident checklist", detail: "Monday", selected: false)
@@ -607,26 +618,32 @@ private struct PreviewNotes: View {
                     .padding(12)
                     .frame(width: 250)
                     .background(LimaColors.sidebarBackground)
+                    Rectangle().fill(LimaColors.separator).frame(width: LimaDesign.hairlineWidth)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Weekly plan").limaFont(.system(size: 24, weight: .semibold))
-                        Text("Updated today · 12:40 PM").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
-                        Divider().padding(.vertical, 13)
-                        Text("This is a calm document surface. The content owns the hierarchy, while metadata and formatting remain quiet.")
-                            .limaFont(.system(size: 15))
-                            .lineSpacing(4)
-                        Text("\n- [x] Review extension packs\n- [ ] Test Light and Dark appearance\n- [ ] Verify dictation retry")
-                            .limaFont(.system(size: 15, design: .monospaced))
-                            .lineSpacing(4)
-                        Spacer()
-                        HStack {
-                            Label("Tasks 1 of 3", systemImage: "circle.dashed")
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Release readiness").limaFont(.system(size: 22, weight: .semibold))
+                                Text("Updated today · 12:40 PM").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
+                            }
                             Spacer()
-                            Text("Bold   Italic   Link   Table").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
+                            Text("Saved").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
                         }
-                        .padding(10)
-                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                        .padding(.bottom, 12)
+                        Divider()
+                        InlineMarkdownEditor(text: $markdown, compact: true, inlineGrammarCheckingEnabled: false)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        HStack(spacing: 8) {
+                            Label("Table", systemImage: "tablecells")
+                            Spacer()
+                            Text("4 rows · 4 columns")
+                                .foregroundStyle(LimaColors.secondaryText)
+                        }
+                        .limaFont(LimaTypography.caption)
+                        .padding(.top, 9)
                     }
-                    .padding(28)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 18)
+                    .padding(.bottom, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(LimaColors.editorBackground)
                 }

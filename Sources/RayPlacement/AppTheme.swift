@@ -106,11 +106,11 @@ struct NotesAppearancePalette {
             ? NSColor(calibratedWhite: 0.205, alpha: 1)
             : Self.blend(background, with: baseAccent, fraction: 0.035)
         tableGrid = isDark
-            ? NSColor(calibratedWhite: 0.36, alpha: 1)
-            : separator.withAlphaComponent(0.58)
+            ? NSColor(calibratedWhite: 0.32, alpha: 1)
+            : separator.withAlphaComponent(0.42)
         tableOuterBorder = isDark
-            ? NSColor(calibratedWhite: 0.56, alpha: 1)
-            : Self.blend(separator, with: textPrimary, fraction: 0.42)
+            ? NSColor(calibratedWhite: 0.40, alpha: 1)
+            : Self.blend(separator, with: textPrimary, fraction: 0.08)
 
         codeBackground = Self.blend(background, with: elevatedSurface, fraction: isDark ? 0.28 : 0.12)
         codeText = textPrimary
