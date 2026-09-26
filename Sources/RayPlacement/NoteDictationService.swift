@@ -99,6 +99,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var operationIdentifier: UUID?
     private var registryTaskID: UUID?
     private var firstPartialPerformanceMeasurementID: UUID?
+    private var partialToCommitStartedAt: Date?
     private var sessionStarted = false
     private var usesDefaultConversationCallbacks = false
 
@@ -405,6 +406,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                     guard let self, self.operationIdentifier == operation else { return }
                     if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.finishFirstPartialMeasurement(succeeded: true)
+                        if self.partialToCommitStartedAt == nil {
+                            self.partialToCommitStartedAt = Date()
+                        }
+                    } else {
+                        self.partialToCommitStartedAt = nil
                     }
                     self.partialTranscript = partial
                     self.livePreviewText = partial
@@ -458,6 +464,17 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         guard operationIdentifier == operation,
               phase == .recording || phase == .transcribing,
               !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if let partialToCommitStartedAt {
+            let duration = max(0, Date().timeIntervalSince(partialToCommitStartedAt))
+            if duration >= 0.01 {
+                PerformanceMonitor.shared.record(
+                    "Dictation partial to committed delta",
+                    startedAt: partialToCommitStartedAt,
+                    duration: duration
+                )
+            }
+        }
+        self.partialToCommitStartedAt = nil
         publishTargetEvent(.committedDelta(delta))
         liveCommittedTranscript += delta
         chunkTranscripts.append(delta)
@@ -998,6 +1015,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func resetJobState() {
         finishFirstPartialMeasurement(succeeded: false, detail: "Reset before first partial")
+        partialToCommitStartedAt = nil
         stopMetering()
         recordedDuration = 0
         speechRecognizer = nil

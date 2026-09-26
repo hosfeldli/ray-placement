@@ -1684,7 +1684,14 @@ final class AIChatViewModel: ObservableObject {
             AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima", completed: false),
             conversationID: conversationID
         )
+        let toolStartedAt = Date()
         let result = await LimaAIToolRegistry.execute(call)
+        PerformanceMonitor.shared.record(
+            "AI tool duration",
+            startedAt: toolStartedAt,
+            duration: max(0, Date().timeIntervalSince(toolStartedAt)),
+            succeeded: !result.isError
+        )
         appendTurnActivity(
             AIAgentActivity(
                 kind: result.isError ? .toolFailed : .toolCompleted,
