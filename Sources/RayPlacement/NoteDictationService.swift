@@ -98,6 +98,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var recorderRestartCount = 0
     private var operationIdentifier: UUID?
     private var registryTaskID: UUID?
+    private var firstPartialPerformanceMeasurementID: UUID?
     private var sessionStarted = false
     private var usesDefaultConversationCallbacks = false
 
@@ -220,6 +221,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func cancel() {
+        finishFirstPartialMeasurement(succeeded: false, detail: "Cancelled before first partial")
         let hadActiveSession = sessionStarted
         liveAppleTranscriber.cancel()
         stopMetering()
@@ -401,6 +403,9 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             if activeEngine == .appleSpeech {
                 liveAppleTranscriber.onPartial = { [weak self] partial in
                     guard let self, self.operationIdentifier == operation else { return }
+                    if !partial.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        self.finishFirstPartialMeasurement(succeeded: true)
+                    }
                     self.partialTranscript = partial
                     self.livePreviewText = partial
                     self.publishTargetEvent(.partial(partial))
@@ -429,6 +434,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                         }
                     }
                 }
+                firstPartialPerformanceMeasurementID = PerformanceMonitor.shared.begin("Dictation speech to first partial")
                 do {
                     try liveAppleTranscriber.start()
                 } catch {
@@ -473,6 +479,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func stopAndTranscribe() {
         guard phase == .recording || phase == .paused, let recorder else { return }
+        finishFirstPartialMeasurement(succeeded: false, detail: "Stopped before first partial")
         phase = .stopping
         stopMetering()
         finalizeCurrentRecordingSegment(recorder)
@@ -604,6 +611,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         let url = recordingSegmentURLs[localSegmentIndex]
         transcriptionProgress = "Transcribing segment \(localSegmentIndex + 1) of \(recordingSegmentURLs.count)…"
         let performance = activePerformance ?? SettingsStore.shared.runtimeDictationPerformance
+        let segmentStartedAt = Date()
         localWhisperIsRunning = true
         localWhisper.transcribe(
             audioURL: url,
@@ -613,7 +621,16 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 self?.transcriptionProgress = message
             }
         ) { [weak self] result in
-            guard let self, self.phase == .recording || self.phase == .transcribing else { return }
+            guard let self else { return }
+            let succeeded: Bool
+            if case .success = result { succeeded = true } else { succeeded = false }
+            PerformanceMonitor.shared.record(
+                "Whisper segment duration",
+                startedAt: segmentStartedAt,
+                duration: max(0, Date().timeIntervalSince(segmentStartedAt)),
+                succeeded: succeeded
+            )
+            guard self.phase == .recording || self.phase == .transcribing else { return }
             self.localWhisperIsRunning = false
             switch result {
             case .success(let transcript):
@@ -973,7 +990,14 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         completedRecordingDuration = 0
     }
 
+    private func finishFirstPartialMeasurement(succeeded: Bool, detail: String? = nil) {
+        guard let measurementID = firstPartialPerformanceMeasurementID else { return }
+        PerformanceMonitor.shared.end(measurementID, succeeded: succeeded, detail: detail)
+        firstPartialPerformanceMeasurementID = nil
+    }
+
     private func resetJobState() {
+        finishFirstPartialMeasurement(succeeded: false, detail: "Reset before first partial")
         stopMetering()
         recordedDuration = 0
         speechRecognizer = nil

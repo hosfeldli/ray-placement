@@ -685,9 +685,20 @@ final class LauncherViewModel: ObservableObject {
             return
         }
         isSearching = true
+        let searchStartedAt = Date()
         universalSearchTask = Task { [weak self] in
             let found = await UniversalSearchCoordinator.shared.search(cleanQuery)
-            guard !Task.isCancelled else { return }
+            let wasCancelled = Task.isCancelled
+            await MainActor.run {
+                PerformanceMonitor.shared.record(
+                    "Search query to results",
+                    startedAt: searchStartedAt,
+                    duration: max(0, Date().timeIntervalSince(searchStartedAt)),
+                    succeeded: !wasCancelled,
+                    detail: wasCancelled ? "Superseded or cancelled" : nil
+                )
+            }
+            guard !wasCancelled else { return }
             await MainActor.run {
                 guard let self,
                       self.mode == .root,

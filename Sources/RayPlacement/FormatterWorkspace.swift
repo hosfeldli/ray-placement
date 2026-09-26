@@ -147,8 +147,13 @@ final class FormatterWorkspaceModel: ObservableObject {
     }
 
     func format() {
+        let measurementID = PerformanceMonitor.shared.begin("Formatter parse")
+        var succeeded = false
         onProcessingStateChanged?(true)
-        defer { onProcessingStateChanged?(false) }
+        defer {
+            onProcessingStateChanged?(false)
+            PerformanceMonitor.shared.end(measurementID, succeeded: succeeded)
+        }
         do {
             let formatted = try DocumentFormatterService.format(
                 source,
@@ -156,6 +161,7 @@ final class FormatterWorkspaceModel: ObservableObject {
                 style: style,
                 ediSegmentDelimiter: segmentEnding.delimiter
             )
+            succeeded = true
             result = formatted
             output = formatted.output
             errorMessage = nil

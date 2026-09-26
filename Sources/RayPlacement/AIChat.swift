@@ -856,6 +856,7 @@ final class AIChatViewModel: ObservableObject {
     private var cancelledAssistantIDs = Set<UUID>()
     private var registeredTaskID: UUID?
     private var performanceMeasurementID: UUID?
+    private var firstTokenPerformanceMeasurementID: UUID?
 
     init(
         store: AIConversationStore? = nil,
@@ -1399,6 +1400,7 @@ final class AIChatViewModel: ObservableObject {
             onCancel: { [weak self] in self?.cancel() }
         )
         performanceMeasurementID = PerformanceMonitor.shared.begin("AI request")
+        firstTokenPerformanceMeasurementID = PerformanceMonitor.shared.begin("AI composer to first token")
         CrashRecoveryStore.shared.update { snapshot in
             snapshot.activeSurface = LimaSurfaceID.workspace.rawValue
             snapshot.activeWorkspaceModule = LimaWorkspaceModule.ai.rawValue
@@ -1864,6 +1866,10 @@ final class AIChatViewModel: ObservableObject {
         case .responseCreated(let id):
             responseID = id
         case .textDelta(let delta):
+            if let measurementID = firstTokenPerformanceMeasurementID {
+                PerformanceMonitor.shared.end(measurementID)
+                firstTokenPerformanceMeasurementID = nil
+            }
             updateAssistant(conversationID: conversationID, assistantID: assistantID) {
                 $0.text += delta
             }
@@ -2045,6 +2051,14 @@ final class AIChatViewModel: ObservableObject {
         if let performanceMeasurementID {
             PerformanceMonitor.shared.end(performanceMeasurementID, succeeded: state == .completed)
             self.performanceMeasurementID = nil
+        }
+        if let firstTokenPerformanceMeasurementID {
+            PerformanceMonitor.shared.end(
+                firstTokenPerformanceMeasurementID,
+                succeeded: false,
+                detail: "No text delta"
+            )
+            self.firstTokenPerformanceMeasurementID = nil
         }
     }
 

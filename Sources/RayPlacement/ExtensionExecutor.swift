@@ -18,6 +18,7 @@ final class ExtensionExecutor {
     private var timeoutWorkItems: [UUID: DispatchWorkItem] = [:]
     private var usageTasks: [UUID: UUID] = [:]
     private var registryTasks: [UUID: UUID] = [:]
+    private var performanceMeasurements: [UUID: UUID] = [:]
 
     func cancelAll() {
         Array(activeProcesses.keys).forEach { cancelProcess($0) }
@@ -30,6 +31,9 @@ final class ExtensionExecutor {
         if process.isRunning { process.terminate() }
         if let usage = usageTasks.removeValue(forKey: identifier) {
             UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
+        }
+        if let measurementID = performanceMeasurements.removeValue(forKey: identifier) {
+            PerformanceMonitor.shared.end(measurementID, succeeded: false, detail: "Cancelled by user")
         }
         if finishRegistryTask, let task = registryTasks.removeValue(forKey: identifier) {
             TaskRegistry.shared.finish(task, state: .cancelled, detail: "Stopped by user")
@@ -269,9 +273,11 @@ final class ExtensionExecutor {
         task.standardError = output
 
         let identifier = UUID()
+        let measurementID = PerformanceMonitor.shared.begin("Extension execution")
         do {
             try task.run()
             activeProcesses[identifier] = task
+            performanceMeasurements[identifier] = measurementID
             usageTasks[identifier] = UsageMonitor.shared.begin(
                 category: .extensionCommand,
                 operation: executable.lastPathComponent,
@@ -285,6 +291,7 @@ final class ExtensionExecutor {
                 onCancel: { [weak self] in self?.cancelProcess(identifier, finishRegistryTask: false) }
             )
         } catch {
+            PerformanceMonitor.shared.end(measurementID, succeeded: false)
             completion(.failure(error))
             return
         }
@@ -378,6 +385,9 @@ final class ExtensionExecutor {
         detail: String? = nil
     ) {
         guard let task = registryTasks.removeValue(forKey: identifier) else { return }
+        if let measurementID = performanceMeasurements.removeValue(forKey: identifier) {
+            PerformanceMonitor.shared.end(measurementID, succeeded: state == .completed)
+        }
         TaskRegistry.shared.finish(task, state: state, detail: detail)
     }
 

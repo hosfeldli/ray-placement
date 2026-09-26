@@ -249,11 +249,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func show(from sourceApplication: NSRunningApplication? = nil) {
         let startedAt = DispatchTime.now().uptimeNanoseconds
+        let measurementID = PerformanceMonitor.shared.begin("Launcher open to visible")
         defer { LauncherPerformanceDiagnostics.shared.mark("hotkey-visible", startedAt: startedAt, budget: 80) }
         rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
         presentPanel()
+        DispatchQueue.main.async { [weak self] in
+            PerformanceMonitor.shared.end(measurementID, succeeded: self?.panel.isVisible == true)
+        }
     }
 
     func hide() {

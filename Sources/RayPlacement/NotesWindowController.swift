@@ -243,6 +243,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func present() {
+        let measurementID = PerformanceMonitor.shared.begin("Workspace open to visible")
         restoreWorkspaceSelection()
         let window = ensureWindow()
         applyPresentationMode(presentation.mode, to: window, animated: false)
@@ -254,6 +255,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             remembersFrame: !presentation.mode.isDocked
         )
         NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            PerformanceMonitor.shared.end(measurementID, succeeded: window.isVisible)
+        }
     }
 
     func present(module: LimaWorkspaceModule) {
@@ -262,6 +266,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func selectModule(_ module: LimaWorkspaceModule) {
+        let measurementID = presentation.activeModule == module
+            ? nil
+            : PerformanceMonitor.shared.begin("Workspace module switch")
         if presentation.mode.isDocked && module != .notes && module != .dictation {
             restoreWorkspace()
         }
@@ -272,6 +279,14 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
         if module == .terminal {
             terminalModel.startIfNeeded()
+        }
+        if let measurementID {
+            DispatchQueue.main.async { [weak self] in
+                PerformanceMonitor.shared.end(
+                    measurementID,
+                    succeeded: self?.presentation.activeModule == module
+                )
+            }
         }
     }
 
