@@ -125,6 +125,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             registeredActivationShortcut = nil
             return
         }
+        guard !SettingsStore.shared.activationShortcut.isEmpty else {
+            hotKeys.unregister(identifier: "activation")
+            registeredActivationShortcut = nil
+            return
+        }
         guard let shortcut = ShortcutSpec(string: SettingsStore.shared.activationShortcut) else {
             SettingsStore.shared.lastError = "The activation shortcut is invalid."
             if let registeredActivationShortcut {
@@ -225,6 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] application in
             self?.launcher.captureSelectionToShelf(from: application)
         }
+        CommandManager.shared.validateShortcuts(launcher.viewModel.extensionCommands)
     }
 
     private func configureAccessoryMouseBindings() {
@@ -326,6 +332,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previous = nil
             return
         }
+        guard !rawShortcut.isEmpty else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            SettingsStore.shared.lastError = nil
+            return
+        }
         guard let shortcut = ShortcutSpec(string: rawShortcut) else {
             SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
             if let previous { restore(previous.storageString) }
@@ -353,6 +365,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else {
             hotKeys.unregister(identifier: identifier)
             previous = nil
+            return
+        }
+        guard !rawShortcut.isEmpty else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            SettingsStore.shared.lastError = nil
             return
         }
         guard let shortcut = ShortcutSpec(string: rawShortcut) else {
@@ -396,6 +414,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ))
             }
         }
+        CommandManager.shared.validateShortcuts(launcher.viewModel.extensionCommands)
         launcher.viewModel.setExtensionHotkeyIssues(issues)
     }
 

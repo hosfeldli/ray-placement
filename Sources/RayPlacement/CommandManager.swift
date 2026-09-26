@@ -15,6 +15,7 @@ final class CommandManager: ObservableObject {
     @Published private(set) var profiles: [CommandProfile]
     @Published var activeProfileID: UUID?
     @Published private(set) var conflictMessages: [String] = []
+    @Published private(set) var shortcutRegistry = ShortcutRegistry()
 
     private let defaults = UserDefaults.standard
     private let favoritesKey = "commandManager.favoriteIDs"
@@ -144,12 +145,36 @@ final class CommandManager: ObservableObject {
     }
 
     func validateShortcuts(_ commands: [LoadedExtensionCommand]) {
-        let grouped = Dictionary(grouping: commands.compactMap { command -> (String, String)? in
-            guard let shortcut = SettingsStore.shared.effectiveShortcut(for: command), !shortcut.isEmpty else { return nil }
-            return (shortcut.lowercased(), "\(command.extensionName): \(command.command.title)")
-        }, by: \.0)
-        conflictMessages = grouped.compactMap { shortcut, values in
-            values.count > 1 ? "\(shortcut) is assigned to \(values.map(\.1).joined(separator: ", "))" : nil
+        let settings = SettingsStore.shared
+        let builtIns: [(id: String, title: String, value: String)] = [
+            ("builtin.activation", "Launcher", settings.activationShortcut),
+            ("builtin.notes", "Notes", settings.notesShortcut),
+            ("builtin.quick-note", "Quick Note", settings.quickNoteShortcut),
+            ("builtin.dictation", "Dictation", settings.dictationShortcut),
+            ("builtin.notes-dock-left", "Dock Notes Left", settings.notesDockLeftShortcut),
+            ("builtin.notes-dock-right", "Dock Notes Right", settings.notesDockRightShortcut),
+            ("builtin.terminal", "Terminal", settings.terminalShortcut),
+            ("builtin.context-shelf.capture-selection", "Add Selection to Shelf", settings.contextShelfCaptureShortcut),
+            ("builtin.stealth-grammar", "Fix Writing", settings.stealthGrammarShortcut)
+        ]
+
+        var registry = ShortcutRegistry(assignments: builtIns.map {
+            ShortcutAssignment(id: $0.id, title: $0.title, shortcut: $0.value)
+        })
+        for command in commands {
+            let id = "extension.\(command.extensionID).\(command.command.id)"
+            let title = "\(command.extensionName): \(command.command.title)"
+            registry.set(ShortcutAssignment(
+                id: id,
+                title: title,
+                shortcut: settings.effectiveShortcut(for: command)
+            ))
+        }
+
+        shortcutRegistry = registry
+        conflictMessages = registry.conflicts.map { assignments in
+            let shortcut = assignments.first?.shortcut?.displayString ?? "Shortcut"
+            return "\(shortcut) is assigned to \(assignments.map(\.title).joined(separator: ", "))"
         }.sorted()
     }
 

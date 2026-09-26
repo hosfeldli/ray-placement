@@ -16,6 +16,15 @@ private struct SettingsExtensionGroup: Identifiable {
     let commands: [LoadedExtensionCommand]
 }
 
+private struct PendingShortcutAssignment: Identifiable {
+    let id = UUID()
+    let targetID: String
+    let targetTitle: String
+    let shortcut: String
+    let conflictID: String
+    let conflictTitle: String
+}
+
 private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case commands
@@ -109,6 +118,8 @@ struct SettingsView: View {
     @State private var confirmUsageClear = false
     @State private var commandProfileName = ""
     @State private var aliasDrafts: [String: String] = [:]
+    @State private var shortcutLookupDraft = ""
+    @State private var pendingShortcutAssignment: PendingShortcutAssignment?
     @State private var workspaceProfileName = ""
     @State private var grammarAPIKey = ""
     @State private var grammarConnectionMessage: String?
@@ -159,6 +170,103 @@ struct SettingsView: View {
             Button("Clear Log", role: .destructive) { usageMonitor.clear() }
         } message: {
             Text("This permanently removes Lima's local task history. It never contains your selected text or document contents.")
+        }
+        .alert(item: $pendingShortcutAssignment) { request in
+            Alert(
+                title: Text("Shortcut conflict"),
+                message: Text("\(ShortcutSpec(string: request.shortcut)?.displayString ?? request.shortcut) is already assigned to \(request.conflictTitle). Reassign it to \(request.targetTitle)?"),
+                primaryButton: .default(Text("Reassign")) {
+                    applyShortcut("", to: request.conflictID)
+                    applyShortcut(request.shortcut, to: request.targetID)
+                },
+                secondaryButton: .cancel()
+            )
+        }
+    }
+
+    private func shortcutBinding(for assignmentID: String) -> Binding<String> {
+        Binding(
+            get: { shortcutValue(for: assignmentID) },
+            set: { requestShortcutAssignment($0, to: assignmentID) }
+        )
+    }
+
+    private func shortcutValue(for assignmentID: String) -> String {
+        switch assignmentID {
+        case "builtin.activation": return settings.activationShortcut
+        case "builtin.notes": return settings.notesShortcut
+        case "builtin.quick-note": return settings.quickNoteShortcut
+        case "builtin.dictation": return settings.dictationShortcut
+        case "builtin.notes-dock-left": return settings.notesDockLeftShortcut
+        case "builtin.notes-dock-right": return settings.notesDockRightShortcut
+        case "builtin.terminal": return settings.terminalShortcut
+        case "builtin.context-shelf.capture-selection": return settings.contextShelfCaptureShortcut
+        case "builtin.stealth-grammar": return settings.stealthGrammarShortcut
+        default:
+            return extensionCommand(for: assignmentID).flatMap { settings.effectiveShortcut(for: $0) } ?? ""
+        }
+    }
+
+    private func requestShortcutAssignment(_ shortcut: String, to assignmentID: String) {
+        guard !shortcut.isEmpty else {
+            applyShortcut(shortcut, to: assignmentID)
+            return
+        }
+        guard ShortcutSpec(string: shortcut) != nil else { return }
+
+        commandManager.validateShortcuts(viewModel.extensionCommands)
+        guard let conflict = commandManager.shortcutRegistry.conflict(for: shortcut, excluding: assignmentID) else {
+            applyShortcut(shortcut, to: assignmentID)
+            return
+        }
+        pendingShortcutAssignment = PendingShortcutAssignment(
+            targetID: assignmentID,
+            targetTitle: shortcutTitle(for: assignmentID),
+            shortcut: shortcut,
+            conflictID: conflict.id,
+            conflictTitle: conflict.title
+        )
+    }
+
+    private func applyShortcut(_ shortcut: String, to assignmentID: String) {
+        switch assignmentID {
+        case "builtin.activation": settings.activationShortcut = shortcut
+        case "builtin.notes": settings.notesShortcut = shortcut
+        case "builtin.quick-note": settings.quickNoteShortcut = shortcut
+        case "builtin.dictation": settings.dictationShortcut = shortcut
+        case "builtin.notes-dock-left": settings.notesDockLeftShortcut = shortcut
+        case "builtin.notes-dock-right": settings.notesDockRightShortcut = shortcut
+        case "builtin.terminal": settings.terminalShortcut = shortcut
+        case "builtin.context-shelf.capture-selection": settings.contextShelfCaptureShortcut = shortcut
+        case "builtin.stealth-grammar": settings.stealthGrammarShortcut = shortcut
+        default:
+            if let command = extensionCommand(for: assignmentID) {
+                settings.setShortcut(shortcut.isEmpty ? nil : shortcut, for: command)
+            }
+        }
+        commandManager.validateShortcuts(viewModel.extensionCommands)
+    }
+
+    private func shortcutTitle(for assignmentID: String) -> String {
+        let titles = [
+            "builtin.activation": "Launcher",
+            "builtin.notes": "Notes",
+            "builtin.quick-note": "Quick Note",
+            "builtin.dictation": "Dictation",
+            "builtin.notes-dock-left": "Dock Notes Left",
+            "builtin.notes-dock-right": "Dock Notes Right",
+            "builtin.terminal": "Terminal",
+            "builtin.context-shelf.capture-selection": "Add Selection to Shelf",
+            "builtin.stealth-grammar": "Fix Writing"
+        ]
+        return titles[assignmentID] ?? extensionCommand(for: assignmentID).map {
+            "\($0.extensionName): \($0.command.title)"
+        } ?? "Lima command"
+    }
+
+    private func extensionCommand(for assignmentID: String) -> LoadedExtensionCommand? {
+        viewModel.extensionCommands.first {
+            "extension.\($0.extensionID).\($0.command.id)" == assignmentID
         }
     }
 
@@ -673,7 +781,7 @@ struct SettingsView: View {
     }
 
     private var grammarSettingsTab: some View {
-        SimpleWritingSettingsView(settings: settings, apiKey: $grammarAPIKey)
+        SimpleWritingSettingsView(settings: settings, apiKey: $grammarAPIKey, shortcut: shortcutBinding(for: "builtin.stealth-grammar"))
     }
 
     private var dictationTab: some View {
@@ -695,7 +803,12 @@ struct SettingsView: View {
             }
             Section("Recording") {
                 Toggle("Enable dictation hotkey", isOn: $settings.dictationHotkeyEnabled)
-                PrimaryShortcutRow(title: "Dictation", symbol: "mic.fill", enabled: $settings.dictationHotkeyEnabled, shortcut: $settings.dictationShortcut)
+                PrimaryShortcutRow(
+                    title: "Dictation",
+                    symbol: "mic.fill",
+                    enabled: $settings.dictationHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.dictation")
+                )
                 Text("Recordings and transcripts remain on this Mac. Start Dictation from the launcher or its keyboard shortcut.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
@@ -1007,50 +1120,72 @@ struct SettingsView: View {
                     title: "Launcher",
                     symbol: "command",
                     enabled: $settings.activationHotkeyEnabled,
-                    shortcut: $settings.activationShortcut
+                    shortcut: shortcutBinding(for: "builtin.activation")
                 )
                 PrimaryShortcutRow(
                     title: "Notes",
                     symbol: "note.text",
                     enabled: $settings.notesHotkeyEnabled,
-                    shortcut: $settings.notesShortcut
+                    shortcut: shortcutBinding(for: "builtin.notes")
                 )
                 PrimaryShortcutRow(
                     title: "Quick Note",
                     symbol: "rectangle.righthalf.inset.filled",
                     enabled: $settings.quickNoteHotkeyEnabled,
-                    shortcut: $settings.quickNoteShortcut
+                    shortcut: shortcutBinding(for: "builtin.quick-note")
                 )
                 PrimaryShortcutRow(
                     title: "Dictation",
                     symbol: "mic.fill",
                     enabled: $settings.dictationHotkeyEnabled,
-                    shortcut: $settings.dictationShortcut
+                    shortcut: shortcutBinding(for: "builtin.dictation")
                 )
                 PrimaryShortcutRow(
                     title: "Dock Notes Left",
                     symbol: "rectangle.lefthalf.inset.filled",
                     enabled: $settings.notesDockLeftHotkeyEnabled,
-                    shortcut: $settings.notesDockLeftShortcut
+                    shortcut: shortcutBinding(for: "builtin.notes-dock-left")
                 )
                 PrimaryShortcutRow(
                     title: "Dock Notes Right",
                     symbol: "rectangle.righthalf.inset.filled",
                     enabled: $settings.notesDockRightHotkeyEnabled,
-                    shortcut: $settings.notesDockRightShortcut
+                    shortcut: shortcutBinding(for: "builtin.notes-dock-right")
                 )
                 PrimaryShortcutRow(
                     title: "Terminal",
                     symbol: "terminal.fill",
                     enabled: $settings.terminalHotkeyEnabled,
-                    shortcut: $settings.terminalShortcut
+                    shortcut: shortcutBinding(for: "builtin.terminal")
                 )
                 PrimaryShortcutRow(
                     title: "Add Selection to Shelf",
                     symbol: "text.badge.plus",
                     enabled: $settings.contextShelfCaptureHotkeyEnabled,
-                    shortcut: $settings.contextShelfCaptureShortcut
+                    shortcut: shortcutBinding(for: "builtin.context-shelf.capture-selection")
                 )
+            }
+
+            Section("Shortcut lookup") {
+                HStack {
+                    Label("Press shortcut…", systemImage: "keyboard")
+                    Spacer()
+                    ShortcutRecorder(shortcut: $shortcutLookupDraft, label: "Shortcut to look up")
+                        .frame(width: 132, height: 28)
+                }
+                let owners = commandManager.shortcutRegistry.owners(of: shortcutLookupDraft)
+                if owners.isEmpty {
+                    Label(
+                        shortcutLookupDraft.isEmpty ? "Record a shortcut to find its Lima assignment." : "No Lima command uses this shortcut.",
+                        systemImage: shortcutLookupDraft.isEmpty ? "info.circle" : "checkmark.circle"
+                    )
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .limaFont(.caption)
+                } else {
+                    ForEach(owners) { owner in
+                        LabeledContent("Assigned to", value: owner.title)
+                    }
+                }
             }
 
             Section("Accessory mouse buttons") {
@@ -1084,7 +1219,7 @@ struct SettingsView: View {
                         Label(message, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).limaFont(.caption)
                     }
                 } else {
-                    Label("No shortcut conflicts detected for extension commands.", systemImage: "checkmark.circle").foregroundStyle(LimaTheme.textSecondary).limaFont(.caption)
+                    Label("No Lima shortcut conflicts detected.", systemImage: "checkmark.circle").foregroundStyle(LimaTheme.textSecondary).limaFont(.caption)
                 }
             }
 
@@ -1752,6 +1887,7 @@ final class SettingsWindowController: NSWindowController {
 private struct SimpleWritingSettingsView: View {
     @ObservedObject var settings: SettingsStore
     @Binding var apiKey: String
+    @Binding var shortcut: String
     @State private var message: String?
 
     var body: some View {
@@ -1783,7 +1919,7 @@ private struct SimpleWritingSettingsView: View {
                 if let message { Text(message).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
             }
             Section("Shortcut") {
-                PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: Binding(get: { settings.stealthGrammarShortcut }, set: { settings.stealthGrammarShortcut = $0 }))
+                PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: $shortcut)
             }
         }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
     }

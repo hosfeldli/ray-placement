@@ -33,6 +33,36 @@ private func packageRoot() -> URL {
     #expect(ShortcutSpec(string: "command+command")?.displayString == "⌘ twice")
 }
 
+@Test func shortcutRegistryFindsConflictsBeforeAssignmentAndSupportsReverseLookup() {
+    let registry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "notes", title: "Notes", shortcut: "command+shift+n"),
+        ShortcutAssignment(id: "launcher", title: "Launcher", shortcut: "option+space"),
+        ShortcutAssignment(id: "unused", title: "Unused", shortcut: nil)
+    ])
+
+    #expect(registry.conflict(for: "⌘⇧N", excluding: "ai")?.id == "notes")
+    #expect(registry.conflict(for: "⌘⇧N", excluding: "notes") == nil)
+    #expect(registry.reverseLookup("command+shift+n")?.title == "Notes")
+    #expect(registry.reverseLookup("option+control+q") == nil)
+    #expect(registry.conflicts.isEmpty)
+
+    let physicalKeyRegistry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "legacy", title: "Legacy", shortcut: "command+shift+n")
+    ])
+    #expect(physicalKeyRegistry.conflict(for: "command+shift+kc45:n", excluding: "captured")?.id == "legacy")
+    #expect(physicalKeyRegistry.owners(of: "command+shift+kc45:n").map(\.id) == ["legacy"])
+}
+
+@Test func shortcutRegistryReportsExistingDuplicateAssignments() {
+    let registry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "notes", title: "Notes", shortcut: "command+shift+n"),
+        ShortcutAssignment(id: "ai", title: "AI", shortcut: "⌘⇧N")
+    ])
+
+    #expect(registry.conflicts.count == 1)
+    #expect(registry.conflicts.first?.map(\.id) == ["ai", "notes"])
+}
+
 @Test func notesDockLayoutPinsToEitherVisibleScreenEdge() {
     let screen = CGRect(x: 100, y: 40, width: 1_440, height: 860)
     let left = NotesWindowLayout.dockedFrame(edge: .left, visibleFrame: screen, preferredWidth: 420)
