@@ -13,6 +13,24 @@ private enum PasteTargetPolicy {
     case currentInsertionPoint
 }
 
+/// The live monitor delegates AI Escape to this small route so the same
+/// navigation policy can be exercised without manufacturing a window in tests.
+enum LauncherAIKeyboardRoute: Equatable {
+    case navigateBack
+    case passthrough
+
+    @MainActor
+    static func action(for event: NSEvent, coordinator: LimaSurfaceCoordinator? = nil) -> Self {
+        guard event.keyCode == 53 else { return .passthrough }
+        let coordinator = coordinator ?? .shared
+        return coordinator.escapeAction(
+            for: .launcher,
+            canNavigateBack: true,
+            hasSelection: false
+        ) == .navigateBack ? .navigateBack : .passthrough
+    }
+}
+
 @MainActor
 final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDelegate, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     let clipboard: ClipboardHistoryService
@@ -714,13 +732,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
             // AI Chat owns ordinary typing, navigation, Return, and copy/paste.
-            // Escape ends an active streamed or approval-paused task without
-            // closing the workspace; its visible End Task controls remain the
-            // primary affordance.
+            // Escape is navigation only: leave the embedded chat for root search
+            // while any streamed task remains available in the Activity Shelf.
+            // An explicit End Task or shelf Stop action is the only cancellation
+            // path.
             if case .surface(let session) = viewModel.mode,
                session.surface.handler == .aiChat {
-                if event.keyCode == 53, aiChatModel.canEndTask {
-                    aiChatModel.endTask()
+                if LauncherAIKeyboardRoute.action(for: event) == .navigateBack {
+                    viewModel.enter(.root)
                     return nil
                 }
                 return event

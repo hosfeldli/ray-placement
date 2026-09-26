@@ -770,6 +770,7 @@ final class AIChatViewModel: ObservableObject {
     let mcpStore: MCPServerStore
     let nativeToolStore: LimaAIToolStore
     let transport: any AIChatTransport
+    private let taskRegistry: TaskRegistry
     private var streamTask: Task<Void, Never>?
     private var pendingLocalFunctionCall: AIOutputItem?
     private var activeAssistantID: UUID?
@@ -783,7 +784,8 @@ final class AIChatViewModel: ObservableObject {
         credentials: AIChatCredentialStore? = nil,
         mcpStore: MCPServerStore? = nil,
         nativeToolStore: LimaAIToolStore? = nil,
-        transport: (any AIChatTransport)? = nil
+        transport: (any AIChatTransport)? = nil,
+        taskRegistry: TaskRegistry? = nil
     ) {
         let store = store ?? .shared
         let credentials = credentials ?? .shared
@@ -792,6 +794,7 @@ final class AIChatViewModel: ObservableObject {
         self.mcpStore = mcpStore ?? .shared
         self.nativeToolStore = nativeToolStore ?? .shared
         self.transport = transport ?? AIChatResponsesClient()
+        self.taskRegistry = taskRegistry ?? .shared
         selectedConversationID = store.conversations.first?.id
         if let selected = store.conversations.first {
             model = selected.model
@@ -1074,7 +1077,7 @@ final class AIChatViewModel: ObservableObject {
         pendingApproval = nil
         pendingLocalFunctionCall = nil
         isStreaming = true
-        registeredTaskID = TaskRegistry.shared.begin(
+        registeredTaskID = taskRegistry.begin(
             kind: .aiGeneration,
             title: "AI is working",
             detail: "Preparing a response",
@@ -1571,7 +1574,7 @@ final class AIChatViewModel: ObservableObject {
         case .approval(let request):
             pendingApproval = request
             if let registeredTaskID {
-                TaskRegistry.shared.update(
+                taskRegistry.update(
                     registeredTaskID,
                     title: "AI needs attention",
                     detail: "Awaiting tool decision",
@@ -1688,7 +1691,7 @@ final class AIChatViewModel: ObservableObject {
 
     private func finishSharedTask(state: LimaTaskState, detail: String? = nil) {
         if let registeredTaskID {
-            TaskRegistry.shared.finish(registeredTaskID, state: state, detail: detail)
+            taskRegistry.finish(registeredTaskID, state: state, detail: detail)
             self.registeredTaskID = nil
         }
         if let performanceMeasurementID {
@@ -2163,7 +2166,11 @@ struct AIChatWorkspaceView: View {
                             .allowsHitTesting(false)
                     }
 
-                    AIChatComposerEditor(text: $model.draft, editable: !model.canEndTask)
+                    AIChatComposerEditor(
+                        text: $model.draft,
+                        editable: !model.canEndTask,
+                        onSend: model.send
+                    )
                         .frame(height: 66)
                         .accessibilityLabel("Message")
                 }
@@ -2519,11 +2526,28 @@ private struct AIChatMessageRow: View {
     }
 }
 
+enum AIChatComposerKeyboardAction: Equatable {
+    case send
+    case insertNewline
+    case passthrough
+
+    static func action(isReturnKey: Bool, modifiers: NSEvent.ModifierFlags) -> Self {
+        guard isReturnKey else { return .passthrough }
+        if modifiers.contains(.shift) || modifiers.contains(.option) {
+            return .insertNewline
+        }
+        return .send
+    }
+}
+
 private struct AIChatComposerEditor: NSViewRepresentable {
     @Binding var text: String
     let editable: Bool
+    let onSend: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, onSend: onSend)
+    }
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -2566,6 +2590,7 @@ private struct AIChatComposerEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.text = $text
+        context.coordinator.onSend = onSend
         textView.isEditable = editable
         applyAppearance(to: textView)
         if textView.string != text { textView.string = text }
@@ -2590,13 +2615,27 @@ private struct AIChatComposerEditor: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var onSend: () -> Void
         weak var textView: NSTextView?
 
-        init(text: Binding<String>) { self.text = text }
+        init(text: Binding<String>, onSend: @escaping () -> Void) {
+            self.text = text
+            self.onSend = onSend
+        }
 
         func textDidChange(_ notification: Notification) {
             guard let textView, text.wrappedValue != textView.string else { return }
             text.wrappedValue = textView.string
+        }
+
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            let action = AIChatComposerKeyboardAction.action(
+                isReturnKey: selector == #selector(NSResponder.insertNewline(_:)),
+                modifiers: NSApp.currentEvent?.modifierFlags ?? []
+            )
+            guard action == .send else { return false }
+            onSend()
+            return true
         }
     }
 }

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import RayPlacement
@@ -684,4 +685,103 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(AIResponsesEventDecoder.events(eventType: "", dataLines: ["[DONE]"], model: "gpt-5").isEmpty)
     let partial = responseEvent("response.output_text.delta", ["delta": "partial"])
     #expect(partial.contains { if case .textDelta(let text) = $0 { return text == "partial" }; return false })
+}
+
+@Test func aiComposerReturnSendsAndModifiedReturnInsertsNewline() {
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: []) == .send)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.command]) == .send)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.shift]) == .insertNewline)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: true, modifiers: [.option]) == .insertNewline)
+    #expect(AIChatComposerKeyboardAction.action(isReturnKey: false, modifiers: []) == .passthrough)
+}
+
+@Test @MainActor func returnWithEmptyDraftDoesNotStartAIWork() {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: []),
+        taskRegistry: registry
+    )
+
+    model.send()
+
+    #expect(store.conversations.isEmpty)
+    #expect(registry.activeTasks.isEmpty)
+}
+
+@Test @MainActor func returnDuringActiveTaskCannotStartAnotherAIRequest() async {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("partial"), .completed("active-task")],
+            interEventDelay: .seconds(2)
+        ),
+        taskRegistry: registry
+    )
+
+    model.draft = "First request"
+    model.send()
+    model.draft = "Second request"
+    model.send()
+
+    #expect(store.conversations.first?.messages.filter { $0.role == .user }.map(\.text) == ["First request"])
+    #expect(registry.activeTasks.count == 1)
+    model.cancel()
+}
+
+@Test @MainActor func launcherEscapeRouteKeepsAIWorkRunningUntilExplicitStop() async {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("partial"), .completed("escape-task")],
+            interEventDelay: .seconds(2)
+        ),
+        taskRegistry: registry
+    )
+    model.draft = "Keep working"
+    model.send()
+    guard let taskID = registry.activeTasks.first?.id else {
+        Issue.record("Expected a registered AI task before routing Escape.")
+        return
+    }
+
+    let escape = NSEvent.keyEvent(
+        with: .keyDown,
+        location: .zero,
+        modifierFlags: [],
+        timestamp: 0,
+        windowNumber: 0,
+        context: nil,
+        characters: "\u{1B}",
+        charactersIgnoringModifiers: "\u{1B}",
+        isARepeat: false,
+        keyCode: 53
+    )!
+
+    #expect(LauncherAIKeyboardRoute.action(for: escape) == .navigateBack)
+    #expect(model.canEndTask)
+    #expect(registry.task(id: taskID)?.state == .running)
+
+    // This is the same explicit cancellation invoked by the Activity Shelf's
+    // stop control. Escape routed above never touches the registry entry.
+    registry.cancel(taskID)
+    for _ in 0..<300 where model.canEndTask {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(!model.canEndTask)
+    #expect(registry.task(id: taskID)?.state == .cancelled)
 }
