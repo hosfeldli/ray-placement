@@ -55,7 +55,7 @@ final class ActivityHUDController {
     init(
         dictation: NoteDictationService,
         conversations: DictationConversationStore,
-        openConversation: @escaping (UUID) -> Void
+        openConversation: @escaping (UUID?) -> Void
     ) {
         panel = ActivityHUDPanel(contentRect: NSRect(x: 0, y: 0, width: 250, height: 56))
         panel.onMiddleClick = { [weak self] in
@@ -79,8 +79,7 @@ final class ActivityHUDController {
             settings: settings,
             tasks: tasks,
             openDictation: { [weak self] in
-                guard let id = conversations.currentConversationID else { return }
-                openConversation(id)
+                openConversation(conversations.currentConversationID ?? conversations.selectedConversationID)
                 self?.focus.restoreSoon()
             }
         )))
@@ -798,13 +797,17 @@ private struct ActivityHUDView: View {
     }
 
     private var secondaryText: String {
-        dictation.phase == .paused
+        let preview = dictation.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !preview.isEmpty { return preview }
+        return dictation.phase == .paused
             ? Self.clock(dictation.recordingElapsed)
             : "\(Self.clock(dictation.recordingElapsed)) · \(dictation.inputSignalText)"
     }
 
     private var accessibilityText: String {
-        "\(primaryText) · \(Self.clock(dictation.recordingElapsed)) elapsed"
+        let preview = dictation.partialTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = preview.isEmpty ? "\(Self.clock(dictation.recordingElapsed)) elapsed" : "\(preview) · \(Self.clock(dictation.recordingElapsed)) elapsed"
+        return "\(primaryText) · \(context)"
     }
 
     private static func clock(_ seconds: TimeInterval) -> String {

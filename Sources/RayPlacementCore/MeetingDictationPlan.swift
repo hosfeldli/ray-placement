@@ -13,10 +13,11 @@ public struct MeetingDictationSegment: Equatable, Sendable {
 public enum MeetingDictationPlan {
     // Two hours gives a full one-hour meeting a generous overrun buffer.
     public static let maximumDuration: TimeInterval = 2 * 60 * 60
-    // Rolling windows keep transcription visibly live while a fresh file keeps
-    // recording. The windows stay long enough to preserve sentence context.
+    // Apple Speech consumes the live AVAudioEngine stream; these short WAVs are
+    // retained only for interruption recovery. Whisper uses short rolling files
+    // so its CLI transcription process can start before a long recording ends.
     public static let appleSpeechSegmentDuration: TimeInterval = 8
-    public static let localWhisperSegmentDuration: TimeInterval = 15
+    public static let localWhisperSegmentDuration: TimeInterval = 3
     // Offline planning/storage estimates keep the stable 45-second unit; the
     // recorder uses the shorter engine-specific live windows above.
     public static let segmentDuration: TimeInterval = 45

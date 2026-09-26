@@ -451,9 +451,68 @@ private func packageRoot() -> URL {
 }
 
 @Test func meetingDictationUsesShortRollingAudioSegments() {
-    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 15)
+    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 3)
     #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 8)
     #expect(MeetingDictationPlan.maximumDuration >= 60 * 60)
+}
+
+@Test func transcriptAssemblerKeepsPartialsMutableAndCommitsOnlyStablePrefix() {
+    var assembler = TranscriptAssembler(heldWordCount: 1)
+    let first = assembler.receivePartial("the shipment should")
+    #expect(first.committedDelta.isEmpty)
+    #expect(first.partialText == "the shipment should")
+
+    let second = assembler.receivePartial("the shipment should arrive")
+    #expect(second.committedDelta == "the shipment")
+    #expect(second.committedText == "the shipment")
+    #expect(second.partialText == "should arrive")
+
+    let third = assembler.receivePartial("the shipment should arrive tomorrow")
+    #expect(third.committedDelta == " should")
+    #expect(third.committedText == "the shipment should")
+    #expect(third.partialText == "arrive tomorrow")
+
+    let final = assembler.finish()
+    #expect(final.committedDelta == "arrive tomorrow")
+    #expect(final.committedText == "the shipment should arrive tomorrow")
+    #expect(final.partialText.isEmpty)
+}
+
+@Test func dictationTargetsRepresentWorkspaceAndExternalDestinations() {
+    let conversationID = UUID()
+    let noteID = UUID()
+    #expect(DictationTarget.conversation(conversationID) == .conversation(conversationID))
+    #expect(DictationTarget.note(noteID) == .note(noteID))
+    #expect(DictationTarget.aiPrompt == .aiPrompt)
+    #expect(DictationTarget.launcherQuery == .launcherQuery)
+    #expect(DictationTarget.externalApplication(processIdentifier: 42, bundleIdentifier: "com.example.Editor")
+        == .externalApplication(processIdentifier: 42, bundleIdentifier: "com.example.Editor"))
+    #expect(DictationTranscriptEvent.partial("changing preview").insertableDelta == nil)
+    #expect(DictationTranscriptEvent.committedDelta("stable words").insertableDelta == "stable words")
+    #expect(DictationTranscriptEvent.completed("whole transcript").insertableDelta == nil)
+}
+
+@Test func transcriptReconciliationAppendsOnlyUncommittedSpeech() {
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should",
+        recovered: "the shipment should arrive tomorrow"
+    ) == " arrive tomorrow")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "first committed shipment",
+        recovered: "shipment arrived"
+    ) == " arrived")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should arrive",
+        recovered: "the shipment should"
+    ).isEmpty)
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should",
+        recovered: "The shipment should arrive!"
+    ) == " arrive!")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "committed words",
+        recovered: "unrelated recovered audio"
+    ).isEmpty)
 }
 
 @Test func documentFormatterPrettyPrintsAndInspectsJSON() throws {

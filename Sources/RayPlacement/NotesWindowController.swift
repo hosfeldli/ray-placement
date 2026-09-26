@@ -77,6 +77,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let aiChatModel: AIChatViewModel
     let terminalModel: DeveloperTerminalModel
     let formatterModel: FormatterWorkspaceModel
+    var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
     private var quickNotePanel: NSPanel?
     private var dictationHUD: DictationHUDController!
@@ -86,6 +87,14 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private var isApplyingFrame = false
     private var applicationDeactivateObserver: NSObjectProtocol?
     private var spaceChangeObserver: NSObjectProtocol?
+    private var pendingExternalDictationInsertions: [ExternalDictationInsertion] = []
+    private var externalDictationInsertionInFlight = false
+
+    private struct ExternalDictationInsertion {
+        let text: String
+        let processIdentifier: pid_t
+        let bundleIdentifier: String?
+    }
 
     init(
         aiChatModel: AIChatViewModel,
@@ -102,6 +111,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.dictation = NoteDictationService(
             onTranscript: { [weak conversations] transcript in
                 conversations?.append(transcript)
+            },
+            onCommittedDelta: { [weak conversations] delta in
+                conversations?.appendCommittedDelta(delta)
             },
             onSessionStarted: { [weak conversations] in
                 conversations?.beginConversation()
@@ -125,6 +137,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
         super.init()
+        self.dictation.targetProvider = { [weak conversations] in
+            .conversation(conversations?.currentConversationID ?? conversations?.selectedConversationID ?? UUID())
+        }
+        self.dictation.onTargetEvent = { [weak self] target, event in
+            self?.routeDictationEvent(event, to: target)
+        }
         self.spaceChangeObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main
         ) { [weak self] notification in
@@ -139,9 +157,89 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             dictation: dictation,
             conversations: conversations,
             openConversation: { [weak self] id in
-                self?.presentDictationConversation(id: id)
+                guard let self else { return }
+                switch self.dictation.currentTarget {
+                case .conversation(let targetID):
+                    self.presentDictationConversation(id: targetID)
+                case .note(let targetID):
+                    self.store.selectNote(targetID)
+                    self.present(module: .notes)
+                case .aiPrompt:
+                    self.present(module: .ai)
+                case .launcherQuery:
+                    return
+                case .externalApplication(let processIdentifier, let bundleIdentifier):
+                    guard let application = NSRunningApplication(processIdentifier: pid_t(processIdentifier)),
+                          bundleIdentifier == nil || application.bundleIdentifier == bundleIdentifier else { return }
+                    application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                case nil:
+                    if let id {
+                        self.presentDictationConversation(id: id)
+                    } else {
+                        self.present(module: .dictation)
+                    }
+                }
             }
         )
+    }
+
+    private func routeDictationEvent(_ event: DictationTranscriptEvent, to target: DictationTarget) {
+        switch event {
+        case .partial:
+            return
+        case .completed:
+            if case .conversation(let identifier) = target {
+                conversations.finishConversation(identifier)
+            }
+            return
+        case .committedDelta(let delta):
+            switch target {
+            case .conversation(let identifier):
+                conversations.appendCommittedDelta(delta, to: identifier)
+            case .note(let identifier):
+                store.appendDictationDelta(delta, to: identifier)
+            case .aiPrompt:
+                aiChatModel.appendDictationText(delta)
+            case .launcherQuery:
+                onLauncherQueryDictation?(delta)
+            case .externalApplication(let processIdentifier, let expectedBundleIdentifier):
+                pendingExternalDictationInsertions.append(ExternalDictationInsertion(
+                    text: delta,
+                    processIdentifier: pid_t(processIdentifier),
+                    bundleIdentifier: expectedBundleIdentifier
+                ))
+                insertNextExternalDictationDelta()
+            }
+        }
+    }
+
+    private func insertNextExternalDictationDelta() {
+        guard !externalDictationInsertionInFlight,
+              !pendingExternalDictationInsertions.isEmpty else { return }
+        let insertion = pendingExternalDictationInsertions.removeFirst()
+        guard let application = NSRunningApplication(processIdentifier: insertion.processIdentifier),
+              !application.isTerminated,
+              insertion.bundleIdentifier == nil || application.bundleIdentifier == insertion.bundleIdentifier else {
+            dictation.lastError = "The target app is no longer available; dictation text was not inserted."
+            insertNextExternalDictationDelta()
+            return
+        }
+
+        externalDictationInsertionInFlight = true
+        KeyboardSelectionService.paste(
+            insertion.text,
+            into: application,
+            clipboardHistory: ClipboardHistoryService.shared
+        ) { [weak self] result in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.externalDictationInsertionInFlight = false
+                if case .failure(let error) = result {
+                    self.dictation.lastError = "Dictation could not be inserted: " + error.localizedDescription
+                }
+                self.insertNextExternalDictationDelta()
+            }
+        }
     }
 
     func present() {
@@ -978,7 +1076,11 @@ private struct WorkspaceView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             case .ai:
-                AIChatWorkspaceView(model: aiChatModel, isEmbedded: true)
+                AIChatWorkspaceView(
+                    model: aiChatModel,
+                    isEmbedded: true,
+                    onDictation: { dictation.performPrimaryAction(target: .aiPrompt) }
+                )
             case .dictation:
                 dictationSection
             case .terminal:
@@ -1621,6 +1723,21 @@ private struct WorkspaceView: View {
                     }
                     .frame(minHeight: 170, maxHeight: .infinity)
 
+                    if !dictation.partialTranscript.isEmpty {
+                        HStack(alignment: .top, spacing: 6) {
+                            Label("Live preview", systemImage: "waveform")
+                                .limaFont(.caption2.weight(.semibold))
+                                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                            Text(dictation.partialTranscript)
+                                .limaFont(.caption)
+                                .foregroundStyle(LimaTheme.textSecondary)
+                                .lineLimit(2)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Live preview: \(dictation.partialTranscript)")
+                    }
+
                     HStack(alignment: .top, spacing: 7) {
                         Image(systemName: dictationStatusSymbol(for: conversation))
                             .foregroundStyle(dictationStatusColor(for: conversation))
@@ -2034,6 +2151,11 @@ private struct WorkspaceView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .help("Import or export Markdown notes")
+
+                NotesChromeButton(symbol: "mic", label: "Dictate into this note") {
+                    dictation.performPrimaryAction(target: .note(note.id))
+                }
+
                 HStack(spacing: 1) {
                     Menu {
                         Button("Heading 1") { MarkdownEditorActions.heading(1) }

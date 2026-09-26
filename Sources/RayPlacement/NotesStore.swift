@@ -303,6 +303,24 @@ final class NotesStore: ObservableObject {
         appendMarkdown(conversation.transcript, to: identifier)
     }
 
+    /// Appends one immutable dictation delta to a note without changing the
+    /// selected note or creating a paragraph boundary for each speech callback.
+    func appendDictationDelta(_ delta: String, to identifier: UUID) {
+        let clean = delta.trimmingCharacters(in: .newlines)
+        guard !clean.isEmpty else { return }
+        updateNote(identifier) { note in
+            let separator = note.content.isEmpty
+                || note.content.hasSuffix(" ")
+                || note.content.hasSuffix("\n")
+                || clean.hasPrefix(" ")
+                ? ""
+                : " "
+            let remaining = Self.maximumCharactersPerNote - note.content.count - separator.count
+            guard remaining > 0 else { return }
+            note.content += separator + String(clean.prefix(remaining))
+        }
+    }
+
     struct TaskSummary: Identifiable, Equatable {
         let id: String
         let noteID: UUID

@@ -1179,6 +1179,15 @@ final class AIChatViewModel: ObservableObject {
         self.selectedConversationID = store.conversations.first?.id
     }
 
+    func appendDictationText(_ delta: String) {
+        guard !canEndTask, !delta.isEmpty else { return }
+        if let last = draft.last, let first = delta.first,
+           !last.isWhitespace, !first.isWhitespace {
+            draft += " "
+        }
+        draft += delta
+    }
+
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming, pendingApproval == nil else { return }
@@ -1921,11 +1930,13 @@ struct AIChatWorkspaceView: View {
     @ObservedObject private var mcpStore: MCPServerStore
     @ObservedObject private var nativeToolStore: LimaAIToolStore
     let isEmbedded: Bool
+    let onDictation: (() -> Void)?
     @State private var apiKey = ""
 
-    init(model: AIChatViewModel, isEmbedded: Bool = false) {
+    init(model: AIChatViewModel, isEmbedded: Bool = false, onDictation: (() -> Void)? = nil) {
         self.model = model
         self.isEmbedded = isEmbedded
+        self.onDictation = onDictation
         _conversationStore = ObservedObject(wrappedValue: model.store)
         _mcpStore = ObservedObject(wrappedValue: model.mcpStore)
         _nativeToolStore = ObservedObject(wrappedValue: model.nativeToolStore)
@@ -2369,6 +2380,18 @@ struct AIChatWorkspaceView: View {
                     RoundedRectangle(cornerRadius: LimaRadius.searchField, style: .continuous)
                         .stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.borderWidth)
                 )
+
+                if let onDictation {
+                    Button(action: onDictation) {
+                        Image(systemName: "mic")
+                            .limaFont(.system(size: 13, weight: .semibold))
+                            .frame(width: 36, height: 36)
+                    }
+                    .buttonStyle(.borderless)
+                    .disabled(model.canEndTask)
+                    .help("Dictate into the message")
+                    .accessibilityLabel("Dictate into the message")
+                }
 
                 if !model.canEndTask {
                     Button(action: model.send) {

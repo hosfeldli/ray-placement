@@ -46,11 +46,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let writingChecker = RuleBasedWritingChecker()
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
-    private lazy var notesWindow = NotesWindowController(
-        aiChatModel: aiChatModel,
-        terminalModel: terminalModel,
-        formatterModel: formatterModel
-    )
+    private lazy var notesWindow: NotesWindowController = {
+        let controller = NotesWindowController(
+            aiChatModel: aiChatModel,
+            terminalModel: terminalModel,
+            formatterModel: formatterModel
+        )
+        controller.onLauncherQueryDictation = { [weak self] delta in
+            guard let self, !delta.isEmpty else { return }
+            if let last = self.viewModel.query.last, let first = delta.first,
+               !last.isWhitespace, !first.isWhitespace {
+                self.viewModel.query += " "
+            }
+            self.viewModel.query += delta
+        }
+        return controller
+    }()
     private let extensionStoreModel: ExtensionStoreModel
     private let formatterModel: FormatterWorkspaceModel
     private let workflowModel: WorkflowEditorModel
