@@ -29,6 +29,74 @@ import Testing
     ]))
 }
 
+@Test func providerNeutralHistoryPreservesTextAndOmitsStreamingPlaceholder() {
+    let transcript = AIProviderMessage.transcript([
+        AIChatMessage(role: .user, text: "First question"),
+        AIChatMessage(role: .assistant, text: "First answer"),
+        AIChatMessage(role: .user, text: "Follow up"),
+        AIChatMessage(role: .assistant, text: "")
+    ])
+
+    #expect(transcript.count == 3)
+    let text = transcript.flatMap(\.content).compactMap { item -> String? in
+        if case .text(let value) = item { return value }
+        return nil
+    }
+    #expect(text == ["First question", "First answer", "Follow up"])
+}
+
+@Test func providerWireHelpersPreserveToolUseAndResultAndBasePath() {
+    let history = [
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: "call-1", name: "search_files", arguments: #"{"query":"invoice"}"#)
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: "call-1", output: #"{"count":1}"#)
+        ])
+    ]
+    let payload = AIProviderHTTP.messages(history)
+    #expect(payload.count == 2)
+    #expect(payload[0]["role"] as? String == "assistant")
+    #expect(payload[1]["role"] as? String == "user")
+    let assistantContent = payload[0]["content"] as? [[String: Any]]
+    let userContent = payload[1]["content"] as? [[String: Any]]
+    #expect(assistantContent?.first?["type"] as? String == "tool_use")
+    #expect(userContent?.first?["type"] as? String == "tool_result")
+
+    let base = AIProviderHTTP.validateBaseURL("https://example.test/v1")
+    #expect(AIProviderHTTP.endpoint(base: base!, path: "chat/completions")?.path == "/v1/chat/completions")
+}
+
+@Test func sharedProviderRegistryIncludesChatCoreProviders() {
+    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible])
+    #expect(AIProviderClientRegistry.client(for: .openAI, openAICompatibleBaseURL: "") is AIChatResponsesClient)
+    #expect(AIProviderClientRegistry.client(for: .anthropic, openAICompatibleBaseURL: "") is AnthropicAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .gemini, openAICompatibleBaseURL: "") is GeminiAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .openAICompatible, openAICompatibleBaseURL: "http://127.0.0.1:1234/v1") is OpenAICompatibleAIProviderClient)
+}
+
+@Test @MainActor func aiProviderSelectionPersistsPerConversation() {
+    let openAIConversation = AIConversation(provider: .openAI, model: "gpt-5.4")
+    let geminiConversation = AIConversation(provider: .gemini, model: "gemini-2.5-flash")
+    let store = AIConversationStore(fixtures: [openAIConversation, geminiConversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    model.select(openAIConversation.id)
+    model.selectProvider(.anthropic)
+    #expect(store.conversation(id: openAIConversation.id)?.provider == .anthropic)
+    #expect(store.conversation(id: openAIConversation.id)?.model == AIProvider.anthropic.defaultChatModel)
+
+    model.select(geminiConversation.id)
+    #expect(model.provider == .gemini)
+    #expect(model.model == "gemini-2.5-flash")
+}
+
 @Test @MainActor func fixtureCredentialsStayInMemory() {
     let connected = AIChatCredentialStore(configuration: .fixture)
     let missing = AIChatCredentialStore(configuration: .missingFixture)

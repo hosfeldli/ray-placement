@@ -46,6 +46,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
     var title: String
     var createdAt: Date
     var updatedAt: Date
+    var provider: AIProvider
     var model: String
     var lastResponseID: String?
     var reasoningEffort: AIReasoningEffort
@@ -59,6 +60,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         title: String = "New Chat",
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
+        provider: AIProvider = .openAI,
         model: String = "gpt-5",
         lastResponseID: String? = nil,
         reasoningEffort: AIReasoningEffort = .medium,
@@ -71,6 +73,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         self.title = title
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.provider = provider
         self.model = model
         self.lastResponseID = lastResponseID
         self.reasoningEffort = reasoningEffort
@@ -89,7 +92,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, createdAt, updatedAt, model, lastResponseID
+        case id, title, createdAt, updatedAt, provider, model, lastResponseID
         case reasoningEffort, reasoningSummary, activities, attachments, messages
     }
 
@@ -99,6 +102,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         title = try values.decode(String.self, forKey: .title)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        provider = try values.decodeIfPresent(AIProvider.self, forKey: .provider) ?? .openAI
         model = try values.decode(String.self, forKey: .model)
         lastResponseID = try values.decodeIfPresent(String.self, forKey: .lastResponseID)
         reasoningEffort = try values.decodeIfPresent(AIReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
@@ -158,8 +162,8 @@ private extension String {
 }
 
 @MainActor
-final class AIChatCredentialStore: ObservableObject {
-    static let shared = AIChatCredentialStore()
+final class AIProviderCredentialStore: ObservableObject {
+    static let shared = AIProviderCredentialStore()
 
     @Published private(set) var hasAPIKey = false
 
@@ -170,13 +174,13 @@ final class AIChatCredentialStore: ObservableObject {
         refresh()
     }
 
-    func saveAPIKey(_ value: String) throws {
+    func saveAPIKey(_ value: String, for provider: AIProvider = .openAI) throws {
         let key = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else {
             throw NSError(
                 domain: "LimaAI",
                 code: 1,
-                userInfo: [NSLocalizedDescriptionKey: "Enter an OpenAI API key."]
+                userInfo: [NSLocalizedDescriptionKey: "Enter an API key for the selected provider."]
             )
         }
 
@@ -185,7 +189,7 @@ final class AIChatCredentialStore: ObservableObject {
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: configuration.service,
-            kSecAttrAccount as String: configuration.account,
+            kSecAttrAccount as String: keychainAccount(for: provider),
             kSecValueData as String: Data(key.utf8),
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
@@ -194,7 +198,7 @@ final class AIChatCredentialStore: ObservableObject {
             let query: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: configuration.service,
-                kSecAttrAccount as String: configuration.account
+                kSecAttrAccount as String: keychainAccount(for: provider)
             ]
             let update = SecItemUpdate(
                 query as CFDictionary,
@@ -204,53 +208,97 @@ final class AIChatCredentialStore: ObservableObject {
         } else if status != errSecSuccess {
             throw keychainError(status)
         }
-        hasAPIKey = true
+        hasAPIKey = apiKey(for: .openAI)?.isEmpty == false
     }
 
     func apiKey() -> String? {
-        if let fixtureAPIKey = configuration.fixtureAPIKey { return fixtureAPIKey }
-        if let environmentAPIKey = configuration.environmentAPIKey { return environmentAPIKey }
+        apiKey(for: .openAI)
+    }
+
+    func apiKey(for provider: AIProvider) -> String? {
+        if provider == .openAI {
+            if let fixtureAPIKey = configuration.fixtureAPIKey { return fixtureAPIKey }
+            if let environmentAPIKey = configuration.environmentAPIKey { return environmentAPIKey }
+        }
         guard configuration.usesKeychain else { return nil }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: configuration.service,
-            kSecAttrAccount as String: configuration.account,
+            kSecAttrAccount as String: keychainAccount(for: provider),
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
         var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
-              let data = item as? Data else {
-            return nil
+        if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+           let data = item as? Data {
+            return String(data: data, encoding: .utf8)
         }
-        return String(data: data, encoding: .utf8)
+
+        // Migrate legacy grammar credentials into the shared provider account on
+        // first use; do not read the production Keychain namespace in test mode.
+        guard !configuration.isTestCredential else { return nil }
+        let legacyQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.lima.developer-grammar",
+            kSecAttrAccount as String: provider.rawValue,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var legacyItem: CFTypeRef?
+        guard SecItemCopyMatching(legacyQuery as CFDictionary, &legacyItem) == errSecSuccess,
+              let legacyData = legacyItem as? Data,
+              let legacyValue = String(data: legacyData, encoding: .utf8),
+              !legacyValue.isEmpty else { return nil }
+        try? saveAPIKey(legacyValue, for: provider)
+        SecItemDelete(legacyQuery as CFDictionary)
+        return legacyValue
     }
 
-    func removeAPIKey() {
+    func hasAPIKey(for provider: AIProvider) -> Bool {
+        apiKey(for: provider)?.isEmpty == false
+    }
+
+    func removeAPIKey(for provider: AIProvider = .openAI) {
         guard configuration.fixtureAPIKey == nil, configuration.usesKeychain else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: configuration.service,
-            kSecAttrAccount as String: configuration.account
+            kSecAttrAccount as String: keychainAccount(for: provider)
         ]
         SecItemDelete(query as CFDictionary)
-        hasAPIKey = configuration.environmentAPIKey != nil
+        if !configuration.isTestCredential {
+            let legacyQuery: [String: Any] = [
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: "com.lima.developer-grammar",
+                kSecAttrAccount as String: provider.rawValue
+            ]
+            SecItemDelete(legacyQuery as CFDictionary)
+        }
+        if provider == .openAI {
+            hasAPIKey = configuration.environmentAPIKey != nil
+        }
     }
 
     func refresh() {
         hasAPIKey = apiKey()?.isEmpty == false
     }
 
+    private func keychainAccount(for provider: AIProvider) -> String {
+        provider == .openAI ? configuration.account : "\(provider.rawValue.lowercased())-api-key"
+    }
+
     private func keychainError(_ status: OSStatus = errSecAuthFailed) -> NSError {
         NSError(
             domain: NSOSStatusErrorDomain,
             code: Int(status),
-                userInfo: [NSLocalizedDescriptionKey: configuration.isTestCredential
-                    ? "Lima could not access the test OpenAI API key in Keychain."
-                    : "Lima could not access the OpenAI API key in Keychain."]
+            userInfo: [NSLocalizedDescriptionKey: configuration.isTestCredential
+                ? "Lima could not access the test provider API key in Keychain."
+                : "Lima could not access the provider API key in Keychain."]
         )
     }
 }
+
+typealias AIChatCredentialStore = AIProviderCredentialStore
 
 @MainActor
 final class AIConversationStore: ObservableObject {
@@ -281,8 +329,8 @@ final class AIConversationStore: ObservableObject {
     }
 
     @discardableResult
-    func createConversation(model: String) -> AIConversation {
-        let conversation = AIConversation(model: model)
+    func createConversation(provider: AIProvider = .openAI, model: String) -> AIConversation {
+        let conversation = AIConversation(provider: provider, model: model)
         conversations.insert(conversation, at: 0)
         scheduleSave()
         return conversation
@@ -398,12 +446,13 @@ struct AIChatTaskState {
     let canEnd: Bool
 }
 
-protocol AIChatTransport {
+protocol AIProviderClient {
     func listModels(apiKey: String) async throws -> [AIModelOption]
     func streamReply(
         apiKey: String,
         model: String,
         input: String,
+        history: [AIProviderMessage],
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
@@ -425,12 +474,15 @@ protocol AIChatTransport {
         apiKey: String,
         model: String,
         previousResponseID: String,
+        history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition]
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
 }
+
+typealias AIChatTransport = AIProviderClient
 
 /// A deterministic transport for visual and UI tests. It contains no endpoint,
 /// credential, or network implementation.
@@ -454,6 +506,7 @@ struct FixtureAITransport: AIChatTransport {
         apiKey: String,
         model: String,
         input: String,
+        history: [AIProviderMessage],
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
@@ -477,6 +530,7 @@ struct FixtureAITransport: AIChatTransport {
         apiKey: String,
         model: String,
         previousResponseID: String,
+        history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
@@ -551,6 +605,7 @@ struct AIChatResponsesClient: AIChatTransport {
         apiKey: String,
         model: String,
         input: String,
+        history: [AIProviderMessage],
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
@@ -607,6 +662,7 @@ struct AIChatResponsesClient: AIChatTransport {
         apiKey: String,
         model: String,
         previousResponseID: String,
+        history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
@@ -753,10 +809,12 @@ struct AIChatResponsesClient: AIChatTransport {
 final class AIChatViewModel: ObservableObject {
     @Published private(set) var selectedConversationID: UUID?
     @Published var draft = ""
+    @Published var provider: AIProvider = .openAI
     @Published var model = "gpt-5"
     @Published var reasoningEffort: AIReasoningEffort = .medium
-    @Published private(set) var availableModels: [AIModelOption] = AIModelOption.fallbackModels
+    @Published private(set) var availableModels: [AIModelOption] = AIProvider.openAI.chatModels
     @Published private(set) var isLoadingModels = false
+    @Published private(set) var providerConnectionMessage: String?
     @Published var attachments: [AIAttachment] = []
     @Published var showActivity = true
     @Published private(set) var isStreaming = false
@@ -770,6 +828,7 @@ final class AIChatViewModel: ObservableObject {
     let mcpStore: MCPServerStore
     let nativeToolStore: LimaAIToolStore
     let transport: any AIChatTransport
+    private let hasInjectedTransport: Bool
     private let taskRegistry: TaskRegistry
     private var streamTask: Task<Void, Never>?
     private var pendingLocalFunctionCall: AIOutputItem?
@@ -794,9 +853,12 @@ final class AIChatViewModel: ObservableObject {
         self.mcpStore = mcpStore ?? .shared
         self.nativeToolStore = nativeToolStore ?? .shared
         self.transport = transport ?? AIChatResponsesClient()
+        self.hasInjectedTransport = transport != nil
         self.taskRegistry = taskRegistry ?? .shared
         selectedConversationID = store.conversations.first?.id
         if let selected = store.conversations.first {
+            provider = selected.provider
+            availableModels = selected.provider.chatModels
             model = selected.model
             reasoningEffort = selected.reasoningEffort
             attachments = selected.attachments
@@ -813,6 +875,8 @@ final class AIChatViewModel: ObservableObject {
     func select(_ id: UUID) {
         selectedConversationID = id
         if let conversation = store.conversation(id: id) {
+            provider = conversation.provider
+            availableModels = conversation.provider.chatModels
             model = conversation.model
             reasoningEffort = conversation.reasoningEffort
             attachments = conversation.attachments
@@ -826,6 +890,41 @@ final class AIChatViewModel: ObservableObject {
 
     var supportedReasoningEfforts: [AIReasoningEffort] {
         selectedModelOption.supportedReasoningEfforts
+    }
+
+    var hasProviderAPIKey: Bool {
+        credentials.hasAPIKey(for: provider) || transport is FixtureAITransport
+    }
+
+    private func providerClient(for provider: AIProvider) -> any AIChatTransport {
+        if hasInjectedTransport { return transport }
+        return AIProviderClientRegistry.client(
+            for: provider,
+            openAICompatibleBaseURL: AIProviderPreferences.shared.openAICompatibleBaseURL
+        )
+    }
+
+    func selectProvider(_ provider: AIProvider) {
+        guard AIProvider.chatProviders.contains(provider), self.provider != provider, !canEndTask else { return }
+        self.provider = provider
+        providerConnectionMessage = nil
+        if provider == .openAICompatible {
+            let compatibleModel = AIProviderPreferences.shared.openAICompatibleModelID
+            availableModels = [AIModelOption(id: compatibleModel, displayName: compatibleModel, supportsReasoning: false)]
+            model = compatibleModel
+        } else {
+            availableModels = provider.chatModels
+            model = provider.defaultChatModel
+        }
+        reasoningEffort = .medium
+        if let id = selectedConversationID, var conversation = store.conversation(id: id) {
+            conversation.provider = provider
+            conversation.model = model
+            conversation.lastResponseID = nil
+            conversation.reasoningEffort = reasoningEffort
+            store.update(conversation)
+        }
+        ensureModelIsAvailable()
     }
 
     private var enabledNativeTools: [LimaAIToolDefinition] {
@@ -972,30 +1071,74 @@ final class AIChatViewModel: ObservableObject {
             streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
             return
         }
-        guard let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
-            streamError = "Save an OpenAI API key before loading available models."
+        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
+            streamError = "Save an API key for \(provider.title) before loading available models."
             return
         }
+        let selectedProvider = provider
+        let client = providerClient(for: selectedProvider)
         isLoadingModels = true
         Task { [weak self] in
             guard let self else { return }
             defer { self.isLoadingModels = false }
             do {
-                let models = try await self.transport.listModels(apiKey: apiKey)
+                let models = try await client.listModels(apiKey: apiKey)
+                guard self.provider == selectedProvider else { return }
                 self.availableModels = models
                 self.ensureModelIsAvailable()
             } catch {
+                guard self.provider == selectedProvider else { return }
                 self.streamError = error.localizedDescription
+            }
+        }
+    }
+
+    func testConnection() {
+        guard !isLoadingModels else { return }
+        guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
+            providerConnectionMessage = "This fixture scenario does not make provider requests."
+            return
+        }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI || transport is FixtureAITransport else {
+            providerConnectionMessage = "Live AI testing is disabled for this test session."
+            return
+        }
+        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
+            providerConnectionMessage = "Save an API key for " + provider.title + " before testing the connection."
+            return
+        }
+
+        let selectedProvider = provider
+        let client = providerClient(for: selectedProvider)
+        isLoadingModels = true
+        providerConnectionMessage = nil
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.isLoadingModels = false }
+            do {
+                let models = try await client.listModels(apiKey: apiKey)
+                guard self.provider == selectedProvider else { return }
+                self.availableModels = models
+                self.ensureModelIsAvailable()
+                self.providerConnectionMessage = "Connected to " + selectedProvider.title + " · " + String(models.count) + " models available."
+                self.streamError = nil
+            } catch {
+                guard self.provider == selectedProvider else { return }
+                self.providerConnectionMessage = error.localizedDescription
             }
         }
     }
 
     func selectModel(_ option: AIModelOption) {
         model = option.id
+        if provider == .openAICompatible {
+            AIProviderPreferences.shared.openAICompatibleModelID = model
+        }
         if !option.supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort = option.defaultReasoningEffort ?? .medium
         }
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
+            conversation.provider = provider
             conversation.model = model
             conversation.reasoningEffort = reasoningEffort
             store.update(conversation)
@@ -1015,13 +1158,16 @@ final class AIChatViewModel: ObservableObject {
         if !availableModels.contains(where: { $0.id == model }), let first = availableModels.first {
             model = first.id
         }
+        if provider == .openAICompatible {
+            AIProviderPreferences.shared.openAICompatibleModelID = model
+        }
         if !selectedModelOption.supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort = selectedModelOption.defaultReasoningEffort ?? .medium
         }
     }
 
     func newConversation() {
-        let conversation = store.createConversation(model: model)
+        let conversation = store.createConversation(provider: provider, model: model)
         selectedConversationID = conversation.id
         streamError = nil
         draft = ""
@@ -1044,13 +1190,14 @@ final class AIChatViewModel: ObservableObject {
             streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
             return
         }
-        guard let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
-            streamError = "Add an OpenAI API key in the setup panel before sending a message."
+        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
+            streamError = "Add an \(provider.title) API key in the setup panel before sending a message."
             return
         }
 
-        var conversation = selectedConversation ?? store.createConversation(model: model)
+        var conversation = selectedConversation ?? store.createConversation(provider: provider, model: model)
         selectedConversationID = conversation.id
+        conversation.provider = provider
         conversation.model = model
         conversation.messages.append(AIChatMessage(role: .user, text: text))
         if conversation.title == "New Chat" {
@@ -1091,16 +1238,18 @@ final class AIChatViewModel: ObservableObject {
             snapshot.selectedConversationID = conversation.id
         }
 
+        let providerHistory = AIProviderMessage.transcript(conversation.messages)
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            let client = transport
-            let mcpServers = mcpStore.servers.filter(\.enabled)
+            let client = self.providerClient(for: conversation.provider)
+            let mcpServers = self.mcpStore.servers.filter(\.enabled)
             let responseID = await self.runToolLoop(
                 initialStream: client.streamReply(
                     apiKey: apiKey,
                     model: conversation.model,
                     input: text,
+                    history: providerHistory,
                     previousResponseID: conversation.lastResponseID,
                     reasoningEffort: conversation.reasoningEffort,
                     attachments: conversation.attachments,
@@ -1114,6 +1263,7 @@ final class AIChatViewModel: ObservableObject {
                 model: conversation.model,
                 reasoningEffort: conversation.reasoningEffort,
                 mcpServers: mcpServers,
+                history: providerHistory,
                 initialResponseID: nil
             )
             self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
@@ -1226,9 +1376,11 @@ final class AIChatViewModel: ObservableObject {
         model: String,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
+        history: [AIProviderMessage],
         initialResponseID: String?
     ) async -> String? {
         var stream = initialStream
+        var currentHistory = history
         var latestResponseID = initialResponseID
         var handledCallIDs = Set<String>()
 
@@ -1267,10 +1419,23 @@ final class AIChatViewModel: ObservableObject {
                 }
             }
             guard !outputs.isEmpty else { break }
+            let toolUses = calls.compactMap { call -> AIProviderMessage.Content? in
+                guard let id = call.callID, let name = call.name else { return nil }
+                return .toolUse(id: id, name: name, arguments: call.arguments ?? "{}")
+            }
+            let toolUseIDs = Set(calls.compactMap(\.callID))
+            let toolResults = outputs.compactMap { output -> AIProviderMessage.Content? in
+                guard let id = output["call_id"] as? String, toolUseIDs.contains(id),
+                      let value = output["output"] as? String else { return nil }
+                return .toolResult(id: id, output: value)
+            }
+            if !toolUses.isEmpty { currentHistory.append(AIProviderMessage(role: .assistant, content: toolUses)) }
+            if !toolResults.isEmpty { currentHistory.append(AIProviderMessage(role: .user, content: toolResults)) }
             stream = client.streamToolOutputs(
                 apiKey: apiKey,
                 model: model,
                 previousResponseID: responseID,
+                history: currentHistory,
                 outputs: outputs,
                 reasoningEffort: reasoningEffort,
                 mcpServers: mcpServers,
@@ -1395,7 +1560,7 @@ final class AIChatViewModel: ObservableObject {
         guard let approval = pendingApproval,
               let conversation = selectedConversation,
               let previousResponseID = conversation.lastResponseID,
-              let apiKey = credentials.apiKey(), !apiKey.isEmpty else {
+              let apiKey = credentials.apiKey(for: conversation.provider), !apiKey.isEmpty else {
             pendingApproval = nil
             pendingLocalFunctionCall = nil
             streamError = "AI Chat couldn’t continue this tool request because its response session is unavailable."
@@ -1434,8 +1599,9 @@ final class AIChatViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
-            let client = transport
-            let mcpServers = mcpStore.servers.filter(\.enabled)
+            let client = self.providerClient(for: conversation.provider)
+            let mcpServers = self.mcpStore.servers.filter(\.enabled)
+            var toolHistory = AIProviderMessage.transcript(conversation.messages)
 
             if let localCall {
                 let output: [String: Any]?
@@ -1452,11 +1618,20 @@ final class AIChatViewModel: ObservableObject {
                     self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: previousResponseID)
                     return
                 }
+                if let id = localCall.callID, let name = localCall.name {
+                    toolHistory.append(AIProviderMessage(role: .assistant, content: [
+                        .toolUse(id: id, name: name, arguments: localCall.arguments ?? "{}")
+                    ]))
+                    if let result = output["output"] as? String {
+                        toolHistory.append(AIProviderMessage(role: .user, content: [.toolResult(id: id, output: result)]))
+                    }
+                }
                 let responseID = await self.runToolLoop(
                     initialStream: client.streamToolOutputs(
                         apiKey: apiKey,
                         model: conversation.model,
                         previousResponseID: previousResponseID,
+                        history: toolHistory,
                         outputs: [output],
                         reasoningEffort: conversation.reasoningEffort,
                         mcpServers: mcpServers,
@@ -1469,6 +1644,7 @@ final class AIChatViewModel: ObservableObject {
                     model: conversation.model,
                     reasoningEffort: conversation.reasoningEffort,
                     mcpServers: mcpServers,
+                    history: toolHistory,
                     initialResponseID: previousResponseID
                 )
                 self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
@@ -1499,6 +1675,7 @@ final class AIChatViewModel: ObservableObject {
                 model: conversation.model,
                 reasoningEffort: conversation.reasoningEffort,
                 mcpServers: mcpServers,
+                history: toolHistory,
                 initialResponseID: previousResponseID
             )
             self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
@@ -1754,6 +1931,7 @@ struct AIChatWorkspaceView: View {
         _nativeToolStore = ObservedObject(wrappedValue: model.nativeToolStore)
     }
     @State private var showKey = false
+    @State private var showingProviderSetup = false
     @State private var keyMessage: String?
 
     @State private var conversationSearchQuery = ""
@@ -1963,7 +2141,7 @@ struct AIChatWorkspaceView: View {
                     .padding(.top, 10)
             }
 
-            if !model.credentials.hasAPIKey {
+            if !model.hasProviderAPIKey || showingProviderSetup {
                 setupPanel
             } else {
                 messages
@@ -1987,7 +2165,7 @@ struct AIChatWorkspaceView: View {
                     .limaFont(.headline)
                     .foregroundStyle(LimaTheme.textPrimary)
                     .lineLimit(1)
-                Text(model.credentials.hasAPIKey ? "Private · local history" : "Setup required")
+                Text(model.hasProviderAPIKey ? "Private · local history · " + model.provider.title : "Setup required · " + model.provider.title)
                     .limaFont(.caption2)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -2006,6 +2184,7 @@ struct AIChatWorkspaceView: View {
             .accessibilityLabel("New chat")
 
             Menu {
+                Button("Provider Settings…") { showingProviderSetup = true }
                 Button(model.showActivity ? "Hide turn details" : "Show turn details") {
                     model.showActivity.toggle()
                 }
@@ -2079,28 +2258,36 @@ struct AIChatWorkspaceView: View {
             Image(systemName: "key.fill")
                 .font(.system(size: 28))
                 .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-            Text("Connect OpenAI")
+            Text("Connect " + model.provider.title)
                 .limaFont(.title2.weight(.semibold))
-            Text("Your API key is saved only in your macOS Keychain. Lima sends messages directly to the OpenAI Responses API. Tools and attachments are opt-in. Every AI tool is read-only: Lima never lets AI write, delete, run, install, or approve anything.")
+            Text("Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Tools and attachments are opt-in. Every AI tool is read-only: Lima never lets AI write, delete, run, install, or approve anything.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            SecureField("OpenAI API key", text: $apiKey)
+            providerPicker
+            modelPicker
+            SecureField(model.provider.title + " API key", text: $apiKey)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Button("Save Key") {
                     do {
-                        try model.credentials.saveAPIKey(apiKey)
+                        try model.credentials.saveAPIKey(apiKey, for: model.provider)
+                        model.credentials.refresh()
                         apiKey = ""
-                        keyMessage = "API key saved in Keychain."
+                        keyMessage = model.provider.title + " API key saved in Keychain."
                     } catch {
                         keyMessage = error.localizedDescription
                     }
                 }
                 .buttonStyle(.borderedProminent)
-                if let keyMessage {
-                    Text(keyMessage)
+                Button("Test Connection", action: model.testConnection)
+                    .disabled(model.isLoadingModels || !model.hasProviderAPIKey)
+                if let message = model.providerConnectionMessage ?? keyMessage {
+                    Text(message)
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
+                }
+                if showingProviderSetup && model.hasProviderAPIKey {
+                    Button("Done") { showingProviderSetup = false }
                 }
             }
             Spacer()
@@ -2145,8 +2332,11 @@ struct AIChatWorkspaceView: View {
 
             HStack(spacing: 8) {
                 attachmentAndToolMenu
-                modelPicker
-                reasoningPicker
+                if model.hasProviderAPIKey && !showingProviderSetup {
+                    providerPicker
+                    modelPicker
+                    reasoningPicker
+                }
                 Spacer(minLength: 8)
                 Label("\(enabledToolCount) read-only", systemImage: "eye")
                     .limaFont(.caption2.weight(.medium))
@@ -2261,6 +2451,26 @@ struct AIChatWorkspaceView: View {
         .accessibilityLabel("Add context and choose read-only tools")
     }
 
+    private var providerPicker: some View {
+        Menu {
+            ForEach(AIProvider.chatProviders) { provider in
+                Button {
+                    model.selectProvider(provider)
+                    keyMessage = nil
+                } label: {
+                    Label(provider.title, systemImage: model.provider == provider ? "checkmark" : "circle")
+                }
+            }
+        } label: {
+            Label(model.provider.title, systemImage: "chevron.down")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.canEndTask)
+        .help("Choose an AI provider")
+        .accessibilityLabel("AI provider")
+    }
+
     private var modelPicker: some View {
         Menu {
             ForEach(model.availableModels) { option in
@@ -2278,7 +2488,7 @@ struct AIChatWorkspaceView: View {
         }
         .menuStyle(.borderlessButton)
         .disabled(model.canEndTask || model.isLoadingModels)
-        .help("Choose an OpenAI Responses model")
+        .help("Choose a model for " + model.provider.title)
     }
 
     private var reasoningPicker: some View {
