@@ -10,6 +10,101 @@ private func packageRoot() -> URL {
 }
 
 
+@Test func salesforceCaseResolverFindsExactCaseNumberInCurrentPageSnapshot() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let recordURL = URL(string: "https://acme.lightning.force.com/lightning/r/Case/500000000000001AAA/view")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 0012345678 — duplicate shipment"
+            ),
+            SalesforcePageLink(
+                href: recordURL.absoluteString,
+                text: "",
+                accessibleName: "Open case #00123456",
+                title: "Customer shipment issue"
+            )
+        ]
+    )
+
+    #expect(result == .found(recordURL))
+}
+
+@Test func salesforceCaseResolverRejectsSubstringAndNonCaseLinks() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 900123456 and 001234567"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Account/001000000000001AAA/view",
+                text: "Case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "https://other.lightning.force.com/lightning/r/Case/500000000000002AAA/view",
+                text: "Case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "http://acme.lightning.force.com/lightning/r/Case/500000000000003AAA/view",
+                text: "Case 00123456"
+            )
+        ]
+    )
+
+    #expect(result == .notFound)
+}
+
+@Test func salesforceCaseResolverReportsAmbiguousRecordLinks() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "00123456"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                accessibleName: "Open case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000002AAA/view",
+                title: "Case #00123456"
+            )
+        ]
+    )
+
+    #expect(result == .ambiguous(matchCount: 2))
+}
+
+@Test func salesforceCaseResolverRejectsInvalidQueriesAndNonSalesforceRecordIDs() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    #expect(SalesforceCaseResolver.resolve(caseNumber: "case 00123456", pageURL: pageURL, links: []) == .notFound)
+    #expect(SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: URL(string: "http://acme.lightning.force.com/lightning/page/home")!,
+        links: []
+    ) == .notFound)
+    #expect(SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/001000000000001AAA/view",
+                text: "Case 00123456"
+            )
+        ]
+    ) == .notFound)
+}
+
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
