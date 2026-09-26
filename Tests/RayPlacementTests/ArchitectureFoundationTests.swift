@@ -269,3 +269,10 @@ import Testing
     #expect(snapshot.dictationEngine == .appleSpeech)
     #expect(snapshot.dictationIsActive)
 }
+
+@Test func replacementFeedbackKeepsSuccessfulDeliverySilent() {
+    #expect(ReplacementOutcome.verified.feedback == .silent)
+    #expect(ReplacementOutcome.sentUnverified.feedback == .silent)
+    #expect(ReplacementOutcome.targetChanged.feedback == .targetChanged)
+    #expect(ReplacementOutcome.failedBeforeDelivery(NSError(domain: "Replacement", code: 1)).feedback == .deliveryFailed)
+}

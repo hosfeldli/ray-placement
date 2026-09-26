@@ -2,11 +2,28 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+enum ReplacementFeedback: Equatable {
+    case silent
+    case targetChanged
+    case deliveryFailed
+}
+
 enum ReplacementOutcome {
     case verified
     case sentUnverified
     case failedBeforeDelivery(Error)
     case targetChanged
+
+    var feedback: ReplacementFeedback {
+        switch self {
+        case .verified, .sentUnverified:
+            .silent
+        case .targetChanged:
+            .targetChanged
+        case .failedBeforeDelivery:
+            .deliveryFailed
+        }
+    }
 }
 
 enum SelectedTextService {

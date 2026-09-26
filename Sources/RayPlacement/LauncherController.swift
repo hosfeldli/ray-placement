@@ -2282,26 +2282,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         keyboardSelectionContext = nil
         focusedTextContext = nil
 
-        switch outcome {
-        case .verified:
-            // Successful replacement is intentionally silent.
+        switch outcome.feedback {
+        case .silent:
+            // Successful delivery remains quiet even when read-back is unavailable.
             break
-        case .sentUnverified:
-            // This fallback may matter to the user because the target could not
-            // be read back, so retain a short neutral warning rather than a
-            // misleading success confirmation.
-            if stealth {
-                toast.showStealth("Replacement sent · target could not confirm it", style: .working, duration: 2.8)
-            } else {
-                toast.show("Replacement sent · target could not confirm it", style: .working, duration: 3.2)
-            }
         case .targetChanged:
             clipboard.copy(text)
             presentError(
                 title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
                 message: "The target changed before replacement could be verified. The corrected text is on the clipboard."
             )
-        case .failedBeforeDelivery(let error):
+        case .deliveryFailed:
+            guard case .failedBeforeDelivery(let error) = outcome else {
+                assertionFailure("Delivery-failure feedback requires a delivery error")
+                return
+            }
             clipboard.copy(text)
             presentError(
                 title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
