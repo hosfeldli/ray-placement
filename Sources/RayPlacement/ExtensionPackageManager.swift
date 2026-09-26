@@ -60,10 +60,12 @@ final class ExtensionPackageManager: ObservableObject {
     private static let removedBundledKey = "lima.logicallyRemovedBundledExtensions"
 
     @Published private(set) var records: [String: ExtensionPackageRecord]
+    private let defaults: UserDefaults
     private var activePackageID: String?
 
-    init() {
-        records = (try? JSONDecoder().decode([String: ExtensionPackageRecord].self, from: UserDefaults.standard.data(forKey: Self.recordsKey) ?? Data())) ?? [:]
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        records = (try? JSONDecoder().decode([String: ExtensionPackageRecord].self, from: defaults.data(forKey: Self.recordsKey) ?? Data())) ?? [:]
     }
 
     func record(for id: String) -> ExtensionPackageRecord? { records[id] }
@@ -99,37 +101,59 @@ final class ExtensionPackageManager: ObservableObject {
             activePackageID = nil
             return ExtensionPackageTransaction(id: transactionID, packageID: id, previous: previous, stagedURL: nil, validationPassed: true, committed: true, error: nil)
         } catch {
-            var failed = records[id] ?? ExtensionPackageRecord(id: id, name: name, version: version, state: .failed, provenance: provenance)
-            failed.state = previous?.state ?? .failed; failed.lastError = error.localizedDescription; failed.updatedAt = Date()
-            records[id] = failed; persist(); activePackageID = nil
-            return ExtensionPackageTransaction(id: transactionID, packageID: id, previous: previous, stagedURL: nil, validationPassed: false, committed: false, error: error.localizedDescription)
+            // Restore the complete prior record as well as the staged package
+            // directory. Keeping the attempted version here would make the UI
+            // claim that an update succeeded even though its files were rolled
+            // back. New installs retain a failed record for retry diagnostics.
+            var failed = previous ?? ExtensionPackageRecord(
+                id: id,
+                name: name,
+                version: version,
+                state: .failed,
+                provenance: provenance
+            )
+            failed.state = previous?.state ?? .failed
+            failed.lastError = error.localizedDescription
+            failed.updatedAt = Date()
+            records[id] = failed
+            persist()
+            activePackageID = nil
+            return ExtensionPackageTransaction(
+                id: transactionID,
+                packageID: id,
+                previous: previous,
+                stagedURL: nil,
+                validationPassed: false,
+                committed: false,
+                error: error.localizedDescription
+            )
         }
     }
 
     func logicallyRemoveBundled(id: String) {
         var removed = logicallyRemovedBundled()
         removed.insert(id)
-        UserDefaults.standard.set(Array(removed).sorted(), forKey: Self.removedBundledKey)
+        defaults.set(Array(removed).sorted(), forKey: Self.removedBundledKey)
         if records[id] != nil { transition(.logicallyRemoved, id: id) }
     }
 
     func restoreBundled(id: String) {
         var removed = logicallyRemovedBundled(); removed.remove(id)
-        UserDefaults.standard.set(Array(removed).sorted(), forKey: Self.removedBundledKey)
+        defaults.set(Array(removed).sorted(), forKey: Self.removedBundledKey)
         if records[id] != nil { transition(.installed, id: id) }
     }
 
     func isLogicallyRemoved(_ id: String) -> Bool {
-        let values = UserDefaults.standard.array(forKey: Self.removedBundledKey) as? [String] ?? []
+        let values = defaults.array(forKey: Self.removedBundledKey) as? [String] ?? []
         return Set(values).contains(id)
     }
 
     func logicallyRemovedBundled() -> Set<String> {
-        Set(UserDefaults.standard.array(forKey: Self.removedBundledKey) as? [String] ?? [])
+        Set(defaults.array(forKey: Self.removedBundledKey) as? [String] ?? [])
     }
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(records) else { return }
-        UserDefaults.standard.set(data, forKey: Self.recordsKey)
+        defaults.set(data, forKey: Self.recordsKey)
     }
 }
