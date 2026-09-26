@@ -775,6 +775,56 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(LimaAIToolRegistry.definition(for: "open_lima_settings") == nil)
     #expect(LimaAIToolRegistry.definition(for: "read_screen_context")?.displayName == "Screen context")
     #expect(LimaAIToolRegistry.definition(for: "search_web")?.displayName == "Search the web")
+    #expect(["list_directory", "find_files", "search_files", "read_file", "file_metadata"]
+        .allSatisfy { LimaAIToolRegistry.definition(for: $0) != nil })
+}
+
+@Test @MainActor func fileToolsReturnBoundedNumberedRangesAndSkipHiddenOrLinkedEntries() throws {
+    let repository = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let directory = repository
+        .appendingPathComponent(".build", isDirectory: true)
+        .appendingPathComponent("ai-file-inspection-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let file = directory.appendingPathComponent("sample.txt")
+    try Data("alpha\nbeta\ngamma\n".utf8).write(to: file)
+    try Data("hidden".utf8).write(to: directory.appendingPathComponent(".hidden.txt"))
+    let symbolicLink = directory.appendingPathComponent("sample-link.txt")
+    try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: file)
+
+    let firstRange = LimaAIToolRegistry.readTextFile(at: file.path, startLine: 2, length: 1)
+    #expect(!firstRange.isError)
+    let rangePayload = try #require(
+        JSONSerialization.jsonObject(with: Data(firstRange.output.utf8)) as? [String: Any]
+    )
+    #expect(rangePayload["content"] as? String == "2\tbeta")
+    #expect(rangePayload["next_start_line"] as? Int == 3)
+    #expect(rangePayload["truncated"] as? Bool == true)
+    #expect(LimaAIToolRegistry.integerArgument(named: "start_line", from: #"{"start_line":true}"#) == nil)
+
+    let listing = LimaAIToolRegistry.listDirectory(at: directory.path)
+    let listingPayload = try #require(
+        JSONSerialization.jsonObject(with: Data(listing.output.utf8)) as? [String: Any]
+    )
+    let entries = try #require(listingPayload["entries"] as? [[String: Any]])
+    let names = entries.compactMap { $0["name"] as? String }
+    #expect(names.contains("sample.txt"))
+    #expect(!names.contains(".hidden.txt"))
+    #expect(!names.contains("sample-link.txt"))
+
+    let metadata = LimaAIToolRegistry.fileMetadata(at: file.path)
+    let metadataPayload = try #require(
+        JSONSerialization.jsonObject(with: Data(metadata.output.utf8)) as? [String: Any]
+    )
+    #expect(metadataPayload["name"] as? String == "sample.txt")
+    #expect(metadataPayload["kind"] as? String == "file")
+    #expect(metadataPayload["size_bytes"] as? Int == 17)
+    #expect(LimaAIToolRegistry.readTextFile(at: symbolicLink.path).isError)
+    #expect(LimaAIToolRegistry.listDirectory(at: "/etc").isError)
 }
 
 @Test @MainActor func extensionHostAdaptersAreAllowlistedAndTextTransformIsPure() async throws {

@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import CoreFoundation
 import Foundation
 import RayPlacementCore
 import Security
@@ -1304,7 +1305,7 @@ enum LimaAIToolRegistry {
         LimaAIToolDefinition(
             id: "search_files",
             name: "search_files",
-            description: "Search file names in the user’s existing Spotlight index. Returns up to 20 paths and never reads file contents.",
+            description: "Search file names in the user’s existing Spotlight index. Returns up to 20 safe paths and never reads file contents.",
             parameters: [
                 "type": "object",
                 "properties": ["query": ["type": "string", "description": "A concise file-name query."]],
@@ -1314,12 +1315,55 @@ enum LimaAIToolRegistry {
             risk: .read
         ),
         LimaAIToolDefinition(
-            id: "read_file",
-            name: "read_file",
-            description: "Read a bounded text or source-code file. Sensitive credential locations, non-text files, and files larger than 96 KB are blocked. This tool never changes a file.",
+            id: "find_files",
+            name: "find_files",
+            description: "Find matching file names in the Spotlight index, optionally limited to a directory. Returns paths only.",
             parameters: [
                 "type": "object",
-                "properties": ["path": ["type": "string", "description": "An absolute path returned by Search Files or supplied by the user."]],
+                "properties": [
+                    "query": ["type": "string", "description": "A concise file-name query."],
+                    "directory": ["type": "string", "description": "Optional absolute directory to limit results."]
+                ],
+                "required": ["query"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "list_directory",
+            name: "list_directory",
+            description: "List up to 100 visible direct children of a directory. Hidden and sensitive paths and symbolic links are omitted; file contents are never read.",
+            parameters: [
+                "type": "object",
+                "properties": ["path": ["type": "string", "description": "An absolute directory path."]],
+                "required": ["path"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "file_metadata",
+            name: "file_metadata",
+            description: "Read basic metadata for a file or directory without reading its contents. Sensitive locations are blocked.",
+            parameters: [
+                "type": "object",
+                "properties": ["path": ["type": "string", "description": "An absolute file or directory path."]],
+                "required": ["path"],
+                "additionalProperties": false
+            ],
+            risk: .read
+        ),
+        LimaAIToolDefinition(
+            id: "read_file",
+            name: "read_file",
+            description: "Read a bounded line range from a text or source-code file with line numbers. Sensitive locations, non-text files, and files larger than 96 KB are blocked. This tool never changes a file.",
+            parameters: [
+                "type": "object",
+                "properties": [
+                    "path": ["type": "string", "description": "An absolute path returned by a file search or supplied by the user."],
+                    "start_line": ["type": "integer", "minimum": 1, "description": "One-based first line to read; defaults to 1."],
+                    "length": ["type": "integer", "minimum": 1, "maximum": 400, "description": "Maximum number of lines to return; defaults to 200."]
+                ],
                 "required": ["path"],
                 "additionalProperties": false
             ],
@@ -1418,20 +1462,59 @@ enum LimaAIToolRegistry {
         switch definition.id {
         case "read_screen_context":
             return .json(LimaScreenContextStore.shared.read())
-        case "search_files":
+        case "search_files", "find_files":
             guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
-                return .json(["error": "Search Files needs a non-empty query."], isError: true)
+                return .json(["error": "File search needs a non-empty query."], isError: true)
+            }
+            var directoryPath: String?
+            if let directory = stringArgument(named: "directory", from: call.arguments) {
+                guard directory.hasPrefix("/") else {
+                    return .json(["error": "The optional search directory must be an absolute path."], isError: true)
+                }
+                let root = URL(fileURLWithPath: directory).standardizedFileURL.resolvingSymlinksInPath()
+                guard !isSensitivePath(root),
+                      (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+                    return .json(["error": "The search directory is unavailable or sensitive."], isError: true)
+                }
+                directoryPath = root.path
             }
             let urls = await searchFiles(named: String(query.prefix(160)))
+            let matches = urls.compactMap { candidate -> [String: String]? in
+                let url = candidate.standardizedFileURL.resolvingSymlinksInPath()
+                guard !isSensitivePath(url),
+                      directoryPath.map({ url.path.hasPrefix($0 == "/" ? "/" : $0 + "/") }) ?? true else { return nil }
+                return ["name": url.lastPathComponent, "path": url.path]
+            }
             return .json([
-                "matches": urls.prefix(20).map { ["name": $0.lastPathComponent, "path": $0.path] },
-                "truncated": urls.count > 20
+                "matches": matches.prefix(20),
+                "truncated": matches.count > 20
             ])
+        case "list_directory":
+            guard let path = stringArgument(named: "path", from: call.arguments), !path.isEmpty else {
+                return .json(["error": "List Directory needs an absolute path."], isError: true)
+            }
+            return listDirectory(at: path)
+        case "file_metadata":
+            guard let path = stringArgument(named: "path", from: call.arguments), !path.isEmpty else {
+                return .json(["error": "File Metadata needs an absolute path."], isError: true)
+            }
+            return fileMetadata(at: path)
         case "read_file":
             guard let path = stringArgument(named: "path", from: call.arguments), !path.isEmpty else {
                 return .json(["error": "Read File needs an absolute path."], isError: true)
             }
-            return readTextFile(at: path)
+            let requestedStartLine = integerArgument(named: "start_line", from: call.arguments)
+            let requestedLength = integerArgument(named: "length", from: call.arguments)
+            guard (!hasArgument(named: "start_line", from: call.arguments) || requestedStartLine != nil),
+                  (!hasArgument(named: "length", from: call.arguments) || requestedLength != nil) else {
+                return .json(["error": "Read File needs integer start_line and length values."], isError: true)
+            }
+            let startLine = requestedStartLine ?? 1
+            let length = requestedLength ?? 200
+            guard startLine > 0, (1...400).contains(length) else {
+                return .json(["error": "Read File accepts a positive start_line and a length from 1 to 400."], isError: true)
+            }
+            return readTextFile(at: path, startLine: startLine, length: length)
         case "search_web":
             guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
                 return .json(["error": "Search Web needs a non-empty query."], isError: true)
@@ -1482,6 +1565,27 @@ enum LimaAIToolRegistry {
         return (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    static func integerArgument(named key: String, from arguments: String?) -> Int? {
+        guard let arguments,
+              let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let number = object[key] as? NSNumber,
+              CFGetTypeID(number) != CFBooleanGetTypeID() else { return nil }
+        let value = number.doubleValue
+        guard value.isFinite,
+              value.rounded(.towardZero) == value,
+              value >= Double(Int.min),
+              value < Double(Int.max) else { return nil }
+        return number.intValue
+    }
+
+    static func hasArgument(named key: String, from arguments: String?) -> Bool {
+        guard let arguments,
+              let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        return object.keys.contains(key)
+    }
+
     static func searchFiles(named query: String) async -> [URL] {
         await withCheckedContinuation { continuation in
             fileSearch.search(query) { urls in
@@ -1490,11 +1594,15 @@ enum LimaAIToolRegistry {
         }
     }
 
-    static func readTextFile(at path: String) -> LimaAIToolExecution {
-        let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
-        guard url.path.hasPrefix("/") else {
-            return .json(["error": "Read File only accepts absolute paths."], isError: true)
+    static func readTextFile(at path: String, startLine: Int = 1, length: Int = 200) -> LimaAIToolExecution {
+        guard path.hasPrefix("/"), startLine > 0, (1...400).contains(length) else {
+            return .json(["error": "Read File needs an absolute path, a positive start line, and a length from 1 to 400."], isError: true)
         }
+        let requestedURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard (try? requestedURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            return .json(["error": "Read File does not follow symbolic links."], isError: true)
+        }
+        let url = requestedURL.resolvingSymlinksInPath()
         guard !isSensitivePath(url) else {
             return .json(["error": "Lima does not share credentials, system files, or hidden secret locations with AI Chat."], isError: true)
         }
@@ -1511,17 +1619,133 @@ enum LimaAIToolRegistry {
                 return .json(["error": "Read File supports text and source-code files only."], isError: true)
             }
             let data = try Data(contentsOf: url)
-            guard let text = String(data: data, encoding: .utf8) else {
-                return .json(["error": "Lima could not decode that file as UTF-8 text."], isError: true)
+            guard let text = String(data: data, encoding: .utf8),
+                  !data.contains(0),
+                  !text.unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
+                  }) else {
+                return .json(["error": "Lima could not decode that file as safe UTF-8 text."], isError: true)
             }
-            let limitedText = String(text.prefix(32_000))
+            let normalizedText = text.replacingOccurrences(of: "\r\n", with: "\n")
+            var lines = normalizedText.components(separatedBy: "\n")
+            if normalizedText.hasSuffix("\n") { lines.removeLast() }
+            let firstIndex = min(startLine - 1, lines.count)
+            var output: [String] = []
+            var outputCharacters = 0
+            var lineWasClipped = false
+            for index in firstIndex..<min(lines.count, firstIndex + length) {
+                let line = lines[index]
+                let remaining = max(0, 32_000 - outputCharacters)
+                guard remaining > 0 else { break }
+                let numberedLine = "\(index + 1)\t\(line)"
+                if numberedLine.count <= remaining {
+                    output.append(numberedLine)
+                    outputCharacters += numberedLine.count + 1
+                } else {
+                    output.append(String(numberedLine.prefix(remaining)))
+                    lineWasClipped = true
+                    break
+                }
+            }
+            let candidateNextStartLine = firstIndex + output.count + 1
+            let nextStartLine: Int? = !lineWasClipped && candidateNextStartLine <= lines.count
+                ? candidateNextStartLine
+                : nil
             return .json([
                 "path": url.path,
-                "content": limitedText,
-                "truncated": text.count > limitedText.count
+                "start_line": startLine,
+                "length": length,
+                "content": output.joined(separator: "\n"),
+                "next_start_line": nextStartLine.map { $0 as Any } ?? NSNull(),
+                "line_truncated": lineWasClipped,
+                "truncated": nextStartLine != nil || lineWasClipped
             ])
         } catch {
             return .json(["error": "Lima could not read that file."], isError: true)
+        }
+    }
+
+    static func listDirectory(at path: String) -> LimaAIToolExecution {
+        guard path.hasPrefix("/") else {
+            return .json(["error": "List Directory only accepts absolute paths."], isError: true)
+        }
+        let requestedURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard (try? requestedURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            return .json(["error": "List Directory does not follow symbolic links."], isError: true)
+        }
+        let url = requestedURL.resolvingSymlinksInPath()
+        guard !isSensitivePath(url) else {
+            return .json(["error": "Lima does not list credential, system, or hidden secret locations."], isError: true)
+        }
+        do {
+            guard try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true,
+                  let enumerator = FileManager.default.enumerator(
+                    at: url,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+                    options: [.skipsHiddenFiles]
+                  ) else {
+                return .json(["error": "List Directory needs an accessible directory path."], isError: true)
+            }
+            var entries: [[String: Any]] = []
+            while let child = enumerator.nextObject() as? URL {
+                let values = try? child.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                if values?.isDirectory == true || values?.isSymbolicLink == true {
+                    enumerator.skipDescendants()
+                }
+                guard values?.isSymbolicLink != true else { continue }
+                let resolved = child.standardizedFileURL.resolvingSymlinksInPath()
+                guard !isSensitivePath(resolved) else { continue }
+                let kind = values?.isDirectory == true ? "directory" : (values?.isRegularFile == true ? "file" : "other")
+                entries.append([
+                    "name": child.lastPathComponent,
+                    "path": child.path,
+                    "kind": kind,
+                    "size_bytes": values?.fileSize.map { $0 as Any } ?? NSNull()
+                ])
+                if entries.count > 100 { break }
+            }
+            entries.sort {
+                ($0["name"] as? String ?? "").localizedStandardCompare($1["name"] as? String ?? "") == .orderedAscending
+            }
+            let boundedEntries = Array(entries.prefix(100))
+            return .json([
+                "path": url.path,
+                "entries": boundedEntries,
+                "truncated": entries.count > boundedEntries.count
+            ])
+        } catch {
+            return .json(["error": "Lima could not list that directory."], isError: true)
+        }
+    }
+
+    static func fileMetadata(at path: String) -> LimaAIToolExecution {
+        guard path.hasPrefix("/") else {
+            return .json(["error": "File Metadata only accepts absolute paths."], isError: true)
+        }
+        let requestedURL = URL(fileURLWithPath: path).standardizedFileURL
+        guard (try? requestedURL.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true else {
+            return .json(["error": "File Metadata does not follow symbolic links."], isError: true)
+        }
+        let url = requestedURL.resolvingSymlinksInPath()
+        guard !isSensitivePath(url) else {
+            return .json(["error": "Lima does not expose metadata from credential, system, or hidden secret locations."], isError: true)
+        }
+        do {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey, .fileSizeKey, .contentTypeKey, .contentModificationDateKey])
+            guard values.isRegularFile == true || values.isDirectory == true else {
+                return .json(["error": "File Metadata supports regular files and directories only."], isError: true)
+            }
+            let formatter = ISO8601DateFormatter()
+            return .json([
+                "path": url.path,
+                "name": url.lastPathComponent,
+                "kind": values.isDirectory == true ? "directory" : "file",
+                "size_bytes": values.fileSize ?? 0,
+                "modified_at": values.contentModificationDate.map { formatter.string(from: $0) as Any } ?? NSNull(),
+                "content_type": values.contentType.map { $0.identifier as Any } ?? NSNull()
+            ])
+        } catch {
+            return .json(["error": "Lima could not read that item’s metadata."], isError: true)
         }
     }
 
@@ -1827,8 +2051,10 @@ extension LimaAIToolDefinition {
     var userSummary: String {
         switch id {
         case "read_screen_context": return "App, window, and selected text"
-        case "search_files": return "Names and paths only"
-        case "read_file": return "Text and code, never changes"
+        case "search_files", "find_files": return "Names and paths only"
+        case "list_directory": return "Visible direct children only"
+        case "file_metadata": return "Basic file metadata only"
+        case "read_file": return "Bounded numbered text ranges"
         case "search_web": return "Public results only"
         case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
@@ -1842,7 +2068,8 @@ extension LimaAIToolDefinition {
     var symbol: String {
         switch id {
         case "read_screen_context": return "rectangle.on.rectangle"
-        case "search_files": return "folder"
+        case "search_files", "find_files", "list_directory": return "folder"
+        case "file_metadata": return "doc.badge.gearshape"
         case "read_file": return "doc.text"
         case "search_web": return "globe"
         case "read_web": return "doc.text.magnifyingglass"
