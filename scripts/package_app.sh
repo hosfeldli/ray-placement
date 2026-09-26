@@ -57,6 +57,16 @@ fi
 mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources" "$FRAMEWORKS_DIRECTORY"
 
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
+cp "$BIN_DIRECTORY/LimaBrowserBridgeHost" "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
+chmod 755 "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
+ditto "$PROJECT_DIRECTORY/BrowserBridge" "$CONTENTS_DIRECTORY/Resources/BrowserBridge"
+cp "$PROJECT_DIRECTORY/docs/BROWSER_BRIDGE.md" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/README.md"
+python3 "$PROJECT_DIRECTORY/scripts/package_browser_bridge.py" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-unsigned.xpi"
+# A signed release artifact is supplied explicitly; never rename an unsigned XPI.
+if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI:-}" ]]; then
+    python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$LIMA_BROWSER_BRIDGE_SIGNED_XPI" --require-signature
+    cp "$LIMA_BROWSER_BRIDGE_SIGNED_XPI" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-signed.xpi"
+fi
 install_name_tool -add_rpath '@loader_path/../Frameworks' "$CONTENTS_DIRECTORY/MacOS/Lima"
 # SwiftPM's executable links Sparkle through @rpath/@loader_path. Copy the
 # complete framework bundle with ditto so its versions, helper bundles, XPC
@@ -168,6 +178,7 @@ plutil -lint "$CONTENTS_DIRECTORY/Info.plist" >/dev/null
 sign_sparkle_framework() {
     local framework="$1"
     local signing_identity="$2"
+    codesign --force --sign "$signing_identity" "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
     local nested_app
     local nested_binary
 

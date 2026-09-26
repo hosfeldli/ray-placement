@@ -29,6 +29,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case commands
     case writing
+    case browser
     case appearance
     case advanced
 
@@ -39,6 +40,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
+        case .browser: return "Browser Bridge"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
         }
@@ -49,6 +51,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: return "gearshape.fill"
         case .commands: return "square.grid.2x2"
         case .writing: return "text.badge.checkmark"
+        case .browser: return "globe"
         case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
         }
@@ -62,6 +65,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
             return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "tools", "skills", "agents", "conflict", "key", "store", "updates"]
         case .writing:
             return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
+        case .browser:
+            return ["zen", "firefox", "browser", "bridge", "site", "permissions", "native", "helper", "salesforce", "tabs"]
         case .appearance:
             return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
         case .advanced:
@@ -110,6 +115,7 @@ struct SettingsView: View {
     @State private var selectedSection: SettingsSection = .general
     @State private var settingsSearchQuery = ""
     @State private var advancedSubsection = 0
+    @State private var writingSubsection = 0
     @State private var confirmUsageClear = false
     @State private var commandProfileName = ""
     @State private var aliasDrafts: [String: String] = [:]
@@ -410,6 +416,7 @@ struct SettingsView: View {
         case .general: generalTab
         case .commands: commandCenterTab
         case .writing: writingSettingsTab
+        case .browser: BrowserBridgeSettingsView()
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
         }
@@ -417,14 +424,14 @@ struct SettingsView: View {
 
     private var writingSettingsTab: some View {
         VStack(spacing: 0) {
-            Picker("Writing area", selection: $advancedSubsection) {
+            Picker("Writing area", selection: $writingSubsection) {
                 Text("Fix Writing").tag(0)
                 Text("Dictation").tag(1)
             }
             .pickerStyle(.segmented)
             .padding(12)
             Group {
-                switch advancedSubsection {
+                switch writingSubsection {
                 case 1: dictationTab
                 default: grammarSettingsTab
                 }

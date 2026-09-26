@@ -21,6 +21,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "RayPlacement", targets: ["RayPlacement"]),
+        .executable(name: "LimaBrowserBridgeHost", targets: ["LimaBrowserBridgeHost"]),
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
     ],
@@ -28,6 +29,10 @@ let package = Package(
     targets: [
         .target(name: "RayPlacementCore", resources: [.process("Fixtures")]),
         .target(name: "RayPlacementWriting"),
+        .executableTarget(
+            name: "LimaBrowserBridgeHost",
+            dependencies: ["RayPlacementCore"]
+        ),
         .executableTarget(
             name: "RayPlacement",
             dependencies: appDependencies

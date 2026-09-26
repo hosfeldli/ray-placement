@@ -1,0 +1,32 @@
+{
+  "manifest_version": 2,
+  "name": "Lima Browser Bridge",
+  "version": "1.0.0",
+  "description": "Explicit per-site browser context for Lima. No automatic page access.",
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "lima-browser-bridge@liamhosfeld.com",
+      "strict_min_version": "115.0"
+    }
+  },
+  "permissions": [
+    "nativeMessaging",
+    "tabs",
+    "activeTab"
+  ],
+  "optional_permissions": [
+    "https://*/*"
+  ],
+  "background": {
+    "scripts": [
+      "policy.js",
+      "background.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "Lima Browser Bridge",
+    "default_popup": "popup.html"
+  },
+  "incognito": "not_allowed",
+  "content_security_policy": "script-src 'self'; object-src 'none'"
+}

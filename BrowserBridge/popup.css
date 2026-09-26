@@ -1,0 +1,4 @@
+:root {color-scheme: light dark; font: 13px system-ui; } body {width: 350px; margin: 18px; } h1 {font-size: 18px} h2 {font-size: 14px; margin-top:20px}
+p {line-height:1.5; overflow-wrap:anywhere} button {padding:7px 10px; margin:3px; border-radius:7px; border:1px solid #8886; cursor:pointer}
+button:focus-visible {outline:2px solid #8b73f5; outline-offset:2px} li {margin:8px 0; overflow-wrap:anywhere} ul {padding-left:18px}
+.action {border-top:1px solid #8884; padding:8px 0} .detail {white-space:pre-wrap; overflow-wrap:anywhere}

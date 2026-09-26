@@ -4,7 +4,16 @@ MODULE_CACHE_DIRECTORY := $(SCRATCH_DIRECTORY)/module-cache
 SWIFT_ENV := CLANG_MODULE_CACHE_PATH=$(MODULE_CACHE_DIRECTORY) SWIFTPM_MODULECACHE_OVERRIDE=$(MODULE_CACHE_DIRECTORY)
 VISUAL_SCENARIO ?= ai-conversation
 
-.PHONY: build test package verify run visual visual-lab clean
+.PHONY: build test package verify run visual visual-lab clean bridge-test bridge-package
+
+bridge-test:
+	node --test Tests/BrowserBridgeTests/*.test.cjs
+	swift build --product LimaBrowserBridgeHost
+	python3 Tests/BrowserBridgeTests/native_host_smoke.py
+
+bridge-package:
+	python3 scripts/package_browser_bridge.py
+	python3 scripts/verify_browser_bridge_package.py build/lima-browser-bridge-unsigned.xpi
 
 build:
 	$(SWIFT_ENV) swift build --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)"

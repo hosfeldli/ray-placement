@@ -18,6 +18,12 @@ require() {
 
 require "Lima.app is missing" test -d "$APP_DIRECTORY"
 require "the Lima executable is missing" test -x "$BINARY"
+require "the browser native helper is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the browser helper signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"
+if [[ -f "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" ]]; then
+    require "the signed browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" --require-signature
+fi
 require "Sparkle.framework is missing" test -d "$SPARKLE_FRAMEWORK"
 require "the Sparkle framework binary is missing" test -x "$SPARKLE_FRAMEWORK/Versions/B/Sparkle"
 require "Sparkle's updater helper is missing" test -d "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"

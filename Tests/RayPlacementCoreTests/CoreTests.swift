@@ -1114,3 +1114,73 @@ private func packageRoot() -> URL {
     let incomplete = ExtensionManifest(schemaVersion: 3, id: "incomplete", name: "Incomplete", bundled: true, provenance: .userInstalled, commands: [command], trust: .unsigned)
     #expect(throws: ExtensionManifest.ValidationError.bundledRequiresBundledProvenance) { try incomplete.validateLifecycleMetadata() }
 }
+
+@Test func browserBridgeResolvesOnlyLinksFromTheSuppliedSecurePage() throws {
+    let request = LimaBrowserBridgeRequest(
+        requestID: "lookup-1",
+        command: "salesforce.resolve_case",
+        caseNumber: "000123",
+        pageURL: "https://acme.my.salesforce.com/lightning/page/home",
+        links: [
+            LimaBrowserBridgeLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 000123"
+            )
+        ]
+    )
+
+    let response = LimaBrowserBridgeDispatcher.handle(request)
+    #expect(response.ok)
+    #expect(response.status == "found")
+    #expect(response.recordURL == "https://acme.my.salesforce.com/lightning/r/Case/500000000000001AAA/view")
+    #expect(response.errorCode == nil)
+}
+
+@Test func browserBridgeRejectsUnknownCommandsAndUnboundedRequests() {
+    let unknown = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(requestID: "lookup-2", command: "run_javascript")
+    )
+    #expect(!unknown.ok)
+    #expect(unknown.errorCode == "unsupported_command")
+
+    let oversized = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(
+            requestID: "lookup-3",
+            command: "salesforce.resolve_case",
+            caseNumber: "123",
+            pageURL: "https://acme.my.salesforce.com/",
+            links: Array(repeating: LimaBrowserBridgeLink(href: "/lightning/r/Case/500000000000001AAA/view", text: "Case 123"), count: LimaBrowserBridgeDispatcher.maximumLinks + 1)
+        )
+    )
+    #expect(!oversized.ok)
+    #expect(oversized.errorCode == "invalid_case_lookup")
+
+    let wrongVersion = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(version: 99, requestID: "lookup-4", command: "ping")
+    )
+    #expect(!wrongVersion.ok)
+    #expect(wrongVersion.errorCode == "unsupported_version")
+}
+
+@Test func firefoxNativeMessageFrameUsesLittleEndianLengthAndRejectsMalformedFrames() throws {
+    let payload = Data("{\"ok\":true}".utf8)
+    let framed = try FirefoxNativeMessageFrame.encode(payload)
+    #expect(Array(framed.prefix(4)) == [11, 0, 0, 0])
+    #expect(try FirefoxNativeMessageFrame.payloadLength(fromHeader: Data(framed.prefix(4))) == payload.count)
+    #expect(try FirefoxNativeMessageFrame.decode(framed) == payload)
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedHeader) {
+        try FirefoxNativeMessageFrame.payloadLength(fromHeader: Data([1, 2, 3]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedHeader) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 2, 3]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedPayload) {
+        try FirefoxNativeMessageFrame.decode(Data([4, 0, 0, 0, 1]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.trailingBytes) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 0, 0, 0, 65, 66]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.payloadTooLarge) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 0, 16, 0]))
+    }
+}

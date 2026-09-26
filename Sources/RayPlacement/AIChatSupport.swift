@@ -1410,7 +1410,7 @@ enum LimaAIToolRegistry {
     ]
 
     static var availableDefinitions: [LimaAIToolDefinition] {
-        definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+        definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
     }
 
     static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)) }
@@ -1458,6 +1458,9 @@ enum LimaAIToolRegistry {
             } catch {
                 return .json(["error": "The approved read-only extension tool could not be executed."], isError: true)
             }
+        }
+        if BrowserBridgeAITools.definitions.contains(where: { $0.id == definition.id }) {
+            return await BrowserBridgeAITools.execute(call)
         }
         switch definition.id {
         case "read_screen_context":
