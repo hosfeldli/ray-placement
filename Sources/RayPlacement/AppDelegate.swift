@@ -33,6 +33,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        DiagnosticsService.shared.markAppStarted()
         try? ApplicationPaths.prepare()
         CrashRecoveryStore.shared.beginLaunch()
         let launchPath = Bundle.main.bundleURL.path

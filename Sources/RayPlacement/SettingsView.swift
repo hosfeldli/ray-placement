@@ -820,7 +820,45 @@ struct SettingsView: View {
     private var usageTab: some View {
         let summary = usageMonitor.summary
         let latencySamples = Array(LauncherPerformanceDiagnostics.shared.samples.suffix(8))
+        let provider = AIConversationStore.shared.conversations.first?.provider ?? .openAI
+        let credentialConfigured = provider == .openAICompatible
+            || AIProviderCredentialStore.shared.hasAPIKey(for: provider)
+        let runtime = DiagnosticsService.shared.runtimeSnapshot(
+            provider: provider,
+            providerCredentialConfigured: credentialConfigured,
+            extensionIssueCount: viewModel.extensionIssues.count,
+            dictationEngine: settings.dictationEngine
+        )
         return Form {
+            Section("Runtime diagnostics") {
+                LabeledContent("App uptime", value: durationLabel(runtime.appUptime))
+                LabeledContent(
+                    "Resident memory",
+                    value: runtime.residentMemoryBytes.map {
+                        ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .memory)
+                    } ?? "Unavailable"
+                )
+                LabeledContent("Active tasks", value: runtime.activeTaskCount.formatted())
+                LabeledContent("Recent failures", value: runtime.recentFailures.count.formatted())
+                LabeledContent("AI provider", value: "\(runtime.provider.title) · \(runtime.providerStatus)")
+                LabeledContent(
+                    "Extensions",
+                    value: runtime.extensionIssueCount == 0
+                        ? "No issues"
+                        : "\(runtime.extensionIssueCount) issue\(runtime.extensionIssueCount == 1 ? "" : "s")"
+                )
+                LabeledContent(
+                    "Dictation",
+                    value: "\(runtime.dictationEngine.title) · \(runtime.dictationIsActive ? "Active" : "Idle")"
+                )
+                if !runtime.recentFailures.isEmpty {
+                    ForEach(runtime.recentFailures) { task in
+                        Label(task.title, systemImage: "exclamationmark.circle")
+                            .foregroundStyle(.orange)
+                    }
+                }
+            }
+
             Section("Live activity") {
                 if usageMonitor.activeTasks.isEmpty {
                     Label("No local process is running", systemImage: "checkmark.circle.fill")
@@ -868,25 +906,22 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Recent performance") {
-                if performanceMonitor.samples.isEmpty {
-                    Text("No cross-surface measurements recorded yet.")
+            Section("Recent slow operations") {
+                if runtime.recentSlowOperations.isEmpty {
+                    Text("No operations over 1 second have been recorded.")
                         .foregroundStyle(LimaTheme.textSecondary)
                 } else {
-                    ForEach(performanceMonitor.samples.prefix(12)) { sample in
+                    ForEach(runtime.recentSlowOperations) { sample in
                         HStack {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(sample.operation)
-                                if let detail = sample.detail {
-                                    Text(detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
-                                }
-                            }
+                            Text(sample.operation)
                             Spacer()
                             Text("\(sample.milliseconds) ms")
                                 .limaFont(.caption.monospacedDigit())
                                 .foregroundStyle(sample.succeeded ? LimaTheme.textSecondary : .orange)
                         }
                     }
+                }
+                if !performanceMonitor.samples.isEmpty {
                     Button("Clear performance history") { performanceMonitor.clear() }
                 }
             }

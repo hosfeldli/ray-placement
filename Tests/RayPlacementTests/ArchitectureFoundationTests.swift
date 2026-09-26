@@ -210,3 +210,62 @@ import Testing
     #expect(CommandCenterCatalog.visibleEntries(entries, filter: .extensions, query: "").map(\.id) == ["extension.review"])
     #expect(CommandCenterCatalog.visibleEntries(entries, filter: .all, query: "research claude").map(\.id) == ["agent.research"])
 }
+
+@Test func runtimeDiagnosticsSummaryIsBoundedAndPrivacySafe() {
+    let start = Date(timeIntervalSince1970: 1_000)
+    func task(_ title: String, _ state: LimaTaskState) -> LimaTask {
+        let date = start.addingTimeInterval(10)
+        return LimaTask(
+            id: UUID(),
+            kind: .aiGeneration,
+            title: title,
+            detail: nil,
+            state: state,
+            progress: nil,
+            startedAt: start,
+            updatedAt: date,
+            finishedAt: state.isActive ? nil : date,
+            isCancellable: false
+        )
+    }
+    func sample(_ operation: String, milliseconds: Int) -> LimaPerformanceSample {
+        LimaPerformanceSample(
+            id: UUID(),
+            operation: operation,
+            startedAt: start,
+            duration: TimeInterval(milliseconds) / 1_000,
+            succeeded: true,
+            detail: nil
+        )
+    }
+
+    let failures = (0..<8).map { task("AI request failure \($0)", .failed) }
+    let cancelled = task("User stopped work", .cancelled)
+    let active = task("AI is working", .running)
+    let slowSamples = (0..<7).map { sample("slow operation \($0)", milliseconds: 1_200) }
+    let snapshot = RuntimeDiagnosticsSnapshot.make(
+        startedAt: start,
+        now: start.addingTimeInterval(123),
+        residentMemoryBytes: 4_194_304,
+        activeTasks: [active],
+        recentTasks: failures + [cancelled],
+        performanceSamples: slowSamples + [sample("search", milliseconds: 450)],
+        provider: .anthropic,
+        providerCredentialConfigured: false,
+        extensionIssueCount: -2,
+        dictationEngine: .appleSpeech,
+        dictationIsActive: true
+    )
+
+    #expect(snapshot.appUptime == 123)
+    #expect(snapshot.residentMemoryBytes == 4_194_304)
+    #expect(snapshot.activeTaskCount == 1)
+    #expect(snapshot.recentFailures.map(\.id) == failures.prefix(5).map(\.id))
+    #expect(snapshot.recentFailures.count == RuntimeDiagnosticsSnapshot.maximumRecentFailures)
+    #expect(snapshot.recentSlowOperations.map(\.operation) == slowSamples.prefix(5).map(\.operation))
+    #expect(snapshot.recentSlowOperations.count == RuntimeDiagnosticsSnapshot.maximumRecentSlowOperations)
+    #expect(snapshot.providerStatus == "Credential not configured")
+    #expect(snapshot.extensionIssueCount == 0)
+    #expect(snapshot.dictationEngine == .appleSpeech)
+    #expect(snapshot.dictationIsActive)
+}
