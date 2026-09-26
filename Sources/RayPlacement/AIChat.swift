@@ -2171,15 +2171,30 @@ struct AIChatWorkspaceView: View {
         .tint(SettingsStore.shared.accentTheme.readablePrimary)
     }
 
+    @ViewBuilder
     private var workspacePanes: some View {
-        HStack(spacing: isEmbedded ? 8 : 10) {
-            sidebar
-                .frame(width: isEmbedded ? 220 : 246)
-                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+        if isEmbedded {
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: 220)
 
-            conversation
-                .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
-                .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+                Rectangle()
+                    .fill(LimaDesign.separator)
+                    .frame(width: LimaDesign.hairlineWidth)
+
+                conversation
+                    .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+            }
+        } else {
+            HStack(spacing: 10) {
+                sidebar
+                    .frame(width: 246)
+                    .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+
+                conversation
+                    .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+                    .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+            }
         }
     }
 

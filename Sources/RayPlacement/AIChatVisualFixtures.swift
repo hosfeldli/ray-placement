@@ -33,18 +33,21 @@ struct AIChatVisualPreview: View {
     }
 
     var body: some View {
-        AIChatWorkspaceView(model: model)
-            .overlay(alignment: .topTrailing) {
-                Label("TEST DATA", systemImage: "testtube.2")
-                    .limaFont(.caption2.weight(.bold))
-                    .foregroundStyle(.black.opacity(0.8))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 5)
-                    .background(.orange, in: Capsule())
-                    .padding(16)
-                    .accessibilityLabel("Test data")
-            }
-            .accessibilityIdentifier("ai-visual-\(scenario.rawValue)")
+        ZStack {
+            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            AIChatWorkspaceView(model: model, isEmbedded: true)
+                .overlay(alignment: .topTrailing) {
+                    Label("TEST DATA", systemImage: "testtube.2")
+                        .limaFont(.caption2.weight(.bold))
+                        .foregroundStyle(.black.opacity(0.8))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(.orange, in: Capsule())
+                        .padding(16)
+                        .accessibilityLabel("Test data")
+                }
+        }
+        .accessibilityIdentifier("ai-visual-\(scenario.rawValue)")
     }
 }
 
