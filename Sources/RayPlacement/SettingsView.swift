@@ -25,13 +25,16 @@ private struct PendingShortcutAssignment: Identifiable {
     let conflictTitle: String
 }
 
-private enum SettingsSection: String, CaseIterable, Identifiable {
+enum SettingsSection: String, CaseIterable, Identifiable {
     case general
     case commands
     case writing
+    case ai
     case browser
     case appearance
     case advanced
+
+    static let sidebarSections = Self.allCases
 
     var id: String { rawValue }
 
@@ -40,6 +43,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: return "General"
         case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
+        case .ai: return "AI Chat"
         case .browser: return "Browser Bridge"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
@@ -51,6 +55,7 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
         case .general: return "gearshape.fill"
         case .commands: return "square.grid.2x2"
         case .writing: return "text.badge.checkmark"
+        case .ai: return "sparkles"
         case .browser: return "globe"
         case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
@@ -65,6 +70,8 @@ private enum SettingsSection: String, CaseIterable, Identifiable {
             return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "tools", "skills", "agents", "conflict", "key", "store", "updates"]
         case .writing:
             return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
+        case .ai:
+            return ["ai", "chat", "provider", "model", "anthropic", "claude", "openai", "gemini", "compatible", "endpoint", "api key", "reasoning"]
         case .browser:
             return ["zen", "firefox", "browser", "bridge", "site", "permissions", "native", "helper", "salesforce", "tabs"]
         case .appearance:
@@ -97,6 +104,7 @@ private enum SettingsColors {
 struct SettingsView: View {
     @ObservedObject var settings: SettingsStore
     @ObservedObject var viewModel: LauncherViewModel
+    @ObservedObject var aiChatModel: AIChatViewModel
     @ObservedObject var updateService: UpdateService
     @ObservedObject private var usageMonitor = UsageMonitor.shared
     @ObservedObject private var taskRegistry = TaskRegistry.shared
@@ -315,7 +323,7 @@ struct SettingsView: View {
             .padding(.bottom, 10)
 
             if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                sidebarGroup("SETTINGS", sections: [.general, .commands, .writing, .appearance, .advanced])
+                sidebarGroup("SETTINGS", sections: SettingsSection.sidebarSections)
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
                     .limaFont(.caption)
@@ -416,6 +424,7 @@ struct SettingsView: View {
         case .general: generalTab
         case .commands: commandCenterTab
         case .writing: writingSettingsTab
+        case .ai: AIProviderSettingsView(model: aiChatModel)
         case .browser: BrowserBridgeSettingsView()
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
@@ -427,12 +436,14 @@ struct SettingsView: View {
             Picker("Writing area", selection: $writingSubsection) {
                 Text("Fix Writing").tag(0)
                 Text("Dictation").tag(1)
+                Text("Writing Advanced").tag(2)
             }
             .pickerStyle(.segmented)
             .padding(12)
             Group {
                 switch writingSubsection {
                 case 1: dictationTab
+                case 2: GrammarSettingsView(settings: settings, openDebugger: openGrammarDebugger)
                 default: grammarSettingsTab
                 }
             }
@@ -1893,9 +1904,9 @@ final class ShortcutCaptureView: NSView {
 final class SettingsWindowController: NSWindowController {
     private let settingsStore: SettingsStore
 
-    init(settings: SettingsStore, viewModel: LauncherViewModel, updateService: UpdateService, reloadExtensions: @escaping () -> Void, openGrammarDebugger: @escaping () -> Void, extensionStoreModel: ExtensionStoreModel) {
+    init(settings: SettingsStore, viewModel: LauncherViewModel, aiChatModel: AIChatViewModel, updateService: UpdateService, reloadExtensions: @escaping () -> Void, openGrammarDebugger: @escaping () -> Void, extensionStoreModel: ExtensionStoreModel) {
         self.settingsStore = settings
-        let view = SettingsView(settings: settings, viewModel: viewModel, updateService: updateService, reloadExtensions: reloadExtensions, openGrammarDebugger: openGrammarDebugger, extensionStoreModel: extensionStoreModel)
+        let view = SettingsView(settings: settings, viewModel: viewModel, aiChatModel: aiChatModel, updateService: updateService, reloadExtensions: reloadExtensions, openGrammarDebugger: openGrammarDebugger, extensionStoreModel: extensionStoreModel)
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -1932,6 +1943,7 @@ private struct SimpleWritingSettingsView: View {
     @Binding var apiKey: String
     @Binding var shortcut: String
     @State private var message: String?
+    @State private var confirmRemove = false
 
     var body: some View {
         Form {
@@ -1944,6 +1956,9 @@ private struct SimpleWritingSettingsView: View {
                 Toggle("Use Harper if AI is unavailable", isOn: Binding(get: { settings.grammarFallbackToLocal }, set: { settings.grammarFallbackToLocal = $0 }))
             }
             Section("AI connection") {
+                Picker("Provider", selection: Binding(get: { settings.developerGrammarProvider }, set: { settings.selectDeveloperGrammarProvider($0); apiKey = ""; message = nil })) {
+                    ForEach(AIProvider.allCases) { Text($0.title).tag($0) }
+                }
                 SecureField("API key", text: $apiKey)
                 HStack {
                     Label(settings.enhancedGrammarAPIKeyStored ? "API key stored in Keychain" : "No API key stored", systemImage: settings.enhancedGrammarAPIKeyStored ? "checkmark.circle.fill" : "key")
@@ -1956,8 +1971,17 @@ private struct SimpleWritingSettingsView: View {
                 }
                 Picker("Model", selection: Binding(get: { settings.developerGrammarModel }, set: { settings.developerGrammarModel = $0 })) {
                     ForEach(settings.developerGrammarProvider.modelOptions, id: \.id) { option in Text(option.title).tag(option.id) }
+                    if !settings.developerGrammarProvider.modelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
+                        Text(settings.developerGrammarModel.isEmpty ? "Choose a model" : settings.developerGrammarModel).tag(settings.developerGrammarModel)
+                    }
                 }
-                Text("Only the selected text is sent for the current AI correction. Harper remains local.")
+                TextField("Custom model ID", text: $settings.developerGrammarModel)
+                TextField("Base URL", text: $settings.developerGrammarBaseURL)
+                Text("Use HTTPS, or HTTP for a loopback server. Compatible servers may omit the API key. Keys are shared with AI Chat; models and endpoints are separate. Connection testing and ensemble controls are in Writing Advanced.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Button("Remove Shared Key", role: .destructive) { confirmRemove = true }
+                    .disabled(!settings.enhancedGrammarAPIKeyStored)
+                Text("Only the text being corrected is sent to the configured provider. Harper remains local.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let message { Text(message).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
             }
@@ -1965,5 +1989,13 @@ private struct SimpleWritingSettingsView: View {
                 PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: $shortcut)
             }
         }.formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
+        .onDisappear { apiKey = "" }
+        .alert("Remove shared provider key?", isPresented: $confirmRemove) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                do { try settings.saveDeveloperGrammarAPIKey(""); apiKey = ""; message = nil }
+                catch { message = error.localizedDescription }
+            }
+        } message: { Text("This removes the provider key used by both AI Chat and Writing.") }
     }
 }

@@ -9,6 +9,9 @@ struct GrammarSettingsView: View {
     @State private var testInput = "This are a grammer sentence."
     @State private var apiKey = ""
     @State private var isTestingConnection = false
+    @State private var connectionTask: URLSessionDataTask?
+    @State private var connectionTaskID: UUID?
+    @State private var confirmRemoveKey = false
     @State private var connectionMessage: String?
     @State private var isRunningTest = false
     @State private var testResult: GrammarEnsembleCoordinator.Result?
@@ -46,6 +49,15 @@ struct GrammarSettingsView: View {
                 }
             }
         }
+        .onChange(of: settings.developerGrammarProvider) { _ in apiKey = ""; connectionMessage = nil }
+        .onDisappear { apiKey = "" }
+        .alert("Remove shared provider key?", isPresented: $confirmRemoveKey) {
+            Button("Cancel", role: .cancel) {}
+            Button("Remove", role: .destructive) {
+                do { try settings.saveDeveloperGrammarAPIKey(""); apiKey = ""; connectionMessage = nil }
+                catch { connectionMessage = error.localizedDescription }
+            }
+        } message: { Text("This removes the provider key used by both AI Chat and Writing.") }
     }
 
     private var overview: some View {
@@ -227,12 +239,8 @@ struct GrammarSettingsView: View {
                         } catch { connectionMessage = error.localizedDescription }
                     }
                     .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Clear Stored Key", role: .destructive) {
-                        do {
-                            try settings.saveDeveloperGrammarAPIKey("")
-                            connectionMessage = "Removed from macOS Keychain."
-                        } catch { connectionMessage = error.localizedDescription }
-                    }
+                    Button("Remove Shared Key", role: .destructive) { confirmRemoveKey = true }
+                        .disabled(isTestingConnection || !settings.enhancedGrammarAPIKeyStored)
                     if settings.enhancedGrammarAPIKeyStored { Label("Stored", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 }
                 if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
@@ -242,14 +250,17 @@ struct GrammarSettingsView: View {
                     } label: {
                         if isTestingConnection { ProgressView().controlSize(.small) } else { Text("Test Connection") }
                     }
-                    .disabled(isTestingConnection || !settings.enhancedGrammarAPIKeyStored)
+                    .disabled(isTestingConnection || settings.developerGrammarConfigurationForTesting == nil)
+                    if isTestingConnection {
+                        Button("Stop") { if let connectionTaskID { TaskRegistry.shared.cancel(connectionTaskID) } }
+                    }
                     if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
                 }
             }
             Section("Advanced provider settings") {
                 TextField("Base URL", text: $settings.developerGrammarBaseURL)
                     .textFieldStyle(.roundedBorder)
-                Text("Custom compatible endpoints can be configured here. External failures are reported directly; Lima never falls back to Local automatically.")
+                Text("Use HTTPS, or HTTP for loopback servers. Compatible servers may omit the API key. The Harper fallback setting in Fix Writing controls local fallback.")
                     .font(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -330,15 +341,33 @@ struct GrammarSettingsView: View {
     }
 
     private func testConnection() {
+        guard !isTestingConnection else { return }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI else {
+            connectionMessage = "Live AI testing is disabled for this test session."
+            return
+        }
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            connectionMessage = "Save a key, model, and base URL first."
+            connectionMessage = "Enter a model, valid endpoint, and any required provider key first."
             return
         }
         isTestingConnection = true
         connectionMessage = nil
         let started = Date()
-        StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
+        let taskID = TaskRegistry.shared.begin(kind: .aiTool, title: "Checking Writing provider", isCancellable: true,
+            onCancel: { connectionTask?.cancel() })
+        connectionTaskID = taskID
+        connectionTask = StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
             isTestingConnection = false
+            connectionTask = nil
+            connectionTaskID = nil
+            switch result {
+            case .success: TaskRegistry.shared.finish(taskID)
+            case .failure(let error):
+                TaskRegistry.shared.finish(taskID, state: (error as NSError).code == NSURLErrorCancelled ? .cancelled : .failed)
+            }
+            guard settings.developerGrammarProvider == configuration.provider,
+                  settings.developerGrammarBaseURL == configuration.baseURL,
+                  settings.developerGrammarModel == configuration.model else { return }
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             switch result {
             case .success: connectionMessage = "Connected · \(latency) ms"
@@ -369,6 +398,10 @@ struct GrammarSettingsView: View {
 
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
             testError = "Save a provider key, model, and base URL first."
+            return
+        }
+        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI else {
+            testError = "Live AI testing is disabled for this test session."
             return
         }
         isRunningTest = true

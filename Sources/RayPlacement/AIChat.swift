@@ -257,31 +257,39 @@ final class AIProviderCredentialStore: ObservableObject {
               let legacyData = legacyItem as? Data,
               let legacyValue = String(data: legacyData, encoding: .utf8),
               !legacyValue.isEmpty else { return nil }
-        try? saveAPIKey(legacyValue, for: provider)
-        SecItemDelete(legacyQuery as CFDictionary)
+        Self.migrateLegacyCredential(save: { try saveAPIKey(legacyValue, for: provider) },
+                                     removeLegacy: { SecItemDelete(legacyQuery as CFDictionary) })
         return legacyValue
+    }
+
+    /// Never remove the last working credential when a Keychain migration fails.
+    static func migrateLegacyCredential(save: () throws -> Void, removeLegacy: () -> OSStatus) {
+        do { try save(); _ = removeLegacy() } catch { /* Preserve the legacy value for retry. */ }
     }
 
     func hasAPIKey(for provider: AIProvider) -> Bool {
         apiKey(for: provider)?.isEmpty == false
     }
 
-    func removeAPIKey(for provider: AIProvider = .openAI) {
+    func removeAPIKey(for provider: AIProvider = .openAI) throws {
         guard configuration.fixtureAPIKey == nil, configuration.usesKeychain else { return }
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: configuration.service,
             kSecAttrAccount as String: keychainAccount(for: provider)
         ]
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
         if !configuration.isTestCredential {
             let legacyQuery: [String: Any] = [
                 kSecClass as String: kSecClassGenericPassword,
                 kSecAttrService as String: "com.lima.developer-grammar",
                 kSecAttrAccount as String: provider.rawValue
             ]
-            SecItemDelete(legacyQuery as CFDictionary)
+            let legacyStatus = SecItemDelete(legacyQuery as CFDictionary)
+            guard legacyStatus == errSecSuccess || legacyStatus == errSecItemNotFound else { throw keychainError(legacyStatus) }
         }
+        objectWillChange.send()
         if provider == .openAI {
             hasAPIKey = configuration.environmentAPIKey != nil
         }
@@ -502,6 +510,7 @@ struct FixtureAITransport: AIChatTransport {
     /// Optional replay pacing for deterministic streaming and cancellation tests.
     var interEventDelay: Duration? = nil
     var models: [AIModelOption] = [AIModelOption(id: "gpt-5.6-terra")]
+    var modelDiscoveryDelay: Duration? = nil
 
     static let standard = FixtureAITransport(events: [
         .responseCreated("fixture-response"),
@@ -511,7 +520,10 @@ struct FixtureAITransport: AIChatTransport {
         .completed("fixture-response")
     ])
 
-    func listModels(apiKey: String) async throws -> [AIModelOption] { models }
+    func listModels(apiKey: String) async throws -> [AIModelOption] {
+        if let modelDiscoveryDelay { try await Task.sleep(for: modelDiscoveryDelay) }
+        return models
+    }
 
     func streamReply(
         apiKey: String,
@@ -846,10 +858,12 @@ final class AIChatViewModel: ObservableObject {
     let credentials: AIChatCredentialStore
     let mcpStore: MCPServerStore
     let nativeToolStore: LimaAIToolStore
+    let providerPreferences: AIProviderPreferences
     let transport: any AIChatTransport
     private let hasInjectedTransport: Bool
     private let taskRegistry: TaskRegistry
     private var streamTask: Task<Void, Never>?
+    private var modelDiscoveryTask: Task<Void, Never>?
     private var pendingLocalFunctionCall: AIOutputItem?
     private var activeAssistantID: UUID?
     private var activeConversationID: UUID?
@@ -864,7 +878,8 @@ final class AIChatViewModel: ObservableObject {
         mcpStore: MCPServerStore? = nil,
         nativeToolStore: LimaAIToolStore? = nil,
         transport: (any AIChatTransport)? = nil,
-        taskRegistry: TaskRegistry? = nil
+        taskRegistry: TaskRegistry? = nil,
+        providerPreferences: AIProviderPreferences? = nil
     ) {
         let store = store ?? .shared
         let credentials = credentials ?? .shared
@@ -875,6 +890,7 @@ final class AIChatViewModel: ObservableObject {
         self.transport = transport ?? AIChatResponsesClient()
         self.hasInjectedTransport = transport != nil
         self.taskRegistry = taskRegistry ?? .shared
+        self.providerPreferences = providerPreferences ?? .shared
         selectedConversationID = store.conversations.first?.id
         if let selected = store.conversations.first {
             provider = selected.provider
@@ -886,13 +902,15 @@ final class AIChatViewModel: ObservableObject {
         ensureModelIsAvailable()
     }
 
-    deinit { streamTask?.cancel() }
+    deinit { streamTask?.cancel(); modelDiscoveryTask?.cancel() }
 
     var selectedConversation: AIConversation? {
         selectedConversationID.flatMap(store.conversation(id:))
     }
 
     func select(_ id: UUID) {
+        guard !canEndTask, store.conversation(id: id) != nil else { return }
+        if selectedConversationID != id { draft = ""; providerConnectionMessage = nil }
         selectedConversationID = id
         if let conversation = store.conversation(id: id) {
             provider = conversation.provider
@@ -913,14 +931,20 @@ final class AIChatViewModel: ObservableObject {
     }
 
     var hasProviderAPIKey: Bool {
-        credentials.hasAPIKey(for: provider) || transport is FixtureAITransport
+        requestAPIKey(for: provider) != nil || transport is FixtureAITransport
+    }
+
+    private func requestAPIKey(for provider: AIProvider) -> String? {
+        if provider == .openAICompatible { return credentials.apiKey(for: provider) ?? "" }
+        guard let key = credentials.apiKey(for: provider), !key.isEmpty else { return nil }
+        return key
     }
 
     private func providerClient(for provider: AIProvider) -> any AIChatTransport {
         if hasInjectedTransport { return transport }
         return AIProviderClientRegistry.client(
             for: provider,
-            openAICompatibleBaseURL: AIProviderPreferences.shared.openAICompatibleBaseURL
+            openAICompatibleBaseURL: providerPreferences.openAICompatibleBaseURL
         )
     }
 
@@ -929,7 +953,7 @@ final class AIChatViewModel: ObservableObject {
         self.provider = provider
         providerConnectionMessage = nil
         if provider == .openAICompatible {
-            let compatibleModel = AIProviderPreferences.shared.openAICompatibleModelID
+            let compatibleModel = providerPreferences.openAICompatibleModelID
             availableModels = [AIModelOption(id: compatibleModel, displayName: compatibleModel, supportsReasoning: false)]
             model = compatibleModel
         } else {
@@ -1000,7 +1024,7 @@ final class AIChatViewModel: ObservableObject {
                 self.provider = provider
                 if provider == .openAICompatible {
                     availableModels = [AIModelOption(
-                        id: AIProviderPreferences.shared.openAICompatibleModelID,
+                        id: providerPreferences.openAICompatibleModelID,
                         supportsReasoning: false
                     )]
                 } else {
@@ -1013,7 +1037,7 @@ final class AIChatViewModel: ObservableObject {
                     conversation.model = modelID
                 } else {
                     conversation.model = provider == .openAICompatible
-                        ? AIProviderPreferences.shared.openAICompatibleModelID
+                        ? providerPreferences.openAICompatibleModelID
                         : provider.defaultChatModel
                 }
             } else if let modelID = agent.modelID, !modelID.isEmpty {
@@ -1065,10 +1089,10 @@ final class AIChatViewModel: ObservableObject {
             conversation.provider = provider
             self.provider = provider
             availableModels = provider == .openAICompatible
-                ? [AIModelOption(id: AIProviderPreferences.shared.openAICompatibleModelID, supportsReasoning: false)]
+                ? [AIModelOption(id: providerPreferences.openAICompatibleModelID, supportsReasoning: false)]
                 : provider.chatModels
             conversation.model = modelID ?? (provider == .openAICompatible
-                ? AIProviderPreferences.shared.openAICompatibleModelID
+                ? providerPreferences.openAICompatibleModelID
                 : provider.defaultChatModel)
         } else if let modelID {
             conversation.model = modelID
@@ -1220,40 +1244,12 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
-    func refreshModels() {
-        guard !isLoadingModels else { return }
-        guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
-            streamError = "This fixture scenario does not make provider requests."
-            return
-        }
-        guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI || transport is FixtureAITransport else {
-            streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
-            return
-        }
-        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
-            streamError = "Save an API key for \(provider.title) before loading available models."
-            return
-        }
-        let selectedProvider = provider
-        let client = providerClient(for: selectedProvider)
-        isLoadingModels = true
-        Task { [weak self] in
-            guard let self else { return }
-            defer { self.isLoadingModels = false }
-            do {
-                let models = try await client.listModels(apiKey: apiKey)
-                guard self.provider == selectedProvider else { return }
-                self.availableModels = models
-                self.ensureModelIsAvailable()
-            } catch {
-                guard self.provider == selectedProvider else { return }
-                self.streamError = error.localizedDescription
-            }
-        }
-    }
+    func refreshModels() { loadProviderModels(reportConnection: false) }
+    func testConnection() { loadProviderModels(reportConnection: true) }
+    func cancelModelDiscovery() { modelDiscoveryTask?.cancel() }
 
-    func testConnection() {
-        guard !isLoadingModels else { return }
+    private func loadProviderModels(reportConnection: Bool) {
+        guard !isLoadingModels, !canEndTask else { return }
         guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
             providerConnectionMessage = "This fixture scenario does not make provider requests."
             return
@@ -1262,36 +1258,73 @@ final class AIChatViewModel: ObservableObject {
             providerConnectionMessage = "Live AI testing is disabled for this test session."
             return
         }
-        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
+        guard let apiKey = requestAPIKey(for: provider) else {
             providerConnectionMessage = "Save an API key for " + provider.title + " before testing the connection."
             return
         }
-
         let selectedProvider = provider
+        let conversationID = selectedConversationID
+        let endpoint = providerPreferences.openAICompatibleBaseURL
         let client = providerClient(for: selectedProvider)
         isLoadingModels = true
         providerConnectionMessage = nil
-        Task { [weak self] in
+        let taskID = taskRegistry.begin(kind: .aiTool, title: "Checking AI provider",
+            isCancellable: true, onCancel: { [weak self] in self?.cancelModelDiscovery() })
+        modelDiscoveryTask = Task { [weak self] in
             guard let self else { return }
-            defer { self.isLoadingModels = false }
+            defer { self.isLoadingModels = false; self.modelDiscoveryTask = nil }
             do {
                 let models = try await client.listModels(apiKey: apiKey)
-                guard self.provider == selectedProvider else { return }
+                try Task.checkCancellation()
+                self.taskRegistry.finish(taskID)
+                guard self.provider == selectedProvider, self.selectedConversationID == conversationID,
+                      selectedProvider != .openAICompatible || endpoint == providerPreferences.openAICompatibleBaseURL else { return }
                 self.availableModels = models
                 self.ensureModelIsAvailable()
-                self.providerConnectionMessage = "Connected to " + selectedProvider.title + " · " + String(models.count) + " models available."
+                if reportConnection {
+                    self.providerConnectionMessage = "Connected to " + selectedProvider.title + " · " + String(models.count) + " models reported."
+                }
                 self.streamError = nil
             } catch {
-                guard self.provider == selectedProvider else { return }
-                self.providerConnectionMessage = error.localizedDescription
+                let cancelled = Task.isCancelled || error is CancellationError
+                self.taskRegistry.finish(taskID, state: cancelled ? .cancelled : .failed)
+                guard self.provider == selectedProvider, self.selectedConversationID == conversationID else { return }
+                self.providerConnectionMessage = cancelled ? "Connection check stopped." : error.localizedDescription
             }
         }
     }
 
-    func selectModel(_ option: AIModelOption) {
-        model = option.id
+    func configureCompatibleProvider(baseURL: String, modelID: String) -> Bool {
+        guard !canEndTask, !isLoadingModels, let url = AIProviderHTTP.validateBaseURL(baseURL) else { return false }
+        let id = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !id.isEmpty, id.utf8.count <= 256,
+              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
+        providerPreferences.openAICompatibleBaseURL = url.absoluteString
+        providerPreferences.openAICompatibleModelID = id
+        providerConnectionMessage = nil
         if provider == .openAICompatible {
-            AIProviderPreferences.shared.openAICompatibleModelID = model
+            let option = AIModelOption(id: id, displayName: id, supportsReasoning: false)
+            availableModels = [option]
+            selectModel(option)
+        }
+        return true
+    }
+
+    func selectCustomModel(_ raw: String) -> Bool {
+        let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !canEndTask, !isLoadingModels, !id.isEmpty, id.utf8.count <= 256,
+              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
+        selectModel(provider == .openAI ? AIModelOption(id: id)
+            : AIModelOption(id: id, displayName: id, supportsReasoning: false))
+        return true
+    }
+
+    func selectModel(_ option: AIModelOption) {
+        guard !canEndTask else { return }
+        model = option.id
+        if !availableModels.contains(where: { $0.id == option.id }) { availableModels.append(option) }
+        if provider == .openAICompatible {
+            providerPreferences.openAICompatibleModelID = model
         }
         if !option.supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort = option.defaultReasoningEffort ?? .medium
@@ -1299,13 +1332,14 @@ final class AIChatViewModel: ObservableObject {
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
             conversation.provider = provider
             conversation.model = model
+            conversation.lastResponseID = nil
             conversation.reasoningEffort = reasoningEffort
             store.update(conversation)
         }
     }
 
     func selectReasoningEffort(_ effort: AIReasoningEffort) {
-        guard selectedModelOption.supportedReasoningEfforts.contains(effort) else { return }
+        guard !canEndTask, selectedModelOption.supportedReasoningEfforts.contains(effort) else { return }
         reasoningEffort = effort
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
             conversation.reasoningEffort = effort
@@ -1314,11 +1348,18 @@ final class AIChatViewModel: ObservableObject {
     }
 
     private func ensureModelIsAvailable() {
-        if !availableModels.contains(where: { $0.id == model }), let first = availableModels.first {
-            model = first.id
+        if model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            model = availableModels.first?.id ?? provider.defaultChatModel
+        }
+        // A saved or user-entered model may be newer than the bundled catalog.
+        // Never silently replace a conversation's model when restoring it.
+        if !availableModels.contains(where: { $0.id == model }) {
+            availableModels.append(provider == .openAICompatible
+                ? AIModelOption(id: model, displayName: model, supportsReasoning: false)
+                : AIModelOption(id: model))
         }
         if provider == .openAICompatible {
-            AIProviderPreferences.shared.openAICompatibleModelID = model
+            providerPreferences.openAICompatibleModelID = model
         }
         if !selectedModelOption.supportedReasoningEfforts.contains(reasoningEffort) {
             reasoningEffort = selectedModelOption.defaultReasoningEffort ?? .medium
@@ -1326,16 +1367,20 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func newConversation() {
+        guard !canEndTask else { return }
         let conversation = store.createConversation(provider: provider, model: model)
         selectedConversationID = conversation.id
         streamError = nil
+        attachments = []
         draft = ""
     }
 
     func deleteSelectedConversation() {
-        guard let selectedConversationID else { return }
+        guard !canEndTask, let selectedConversationID else { return }
+        draft = ""
         store.delete(id: selectedConversationID)
-        self.selectedConversationID = store.conversations.first?.id
+        if let next = store.conversations.first { select(next.id) }
+        else { self.selectedConversationID = nil; attachments = []; draft = "" }
     }
 
     func appendDictationText(_ delta: String) {
@@ -1358,7 +1403,7 @@ final class AIChatViewModel: ObservableObject {
             streamError = "Live AI testing is disabled for this test session. Set LIMA_ALLOW_LIVE_AI_TESTS=1 to enable it."
             return
         }
-        guard let apiKey = credentials.apiKey(for: provider), !apiKey.isEmpty else {
+        guard let apiKey = requestAPIKey(for: provider) else {
             streamError = "Add an \(provider.title) API key in the setup panel before sending a message."
             return
         }
@@ -1738,7 +1783,7 @@ final class AIChatViewModel: ObservableObject {
         guard let approval = pendingApproval,
               let conversation = selectedConversation,
               let previousResponseID = conversation.lastResponseID,
-              let apiKey = credentials.apiKey(for: conversation.provider), !apiKey.isEmpty else {
+              let apiKey = requestAPIKey(for: conversation.provider) else {
             pendingApproval = nil
             pendingLocalFunctionCall = nil
             streamError = "AI Chat couldn’t continue this tool request because its response session is unavailable."

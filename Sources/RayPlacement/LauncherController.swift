@@ -99,6 +99,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
+        aiChatModel: aiChatModel,
         updateService: updateService,
         reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
         openGrammarDebugger: { [weak self] in self?.showGrammarDebugger() },

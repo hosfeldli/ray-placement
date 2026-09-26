@@ -163,7 +163,7 @@ final class StealthGrammarRemoteClient {
         configuration: DeveloperGrammarConfiguration,
         completion: @escaping (Result<[DeveloperGrammarModelOption], Error>) -> Void
     ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
+        guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               let request = makeModelsRequest(configuration: configuration) else {
             completion(.failure(ClientError.invalidConfiguration))
             return nil
@@ -204,7 +204,7 @@ final class StealthGrammarRemoteClient {
         configuration: DeveloperGrammarConfiguration,
         completion: @escaping (Result<String, Error>) -> Void
     ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
+        guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let request = makeRequest(
                 text: configuration.provider == .openAI ? "{\"changes\":[]}" : "Reply with the single word OK.",
@@ -366,7 +366,7 @@ final class StealthGrammarRemoteClient {
         systemPrompt: String,
         completion: @escaping (Result<String, Error>) -> Void
     ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
+        guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !text.isEmpty,
               let request = makeRequest(
@@ -389,7 +389,7 @@ final class StealthGrammarRemoteClient {
         reasoningEffort: String?,
         completion: @escaping (Result<String, Error>) -> Void
     ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
+        guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let request = makeRequest(
                 text: text,
@@ -414,7 +414,7 @@ final class StealthGrammarRemoteClient {
         reasoningEffort: String?,
         completion: @escaping (Result<[StealthGrammarDocumentChange], Error>) -> Void
     ) -> URLSessionDataTask? {
-        guard !configuration.apiKey.isEmpty,
+        guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               !configuration.model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !contextText.isEmpty,
               let request = makeRequest(
@@ -498,23 +498,12 @@ final class StealthGrammarRemoteClient {
     }
 
     private static func validatedBaseURL(_ rawValue: String) -> String? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        let withoutTrailingSlash = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard let url = URL(string: withoutTrailingSlash),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "https" || scheme == "http",
-              url.host != nil,
-              !withoutTrailingSlash.contains("\n"),
-              !withoutTrailingSlash.contains("\r") else { return nil }
-        return withoutTrailingSlash
+        AIProviderHTTP.validateBaseURL(rawValue)?.absoluteString
     }
 
-    private func makeModelsRequest(configuration: DeveloperGrammarConfiguration) -> URLRequest? {
+    func makeModelsRequest(configuration: DeveloperGrammarConfiguration) -> URLRequest? {
         guard let base = Self.validatedBaseURL(configuration.baseURL) else { return nil }
-        var components = URLComponents(string: base + "/models")
-        if configuration.provider == .gemini {
-            components?.queryItems = [URLQueryItem(name: "key", value: configuration.apiKey)]
-        }
+        let components = URLComponents(string: base + "/models")
         guard let url = components?.url else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -523,13 +512,15 @@ final class StealthGrammarRemoteClient {
         if configuration.provider == .anthropic {
             request.setValue(configuration.apiKey, forHTTPHeaderField: "x-api-key")
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-        } else if configuration.provider != .gemini {
+        } else if configuration.provider == .gemini {
+            request.setValue(configuration.apiKey, forHTTPHeaderField: "x-goog-api-key")
+        } else if !configuration.apiKey.isEmpty {
             request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
         }
         return request
     }
 
-    private func makeRequest(
+    func makeRequest(
         text: String,
         configuration: DeveloperGrammarConfiguration,
         systemPrompt: String,
@@ -547,9 +538,8 @@ final class StealthGrammarRemoteClient {
         case .anthropic:
             url = URL(string: base + "/messages")
         case .gemini:
-            var components = URLComponents(string: base + "/models/" + configuration.model + ":generateContent")
-            components?.queryItems = [URLQueryItem(name: "key", value: configuration.apiKey)]
-            url = components?.url
+            guard let baseURL = URL(string: base) else { return nil }
+            url = baseURL.appendingPathComponent("models").appendingPathComponent(configuration.model + ":generateContent")
         }
         guard let url else { return nil }
 
@@ -574,7 +564,7 @@ final class StealthGrammarRemoteClient {
             if let reasoningEffort { payload["reasoning"] = ["effort": reasoningEffort] }
             request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         case .mistral, .xAI, .deepSeek, .openRouter, .openAICompatible:
-            request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization")
+            if !configuration.apiKey.isEmpty { request.setValue("Bearer \(configuration.apiKey)", forHTTPHeaderField: "Authorization") }
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "model": configuration.model,
                 "temperature": temperature ?? 0,
@@ -594,6 +584,7 @@ final class StealthGrammarRemoteClient {
                 "messages": [["role": "user", "content": text]]
             ])
         case .gemini:
+            request.setValue(configuration.apiKey, forHTTPHeaderField: "x-goog-api-key")
             request.httpBody = try? JSONSerialization.data(withJSONObject: [
                 "systemInstruction": ["parts": [["text": systemPrompt]]],
                 "contents": [["role": "user", "parts": [["text": text]]]],

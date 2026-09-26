@@ -846,7 +846,8 @@ final class SettingsStore: ObservableObject {
     var developerGrammarConfigurationForModelDiscovery: DeveloperGrammarConfiguration? {
         let key = developerGrammarAPIKey
         let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !baseURL.isEmpty else { return nil }
+        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty),
+              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
         return DeveloperGrammarConfiguration(
             provider: developerGrammarProvider,
             apiKey: key,
@@ -859,7 +860,8 @@ final class SettingsStore: ObservableObject {
         let key = developerGrammarAPIKey
         let model = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !model.isEmpty, !baseURL.isEmpty else { return nil }
+        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty), !model.isEmpty,
+              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
         return DeveloperGrammarConfiguration(
             provider: developerGrammarProvider,
             apiKey: key,

@@ -168,7 +168,13 @@ enum AIProviderHTTP {
               components.host?.isEmpty == false,
               components.user == nil,
               components.password == nil,
-              components.fragment == nil else { return nil }
+              components.query == nil,
+              components.fragment == nil,
+              value.utf8.count <= 4096,
+              !value.unicodeScalars.contains(where: { CharacterSet.whitespacesAndNewlines.union(.controlCharacters).contains($0) }) else { return nil }
+        let host = components.host?.lowercased() ?? ""
+        guard components.scheme?.lowercased() == "https" ||
+                ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host) else { return nil }
         return components.url
     }
 
@@ -474,7 +480,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
             throw NSError(domain: "LimaAIProvider", code: 3, userInfo: [NSLocalizedDescriptionKey: "Enter a valid provider base URL."])
         }
         var request = URLRequest(url: url)
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
@@ -564,7 +570,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.timeoutInterval = 120
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)

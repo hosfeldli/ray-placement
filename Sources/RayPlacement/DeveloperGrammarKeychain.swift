@@ -10,7 +10,7 @@ enum DeveloperGrammarKeychain {
         let credentials = AIProviderCredentialStore.shared
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
-            credentials.removeAPIKey(for: provider)
+            try credentials.removeAPIKey(for: provider)
         } else {
             try credentials.saveAPIKey(trimmed, for: provider)
         }
