@@ -15,7 +15,7 @@ struct ExtensionsSettingsView: View {
     @State private var status: String?
     @State private var detailTab: DetailTab = .commands
 
-    private enum DetailTab: String, CaseIterable, Identifiable { case commands = "Commands", preferences = "Preferences", permissions = "Permissions"; var id: String { rawValue } }
+    private enum DetailTab: String, CaseIterable, Identifiable { case commands = "Commands", contributions = "Tools, Skills & Agents", preferences = "Preferences", permissions = "Permissions"; var id: String { rawValue } }
 
     private enum ExtensionTab: String, CaseIterable, Identifiable {
         case installed = "Installed"
@@ -35,11 +35,17 @@ struct ExtensionsSettingsView: View {
         let commands: [LoadedExtensionCommand]
         let bundled: Bool
         let manifest: ExtensionManifest?
+        let tools: [ExtensionToolDefinition]
+        let skills: [ExtensionSkillDefinition]
+        let agents: [ExtensionAgentDefinition]
         let lifecycleState: ExtensionPackageState
     }
 
     private var installed: [InstalledPackage] {
         var packages: [String: InstalledPackage] = [:]
+        let contributionsByID = Dictionary(
+            uniqueKeysWithValues: ExtensionLoader().contributionCatalog().map { ($0.extensionID, $0) }
+        )
 
         // Start with loaded commands so command settings remain available.
         for (id, commands) in Dictionary(grouping: viewModel.extensionCommands, by: \.extensionID) {
@@ -55,6 +61,9 @@ struct ExtensionsSettingsView: View {
                 commands: commands.sorted { $0.command.title.localizedStandardCompare($1.command.title) == .orderedAscending },
                 bundled: bundled,
                 manifest: nil,
+                tools: contributionsByID[id]?.tools ?? [],
+                skills: contributionsByID[id]?.skills ?? [],
+                agents: contributionsByID[id]?.agents ?? [],
                 lifecycleState: ExtensionPackageManager.shared.record(for: id)?.state ?? .installed
             )
         }
@@ -92,6 +101,9 @@ struct ExtensionsSettingsView: View {
                     commands: [],
                     bundled: bundled,
                     manifest: manifest,
+                    tools: manifest.contributions.tools,
+                    skills: manifest.contributions.skills,
+                    agents: manifest.contributions.agents,
                     lifecycleState: ExtensionPackageManager.shared.record(for: manifest.id)?.state ?? (ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) ? .logicallyRemoved : .installed)
                 )
             }
@@ -212,14 +224,25 @@ struct ExtensionsSettingsView: View {
                     .background(SettingsStore.shared.accentTheme.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(package.name).font(.callout.weight(.semibold))
-                    Text("\(package.source) · \(package.lifecycleState.rawValue) · v\(package.version) · \(package.commandCount) command\(package.commandCount == 1 ? "" : "s")")
+                    Text("\(package.source) · \(package.lifecycleState.rawValue) · v\(package.version) · \(package.commandCount) commands · \(package.tools.count) tools · \(package.skills.count) skills · \(package.agents.count) agents")
                         .font(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
+                    if let available = storeModel.entries.first(where: { $0.id == package.id }) {
+                        Text("Available v\(available.version)")
+                            .font(.caption2)
+                            .foregroundStyle(LimaTheme.textTertiary)
+                    }
                 }
                 Spacer()
                 Text(package.enabled ? "Enabled" : "Disabled")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(package.enabled ? .green : .secondary)
+                if let update = updates.first(where: { $0.installed.id == package.id }) {
+                    Button("Update") { storeModel.install(update.entry) }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .disabled(storeModel.installingID != nil)
+                }
                 Menu {
                     Button(package.enabled ? "Disable" : "Enable") { toggle(package) }
                     Button("Configure Commands") { selectedID = package.id }
@@ -229,6 +252,10 @@ struct ExtensionsSettingsView: View {
                         if ExtensionPackageManager.shared.isLogicallyRemoved(package.id) { Button("Restore Extension") { restoreBundled(package) } }
                         else { Button("Unload Extension", role: .destructive) { removeBundled(package) } }
                     } else {
+                        if let catalogEntry = storeModel.entries.first(where: { $0.id == package.id }) {
+                            Button("Reinstall") { storeModel.install(catalogEntry) }
+                                .disabled(storeModel.installingID != nil)
+                        }
                         Button("Uninstall", role: .destructive) { confirmUninstallID = package.id }
                     }
                 } label: {
@@ -271,6 +298,7 @@ struct ExtensionsSettingsView: View {
                 }
             }
             }
+            if detailTab == .contributions { extensionContributions(package) }
             if detailTab == .preferences { extensionPreferences(package) }
             if detailTab == .permissions { extensionPermissions(package) }
             HStack {
@@ -279,6 +307,64 @@ struct ExtensionsSettingsView: View {
             }
         }
         .padding(11)
+    }
+
+    private func extensionContributions(_ package: InstalledPackage) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                Text("Tools").font(.headline)
+                if package.tools.isEmpty {
+                    Text("No tools declared.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                ForEach(package.tools) { tool in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(tool.title).font(.callout.weight(.medium))
+                        Text(tool.description).font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                        Text("\(tool.isReadOnly ? "Read-only" : "Write-capable") · \(tool.execution.rawValue) · Adapter: \(tool.hostAdapterID ?? "None")")
+                            .font(.caption2).foregroundStyle(LimaTheme.textTertiary)
+                        if !tool.capabilities.isEmpty {
+                            Text("Capabilities: \(tool.capabilities.map(\.rawValue).sorted().joined(separator: ", "))")
+                                .font(.caption2).foregroundStyle(LimaTheme.textSecondary)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+            Group {
+                Text("Skills").font(.headline)
+                if package.skills.isEmpty {
+                    Text("No skills declared.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                ForEach(package.skills) { skill in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(skill.name).font(.callout.weight(.medium))
+                        Text(skill.instructions).font(.caption).foregroundStyle(LimaTheme.textSecondary).textSelection(.enabled)
+                        if !skill.preferredToolIDs.isEmpty {
+                            Text("Preferred tools: \(skill.preferredToolIDs.joined(separator: ", "))")
+                                .font(.caption2).foregroundStyle(LimaTheme.textTertiary)
+                        }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+            Group {
+                Text("Agents").font(.headline)
+                if package.agents.isEmpty {
+                    Text("No agents declared.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                ForEach(package.agents) { agent in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(agent.name).font(.callout.weight(.medium))
+                        Text(agent.instructions).font(.caption).foregroundStyle(LimaTheme.textSecondary).textSelection(.enabled)
+                        let model = [agent.modelProviderID, agent.modelID].compactMap { $0 }.joined(separator: " · ")
+                        if !model.isEmpty { Text("Model: \(model)").font(.caption2).foregroundStyle(LimaTheme.textTertiary) }
+                        if !agent.skillIDs.isEmpty { Text("Skills: \(agent.skillIDs.joined(separator: ", "))").font(.caption2).foregroundStyle(LimaTheme.textTertiary) }
+                        if !agent.toolIDs.isEmpty { Text("Tools: \(agent.toolIDs.joined(separator: ", "))").font(.caption2).foregroundStyle(LimaTheme.textTertiary) }
+                    }
+                    .padding(.vertical, 3)
+                }
+            }
+        }
     }
 
     private func extensionPreferences(_ package: InstalledPackage) -> some View {
@@ -293,7 +379,9 @@ struct ExtensionsSettingsView: View {
     private func extensionPermissions(_ package: InstalledPackage) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Permissions").font(.headline)
-            let capabilities = package.commands.compactMap { Array($0.capabilities) }.reduce(into: Set<ExtensionManifest.Capability>()) { $0.formUnion($1) }
+            let commandCapabilities = package.commands.reduce(into: Set<ExtensionManifest.Capability>()) { $0.formUnion($1.capabilities) }
+            let toolCapabilities = package.tools.reduce(into: Set<ExtensionManifest.Capability>()) { $0.formUnion($1.capabilities) }
+            let capabilities = commandCapabilities.union(toolCapabilities).union(package.manifest?.capabilities ?? [])
             if capabilities.isEmpty { Text("No special capabilities requested.").font(.caption).foregroundStyle(LimaTheme.textSecondary) }
             ForEach(Array(capabilities).sorted { $0.rawValue < $1.rawValue }, id: \.rawValue) { capability in Label(capability.rawValue, systemImage: "checkmark.shield") .font(.caption) }
             Text(package.bundled ? "Bundled extensions are trusted by Lima." : "User extensions require approval when their manifest or capabilities change.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
