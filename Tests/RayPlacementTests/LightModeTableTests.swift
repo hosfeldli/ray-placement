@@ -113,6 +113,51 @@ import Testing
     }
 }
 
+@Test @MainActor func markdownTableFieldEditorTypingSelectionAndTabularPaste() async throws {
+    let table = MarkdownTableData(headers: ["Task", "Owner"], alignments: [.leading, .leading],
+                                  rows: [["Original", "Liam"]])
+    let view = MarkdownNativeTableView(table: table)
+    view.frame = NSRect(x: 0, y: 0, width: 520, height: view.preferredHeight)
+    let window = NSWindow(contentRect: view.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.contentView = view
+    defer { window.makeFirstResponder(nil); window.contentView = nil }
+    window.layoutIfNeeded()
+    view.layoutSubtreeIfNeeded()
+    var changes = 0
+    view.onChange = { changes += 1 }
+
+    #expect(view.debugFocusCell(row: 1, column: 0))
+    let editor = try #require(window.firstResponder as? NSTextView)
+    editor.selectAll(nil)
+    let selection = try #require(editor.selectedTextAttributes[.backgroundColor] as? NSColor)
+    #expect(selection.alphaComponent > 0) // Selection must not be invisible.
+    editor.insertText("Typed | value", replacementRange: editor.selectedRange())
+    #expect(table.rows[0][0] == "Typed | value")
+    #expect(changes > 0)
+    #expect(table.markdown.contains("Typed \\| value"))
+
+    // Use a private pasteboard; never read or replace the user's clipboard.
+    let pasteboard = NSPasteboard.withUniqueName()
+    defer { pasteboard.releaseGlobally() }
+    pasteboard.setString("One\tTwo\tThree\nFour\tFive\tSix", forType: .string)
+    #expect(editor.readSelection(from: pasteboard, type: .string))
+    for _ in 0..<10 { await Task.yield() }
+    #expect(table.columnCount == 3)
+    #expect(table.rows == [["One", "Two", "Three"], ["Four", "Five", "Six"]])
+    #expect(view.debugCellIsFocused(row: 1, column: 0))
+    let focusedEditor = try #require(window.firstResponder as? NSTextView)
+    focusedEditor.doCommand(by: #selector(NSResponder.insertTab(_:)))
+    #expect(view.debugCellIsFocused(row: 1, column: 1))
+    #expect(view.subviews.filter { $0 is NSScrollView }.count == 1)
+    let secondEditor = try #require(window.firstResponder as? NSTextView)
+    #expect(secondEditor.readSelection(from: pasteboard, type: .string))
+    for _ in 0..<10 { await Task.yield() }
+    #expect(view.subviews.filter { $0 is NSScrollView }.count == 1)
+    #expect(table.rows[0][0] == "One")
+    #expect(table.rows[0][1] == "One")
+    #expect(table.columnCount == 4)
+}
+
 @MainActor
 private func resolved(_ color: NSColor, appearance: NSAppearance) -> NSColor {
     NotesAppearancePalette.resolved(color, appearance: appearance)

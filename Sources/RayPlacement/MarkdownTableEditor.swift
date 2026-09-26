@@ -171,6 +171,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     private weak var toolbarIcon: NSImageView?
     private weak var titleField: NSTextField?
     private var isSizingColumns = false
+    private let tableFieldEditor = MarkdownTableTextView(frame: .zero)
     private var accentObserver: NSObjectProtocol?
     private var notesAppearanceObserver: NSObjectProtocol?
     private var typographySubscription: AnyCancellable?
@@ -390,7 +391,12 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
     }
 
     private func rebuildGrid(focus coordinate: CellCoordinate? = nil) {
+        // Detach the active editor before its field and scroll container disappear.
+        if fields.contains(where: { $0.currentEditor() === window?.firstResponder && $0.currentEditor() != nil }) {
+            window?.makeFirstResponder(nil)
+        }
         gridView?.removeFromSuperview()
+        gridScrollView?.removeFromSuperview()
         fields.removeAll(keepingCapacity: true)
         cellAppearances.removeAll(keepingCapacity: true)
 
@@ -457,6 +463,11 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         container.wantsLayer = true
 
         let field = MarkdownTableField(string: value)
+        let editorCell = MarkdownTableFieldCell(textCell: value)
+        editorCell.tableEditor = tableFieldEditor
+        field.cell = editorCell
+        field.isEditable = true
+        field.isSelectable = true
         field.coordinate = coordinate
         let trimmedValue = value.trimmingCharacters(in: .whitespacesAndNewlines)
         if !header, trimmedValue.hasPrefix("[ ] ") || trimmedValue.hasPrefix("[x] ") {
@@ -620,7 +631,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
                 editor.drawsBackground = false
                 editor.backgroundColor = editorColor
                 if let editorView = editor as? NSTextView {
-                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor, .foregroundColor: NSColor.selectedTextColor]
                     editorView.insertionPointColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: effectiveAppearance)
                 }
                 editor.wantsLayer = true
@@ -657,7 +668,7 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
         if focused, let editor = field.currentEditor() as? NSTextView {
             editor.setSelectedRange(NSRange(location: editor.string.utf16.count, length: 0))
             editor.insertionPointColor = NotesAppearancePalette.resolved(NotesAppearancePalette(theme: SettingsStore.shared.notesVisualTheme, appearance: effectiveAppearance).textPrimary, appearance: effectiveAppearance)
-            editor.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+            editor.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor, .foregroundColor: NSColor.selectedTextColor]
         }
         updateAppearance()
         return focused
@@ -746,13 +757,16 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             return
         }
         guard let field = notification.object as? MarkdownTableField else { return }
+        let priorHeight = preferredHeight
         switch field.coordinate {
         case .header(let column):
             table.headers[column] = field.stringValue
         case .body(let row, let column):
             table.rows[row][column] = field.stringValue
         }
+        needsLayout = true
         onChange?()
+        if preferredHeight != priorHeight { onSizeChange?() }
     }
 
     func control(
@@ -997,6 +1011,32 @@ private final class MarkdownTableCellView: NSView {
     }
 }
 
+/// The field editor, not its owning NSTextField, receives Edit > Paste.
+private final class MarkdownTableTextView: NSTextView {
+    var onPasteTable: ((TabularData) -> Bool)?
+
+    override func readSelection(from pasteboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        if let data = TabularDataParser.parse(text: pasteboard.string(forType: .string) ?? "",
+                                             html: pasteboard.string(forType: .html)),
+           onPasteTable?(data) == true { return true }
+        return super.readSelection(from: pasteboard, type: type)
+    }
+}
+
+private final class MarkdownTableFieldCell: NSTextFieldCell {
+    weak var tableEditor: MarkdownTableTextView?
+
+    override func fieldEditor(for controlView: NSView) -> NSTextView? {
+        guard let field = controlView as? MarkdownTableField, let tableEditor else {
+            return super.fieldEditor(for: controlView)
+        }
+        tableEditor.isFieldEditor = true
+        tableEditor.isRichText = false
+        tableEditor.onPasteTable = { [weak field] data in field?.onPasteTable?(data) ?? false }
+        return tableEditor
+    }
+}
+
 private final class MarkdownTableField: NSTextField {
     var coordinate: CellCoordinate = .header(0)
     var onPasteTable: ((TabularData) -> Bool)?
@@ -1017,7 +1057,7 @@ private final class MarkdownTableField: NSTextField {
                 editor.drawsBackground = false
                 editor.backgroundColor = .clear
                 if let editorView = editor as? NSTextView {
-                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.clear]
+                    editorView.selectedTextAttributes = [.backgroundColor: NSColor.selectedTextBackgroundColor, .foregroundColor: NSColor.selectedTextColor]
                     editorView.insertionPointColor = NotesAppearancePalette.resolved(palette.textPrimary, appearance: effectiveAppearance)
                 }
                 editor.wantsLayer = true
@@ -1051,7 +1091,9 @@ private final class MarkdownTableField: NSTextField {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command,
+        if let firstResponder = window?.firstResponder,
+           firstResponder === self || firstResponder === currentEditor(),
+           flags == .command,
            event.charactersIgnoringModifiers?.lowercased() == "v",
            let data = TabularDataParser.parse(
                text: NSPasteboard.general.string(forType: .string) ?? "",

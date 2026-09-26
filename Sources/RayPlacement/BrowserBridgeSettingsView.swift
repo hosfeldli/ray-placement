@@ -149,7 +149,7 @@ struct BrowserBridgeSettingsView: View {
                             mutate("browser.navigate", tab: tab, extra: ["url": .string(destination)])
                         }.disabled(busy || destination.isEmpty)
                     }
-                    if busy { Button("Cancel", role: .cancel) { operation?.cancel() } }
+                    if busy { Button("Stop") { operation?.cancel() } }
                 }
                 Text("Tab changes wait for Allow Once in the companion popup (badge !). Destinations must also have an explicit site grant.")
                     .font(.caption).foregroundStyle(.secondary)
