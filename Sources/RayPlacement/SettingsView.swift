@@ -1297,7 +1297,7 @@ struct SettingsView: View {
             }
             Section("Persistence") {
                 if let error = settings.lastError { Text(error).foregroundStyle(.orange) }
-                Text("Notes, dictation, clipboard, settings, terminal sessions, workflows, and workspace state use private atomic storage with recovery copies.")
+                Text("Notes, dictation, clipboard, settings, Lima's single Terminal shell, workflows, and Workspace state use private atomic storage with recovery copies.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
         }

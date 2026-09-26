@@ -38,7 +38,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
     public var selectedNoteID: UUID?
     public var selectedDictationID: UUID?
     public var selectedAIConversationID: UUID?
-    public var terminalSessionID: UUID?
     public var sidebarVisible: Bool?
     public var focusMode: Bool?
     public var windowFrames: [String: String]
@@ -50,7 +49,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         notesSection: String? = nil,
         selectedNoteID: UUID? = nil,
         selectedDictationID: UUID? = nil,
-        terminalSessionID: UUID? = nil,
         windowFrames: [String: String] = [:],
         dockMode: String? = nil,
         activeModule: String? = nil,
@@ -65,7 +63,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         self.selectedNoteID = selectedNoteID
         self.selectedDictationID = selectedDictationID
         self.selectedAIConversationID = selectedAIConversationID
-        self.terminalSessionID = terminalSessionID
         self.sidebarVisible = sidebarVisible
         self.focusMode = focusMode
         self.windowFrames = windowFrames
@@ -74,7 +71,7 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case schemaVersion, activeWorkspace, activeModule, notesSection, selectedNoteID, selectedDictationID
-        case selectedAIConversationID, terminalSessionID, sidebarVisible, focusMode, windowFrames, dockMode
+        case selectedAIConversationID, sidebarVisible, focusMode, windowFrames, dockMode
         // Obsolete tester/workspace keys are intentionally omitted. Codable
         // ignores unknown keys, allowing old installations to start safely.
     }
@@ -88,7 +85,6 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         selectedNoteID = try container.decodeIfPresent(UUID.self, forKey: .selectedNoteID)
         selectedDictationID = try container.decodeIfPresent(UUID.self, forKey: .selectedDictationID)
         selectedAIConversationID = try container.decodeIfPresent(UUID.self, forKey: .selectedAIConversationID)
-        terminalSessionID = try container.decodeIfPresent(UUID.self, forKey: .terminalSessionID)
         sidebarVisible = try container.decodeIfPresent(Bool.self, forKey: .sidebarVisible)
         focusMode = try container.decodeIfPresent(Bool.self, forKey: .focusMode)
         windowFrames = try container.decodeIfPresent([String: String].self, forKey: .windowFrames) ?? [:]

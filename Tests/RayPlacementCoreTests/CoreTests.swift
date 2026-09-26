@@ -791,19 +791,18 @@ private func packageRoot() -> URL {
         "apiEnvironmentID": UUID().uuidString,
         String(["sql", "Workspace"].joined()): "removed",
         "schemaVersion": 1,
+        "terminalSessionID": UUID().uuidString,
         "windowFrames": [:]
     ]
     let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
     let legacy = try JSONDecoder().decode(WorkspaceState.self, from: legacyData)
     #expect(legacy.windowFrames.isEmpty)
-    #expect(legacy.terminalSessionID == nil)
 
     let state = WorkspaceState(
         activeWorkspace: "workspace",
         notesSection: "favorites",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
-        terminalSessionID: UUID(),
         windowFrames: ["launcher": "{10, 20} 680 452"],
         dockMode: "right",
         activeModule: "ai",
@@ -865,13 +864,12 @@ private func packageRoot() -> URL {
 }
 
 
-@Test func currentWorkspaceStateIntegrationRoundTripsTerminalNotesAndFrames() throws {
+@Test func currentWorkspaceStateRoundTripsNotesAndFramesWithoutTerminalSessions() throws {
     let state = WorkspaceState(
         activeWorkspace: "workspace",
         notesSection: "all",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
-        terminalSessionID: UUID(),
         windowFrames: ["launcher": "{10, 20} 680 452", "workspace": "{40, 50} 900 700"],
         dockMode: "left",
         activeModule: "formatter",
@@ -881,11 +879,12 @@ private func packageRoot() -> URL {
     )
     let data = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    let serialized = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     #expect(decoded == state)
     #expect(decoded.activeWorkspace == "workspace")
     #expect(decoded.activeModule == "formatter")
-    #expect(decoded.terminalSessionID == state.terminalSessionID)
     #expect(decoded.windowFrames.count == 2)
+    #expect(serialized?["terminalSessionID"] == nil)
 }
 
 @Test func quickNoteTargetPrefersLastShownNoteOverWorkspaceSelection() {
