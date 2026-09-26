@@ -1384,7 +1384,7 @@ enum LimaAIToolRegistry {
         LimaAIToolDefinition(
             id: "read_web",
             name: "read_web",
-            description: "Read the main text and public links from a public web page. It blocks local and private hosts, does not send cookies or credentials, does not follow redirects, and never submits or changes web content.",
+            description: "Read extracted headings, main text, metadata, and public links from a public web page. Links are references only; use a separate read_web call to read a selected link. It blocks local and private hosts, sends no cookies or credentials, does not follow redirects, and never submits or changes web content.",
             parameters: [
                 "type": "object",
                 "properties": ["url": ["type": "string", "description": "A public HTTP or HTTPS URL returned by Search Web or supplied by the user."]],
@@ -1867,11 +1867,18 @@ enum LimaAIToolRegistry {
             }
 
             let rawText = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-            let result: (title: String?, content: String, links: [String])
+            let result: (
+                title: String?,
+                content: String,
+                links: [String],
+                headings: [String],
+                metadata: [String: String],
+                linkDetails: [[String: String]]
+            )
             if contentType.contains("html") || rawText.range(of: "<html", options: .caseInsensitive) != nil {
                 result = readableWebContent(fromHTML: rawText, baseURL: url)
             } else {
-                result = (nil, normalizedWebText(rawText), [])
+                result = (nil, normalizedWebText(rawText), [], [], [:], [])
             }
             guard !result.content.isEmpty else {
                 return .json(["error": "The page did not contain readable public text."], isError: true)
@@ -1880,8 +1887,11 @@ enum LimaAIToolRegistry {
             return .json([
                 "url": url.absoluteString,
                 "title": result.title ?? "",
+                "headings": Array(result.headings.prefix(24)),
+                "metadata": result.metadata,
                 "content": limitedContent,
                 "links": Array(result.links.prefix(20)),
+                "link_details": Array(result.linkDetails.prefix(20)),
                 "truncated": result.content.count > limitedContent.count,
                 "source": "Public page read without cookies, credentials, redirects, or form submission"
             ])
@@ -1930,31 +1940,460 @@ enum LimaAIToolRegistry {
         }
     }
 
-    static func readableWebContent(fromHTML html: String, baseURL: URL) -> (title: String?, content: String, links: [String]) {
-        let title = firstCapture(in: html, pattern: #"(?is)<title[^>]*>(.*?)</title>"#).map(normalizedWebText)
-        let links = captures(in: html, pattern: #"(?is)<a\b[^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>"#)
-            .compactMap { URL(string: $0, relativeTo: baseURL)?.absoluteURL.absoluteString }
-            .filter { publicWebURL($0) != nil }
-            .reduce(into: [String]()) { values, value in
-                if !values.contains(value) { values.append(value) }
+    static func readableWebContent(
+        fromHTML html: String,
+        baseURL: URL
+    ) -> (
+        title: String?,
+        content: String,
+        links: [String],
+        headings: [String],
+        metadata: [String: String],
+        linkDetails: [[String: String]]
+    ) {
+        let document = parseWebHTML(html)
+        let contentRoot = firstWebElement(named: "main", in: document)
+            ?? firstWebElement(named: "article", in: document)
+            ?? firstWebElement(named: "body", in: document)
+            ?? document
+
+        var metadata: [String: String] = [:]
+        visitWebElements(in: document) { element in
+            guard element.name == "meta",
+                  let content = element.attributes["content"] else { return }
+            let key = (element.attributes["name"] ?? element.attributes["property"] ?? "").lowercased()
+            switch key {
+            case "description", "author", "og:title", "og:description":
+                let value = String(normalizedWebText(content).prefix(500))
+                if !value.isEmpty { metadata[key] = value }
+            default:
+                break
             }
-        var body = html
-        body = replacing(body, pattern: #"(?is)<(script|style|noscript|svg|nav|footer|header|aside|form)[^>]*>.*?</\1>"#, with: " ")
-        body = replacing(body, pattern: #"(?i)<br\s*/?>|</(p|div|li|h[1-6]|tr|section|article)>"#, with: "\n")
-        body = replacing(body, pattern: #"(?is)<[^>]+>"#, with: " ")
-        return (title, normalizedWebText(body), links)
+        }
+        if let htmlElement = firstWebElement(named: "html", in: document),
+           let language = htmlElement.attributes["lang"] {
+            metadata["language"] = String(decodeWebHTMLEntities(language).prefix(40))
+        }
+        visitWebElements(in: document) { element in
+            guard element.name == "link",
+                  decodeWebHTMLEntities(element.attributes["rel"] ?? "")
+                    .lowercased().split(whereSeparator: \.isWhitespace).contains("canonical"),
+                  let rawHref = element.attributes["href"],
+                  let canonicalURL = URL(string: decodeWebHTMLEntities(rawHref), relativeTo: baseURL)?.absoluteURL,
+                  publicWebURL(canonicalURL.absoluteString) != nil else { return }
+            metadata["canonical_url"] = canonicalURL.absoluteString
+        }
+
+        let documentTitle = firstWebElement(named: "title", in: document).map {
+            normalizedWebText(rawWebText(in: $0))
+        }
+        let title = documentTitle.flatMap { $0.isEmpty ? nil : $0 } ?? metadata["og:title"]
+
+        var contentBuffer = ""
+        appendReadableWebText(from: contentRoot, to: &contentBuffer)
+        let content = normalizedWebText(contentBuffer)
+
+        var headings: [String] = []
+        collectReadableHeadings(in: contentRoot, into: &headings)
+        var linkDetails: [[String: String]] = []
+        var seenLinks = Set<String>()
+        collectReadableLinks(in: contentRoot, baseURL: baseURL, into: &linkDetails, seen: &seenLinks)
+
+        return (
+            title,
+            content,
+            linkDetails.compactMap { $0["url"] },
+            headings,
+            metadata,
+            linkDetails
+        )
+    }
+
+    private final class WebHTMLNode {
+        let name: String?
+        let attributes: [String: String]
+        let text: String?
+        var children: [WebHTMLNode] = []
+
+        init(name: String? = nil, attributes: [String: String] = [:], text: String? = nil) {
+            self.name = name
+            self.attributes = attributes
+            self.text = text
+        }
+    }
+
+    private static let voidWebHTMLTags: Set<String> = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+        "meta", "param", "source", "track", "wbr"
+    ]
+
+    private static let ignoredWebContentTags: Set<String> = [
+        "aside", "canvas", "footer", "form", "head", "header", "iframe", "link",
+        "meta", "nav", "noscript", "object", "script", "style", "svg", "template",
+        "title"
+    ]
+
+    private static let blockWebContentTags: Set<String> = [
+        "address", "article", "blockquote", "br", "dd", "div", "dl", "dt",
+        "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
+        "li", "ol", "p", "pre", "section", "table", "tbody", "td", "th",
+        "thead", "tr", "ul"
+    ]
+
+    private static func parseWebHTML(_ html: String) -> WebHTMLNode {
+        let document = WebHTMLNode()
+        var stack = [document]
+        var overflowTags: [String] = []
+        var cursor = html.startIndex
+        let maximumTreeDepth = 256
+
+        while cursor < html.endIndex {
+            guard html[cursor] == "<" else {
+                let textEnd = html[cursor...].firstIndex(of: "<") ?? html.endIndex
+                if overflowTags.isEmpty, textEnd > cursor {
+                    stack[stack.count - 1].children.append(
+                        WebHTMLNode(text: String(html[cursor..<textEnd]))
+                    )
+                }
+                cursor = textEnd
+                continue
+            }
+
+            if html[cursor...].hasPrefix("<!--") {
+                if let commentEnd = html.range(of: "-->", range: cursor..<html.endIndex) {
+                    cursor = commentEnd.upperBound
+                } else {
+                    break
+                }
+                continue
+            }
+
+            let afterOpen = html.index(after: cursor)
+            guard afterOpen < html.endIndex else {
+                if overflowTags.isEmpty {
+                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
+                }
+                break
+            }
+            var tagStart = afterOpen
+            if html[tagStart] == "/" {
+                tagStart = html.index(after: tagStart)
+            }
+            guard tagStart < html.endIndex,
+                  html[tagStart].isLetter || html[tagStart] == "!" || html[tagStart] == "?" else {
+                if overflowTags.isEmpty {
+                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
+                }
+                cursor = afterOpen
+                continue
+            }
+
+            guard let tokenEnd = webHTMLTagEnd(in: html, startingAt: cursor) else {
+                if overflowTags.isEmpty {
+                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
+                }
+                cursor = afterOpen
+                continue
+            }
+            let bodyStart = html.index(after: cursor)
+            let bodyEnd = html.index(before: tokenEnd)
+            let tokenBody = String(html[bodyStart..<bodyEnd])
+            cursor = tokenEnd
+
+            guard let tag = parseWebHTMLTag(tokenBody) else { continue }
+            if tag.name.hasPrefix("!") || tag.name.hasPrefix("?") { continue }
+
+            if !overflowTags.isEmpty {
+                if tag.isClosing {
+                    if let matching = overflowTags.lastIndex(of: tag.name) {
+                        overflowTags.removeSubrange(matching..<overflowTags.count)
+                    }
+                } else if !tag.isSelfClosing && !voidWebHTMLTags.contains(tag.name) {
+                    overflowTags.append(tag.name)
+                }
+                continue
+            }
+
+            if tag.isClosing {
+                if let matching = stack.lastIndex(where: { $0.name == tag.name }), matching > 0 {
+                    stack.removeSubrange(matching..<stack.count)
+                }
+                continue
+            }
+
+            let element = WebHTMLNode(name: tag.name, attributes: tag.attributes)
+            stack[stack.count - 1].children.append(element)
+            guard !tag.isSelfClosing, !voidWebHTMLTags.contains(tag.name) else { continue }
+            if stack.count >= maximumTreeDepth {
+                overflowTags = [tag.name]
+            } else {
+                stack.append(element)
+            }
+        }
+        return document
+    }
+
+    private static func webHTMLTagEnd(in html: String, startingAt start: String.Index) -> String.Index? {
+        var cursor = html.index(after: start)
+        var quote: Character?
+        while cursor < html.endIndex {
+            let character = html[cursor]
+            if let activeQuote = quote {
+                if character == activeQuote { quote = nil }
+            } else if character == "\"" || character == "'" {
+                quote = character
+            } else if character == ">" {
+                return html.index(after: cursor)
+            }
+            cursor = html.index(after: cursor)
+        }
+        return nil
+    }
+
+    private static func parseWebHTMLTag(
+        _ source: String
+    ) -> (name: String, attributes: [String: String], isClosing: Bool, isSelfClosing: Bool)? {
+        let characters = Array(source)
+        var offset = 0
+
+        func skipWhitespace() {
+            while offset < characters.count, characters[offset].isWhitespace { offset += 1 }
+        }
+
+        skipWhitespace()
+        let isClosing = offset < characters.count && characters[offset] == "/"
+        if isClosing { offset += 1 }
+        skipWhitespace()
+
+        let nameStart = offset
+        while offset < characters.count,
+              !characters[offset].isWhitespace,
+              characters[offset] != "/",
+              characters[offset] != ">" {
+            offset += 1
+        }
+        guard offset > nameStart else { return nil }
+        let name = String(characters[nameStart..<offset]).lowercased()
+        if isClosing { return (name, [:], true, false) }
+
+        var attributes: [String: String] = [:]
+        var isSelfClosing = false
+        while offset < characters.count {
+            skipWhitespace()
+            guard offset < characters.count else { break }
+            if characters[offset] == "/" {
+                isSelfClosing = true
+                offset += 1
+                continue
+            }
+
+            let attributeStart = offset
+            while offset < characters.count,
+                  !characters[offset].isWhitespace,
+                  characters[offset] != "=",
+                  characters[offset] != "/",
+                  characters[offset] != ">" {
+                offset += 1
+            }
+            guard offset > attributeStart else {
+                offset += 1
+                continue
+            }
+            let key = String(characters[attributeStart..<offset]).lowercased()
+            skipWhitespace()
+
+            var value = ""
+            if offset < characters.count, characters[offset] == "=" {
+                offset += 1
+                skipWhitespace()
+                if offset < characters.count, characters[offset] == "\"" || characters[offset] == "'" {
+                    let quote = characters[offset]
+                    offset += 1
+                    let valueStart = offset
+                    while offset < characters.count, characters[offset] != quote { offset += 1 }
+                    value = String(characters[valueStart..<offset])
+                    if offset < characters.count { offset += 1 }
+                } else {
+                    let valueStart = offset
+                    while offset < characters.count,
+                          !characters[offset].isWhitespace,
+                          characters[offset] != ">" {
+                        offset += 1
+                    }
+                    value = String(characters[valueStart..<offset])
+                }
+            }
+            if attributes[key] == nil {
+                attributes[key] = value
+            }
+        }
+        return (name, attributes, false, isSelfClosing)
+    }
+
+    private static func firstWebElement(named name: String, in node: WebHTMLNode) -> WebHTMLNode? {
+        if node.name == name { return node }
+        for child in node.children {
+            if let match = firstWebElement(named: name, in: child) { return match }
+        }
+        return nil
+    }
+
+    private static func visitWebElements(in node: WebHTMLNode, _ visit: (WebHTMLNode) -> Void) {
+        visit(node)
+        for child in node.children {
+            visitWebElements(in: child, visit)
+        }
+    }
+
+    private static func webText(in node: WebHTMLNode) -> String {
+        var buffer = ""
+        appendReadableWebText(from: node, to: &buffer)
+        return buffer
+    }
+
+    private static func rawWebText(in node: WebHTMLNode) -> String {
+        if let text = node.text { return text }
+        return node.children.map(rawWebText(in:)).joined()
+    }
+
+    private static func appendReadableWebText(from node: WebHTMLNode, to output: inout String) {
+        if let text = node.text {
+            output += text
+            return
+        }
+        guard let name = node.name else {
+            for child in node.children { appendReadableWebText(from: child, to: &output) }
+            return
+        }
+        let attributes = node.attributes
+        let style = decodeWebHTMLEntities(attributes["style"] ?? "").lowercased()
+        guard !ignoredWebContentTags.contains(name),
+              attributes["hidden"] == nil,
+              attributes["aria-hidden"]?.lowercased() != "true",
+              !style.contains("display:none"),
+              !style.contains("display: none"),
+              !style.contains("visibility:hidden"),
+              !style.contains("visibility: hidden") else { return }
+
+        if name == "br" || name == "hr" {
+            output += "\n"
+            return
+        }
+        let isBlock = blockWebContentTags.contains(name)
+        if isBlock, !output.isEmpty, !output.hasSuffix("\n") { output += "\n" }
+        if name == "img", let alt = attributes["alt"], !alt.isEmpty {
+            output += alt
+        }
+        for child in node.children {
+            appendReadableWebText(from: child, to: &output)
+        }
+        if isBlock, !output.hasSuffix("\n") { output += "\n" }
+    }
+
+    private static func collectReadableHeadings(in node: WebHTMLNode, into headings: inout [String]) {
+        guard let name = node.name else {
+            for child in node.children { collectReadableHeadings(in: child, into: &headings) }
+            return
+        }
+        guard !ignoredWebContentTags.contains(name) else { return }
+        if ["h1", "h2", "h3", "h4", "h5", "h6"].contains(name) {
+            let heading = normalizedWebText(webText(in: node))
+            if !heading.isEmpty, !headings.contains(heading), headings.count < 32 {
+                headings.append(String(heading.prefix(300)))
+            }
+        }
+        for child in node.children { collectReadableHeadings(in: child, into: &headings) }
+    }
+
+    private static func collectReadableLinks(
+        in node: WebHTMLNode,
+        baseURL: URL,
+        into links: inout [[String: String]],
+        seen: inout Set<String>
+    ) {
+        guard let name = node.name else {
+            for child in node.children {
+                collectReadableLinks(in: child, baseURL: baseURL, into: &links, seen: &seen)
+            }
+            return
+        }
+        guard !ignoredWebContentTags.contains(name) else { return }
+        if name == "a",
+           let rawHref = node.attributes["href"],
+           let url = URL(string: decodeWebHTMLEntities(rawHref), relativeTo: baseURL)?.absoluteURL,
+           publicWebURL(url.absoluteString) != nil,
+           seen.insert(url.absoluteString).inserted,
+           links.count < 40 {
+            let anchorText = normalizedWebText(webText(in: node))
+            let fallbackLabel = node.attributes["title"].map(normalizedWebText) ?? url.host ?? "Link"
+            let label = anchorText.isEmpty ? fallbackLabel : anchorText
+            links.append([
+                "text": String(label.prefix(300)),
+                "url": url.absoluteString
+            ])
+        }
+        for child in node.children {
+            collectReadableLinks(in: child, baseURL: baseURL, into: &links, seen: &seen)
+        }
+    }
+
+    private static func decodeWebHTMLEntities(_ value: String) -> String {
+        let namedEntities = [
+            "amp": "&", "apos": "'", "gt": ">", "lt": "<", "nbsp": " ",
+            "quot": "\"", "copy": "©", "mdash": "—", "ndash": "–",
+            "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”",
+            "hellip": "…", "bull": "•"
+        ]
+        var output = ""
+        var cursor = value.startIndex
+        while cursor < value.endIndex {
+            guard value[cursor] == "&" else {
+                output.append(value[cursor])
+                cursor = value.index(after: cursor)
+                continue
+            }
+            let entityStart = value.index(after: cursor)
+            guard let semicolon = value[entityStart...].firstIndex(of: ";"),
+                  value.distance(from: entityStart, to: semicolon) <= 16 else {
+                output.append("&")
+                cursor = entityStart
+                continue
+            }
+            let entity = String(value[entityStart..<semicolon])
+            var decoded: String?
+            if entity.hasPrefix("#x") || entity.hasPrefix("#X") {
+                if let scalarValue = UInt32(entity.dropFirst(2), radix: 16),
+                   let scalar = UnicodeScalar(scalarValue) {
+                    decoded = String(scalar)
+                }
+            } else if entity.hasPrefix("#") {
+                if let scalarValue = UInt32(entity.dropFirst()),
+                   let scalar = UnicodeScalar(scalarValue) {
+                    decoded = String(scalar)
+                }
+            } else {
+                decoded = namedEntities[entity.lowercased()]
+            }
+            if let decoded {
+                output += decoded
+                cursor = value.index(after: semicolon)
+            } else {
+                output += "&"
+                cursor = entityStart
+            }
+        }
+        return output
     }
 
     private static func normalizedWebText(_ value: String) -> String {
-        let entities = value
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-        return replacing(entities, pattern: #"\s+"#, with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let decoded = decodeWebHTMLEntities(value)
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return decoded.components(separatedBy: "\n").compactMap { line in
+            let normalizedLine = replacing(line, pattern: #"[ \t]+"#, with: " ")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return normalizedLine.isEmpty ? nil : normalizedLine
+        }.joined(separator: "\n")
     }
 
     private static func replacing(_ value: String, pattern: String, with replacement: String) -> String {
@@ -1966,18 +2405,6 @@ enum LimaAIToolRegistry {
         )
     }
 
-    private static func firstCapture(in value: String, pattern: String) -> String? {
-        captures(in: value, pattern: pattern).first
-    }
-
-    private static func captures(in value: String, pattern: String) -> [String] {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
-        return expression.matches(in: value, range: NSRange(value.startIndex..., in: value)).compactMap { match in
-            guard match.numberOfRanges > 1,
-                  let range = Range(match.range(at: 1), in: value) else { return nil }
-            return String(value[range])
-        }
-    }
 
     private static func extensionCatalog() -> LimaAIToolExecution {
         let loader = ExtensionLoader()

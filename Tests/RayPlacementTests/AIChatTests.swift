@@ -115,17 +115,35 @@ import Testing
 
     let extracted = LimaAIToolRegistry.readableWebContent(
         fromHTML: """
-        <html><head><title>Example &amp; Guide</title><style>body { color: red; }</style></head>
-        <body><nav>Ignore navigation</nav><main><h1>Useful guide</h1><p>Read this public text.</p>
-        <a href=\"/next\">Next page</a><a href=\"http://127.0.0.1/private\">Private</a></main></body></html>
+        <html lang="en"><head><title>Example &amp; Guide</title>
+        <meta name="description" content="Readable &amp; safe">
+        <meta property="og:description" content="Literal &amp;lt;code&amp;gt;">
+        <style>body { color: red; }</style><script>ignoreThis(); <p>hidden script text</p></script></head>
+        <body><nav>Ignore navigation</nav><p>Outside the main article</p>
+        <main><h1>Useful guide &mdash; start</h1><p>Read this public text.</p>
+        <form><p>Hidden form text</p></form><svg><text>Hidden SVG text</text></svg>
+        <a href="/next" data-label="reader > safe">Next &amp; beyond</a>
+        <a href="http://127.0.0.1/private">Private</a></main></body></html>
         """,
         baseURL: URL(string: "https://example.com/docs")!
     )
     #expect(extracted.title == "Example & Guide")
-    #expect(extracted.content.contains("Useful guide"))
+    #expect(extracted.content.contains("Useful guide — start"))
     #expect(extracted.content.contains("Read this public text."))
     #expect(!extracted.content.contains("Ignore navigation"))
+    #expect(!extracted.content.contains("Outside the main article"))
+    #expect(!extracted.content.contains("hidden script text"))
+    #expect(!extracted.content.contains("Hidden form text"))
+    #expect(!extracted.content.contains("Hidden SVG text"))
+    #expect(extracted.headings == ["Useful guide — start"])
+    #expect(extracted.metadata["description"] == "Readable & safe")
+    #expect(extracted.metadata["og:description"] == "Literal &lt;code&gt;")
+    #expect(extracted.metadata["language"] == "en")
     #expect(extracted.links == ["https://example.com/next"])
+    #expect(extracted.linkDetails == [[
+        "text": "Next & beyond",
+        "url": "https://example.com/next"
+    ]])
 }
 
 @Test @MainActor func fixtureTransportCarriesPromptToVisibleAssistantTurn() async {
