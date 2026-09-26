@@ -18,18 +18,19 @@ enum EmojiCatalog {
     /// the ~650 KB source is touched only when the picker is first opened.
     static let entries: [EmojiEntry] = loadEntries()
 
-    static func search(_ query: String) -> [EmojiEntry] {
+    static func search(_ query: String, usageScore: (EmojiEntry) -> Double = { _ in 0 }) -> [EmojiEntry] {
         let clean = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !clean.isEmpty else { return entries }
         let tokens = clean.components(separatedBy: CharacterSet.alphanumerics.inverted).filter { !$0.isEmpty }
         guard !tokens.isEmpty else { return entries.filter { $0.emoji.contains(clean) } }
 
-        return entries.compactMap { entry -> (EmojiEntry, Int)? in
+        return entries.compactMap { entry -> (EmojiEntry, Double)? in
             let name = entry.name.lowercased()
             let words = entry.searchWords
-            if phraseAliasEmojis[clean]?.contains(entry.emoji) == true { return (entry, 2_000) }
-            if entry.emoji.contains(clean) { return (entry, 1_000) }
-            var score = name == clean ? 900 : (name.hasPrefix(clean) ? 820 : 0)
+            let usageTieBreak = min(0.9, max(0, usageScore(entry)) / 250)
+            if phraseAliasEmojis[clean]?.contains(entry.emoji) == true { return (entry, 2_000 + usageTieBreak) }
+            if entry.emoji.contains(clean) { return (entry, 1_000 + usageTieBreak) }
+            var score = Double(name == clean ? 900 : (name.hasPrefix(clean) ? 820 : 0))
             for token in tokens {
                 let alternatives = [token] + (queryAliases[token] ?? [])
                 let exact = alternatives.contains { words.contains($0) }
@@ -39,7 +40,7 @@ enum EmojiCatalog {
                 score += exact ? 90 : (prefix ? 60 : 35)
             }
             if name.contains(clean) { score += 120 }
-            return (entry, score)
+            return (entry, score + usageTieBreak)
         }
         .sorted {
             if $0.1 == $1.1 { return $0.0.name.localizedStandardCompare($1.0.name) == .orderedAscending }
@@ -179,5 +180,66 @@ enum EmojiCatalog {
                 .components(separatedBy: CharacterSet.alphanumerics.inverted)
                 .filter { !$0.isEmpty })
         )
+    }
+}
+
+private struct EmojiUsageRecord: Codable {
+    let emoji: String
+    var usageCount: Int
+    var lastUsedAt: Date
+}
+
+final class EmojiUsageStore {
+    static let shared = EmojiUsageStore()
+    static let storageKey = "emojiUsage.v1"
+    private static let maximumStoredEmojis = 128
+
+    private let defaults: UserDefaults
+    private var records: [String: EmojiUsageRecord]
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: Self.storageKey),
+           let decoded = try? JSONDecoder().decode([EmojiUsageRecord].self, from: data) {
+            records = Dictionary(decoded.map { ($0.emoji, $0) }, uniquingKeysWith: { first, _ in first })
+        } else {
+            records = [:]
+        }
+    }
+
+    func record(_ emoji: String, now: Date = Date()) {
+        guard !emoji.isEmpty, emoji.count <= 16 else { return }
+        var record = records[emoji] ?? EmojiUsageRecord(emoji: emoji, usageCount: 0, lastUsedAt: now)
+        record.usageCount += 1
+        record.lastUsedAt = now
+        records[emoji] = record
+        persist()
+    }
+
+    func recentEmojis(limit: Int) -> [String] {
+        records.values
+            .sorted {
+                if $0.lastUsedAt == $1.lastUsedAt { return $0.usageCount > $1.usageCount }
+                return $0.lastUsedAt > $1.lastUsedAt
+            }
+            .prefix(max(0, limit))
+            .map(\.emoji)
+    }
+
+    func score(for emoji: String, now: Date = Date()) -> Double {
+        guard let record = records[emoji] else { return 0 }
+        let ageDays = max(0, now.timeIntervalSince(record.lastUsedAt)) / 86_400
+        let recency = min(120, max(0, 120 - ageDays * 8))
+        let frequency = min(100, log1p(Double(record.usageCount)) * 18)
+        return recency + frequency
+    }
+
+    private func persist() {
+        let bounded = records.values
+            .sorted { $0.lastUsedAt > $1.lastUsedAt }
+            .prefix(Self.maximumStoredEmojis)
+        records = Dictionary(bounded.map { ($0.emoji, $0) }, uniquingKeysWith: { first, _ in first })
+        guard let data = try? JSONEncoder().encode(Array(records.values)) else { return }
+        defaults.set(data, forKey: Self.storageKey)
     }
 }

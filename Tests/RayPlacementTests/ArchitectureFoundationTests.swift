@@ -133,6 +133,41 @@ import Testing
     }
 }
 
+@Test func emojiUsageBoostsEquivalentMatchesWithoutOverridingExplicitAliases() {
+    let heartMatches = EmojiCatalog.search("heart")
+    let equivalentMatches = heartMatches.filter { $0.name.lowercased().hasPrefix("heart") }
+    #expect(equivalentMatches.count > 1)
+    if let mostRecentEquivalent = equivalentMatches.last {
+        let ranked = EmojiCatalog.search("heart") { $0.id == mostRecentEquivalent.id ? 225 : 0 }
+        #expect(ranked.first?.id == mostRecentEquivalent.id)
+    }
+    #expect(EmojiCatalog.search("laugh crying") { _ in 225 }.first?.emoji == "😂")
+}
+
+@Test func emojiUsageStorePersistsOnlyEmojiCountAndLastUsedTime() {
+    let suite = "dev.liam.lima.tests.emoji-usage.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let start = Date(timeIntervalSince1970: 1_800_000_000)
+    let store = EmojiUsageStore(defaults: defaults)
+    store.record("😂", now: start)
+    store.record("💛", now: start.addingTimeInterval(1))
+    store.record("😂", now: start.addingTimeInterval(2))
+
+    let restored = EmojiUsageStore(defaults: defaults)
+    #expect(restored.recentEmojis(limit: 2) == ["😂", "💛"])
+    #expect(restored.score(for: "😂", now: start.addingTimeInterval(2)) > restored.score(for: "💛", now: start.addingTimeInterval(2)))
+
+    if let data = defaults.data(forKey: EmojiUsageStore.storageKey),
+       let records = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+        let expectedKeys: Set<String> = ["emoji", "usageCount", "lastUsedAt"]
+        #expect(records.allSatisfy { Set($0.keys) == expectedKeys })
+        #expect(Set(records.compactMap { $0["emoji"] as? String }) == ["😂", "💛"])
+    } else {
+        Issue.record("Emoji usage records were not persisted")
+    }
+}
+
 @Test @MainActor func escapePolicyIsNavigationNotCancellation() {
     let coordinator = LimaSurfaceCoordinator.shared
     #expect(coordinator.escapeAction(for: .launcher, canNavigateBack: true, hasSelection: false) == .navigateBack)

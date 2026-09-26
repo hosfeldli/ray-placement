@@ -549,7 +549,7 @@ final class LauncherViewModel: ObservableObject {
     func executeAction(_ action: LauncherItemAction) {
         guard let item = actionPanelItem ?? selectedItem else { return }
         closeActionPanel()
-        usage.record(item.id, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
+        recordUsage(for: item)
         delegate?.launcherViewModel(self, perform: action.action, item: item)
     }
 
@@ -561,8 +561,16 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func execute(item: LauncherItem) {
-        usage.record(item.id, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
+        recordUsage(for: item)
         delegate?.launcherViewModel(self, perform: item.action, item: item)
+    }
+
+    private func recordUsage(for item: LauncherItem) {
+        if item.id.hasPrefix("emoji."), case .pasteText(let emoji) = item.action {
+            EmojiUsageStore.shared.record(emoji)
+        } else {
+            usage.record(item.id, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
+        }
     }
 
     func executeSelected() {
@@ -1167,21 +1175,19 @@ final class LauncherViewModel: ObservableObject {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let matching: [EmojiEntry]
         if cleanQuery.isEmpty {
-            let entriesByID = Dictionary(uniqueKeysWithValues: EmojiCatalog.entries.map { ($0.id, $0) })
-            let recent = usage.recentIdentifiers(limit: 80).compactMap { identifier -> EmojiEntry? in
-                guard identifier.hasPrefix("emoji.") else { return nil }
-                return entriesByID[String(identifier.dropFirst("emoji.".count))]
-            }
+            let entriesByEmoji = Dictionary(uniqueKeysWithValues: EmojiCatalog.entries.map { ($0.emoji, $0) })
+            let recent = EmojiUsageStore.shared.recentEmojis(limit: 80).compactMap { entriesByEmoji[$0] }
             let recentIDs = Set(recent.map(\.id))
             matching = recent + EmojiCatalog.entries.filter { !recentIDs.contains($0.id) }
         } else {
-            let exact = EmojiCatalog.search(cleanQuery)
+            let exact = EmojiCatalog.search(cleanQuery) { EmojiUsageStore.shared.score(for: $0.emoji) }
             if !exact.isEmpty {
                 matching = exact
             } else {
                 matching = EmojiCatalog.entries.compactMap { entry -> (EmojiEntry, Double)? in
                     guard let fuzzy = FuzzyMatcher.score(entry.searchableText, query: cleanQuery) else { return nil }
-                    return (entry, fuzzy)
+                    let usageTieBreak = min(0.9, EmojiUsageStore.shared.score(for: entry.emoji) / 250)
+                    return (entry, fuzzy + usageTieBreak)
                 }
                 .sorted { first, second in
                     if first.1 == second.1 { return first.0.name < second.0.name }
