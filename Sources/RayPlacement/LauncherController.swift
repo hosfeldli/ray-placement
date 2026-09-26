@@ -46,7 +46,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private let writingChecker = RuleBasedWritingChecker()
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
-    private let notesWindow = NotesWindowController()
+    private lazy var notesWindow = NotesWindowController(
+        aiChatModel: aiChatModel,
+        terminalModel: terminalModel,
+        formatterModel: formatterModel
+    )
     private let extensionStoreModel: ExtensionStoreModel
     private let formatterModel: FormatterWorkspaceModel
     private let workflowModel: WorkflowEditorModel
@@ -282,24 +286,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func showNotes() {
         hide()
+        notesWindow.selectModule(.notes)
         notesWindow.toggleVisibility()
     }
 
     func showAIChat() {
-        let descriptor = LauncherSurfaceDescriptor(
-            id: "ai-chat",
-            title: "AI Chat",
-            kind: .live,
-            preferredSize: CGSize(width: 1_060, height: 700),
-            timeoutPolicy: .never,
-            canPopOut: false,
-            preservesState: true,
-            reopeningPolicy: .resume,
-            handler: .aiChat,
-            supportsSearch: false
-        )
-        viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
-        presentPanel()
+        hide()
+        notesWindow.present(module: .ai)
     }
 
     func showExtensionStore() {
@@ -327,12 +320,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showDeveloperTerminal() {
-        viewModel.enter(.terminal)
-        presentPanel()
-        DispatchQueue.main.async { [weak self] in
-            self?.terminalModel.startIfNeeded()
-            self?.terminalModel.focus()
-        }
+        hide()
+        notesWindow.present(module: .terminal)
+        DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
     }
     func showFocusedFileLauncher() { viewModel.enter(.files); presentPanel() }
 
@@ -543,12 +533,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             hide()
         case .terminal(let path):
             terminalModel.setInitialDirectory(path)
-            viewModel.enter(.terminal)
-            presentPanel()
+            hide()
+            notesWindow.present(module: .terminal)
+            DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
         case .format(let kind):
             formatterModel.kind = kind.lowercased() == "json" ? .json : formatterModel.kind
-            viewModel.enter(.surface(LauncherSurfaceSession(surface: LimaSurfaceRegistry.shared.descriptor(id: "formatter", title: "Formatter", kind: .textEditor, handler: .formatter, preferredHeight: 600, canPopOut: true, primaryActionTitle: "Format", supportsCopy: true))))
-            presentPanel()
+            hide()
+            notesWindow.present(module: .formatter)
         }
     }
 
@@ -1217,9 +1208,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         guard case .surface(let session) = viewModel.mode else { return }
         switch session.surface.handler {
         case .formatter:
-            let window = FormatterWindowController(model: formatterModel)
-            retainedSurfaceWindows.append(window)
-            window.present()
+            notesWindow.present(module: .formatter)
         case .workflows:
             let window = WorkflowWindowController { [weak self] workflow in self?.executeWorkflow(workflow) }
             retainedSurfaceWindows.append(window)

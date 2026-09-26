@@ -32,27 +32,49 @@ public protocol LimaSearchProvider: Sendable {
 public struct WorkspaceState: Codable, Equatable, Sendable {
     public var schemaVersion: Int
     public var activeWorkspace: String?
+    public var activeModule: String?
+    /// Legacy note-browser state; retained so existing state files decode.
     public var notesSection: String?
     public var selectedNoteID: UUID?
     public var selectedDictationID: UUID?
+    public var selectedAIConversationID: UUID?
     public var terminalSessionID: UUID?
+    public var sidebarVisible: Bool?
+    public var focusMode: Bool?
     public var windowFrames: [String: String]
     public var dockMode: String?
 
-    public init(schemaVersion: Int = 1, activeWorkspace: String? = nil, notesSection: String? = nil, selectedNoteID: UUID? = nil, selectedDictationID: UUID? = nil, terminalSessionID: UUID? = nil, windowFrames: [String: String] = [:], dockMode: String? = nil) {
+    public init(
+        schemaVersion: Int = 1,
+        activeWorkspace: String? = nil,
+        notesSection: String? = nil,
+        selectedNoteID: UUID? = nil,
+        selectedDictationID: UUID? = nil,
+        terminalSessionID: UUID? = nil,
+        windowFrames: [String: String] = [:],
+        dockMode: String? = nil,
+        activeModule: String? = nil,
+        selectedAIConversationID: UUID? = nil,
+        sidebarVisible: Bool? = nil,
+        focusMode: Bool? = nil
+    ) {
         self.schemaVersion = schemaVersion
         self.activeWorkspace = activeWorkspace
+        self.activeModule = activeModule
         self.notesSection = notesSection
         self.selectedNoteID = selectedNoteID
         self.selectedDictationID = selectedDictationID
+        self.selectedAIConversationID = selectedAIConversationID
         self.terminalSessionID = terminalSessionID
+        self.sidebarVisible = sidebarVisible
+        self.focusMode = focusMode
         self.windowFrames = windowFrames
         self.dockMode = dockMode
     }
 
     private enum CodingKeys: String, CodingKey {
-        case schemaVersion, activeWorkspace, notesSection, selectedNoteID, selectedDictationID
-        case terminalSessionID, windowFrames, dockMode
+        case schemaVersion, activeWorkspace, activeModule, notesSection, selectedNoteID, selectedDictationID
+        case selectedAIConversationID, terminalSessionID, sidebarVisible, focusMode, windowFrames, dockMode
         // Obsolete tester/workspace keys are intentionally omitted. Codable
         // ignores unknown keys, allowing old installations to start safely.
     }
@@ -61,10 +83,14 @@ public struct WorkspaceState: Codable, Equatable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
         activeWorkspace = try container.decodeIfPresent(String.self, forKey: .activeWorkspace)
+        activeModule = try container.decodeIfPresent(String.self, forKey: .activeModule)
         notesSection = try container.decodeIfPresent(String.self, forKey: .notesSection)
         selectedNoteID = try container.decodeIfPresent(UUID.self, forKey: .selectedNoteID)
         selectedDictationID = try container.decodeIfPresent(UUID.self, forKey: .selectedDictationID)
+        selectedAIConversationID = try container.decodeIfPresent(UUID.self, forKey: .selectedAIConversationID)
         terminalSessionID = try container.decodeIfPresent(UUID.self, forKey: .terminalSessionID)
+        sidebarVisible = try container.decodeIfPresent(Bool.self, forKey: .sidebarVisible)
+        focusMode = try container.decodeIfPresent(Bool.self, forKey: .focusMode)
         windowFrames = try container.decodeIfPresent([String: String].self, forKey: .windowFrames) ?? [:]
         dockMode = try container.decodeIfPresent(String.self, forKey: .dockMode)
     }

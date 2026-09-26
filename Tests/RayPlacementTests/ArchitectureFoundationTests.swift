@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import RayPlacement
@@ -72,4 +73,27 @@ import Testing
     #expect(coordinator.escapeAction(for: .launcher, canNavigateBack: true, hasSelection: false) == .navigateBack)
     #expect(coordinator.escapeAction(for: .launcher, canNavigateBack: false, hasSelection: false) == .dismissSurface)
     #expect(coordinator.escapeAction(for: .workspace, canNavigateBack: false, hasSelection: false) == .none)
+}
+
+@Test @MainActor func workspaceModuleEntryPointsReuseOneCoordinatedWindow() {
+    let coordinator = LimaSurfaceCoordinator.shared
+    let window = NSWindow(
+        contentRect: NSRect(x: 20, y: 20, width: 900, height: 650),
+        styleMask: [.titled, .closable, .resizable],
+        backing: .buffered,
+        defer: true
+    )
+    defer { coordinator.dismiss(.workspace) }
+
+    for module in LimaWorkspaceModule.allCases {
+        coordinator.present(
+            .workspace,
+            window: window,
+            module: module,
+            activate: false,
+            remembersFrame: false
+        )
+        #expect(coordinator.window(for: .workspace) === window)
+        #expect(coordinator.currentModule(for: .workspace) == module)
+    }
 }

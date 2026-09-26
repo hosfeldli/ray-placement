@@ -625,16 +625,24 @@ private func packageRoot() -> URL {
     #expect(legacy.terminalSessionID == nil)
 
     let state = WorkspaceState(
-        activeWorkspace: "terminal",
+        activeWorkspace: "workspace",
         notesSection: "favorites",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
         terminalSessionID: UUID(),
         windowFrames: ["launcher": "{10, 20} 680 452"],
-        dockMode: "right"
+        dockMode: "right",
+        activeModule: "ai",
+        selectedAIConversationID: UUID(),
+        sidebarVisible: false,
+        focusMode: true
     )
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
     #expect(decoded == state)
+    #expect(decoded.activeModule == "ai")
+    #expect(decoded.selectedAIConversationID == state.selectedAIConversationID)
+    #expect(decoded.sidebarVisible == false)
+    #expect(decoded.focusMode == true)
 }
 
 @Test func commandProfilesRemainBackwardCompatible() throws {
@@ -685,18 +693,23 @@ private func packageRoot() -> URL {
 
 @Test func currentWorkspaceStateIntegrationRoundTripsTerminalNotesAndFrames() throws {
     let state = WorkspaceState(
-        activeWorkspace: "notes",
+        activeWorkspace: "workspace",
         notesSection: "all",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
         terminalSessionID: UUID(),
-        windowFrames: ["launcher": "{10, 20} 680 452", "notes": "{40, 50} 900 700"],
-        dockMode: "left"
+        windowFrames: ["launcher": "{10, 20} 680 452", "workspace": "{40, 50} 900 700"],
+        dockMode: "left",
+        activeModule: "formatter",
+        selectedAIConversationID: UUID(),
+        sidebarVisible: true,
+        focusMode: false
     )
     let data = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: data)
     #expect(decoded == state)
-    #expect(decoded.activeWorkspace == "notes")
+    #expect(decoded.activeWorkspace == "workspace")
+    #expect(decoded.activeModule == "formatter")
     #expect(decoded.terminalSessionID == state.terminalSessionID)
     #expect(decoded.windowFrames.count == 2)
 }
