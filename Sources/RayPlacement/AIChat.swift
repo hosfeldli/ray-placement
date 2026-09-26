@@ -50,6 +50,8 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
     var model: String
     var lastResponseID: String?
     var reasoningEffort: AIReasoningEffort
+    var agentID: String?
+    var skillIDs: [String]
     var reasoningSummary: String?
     var activities: [AIAgentActivity]
     var attachments: [AIAttachment]
@@ -64,6 +66,8 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         model: String = "gpt-5",
         lastResponseID: String? = nil,
         reasoningEffort: AIReasoningEffort = .medium,
+        agentID: String? = nil,
+        skillIDs: [String] = [],
         reasoningSummary: String? = nil,
         activities: [AIAgentActivity] = [],
         attachments: [AIAttachment] = [],
@@ -77,6 +81,8 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         self.model = model
         self.lastResponseID = lastResponseID
         self.reasoningEffort = reasoningEffort
+        self.agentID = agentID
+        self.skillIDs = skillIDs
         self.reasoningSummary = reasoningSummary
         self.activities = activities
         self.attachments = attachments
@@ -93,7 +99,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, createdAt, updatedAt, provider, model, lastResponseID
-        case reasoningEffort, reasoningSummary, activities, attachments, messages
+        case reasoningEffort, agentID, skillIDs, reasoningSummary, activities, attachments, messages
     }
 
     init(from decoder: Decoder) throws {
@@ -106,6 +112,8 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         model = try values.decode(String.self, forKey: .model)
         lastResponseID = try values.decodeIfPresent(String.self, forKey: .lastResponseID)
         reasoningEffort = try values.decodeIfPresent(AIReasoningEffort.self, forKey: .reasoningEffort) ?? .medium
+        agentID = try values.decodeIfPresent(String.self, forKey: .agentID)
+        skillIDs = try values.decodeIfPresent([String].self, forKey: .skillIDs) ?? []
         reasoningSummary = try values.decodeIfPresent(String.self, forKey: .reasoningSummary)
         activities = try values.decodeIfPresent([AIAgentActivity].self, forKey: .activities) ?? []
         attachments = try values.decodeIfPresent([AIAttachment].self, forKey: .attachments) ?? []
@@ -457,7 +465,8 @@ protocol AIProviderClient {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
     func streamApproval(
         apiKey: String,
@@ -468,7 +477,8 @@ protocol AIProviderClient {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
     func streamToolOutputs(
         apiKey: String,
@@ -478,7 +488,8 @@ protocol AIProviderClient {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error>
 }
 
@@ -511,7 +522,8 @@ struct FixtureAITransport: AIChatTransport {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
 
     func streamApproval(
@@ -523,7 +535,8 @@ struct FixtureAITransport: AIChatTransport {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
 
     func streamToolOutputs(
@@ -534,7 +547,8 @@ struct FixtureAITransport: AIChatTransport {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> { stream() }
 
     private func stream() -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -610,7 +624,8 @@ struct AIChatResponsesClient: AIChatTransport {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
             let inputContent = try AIInputEncoder.content(text: input, attachments: attachments)
@@ -620,7 +635,8 @@ struct AIChatResponsesClient: AIChatTransport {
                 input: [userInput],
                 previousResponseID: previousResponseID,
                 reasoningEffort: reasoningEffort,
-                tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
+                tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+                systemInstructions: systemInstructions
             )
             return stream(body: body, apiKey: apiKey)
         } catch {
@@ -640,7 +656,8 @@ struct AIChatResponsesClient: AIChatTransport {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         var approval: [String: Any] = [
             "type": "mcp_approval_response",
@@ -666,7 +683,8 @@ struct AIChatResponsesClient: AIChatTransport {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         let body = Self.replyBody(
             model: model,
@@ -683,7 +701,8 @@ struct AIChatResponsesClient: AIChatTransport {
         input: [[String: Any]],
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
-        tools: [[String: Any]]
+        tools: [[String: Any]],
+        systemInstructions: String = AIReadOnlyPolicy.assistantInstructions
     ) -> [String: Any] {
         let option = AIModelOption(id: model)
         var body: [String: Any] = [
@@ -691,7 +710,7 @@ struct AIChatResponsesClient: AIChatTransport {
             "input": input,
             "stream": true,
             "store": true,
-            "instructions": AIReadOnlyPolicy.assistantInstructions
+            "instructions": systemInstructions
         ]
         if option.supportsReasoning {
             let effort = option.supportedReasoningEfforts.contains(reasoningEffort)
@@ -927,8 +946,147 @@ final class AIChatViewModel: ObservableObject {
         ensureModelIsAvailable()
     }
 
+    var selectedAgentID: String? { selectedConversation?.agentID }
+    var selectedSkillIDs: [String] { selectedConversation?.skillIDs ?? [] }
+    var availableAgentConfigurations: [AIChatAgentConfiguration] { AIChatConfigurationCatalog.agents }
+    var availableSkillConfigurations: [AIChatSkillConfiguration] { AIChatConfigurationCatalog.skills }
+    var selectedAgentConfiguration: AIChatAgentConfiguration? {
+        selectedAgentID.flatMap(AIChatConfigurationCatalog.agent(id:))
+    }
+    var selectedSkillConfigurations: [AIChatSkillConfiguration] {
+        selectedSkillIDs.compactMap(AIChatConfigurationCatalog.skill(id:))
+    }
+
     private var enabledNativeTools: [LimaAIToolDefinition] {
-        LimaAIToolRegistry.enabledDefinitions(nativeToolStore.enabledToolIDs)
+        let enabled = LimaAIToolRegistry.enabledDefinitions(nativeToolStore.enabledToolIDs)
+        guard selectedAgentID != nil else { return enabled }
+        guard let allowed = selectedAgentConfiguration?.toolIDs else { return [] }
+        let allowedIDs = Set(allowed)
+        return enabled.filter { definition in
+            allowedIDs.contains(definition.id)
+                || definition.extensionBinding.map {
+                    allowedIDs.contains($0.tool.id)
+                } == true
+        }
+    }
+
+    var systemInstructions: String {
+        var sections = [AIReadOnlyPolicy.assistantInstructions]
+        if let agent = selectedAgentConfiguration, !agent.instructions.isEmpty {
+            sections.append("Agent configuration — \(agent.name):\n\(agent.instructions)")
+            if !agent.contextDefaults.isEmpty {
+                sections.append("Context defaults: \(agent.contextDefaults.joined(separator: ", ")). Use only context explicitly supplied or available through enabled read-only tools.")
+            }
+        }
+        for skill in selectedSkillConfigurations where !skill.instructions.isEmpty {
+            sections.append("Skill — \(skill.name):\n\(skill.instructions)")
+        }
+        return String(sections.joined(separator: "\n\n").prefix(16_000))
+    }
+
+    func selectAgent(_ identifier: String?) {
+        guard !canEndTask else { return }
+        var conversation = configurationConversation()
+        let previousProvider = conversation.provider
+        let previousModel = conversation.model
+        conversation.agentID = identifier
+
+        if let agent = identifier.flatMap(AIChatConfigurationCatalog.agent(id:)) {
+            conversation.skillIDs = agent.skillIDs
+            if let provider = AIChatConfigurationCatalog.provider(for: agent.providerID),
+               AIProvider.chatProviders.contains(provider) {
+                conversation.provider = provider
+                self.provider = provider
+                if provider == .openAICompatible {
+                    availableModels = [AIModelOption(
+                        id: AIProviderPreferences.shared.openAICompatibleModelID,
+                        supportsReasoning: false
+                    )]
+                } else {
+                    availableModels = provider.chatModels
+                }
+                if let modelID = agent.modelID, !modelID.isEmpty {
+                    if !availableModels.contains(where: { $0.id == modelID }) {
+                        availableModels.append(AIModelOption(id: modelID))
+                    }
+                    conversation.model = modelID
+                } else {
+                    conversation.model = provider == .openAICompatible
+                        ? AIProviderPreferences.shared.openAICompatibleModelID
+                        : provider.defaultChatModel
+                }
+            } else if let modelID = agent.modelID, !modelID.isEmpty {
+                conversation.model = modelID
+                if !availableModels.contains(where: { $0.id == modelID }) {
+                    availableModels.append(AIModelOption(id: modelID))
+                }
+            }
+            let configuredOption = availableModels.first(where: { $0.id == conversation.model })
+                ?? AIModelOption(id: conversation.model)
+            if let effort = agent.reasoningEffort,
+               configuredOption.supportedReasoningEfforts.contains(effort) {
+                conversation.reasoningEffort = effort
+                reasoningEffort = effort
+            }
+        } else {
+            conversation.skillIDs = []
+        }
+
+        if previousProvider != conversation.provider || previousModel != conversation.model {
+            conversation.lastResponseID = nil
+        }
+        provider = conversation.provider
+        model = conversation.model
+        reasoningEffort = conversation.reasoningEffort
+        store.update(conversation)
+    }
+
+    func setSelectedSkills(_ identifiers: [String]) {
+        guard !canEndTask else { return }
+        let available = AIChatConfigurationCatalog.skills
+        let validIDs = Set(available.map(\.id))
+        var conversation = configurationConversation()
+        var seen = Set<String>()
+        conversation.skillIDs = identifiers.filter { validIDs.contains($0) && seen.insert($0).inserted }
+        if let recommendation = conversation.skillIDs.reversed()
+            .compactMap({ AIChatConfigurationCatalog.skill(id: $0) })
+            .first(where: { $0.recommendedProviderID != nil || $0.recommendedModelID != nil }) {
+            applyModelRecommendation(providerID: recommendation.recommendedProviderID, modelID: recommendation.recommendedModelID, to: &conversation)
+        }
+        store.update(conversation)
+    }
+
+    private func applyModelRecommendation(providerID: String?, modelID: String?, to conversation: inout AIConversation) {
+        let previousProvider = conversation.provider
+        let previousModel = conversation.model
+        if let provider = AIChatConfigurationCatalog.provider(for: providerID),
+           AIProvider.chatProviders.contains(provider) {
+            conversation.provider = provider
+            self.provider = provider
+            availableModels = provider == .openAICompatible
+                ? [AIModelOption(id: AIProviderPreferences.shared.openAICompatibleModelID, supportsReasoning: false)]
+                : provider.chatModels
+            conversation.model = modelID ?? (provider == .openAICompatible
+                ? AIProviderPreferences.shared.openAICompatibleModelID
+                : provider.defaultChatModel)
+        } else if let modelID {
+            conversation.model = modelID
+        }
+        if let modelID = modelID, !availableModels.contains(where: { $0.id == modelID }) {
+            availableModels.append(AIModelOption(id: modelID))
+        }
+        if conversation.provider != previousProvider || conversation.model != previousModel {
+            conversation.lastResponseID = nil
+        }
+        provider = conversation.provider
+        model = conversation.model
+    }
+
+    private func configurationConversation() -> AIConversation {
+        if let selectedConversation { return selectedConversation }
+        let conversation = store.createConversation(provider: provider, model: model)
+        selectedConversationID = conversation.id
+        return conversation
     }
 
     var canEndTask: Bool {
@@ -1263,7 +1421,8 @@ final class AIChatViewModel: ObservableObject {
                     reasoningEffort: conversation.reasoningEffort,
                     attachments: conversation.attachments,
                     mcpServers: mcpServers,
-                    localTools: self.enabledNativeTools
+                    localTools: self.enabledNativeTools,
+                    systemInstructions: self.systemInstructions
                 ),
                 client: client,
                 apiKey: apiKey,
@@ -1448,7 +1607,8 @@ final class AIChatViewModel: ObservableObject {
                 outputs: outputs,
                 reasoningEffort: reasoningEffort,
                 mcpServers: mcpServers,
-                localTools: enabledNativeTools
+                localTools: enabledNativeTools,
+                systemInstructions: self.systemInstructions
             )
         }
         return latestResponseID
@@ -1644,7 +1804,8 @@ final class AIChatViewModel: ObservableObject {
                         outputs: [output],
                         reasoningEffort: conversation.reasoningEffort,
                         mcpServers: mcpServers,
-                        localTools: self.enabledNativeTools
+                        localTools: self.enabledNativeTools,
+                    systemInstructions: self.systemInstructions
                     ),
                     client: client,
                     apiKey: apiKey,
@@ -1675,7 +1836,8 @@ final class AIChatViewModel: ObservableObject {
                     reason: allowed ? nil : "Lima AI Chat is read-only",
                     reasoningEffort: conversation.reasoningEffort,
                     mcpServers: mcpServers,
-                    localTools: self.enabledNativeTools
+                    localTools: self.enabledNativeTools,
+                    systemInstructions: self.systemInstructions
                 ),
                 client: client,
                 apiKey: apiKey,
@@ -2344,6 +2506,8 @@ struct AIChatWorkspaceView: View {
             HStack(spacing: 8) {
                 attachmentAndToolMenu
                 if model.hasProviderAPIKey && !showingProviderSetup {
+                    agentPicker
+                    skillPicker
                     providerPicker
                     modelPicker
                     reasoningPicker
@@ -2429,7 +2593,7 @@ struct AIChatWorkspaceView: View {
             Button("Add Current Selection", action: model.addSelection)
             Divider()
             Text("Lima tools — read-only")
-            ForEach(LimaAIToolRegistry.definitions) { tool in
+            ForEach(LimaAIToolRegistry.availableDefinitions) { tool in
                 Toggle(isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
                     set: { nativeToolStore.setEnabled(tool, enabled: $0) }
@@ -2472,6 +2636,62 @@ struct AIChatWorkspaceView: View {
         .disabled(model.canEndTask)
         .help("Add context or choose read-only tools")
         .accessibilityLabel("Add context and choose read-only tools")
+    }
+
+    private var agentPicker: some View {
+        Menu {
+            Button {
+                model.selectAgent(nil)
+            } label: {
+                Label("General", systemImage: model.selectedAgentID == nil ? "checkmark" : "circle")
+            }
+            Divider()
+            ForEach(model.availableAgentConfigurations) { agent in
+                Button {
+                    model.selectAgent(agent.id)
+                } label: {
+                    Label(agent.name, systemImage: model.selectedAgentID == agent.id ? "checkmark" : "circle")
+                }
+            }
+        } label: {
+            Label(model.selectedAgentConfiguration?.name ?? "General", systemImage: "chevron.down")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.canEndTask)
+        .help("Configure this conversation with an agent")
+        .accessibilityLabel("Agent")
+
+    }
+
+    private var skillPicker: some View {
+        Menu {
+            ForEach(model.availableSkillConfigurations) { skill in
+                Toggle(isOn: Binding(
+                    get: { model.selectedSkillIDs.contains(skill.id) },
+                    set: { enabled in
+                        var selected = model.selectedSkillIDs
+                        if enabled, !selected.contains(skill.id) { selected.append(skill.id) }
+                        if !enabled { selected.removeAll { $0 == skill.id } }
+                        model.setSelectedSkills(selected)
+                    }
+                )) {
+                    Text(skill.name)
+                }
+            }
+            if model.availableSkillConfigurations.isEmpty {
+                Text("No skills available")
+            }
+        } label: {
+            let names = model.selectedSkillConfigurations.map(\.name)
+            Label(names.isEmpty ? "Skill" : names.joined(separator: ", "), systemImage: "chevron.down")
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(model.canEndTask)
+        .help("Apply one or more instruction-only skills")
+        .accessibilityLabel("Skills")
+
     }
 
     private var providerPicker: some View {

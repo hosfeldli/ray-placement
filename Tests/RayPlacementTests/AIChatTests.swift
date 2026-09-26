@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import RayPlacementCore
 import Testing
 @testable import RayPlacement
 
@@ -428,6 +429,8 @@ import Testing
         title: "API debugging",
         model: "gpt-5.6",
         reasoningEffort: .high,
+        agentID: "agent.code-review",
+        skillIDs: ["skill.code-review", "extension.review-tools:review"],
         reasoningSummary: "The failure comes from the request body.",
         activities: [AIAgentActivity(kind: .toolCompleted, title: "Read package.json", completed: true)],
         attachments: [AIAttachment(kind: .clipboard, displayName: "Clipboard", text: "hello")],
@@ -436,9 +439,56 @@ import Testing
     let data = try JSONEncoder().encode(conversation)
     let restored = try JSONDecoder().decode(AIConversation.self, from: data)
     #expect(restored.reasoningEffort == .high)
+    #expect(restored.agentID == "agent.code-review")
+    #expect(restored.skillIDs == ["skill.code-review", "extension.review-tools:review"])
     #expect(restored.reasoningSummary?.contains("request body") == true)
     #expect(restored.activities.first?.title == "Read package.json")
     #expect(restored.attachments.first?.kind == .clipboard)
+}
+
+@Test @MainActor func skillsAndAgentsConfigureTheExistingConversation() {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "read_file", "search_web", "read_web"]),
+        transport: FixtureAITransport.standard
+    )
+
+    #expect(AIChatConfigurationCatalog.provider(for: "openai") == .openAI)
+    #expect(AIChatConfigurationCatalog.provider(for: "google-gemini") == .gemini)
+
+    model.setSelectedSkills(["skill.writing"])
+    #expect(model.selectedConversation?.skillIDs == ["skill.writing"])
+    #expect(model.systemInstructions.contains("Skill — Writing"))
+    #expect(model.systemInstructions.contains("preserving the author's intent"))
+
+    model.selectAgent("agent.code-review")
+    #expect(model.selectedAgentConfiguration?.name == "Code Review")
+    #expect(model.selectedSkillIDs == ["skill.code-review"])
+    #expect(model.systemInstructions.contains("Agent configuration"))
+    #expect(model.systemInstructions.contains("careful code reviewer"))
+    #expect(model.reasoningEffort == .high)
+}
+
+@Test func conversationInstructionsReachProviderRequestBodies() {
+    let instructions = "Read-only safety policy.\nSkill instructions."
+    let responseBody = AIChatResponsesClient.replyBody(
+        model: "gpt-5",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .medium,
+        tools: [],
+        systemInstructions: instructions
+    )
+    #expect(responseBody["instructions"] as? String == instructions)
+
+    let anthropicBody = AnthropicAIProviderClient.body(
+        model: "claude-3-7-sonnet-latest",
+        history: [],
+        tools: [],
+        systemInstructions: instructions
+    )
+    #expect(anthropicBody["system"] as? String == instructions)
 }
 
 @Test func assistantTurnPersistsItsOwnReasoningAndActivity() throws {
@@ -470,6 +520,8 @@ import Testing
     #expect(restored.reasoningEffort == .medium)
     #expect(restored.activities.isEmpty)
     #expect(restored.attachments.isEmpty)
+    #expect(restored.agentID == nil)
+    #expect(restored.skillIDs.isEmpty)
 }
 
 @Test func mcpRiskClassificationRequiresApprovalForWritesAndDestructiveTools() {
@@ -723,6 +775,75 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(LimaAIToolRegistry.definition(for: "open_lima_settings") == nil)
     #expect(LimaAIToolRegistry.definition(for: "read_screen_context")?.displayName == "Screen context")
     #expect(LimaAIToolRegistry.definition(for: "search_web")?.displayName == "Search the web")
+}
+
+@Test @MainActor func extensionHostAdaptersAreAllowlistedAndTextTransformIsPure() async throws {
+    let transform = try #require(ExtensionToolHostAdapterRegistry.adapter(for: "transform_text"))
+    #expect(transform.requiredCapabilities.isEmpty)
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "run_shell") == nil)
+
+    let declaration = ExtensionToolDefinition(
+        id: "trim",
+        title: "Trim text",
+        description: "Remove surrounding whitespace.",
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    let result = try await transform.execute(
+        definition: declaration,
+        arguments: .object([
+            "operation": .string("trim"),
+            "text": .string("  review this  \n")
+        ])
+    )
+    #expect(result == JSONValue.object(["text": JSONValue.string("review this")]))
+    let normalizedName = ExtensionToolHostAdapterRegistry.functionName(extensionID: "local.review-tools", toolID: "read_diff")
+    #expect(normalizedName.hasPrefix("ext__local_review-tools__read_diff__"))
+    #expect(normalizedName != ExtensionToolHostAdapterRegistry.functionName(extensionID: "local_review-tools", toolID: "read_diff"))
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "read_text_file")?.requiredCapabilities == [.filesystem])
+}
+
+@Test @MainActor func extensionToolsRequireExplicitAIOptIn() {
+    let identifier = "extension:local.review-tools:read_diff"
+    let store = LimaAIToolStore(fixtures: [])
+    let definition = LimaAIToolDefinition(
+        id: identifier,
+        name: "ext__local_review-tools__read_diff__deadbeef",
+        description: "Read an approved diff.",
+        parameters: ["type": "object"],
+        risk: .read
+    )
+
+    #expect(!LimaAIToolRegistry.defaultEnabledToolIDs.contains(identifier))
+    #expect(!store.isEnabled(definition))
+    store.setEnabled(definition, enabled: true)
+    #expect(store.isEnabled(definition))
+}
+
+@Test @MainActor func extensionHostAdapterRejectsUnapprovedBindings() async {
+    let declaration = ExtensionToolDefinition(
+        id: "trim",
+        title: "Trim text",
+        description: "Remove surrounding whitespace.",
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    let binding = ExtensionAIToolBinding(
+        extensionID: "test.unapproved-\(UUID().uuidString)",
+        extensionName: "Unapproved",
+        extensionCapabilities: [],
+        tool: declaration
+    )
+    var rejected = false
+    do {
+        _ = try await ExtensionToolHostAdapterRegistry.execute(
+            binding,
+            arguments: .object(["operation": .string("trim"), "text": .string(" data ")])
+        )
+    } catch {
+        rejected = true
+    }
+    #expect(rejected)
 }
 
 @Test func localToolFailureIsReturnedAsToolOutput() async {

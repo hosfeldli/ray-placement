@@ -351,7 +351,8 @@ struct AnthropicAIProviderClient: AIProviderClient {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
             var messages = history
@@ -359,7 +360,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
             }
-            let body = Self.body(model: model, history: messages, tools: localTools)
+            let body = Self.body(model: model, history: messages, tools: localTools, systemInstructions: systemInstructions)
             return stream(body: body, model: model, apiKey: apiKey)
         } catch {
             return Self.failed(error.localizedDescription)
@@ -375,7 +376,8 @@ struct AnthropicAIProviderClient: AIProviderClient {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         Self.failed("This provider does not support a pending remote tool approval continuation.")
     }
@@ -388,17 +390,18 @@ struct AnthropicAIProviderClient: AIProviderClient {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        stream(body: Self.body(model: model, history: history, tools: localTools), model: model, apiKey: apiKey)
+        stream(body: Self.body(model: model, history: history, tools: localTools, systemInstructions: systemInstructions), model: model, apiKey: apiKey)
     }
 
-    static func body(model: String, history: [AIProviderMessage], tools: [LimaAIToolDefinition]) -> [String: Any] {
+    static func body(model: String, history: [AIProviderMessage], tools: [LimaAIToolDefinition], systemInstructions: String) -> [String: Any] {
         var body: [String: Any] = [
             "model": model,
             "max_tokens": 8_192,
             "stream": true,
-            "system": AIReadOnlyPolicy.assistantInstructions,
+            "system": systemInstructions,
             "messages": AIProviderHTTP.messages(history)
         ]
         if !tools.isEmpty {
@@ -494,7 +497,8 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
             var messages = history
@@ -502,7 +506,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
             }
-            return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools)
+            return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
         } catch {
             return Self.failed(error.localizedDescription)
         }
@@ -517,7 +521,8 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         Self.failed("This provider does not support a pending remote tool approval continuation.")
     }
@@ -530,16 +535,18 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        stream(messages: history, model: model, apiKey: apiKey, tools: localTools)
+        stream(messages: history, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
     }
 
     private func stream(
         messages: [AIProviderMessage],
         model: String,
         apiKey: String,
-        tools: [LimaAIToolDefinition]
+        tools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         guard let base = AIProviderHTTP.validateBaseURL(baseURL),
               let endpoint = AIProviderHTTP.endpoint(base: base, path: "chat/completions") else {
@@ -549,7 +556,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
             "model": model,
             "stream": true,
             "stream_options": ["include_usage": true],
-            "messages": Self.chatMessages(messages)
+            "messages": Self.chatMessages(messages, systemInstructions: systemInstructions)
         ]
         if !tools.isEmpty {
             body["tools"] = tools.map { ["type": "function", "function": ["name": $0.name, "description": $0.description, "parameters": $0.parameters]] }
@@ -564,8 +571,8 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         return stream(request: request, model: model)
     }
 
-    private static func chatMessages(_ history: [AIProviderMessage]) -> [[String: Any]] {
-        var messages: [[String: Any]] = [["role": "system", "content": AIReadOnlyPolicy.assistantInstructions]]
+    private static func chatMessages(_ history: [AIProviderMessage], systemInstructions: String) -> [[String: Any]] {
+        var messages: [[String: Any]] = [["role": "system", "content": systemInstructions]]
         for message in history {
             for item in message.content {
                 switch item {
@@ -700,7 +707,8 @@ struct GeminiAIProviderClient: AIProviderClient {
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
             var messages = history
@@ -708,7 +716,7 @@ struct GeminiAIProviderClient: AIProviderClient {
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
             }
-            return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools)
+            return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
         } catch {
             return Self.failed(error.localizedDescription)
         }
@@ -723,7 +731,8 @@ struct GeminiAIProviderClient: AIProviderClient {
         reason: String?,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         Self.failed("This provider does not support a pending remote tool approval continuation.")
     }
@@ -736,16 +745,18 @@ struct GeminiAIProviderClient: AIProviderClient {
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition]
+        localTools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        stream(messages: history, model: model, apiKey: apiKey, tools: localTools)
+        stream(messages: history, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
     }
 
     private func stream(
         messages: [AIProviderMessage],
         model: String,
         apiKey: String,
-        tools: [LimaAIToolDefinition]
+        tools: [LimaAIToolDefinition],
+        systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         guard let name = model.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               var components = URLComponents(string: "https://generativelanguage.googleapis.com/v1beta/models/\(name):streamGenerateContent") else {
@@ -755,7 +766,7 @@ struct GeminiAIProviderClient: AIProviderClient {
         guard let endpoint = components.url else { return Self.failed("The Gemini model endpoint is invalid.") }
         let contents = Self.geminiContents(messages)
         var body: [String: Any] = [
-            "systemInstruction": ["parts": [["text": AIReadOnlyPolicy.assistantInstructions]]],
+            "systemInstruction": ["parts": [["text": systemInstructions]]],
             "contents": contents,
             "generationConfig": ["temperature": 0.7]
         ]

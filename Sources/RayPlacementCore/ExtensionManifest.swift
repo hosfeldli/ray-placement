@@ -83,6 +83,9 @@ public struct ExtensionManifest: Codable, Sendable {
         case bundledRequiresBundledProvenance
         case nonBundledCannotUseBundledTrust
         case contributionRequiresUndeclaredCapabilities(toolID: String)
+        case hostAdapterRequiresReadOnlyTool(toolID: String)
+        case hostAdapterRequired(toolID: String)
+        case unsupportedHostAdapter(toolID: String, adapterID: String)
     }
 
     /// Validates lifecycle metadata independently from JSON decoding. This is
@@ -95,8 +98,20 @@ public struct ExtensionManifest: Codable, Sendable {
             throw ValidationError.nonBundledCannotUseBundledTrust
         }
         try contributions.validate()
-        for tool in contributions.tools where !tool.capabilities.isSubset(of: capabilities) {
-            throw ValidationError.contributionRequiresUndeclaredCapabilities(toolID: tool.id)
+        for tool in contributions.tools {
+            guard tool.capabilities.isSubset(of: capabilities) else {
+                throw ValidationError.contributionRequiresUndeclaredCapabilities(toolID: tool.id)
+            }
+            guard tool.execution == .hostReadOnly else { continue }
+            guard tool.isReadOnly else {
+                throw ValidationError.hostAdapterRequiresReadOnlyTool(toolID: tool.id)
+            }
+            guard let adapterID = tool.hostAdapterID else {
+                throw ValidationError.hostAdapterRequired(toolID: tool.id)
+            }
+            guard ExtensionToolHostAdapterID(rawValue: adapterID) != nil else {
+                throw ValidationError.unsupportedHostAdapter(toolID: tool.id, adapterID: adapterID)
+            }
         }
     }
 
@@ -168,6 +183,88 @@ public indirect enum JSONValue: Codable, Equatable, Sendable {
 
 public typealias JSONSchema = [String: JSONValue]
 
+/// Validates the data-only object-schema subset accepted for host tool arguments.
+/// Unsupported declarations fail closed instead of weakening adapter execution.
+public enum ExtensionToolInputValidator {
+    public static func accepts(_ arguments: JSONValue, schema: JSONSchema) -> Bool {
+        guard case .object = arguments else { return false }
+        var root = schema
+        if root["type"] == nil { root["type"] = .string("object") }
+        return validate(arguments, against: .object(root))
+    }
+
+    private static func validate(_ value: JSONValue, against schema: JSONValue) -> Bool {
+        guard case .object(let fields) = schema else { return false }
+
+        if case .array(let allowedValues)? = fields["enum"], !allowedValues.contains(value) {
+            return false
+        }
+
+        let type: String?
+        if case .string(let value)? = fields["type"] { type = value }
+        else if fields["type"] == nil { type = nil }
+        else { return false }
+
+        switch type {
+        case "object":
+            guard case .object(let object) = value else { return false }
+            let properties: [String: JSONValue]
+            if case .object(let declared)? = fields["properties"] { properties = declared }
+            else if fields["properties"] == nil { properties = [:] }
+            else { return false }
+
+            let required: [String]
+            if case .array(let values)? = fields["required"] {
+                let strings = values.compactMap { item -> String? in
+                    guard case .string(let string) = item else { return nil }
+                    return string
+                }
+                guard strings.count == values.count else { return false }
+                required = strings
+            } else if fields["required"] == nil {
+                required = []
+            } else {
+                return false
+            }
+
+            guard required.allSatisfy({ object[$0] != nil }) else { return false }
+            let allowsAdditional: Bool
+            if case .bool(let value)? = fields["additionalProperties"] { allowsAdditional = value }
+            else if fields["additionalProperties"] == nil { allowsAdditional = false }
+            else { return false }
+            guard allowsAdditional || object.keys.allSatisfy({ properties[$0] != nil }) else { return false }
+
+            return object.allSatisfy { key, item in
+                guard let propertySchema = properties[key] else { return allowsAdditional }
+                return validate(item, against: propertySchema)
+            }
+        case "string":
+            if case .string = value { return true }
+            return false
+        case "number":
+            if case .number = value { return true }
+            return false
+        case "integer":
+            if case .number(let number) = value { return number.isFinite && number.rounded(.towardZero) == number }
+            return false
+        case "boolean":
+            if case .bool = value { return true }
+            return false
+        case "array":
+            guard case .array(let items) = value else { return false }
+            guard let itemSchema = fields["items"] else { return true }
+            return items.allSatisfy { validate($0, against: itemSchema) }
+        case "null":
+            if case .null = value { return true }
+            return false
+        case nil:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 /// Schema-v3 contribution declarations. They describe what a package offers;
 /// command execution and AI tool execution remain separate host responsibilities.
 public struct ExtensionContributions: Codable, Equatable, Sendable {
@@ -211,9 +308,17 @@ public struct ExtensionContributions: Codable, Equatable, Sendable {
 public enum ExtensionToolExecution: String, Codable, CaseIterable, Sendable {
     /// A declaration that can be shown in a catalog but cannot be invoked.
     case metadataOnly
-    /// A future host-provided, typed read-only adapter. This is intentionally not
-    /// an extension script or command execution mechanism.
+    /// A host-provided, typed read-only adapter. This is never extension code.
     case hostReadOnly
+}
+
+/// Stable IDs for built-in, typed host adapters. Unknown IDs fail manifest
+/// validation rather than falling through to arbitrary extension-provided code.
+public enum ExtensionToolHostAdapterID: String, Codable, CaseIterable, Sendable {
+    case searchFiles = "search_files"
+    case readTextFile = "read_text_file"
+    case readPublicWeb = "read_public_web"
+    case transformText = "transform_text"
 }
 
 public struct ExtensionToolDefinition: Codable, Equatable, Identifiable, Sendable {
@@ -224,6 +329,7 @@ public struct ExtensionToolDefinition: Codable, Equatable, Identifiable, Sendabl
     public var capabilities: Set<ExtensionManifest.Capability>
     public var isReadOnly: Bool
     public var execution: ExtensionToolExecution
+    public var hostAdapterID: String?
 
     public init(
         id: String,
@@ -232,7 +338,8 @@ public struct ExtensionToolDefinition: Codable, Equatable, Identifiable, Sendabl
         inputSchema: JSONSchema = [:],
         capabilities: Set<ExtensionManifest.Capability> = [],
         isReadOnly: Bool = true,
-        execution: ExtensionToolExecution = .metadataOnly
+        execution: ExtensionToolExecution = .metadataOnly,
+        hostAdapterID: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -241,12 +348,15 @@ public struct ExtensionToolDefinition: Codable, Equatable, Identifiable, Sendabl
         self.capabilities = capabilities
         self.isReadOnly = isReadOnly
         self.execution = execution
+        self.hostAdapterID = hostAdapterID
     }
 
-    /// The declaration satisfies the minimum safety contract for an eventual
-    /// host adapter. It is not, by itself, an executable AI tool.
+    /// Eligible declarations name a supported host adapter. Approval, capability
+    /// validity, and the AI policy are checked again at execution time.
     public var isEligibleForReadOnlyHostAdapter: Bool {
-        isReadOnly && execution == .hostReadOnly
+        isReadOnly
+            && execution == .hostReadOnly
+            && hostAdapterID.flatMap(ExtensionToolHostAdapterID.init(rawValue:)) != nil
     }
 }
 
@@ -255,12 +365,23 @@ public struct ExtensionSkillDefinition: Codable, Equatable, Identifiable, Sendab
     public var name: String
     public var instructions: String
     public var preferredToolIDs: [String]
+    public var recommendedModelProviderID: String?
+    public var recommendedModelID: String?
 
-    public init(id: String, name: String, instructions: String, preferredToolIDs: [String] = []) {
+    public init(
+        id: String,
+        name: String,
+        instructions: String,
+        preferredToolIDs: [String] = [],
+        recommendedModelProviderID: String? = nil,
+        recommendedModelID: String? = nil
+    ) {
         self.id = id
         self.name = name
         self.instructions = instructions
         self.preferredToolIDs = preferredToolIDs
+        self.recommendedModelProviderID = recommendedModelProviderID
+        self.recommendedModelID = recommendedModelID
     }
 }
 
@@ -272,8 +393,10 @@ public struct ExtensionAgentDefinition: Codable, Equatable, Identifiable, Sendab
     public var instructions: String
     public var modelProviderID: String?
     public var modelID: String?
+    public var reasoningEffort: String?
     public var skillIDs: [String]
     public var toolIDs: [String]
+    public var contextDefaults: [String]?
 
     public init(
         id: String,
@@ -281,16 +404,20 @@ public struct ExtensionAgentDefinition: Codable, Equatable, Identifiable, Sendab
         instructions: String,
         modelProviderID: String? = nil,
         modelID: String? = nil,
+        reasoningEffort: String? = nil,
         skillIDs: [String] = [],
-        toolIDs: [String] = []
+        toolIDs: [String] = [],
+        contextDefaults: [String]? = nil
     ) {
         self.id = id
         self.name = name
         self.instructions = instructions
         self.modelProviderID = modelProviderID
         self.modelID = modelID
+        self.reasoningEffort = reasoningEffort
         self.skillIDs = skillIDs
         self.toolIDs = toolIDs
+        self.contextDefaults = contextDefaults
     }
 }
 

@@ -147,13 +147,16 @@ private func packageRoot() -> URL {
           "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } },
           "capabilities": ["filesystem"],
           "isReadOnly": true,
-          "execution": "hostReadOnly"
+          "execution": "hostReadOnly",
+          "hostAdapterID": "read_text_file"
         }],
         "skills": [{
           "id": "review",
           "name": "Code Review",
           "instructions": "Review changes carefully.",
-          "preferredToolIDs": ["read_diff"]
+          "preferredToolIDs": ["read_diff"],
+          "recommendedModelProviderID": "openai",
+          "recommendedModelID": "gpt-5"
         }],
         "agents": [{
           "id": "reviewer",
@@ -161,8 +164,10 @@ private func packageRoot() -> URL {
           "instructions": "Use the review skill.",
           "modelProviderID": "anthropic",
           "modelID": "claude-sonnet",
+          "reasoningEffort": "high",
           "skillIDs": ["review"],
-          "toolIDs": ["read_diff"]
+          "toolIDs": ["read_diff"],
+          "contextDefaults": ["selected_file"]
         }]
       }
     }
@@ -172,7 +177,87 @@ private func packageRoot() -> URL {
     try manifest.validateLifecycleMetadata()
     #expect(manifest.contributions.tools.first?.isEligibleForReadOnlyHostAdapter == true)
     #expect(manifest.contributions.skills.first?.preferredToolIDs == ["read_diff"])
+    #expect(manifest.contributions.skills.first?.recommendedModelProviderID == "openai")
     #expect(manifest.contributions.agents.first?.modelProviderID == "anthropic")
+    #expect(manifest.contributions.agents.first?.reasoningEffort == "high")
+    #expect(manifest.contributions.agents.first?.contextDefaults == ["selected_file"])
+    #expect(manifest.contributions.tools.first?.hostAdapterID == "read_text_file")
+}
+
+@Test func manifestRejectsUnsafeOrUnsupportedHostAdapters() throws {
+    func manifest(for tool: ExtensionToolDefinition) -> ExtensionManifest {
+        ExtensionManifest(
+            schemaVersion: 3,
+            id: "local.adapter-test",
+            name: "Adapter Test",
+            commands: [],
+            contributions: ExtensionContributions(tools: [tool]),
+            capabilities: [.filesystem]
+        )
+    }
+
+    let missing = ExtensionToolDefinition(
+        id: "missing",
+        title: "Missing",
+        description: "No adapter.",
+        capabilities: [.filesystem],
+        execution: .hostReadOnly
+    )
+    #expect(throws: ExtensionManifest.ValidationError.hostAdapterRequired(toolID: "missing")) {
+        try manifest(for: missing).validateLifecycleMetadata()
+    }
+
+    let unsupported = ExtensionToolDefinition(
+        id: "unknown",
+        title: "Unknown",
+        description: "Unknown adapter.",
+        capabilities: [.filesystem],
+        execution: .hostReadOnly,
+        hostAdapterID: "run_extension_script"
+    )
+    #expect(throws: ExtensionManifest.ValidationError.unsupportedHostAdapter(
+        toolID: "unknown",
+        adapterID: "run_extension_script"
+    )) {
+        try manifest(for: unsupported).validateLifecycleMetadata()
+    }
+
+    let writable = ExtensionToolDefinition(
+        id: "write",
+        title: "Write",
+        description: "Must never run as a read-only host adapter.",
+        isReadOnly: false,
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    #expect(throws: ExtensionManifest.ValidationError.hostAdapterRequiresReadOnlyTool(toolID: "write")) {
+        try manifest(for: writable).validateLifecycleMetadata()
+    }
+}
+
+@Test func extensionToolArgumentsAreValidatedAgainstDeclaredObjectSchema() {
+    let schema: JSONSchema = [
+        "type": .string("object"),
+        "properties": .object([
+            "path": .object(["type": .string("string")]),
+            "range": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("integer")])
+            ])
+        ]),
+        "required": .array([.string("path")]),
+        "additionalProperties": .bool(false)
+    ]
+
+    #expect(ExtensionToolInputValidator.accepts(
+        .object(["path": .string("/tmp/review.diff"), "range": .array([.number(1), .number(10)])]),
+        schema: schema
+    ))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["range": .array([])]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .number(3)]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .string("/tmp/a"), "extra": .bool(true)]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .string("/tmp/a"), "range": .array([.number(1.5)])]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.string("not an object"), schema: schema))
 }
 
 @Test func exampleManifestDecodes() throws {

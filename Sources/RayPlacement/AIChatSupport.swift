@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import RayPlacementCore
 import Security
 import SwiftUI
 import UniformTypeIdentifiers
@@ -911,12 +912,297 @@ enum AILocalToolRisk: String, Codable, Sendable {
     }
 }
 
+struct ExtensionAIToolBinding: Equatable, Sendable {
+    let extensionID: String
+    let extensionName: String
+    let extensionCapabilities: Set<ExtensionManifest.Capability>
+    let tool: ExtensionToolDefinition
+}
+
+@MainActor
+protocol ExtensionToolHostAdapter {
+    var id: String { get }
+    var requiredCapabilities: Set<ExtensionManifest.Capability> { get }
+    func execute(definition: ExtensionToolDefinition, arguments: JSONValue) async throws -> JSONValue
+}
+
+@MainActor
+private struct BuiltinReadOnlyExtensionToolAdapter: ExtensionToolHostAdapter {
+    let kind: ExtensionToolHostAdapterID
+
+    var id: String { kind.rawValue }
+
+    var requiredCapabilities: Set<ExtensionManifest.Capability> {
+        switch kind {
+        case .searchFiles, .readTextFile: [.filesystem]
+        case .readPublicWeb: [.network]
+        case .transformText: []
+        }
+    }
+
+    func execute(definition: ExtensionToolDefinition, arguments: JSONValue) async throws -> JSONValue {
+        guard case .object(let values) = arguments else { throw ExtensionToolAdapterError.invalidArguments }
+        func string(_ key: String) -> String? {
+            guard case .string(let value)? = values[key] else { return nil }
+            return value.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        switch kind {
+        case .searchFiles:
+            guard let query = string("query"), !query.isEmpty else { throw ExtensionToolAdapterError.invalidArguments }
+            let urls = await LimaAIToolRegistry.searchFiles(named: String(query.prefix(160)))
+            return .object([
+                "matches": .array(urls.prefix(20).map {
+                    .object(["name": .string($0.lastPathComponent), "path": .string($0.path)])
+                }),
+                "truncated": .bool(urls.count > 20)
+            ])
+        case .readTextFile:
+            guard let path = string("path"), !path.isEmpty else { throw ExtensionToolAdapterError.invalidArguments }
+            return LimaAIToolRegistry.jsonValue(from: LimaAIToolRegistry.readTextFile(at: path))
+        case .readPublicWeb:
+            guard let url = string("url"), !url.isEmpty else { throw ExtensionToolAdapterError.invalidArguments }
+            return LimaAIToolRegistry.jsonValue(from: await LimaAIToolRegistry.readPublicWebPage(url))
+        case .transformText:
+            guard let text = string("text"), text.count <= 100_000,
+                  let operation = string("operation") else { throw ExtensionToolAdapterError.invalidArguments }
+            let transformed: String
+            switch operation {
+            case "trim": transformed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "uppercase": transformed = text.uppercased()
+            case "lowercase": transformed = text.lowercased()
+            case "collapse_whitespace":
+                transformed = text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+            default: throw ExtensionToolAdapterError.invalidArguments
+            }
+            return .object(["text": .string(transformed)])
+        }
+    }
+}
+
+private enum ExtensionToolAdapterError: Error {
+    case invalidArguments
+    case unavailable
+    case unauthorized
+}
+
+struct AIChatSkillConfiguration: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let instructions: String
+    let preferredToolIDs: [String]
+    let recommendedProviderID: String?
+    let recommendedModelID: String?
+}
+
+struct AIChatAgentConfiguration: Identifiable, Equatable, Sendable {
+    let id: String
+    let name: String
+    let instructions: String
+    let providerID: String?
+    let modelID: String?
+    let reasoningEffort: AIReasoningEffort?
+    let skillIDs: [String]
+    let toolIDs: [String]
+    let contextDefaults: [String]
+}
+
+@MainActor
+enum AIChatConfigurationCatalog {
+    static let builtInSkills: [AIChatSkillConfiguration] = [
+        AIChatSkillConfiguration(
+            id: "skill.code-review",
+            name: "Code Review",
+            instructions: "Review for correctness, edge cases, regressions, and security concerns. Prioritize actionable findings and cite concrete evidence. Never modify files.",
+            preferredToolIDs: ["search_files", "read_file"],
+            recommendedProviderID: nil,
+            recommendedModelID: nil
+        ),
+        AIChatSkillConfiguration(
+            id: "skill.writing",
+            name: "Writing",
+            instructions: "Improve clarity and structure while preserving the author's intent and voice. Explain substantive changes concisely.",
+            preferredToolIDs: [],
+            recommendedProviderID: nil,
+            recommendedModelID: nil
+        ),
+        AIChatSkillConfiguration(
+            id: "skill.research",
+            name: "Research",
+            instructions: "Use available public read-only sources, distinguish evidence from uncertainty, and provide source URLs when available.",
+            preferredToolIDs: ["search_web", "read_web"],
+            recommendedProviderID: nil,
+            recommendedModelID: nil
+        )
+    ]
+
+    static let builtInAgents: [AIChatAgentConfiguration] = [
+        AIChatAgentConfiguration(
+            id: "agent.code-review",
+            name: "Code Review",
+            instructions: "Act as a careful code reviewer. Lead with important defects and avoid proposing unrequested edits.",
+            providerID: nil,
+            modelID: nil,
+            reasoningEffort: .high,
+            skillIDs: ["skill.code-review"],
+            toolIDs: ["search_files", "read_file"],
+            contextDefaults: []
+        ),
+        AIChatAgentConfiguration(
+            id: "agent.writing",
+            name: "Writing",
+            instructions: "Help produce clear, direct writing while retaining the user's intent.",
+            providerID: nil,
+            modelID: nil,
+            reasoningEffort: nil,
+            skillIDs: ["skill.writing"],
+            toolIDs: [],
+            contextDefaults: []
+        ),
+        AIChatAgentConfiguration(
+            id: "agent.research",
+            name: "Research",
+            instructions: "Answer with evidence from public, read-only sources and state uncertainty plainly.",
+            providerID: nil,
+            modelID: nil,
+            reasoningEffort: .medium,
+            skillIDs: ["skill.research"],
+            toolIDs: ["search_web", "read_web"],
+            contextDefaults: []
+        )
+    ]
+
+    static var skills: [AIChatSkillConfiguration] {
+        let contributed = ExtensionLoader().contributionCatalog().flatMap { entry in
+            entry.skills.map { skill in
+                AIChatSkillConfiguration(
+                    id: scopedID(extensionID: entry.extensionID, contributionID: skill.id),
+                    name: "\(entry.extensionName) · \(skill.name)",
+                    instructions: String(skill.instructions.prefix(8_000)),
+                    preferredToolIDs: skill.preferredToolIDs.map { toolReferenceID($0, extensionID: entry.extensionID) },
+                    recommendedProviderID: skill.recommendedModelProviderID,
+                    recommendedModelID: skill.recommendedModelID
+                )
+            }
+        }
+        return builtInSkills + contributed
+    }
+
+    static var agents: [AIChatAgentConfiguration] {
+        let contributed = ExtensionLoader().contributionCatalog().flatMap { entry in
+            entry.agents.map { agent in
+                AIChatAgentConfiguration(
+                    id: scopedID(extensionID: entry.extensionID, contributionID: agent.id),
+                    name: "\(entry.extensionName) · \(agent.name)",
+                    instructions: String(agent.instructions.prefix(8_000)),
+                    providerID: agent.modelProviderID,
+                    modelID: agent.modelID,
+                    reasoningEffort: agent.reasoningEffort.flatMap(AIReasoningEffort.init(rawValue:)),
+                    skillIDs: agent.skillIDs.map { scopedID(extensionID: entry.extensionID, contributionID: $0) },
+                    toolIDs: agent.toolIDs.map { toolReferenceID($0, extensionID: entry.extensionID) },
+                    contextDefaults: agent.contextDefaults ?? []
+                )
+            }
+        }
+        return builtInAgents + contributed
+    }
+
+    static func skill(id: String) -> AIChatSkillConfiguration? { skills.first { $0.id == id } }
+    static func agent(id: String) -> AIChatAgentConfiguration? { agents.first { $0.id == id } }
+
+    static func provider(for identifier: String?) -> AIProvider? {
+        guard let identifier else { return nil }
+        switch identifier.lowercased().replacingOccurrences(of: "_", with: "-") {
+        case "openai", "open-ai": return .openAI
+        case "anthropic": return .anthropic
+        case "gemini", "google-gemini": return .gemini
+        case "openai-compatible", "custom-openai-compatible": return .openAICompatible
+        default: return AIProvider(rawValue: identifier)
+        }
+    }
+
+    private static func scopedID(extensionID: String, contributionID: String) -> String {
+        "extension:\(extensionID):\(contributionID)"
+    }
+
+    private static func toolReferenceID(_ id: String, extensionID: String) -> String {
+        if LimaAIToolRegistry.definitions.contains(where: { $0.id == id }) { return id }
+        return scopedID(extensionID: extensionID, contributionID: id)
+    }
+}
+
+@MainActor
+enum ExtensionToolHostAdapterRegistry {
+    private static let adapters: [String: any ExtensionToolHostAdapter] = {
+        ExtensionToolHostAdapterID.allCases.reduce(into: [:]) { result, kind in
+            result[kind.rawValue] = BuiltinReadOnlyExtensionToolAdapter(kind: kind)
+        }
+    }()
+
+    static func adapter(for id: String?) -> (any ExtensionToolHostAdapter)? {
+        guard let id, ExtensionToolHostAdapterID(rawValue: id) != nil else { return nil }
+        return adapters[id]
+    }
+
+    static func approvedBindings() -> [ExtensionAIToolBinding] {
+        ExtensionLoader().contributionCatalog().flatMap { entry in
+            entry.tools.compactMap { tool in
+                guard let schemaData = try? JSONEncoder().encode(tool.inputSchema),
+                      schemaData.count <= 32_768,
+                      tool.isEligibleForReadOnlyHostAdapter,
+                      let adapter = adapter(for: tool.hostAdapterID),
+                      tool.capabilities.isSubset(of: entry.capabilities),
+                      adapter.requiredCapabilities.isSubset(of: tool.capabilities),
+                      adapter.requiredCapabilities.isSubset(of: entry.capabilities) else { return nil }
+                return ExtensionAIToolBinding(
+                    extensionID: entry.extensionID,
+                    extensionName: entry.extensionName,
+                    extensionCapabilities: entry.capabilities,
+                    tool: tool
+                )
+            }
+        }
+    }
+
+    static func execute(_ binding: ExtensionAIToolBinding, arguments: JSONValue) async throws -> JSONValue {
+        guard let current = approvedBindings().first(where: { $0 == binding }),
+              let adapter = adapter(for: current.tool.hostAdapterID),
+              current.tool.isReadOnly,
+              current.tool.execution == .hostReadOnly,
+              current.tool.capabilities.isSubset(of: current.extensionCapabilities),
+              adapter.requiredCapabilities.isSubset(of: current.tool.capabilities),
+              adapter.requiredCapabilities.isSubset(of: current.extensionCapabilities),
+              ExtensionToolInputValidator.accepts(arguments, schema: current.tool.inputSchema) else {
+            throw ExtensionToolAdapterError.unauthorized
+        }
+        return try await adapter.execute(definition: current.tool, arguments: arguments)
+    }
+
+    static func functionName(extensionID: String, toolID: String) -> String {
+        func safe(_ value: String) -> String {
+            let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyz0123456789_-")
+            return value.lowercased().unicodeScalars
+                .map { allowed.contains($0) ? String($0) : "_" }
+                .joined()
+        }
+        let package = String(safe(extensionID).prefix(20))
+        let tool = String(safe(toolID).prefix(20))
+        let identity = extensionID + "\\0" + toolID
+        let hash = identity.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { partial, byte in
+            (partial ^ UInt64(byte)) &* 1_099_511_628_211
+        }
+        let suffix = String(String(hash, radix: 16).suffix(8))
+        return "ext__\(package.isEmpty ? "package" : package)__\(tool.isEmpty ? "tool" : tool)__\(suffix)"
+    }
+}
+
 struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     let id: String
     let name: String
     let description: String
     let parameters: [String: Any]
     let risk: AILocalToolRisk
+    var extensionBinding: ExtensionAIToolBinding? = nil
 
     var responsePayload: [String: Any] {
         [
@@ -945,7 +1231,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Every tool is read-only: never write, delete, rename, install, execute, launch, submit, or otherwise change local or remote content. Do not attempt to use tools outside the supplied read-only list. You may inspect files, public web search results, screen context, and extension metadata. You may draft extension code or manifests in the chat for the user to review, but never save, install, or run an extension.
+    You are Lima’s private assistant. Every available tool is a registered, read-only operation used only for its declared purpose. Never write, delete, rename, install, launch, submit, or otherwise change local or remote content. Never run shell commands or extension-provided code. Do not attempt to use tools outside the supplied read-only list. You may inspect files, public web search results, screen context, and extension metadata. You may draft extension code or manifests in chat for the user to review, but never save, install, or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
@@ -1079,20 +1365,55 @@ enum LimaAIToolRegistry {
         )
     ]
 
+    static var availableDefinitions: [LimaAIToolDefinition] {
+        definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+    }
+
     static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)) }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
         guard let name else { return nil }
-        return definitions.first { $0.name == name || $0.id == name }
+        return availableDefinitions.first { $0.name == name || $0.id == name }
     }
 
     static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        definitions.filter { ids.contains($0.id) && $0.risk == .read }
+        availableDefinitions.filter { ids.contains($0.id) && $0.risk == .read }
+    }
+
+    private static func extensionDefinition(_ binding: ExtensionAIToolBinding) -> LimaAIToolDefinition {
+        let schemaData = try? JSONEncoder().encode(binding.tool.inputSchema)
+        let schema = schemaData.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+            ?? ["type": "object", "properties": [:] as [String: Any], "additionalProperties": false]
+        return LimaAIToolDefinition(
+            id: "extension:\(binding.extensionID):\(binding.tool.id)",
+            name: ExtensionToolHostAdapterRegistry.functionName(extensionID: binding.extensionID, toolID: binding.tool.id),
+            description: String(binding.tool.description.prefix(2_000)),
+            parameters: schema,
+            risk: .read,
+            extensionBinding: binding
+        )
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
         guard let definition = definition(for: call.name), definition.risk == .read else {
             return .json(["error": "Lima AI Chat only permits registered read-only tools."], isError: true)
+        }
+        if let binding = definition.extensionBinding {
+            guard let arguments = call.arguments,
+                  arguments.utf8.count <= 64_000,
+                  let data = arguments.data(using: .utf8),
+                  let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+                return .json(["error": "The extension tool arguments were invalid."], isError: true)
+            }
+            do {
+                let output = try await ExtensionToolHostAdapterRegistry.execute(binding, arguments: value)
+                let isError: Bool
+                if case .object(let fields) = output { isError = fields["error"] != nil }
+                else { isError = false }
+                return .json(foundationValue(output), isError: isError)
+            } catch {
+                return .json(["error": "The approved read-only extension tool could not be executed."], isError: true)
+            }
         }
         switch definition.id {
         case "read_screen_context":
@@ -1135,14 +1456,33 @@ enum LimaAIToolRegistry {
         }
     }
 
-    private static func stringArgument(named key: String, from arguments: String?) -> String? {
+    static func jsonValue(from execution: LimaAIToolExecution) -> JSONValue {
+        guard let data = execution.output.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSONValue.self, from: data) else {
+            return .object(["error": .string("Lima could not decode the bounded tool result.")])
+        }
+        return value
+    }
+
+    private static func foundationValue(_ value: JSONValue) -> Any {
+        switch value {
+        case .string(let value): value
+        case .number(let value): value
+        case .bool(let value): value
+        case .object(let values): values.mapValues(foundationValue)
+        case .array(let values): values.map(foundationValue)
+        case .null: NSNull()
+        }
+    }
+
+    static func stringArgument(named key: String, from arguments: String?) -> String? {
         guard let arguments,
               let data = arguments.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return (object[key] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private static func searchFiles(named query: String) async -> [URL] {
+    static func searchFiles(named query: String) async -> [URL] {
         await withCheckedContinuation { continuation in
             fileSearch.search(query) { urls in
                 continuation.resume(returning: urls)
@@ -1150,7 +1490,7 @@ enum LimaAIToolRegistry {
         }
     }
 
-    private static func readTextFile(at path: String) -> LimaAIToolExecution {
+    static func readTextFile(at path: String) -> LimaAIToolExecution {
         let url = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
         guard url.path.hasPrefix("/") else {
             return .json(["error": "Read File only accepts absolute paths."], isError: true)
@@ -1185,7 +1525,7 @@ enum LimaAIToolRegistry {
         }
     }
 
-    private static func isSensitivePath(_ url: URL) -> Bool {
+    static func isSensitivePath(_ url: URL) -> Bool {
         let components = Set(url.pathComponents.map { $0.lowercased() })
         let blockedComponents: Set<String> = [".ssh", ".aws", ".gnupg", ".docker", "keychains", "secrets"]
         if !components.intersection(blockedComponents).isEmpty { return true }
@@ -1199,13 +1539,13 @@ enum LimaAIToolRegistry {
             || url.lastPathComponent.lowercased().contains("secret")
     }
 
-    private static func isTextFile(url: URL, contentType: UTType?) -> Bool {
+    static func isTextFile(url: URL, contentType: UTType?) -> Bool {
         if contentType?.conforms(to: .text) == true || contentType?.conforms(to: .sourceCode) == true { return true }
         let extensions: Set<String> = ["csv", "env.example", "json", "log", "md", "plist", "py", "rb", "sh", "sql", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml", "zsh"]
         return extensions.contains(url.pathExtension.lowercased())
     }
 
-    private static func searchWeb(query: String) async -> LimaAIToolExecution {
+    static func searchWeb(query: String) async -> LimaAIToolExecution {
         var components = URLComponents(string: "https://api.duckduckgo.com/")
         components?.queryItems = [
             URLQueryItem(name: "q", value: query),
@@ -1263,7 +1603,7 @@ enum LimaAIToolRegistry {
         }
     }
 
-    private static func readPublicWebPage(_ rawURL: String) async -> LimaAIToolExecution {
+    static func readPublicWebPage(_ rawURL: String) async -> LimaAIToolExecution {
         guard let url = publicWebURL(rawURL) else {
             return .json(["error": "Read Web only accepts a public HTTP or HTTPS URL without credentials."], isError: true)
         }
@@ -1439,8 +1779,8 @@ enum LimaAIToolRegistry {
                         "title": tool.title,
                         "description": tool.description,
                         "declared_read_only": tool.isReadOnly,
-                        "host_adapter_declared": tool.isEligibleForReadOnlyHostAdapter,
-                        "can_execute_from_ai": false
+                        "host_adapter_available": tool.isEligibleForReadOnlyHostAdapter,
+                        "requires_explicit_ai_opt_in": true
                     ] as [String: Any]
                 },
                 "skills": package.skills.map { skill in
@@ -1463,7 +1803,7 @@ enum LimaAIToolRegistry {
             "commands": commandEntries,
             "contributions": contributionEntries,
             "truncated": commands.count > commandEntries.count || contributions.count > contributionEntries.count,
-            "policy": "AI Chat can inspect this catalog and draft extension code in chat, but never installs, executes, approves, or changes an extension. Declared tools are metadata only unless a future typed host adapter explicitly implements a read-only operation."
+            "policy": "AI Chat can inspect this catalog and draft extension code in chat, but never installs, runs, approves, or changes an extension. Only explicitly enabled declarations with an allowlisted read-only host adapter are callable; all other tools remain metadata only."
         ])
     }
 }
@@ -1478,7 +1818,9 @@ extension LimaAIToolDefinition {
         case "read_web": return "Read a web page"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
-        default: return name.replacingOccurrences(of: "_", with: " ").capitalized
+        default:
+            if let extensionBinding { return "\(extensionBinding.extensionName) · \(extensionBinding.tool.title)" }
+            return name.replacingOccurrences(of: "_", with: " ").capitalized
         }
     }
 
@@ -1491,7 +1833,9 @@ extension LimaAIToolDefinition {
         case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
-        default: return description
+        default:
+            if let extensionBinding { return extensionBinding.tool.description }
+            return description
         }
     }
 
