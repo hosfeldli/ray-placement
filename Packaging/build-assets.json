@@ -12,6 +12,12 @@
       "destination": "Packaging/Vendor/Harper/harper-cli",
       "sha256": "2b0a75c7387d24af7dbe66e00b9e13e0fa0bbb7ddb679b5404dab3ce7e15513f",
       "mode": "0755"
+    },
+    "browserBridgeSignedXPI": {
+      "object": "browser-bridge/lima-browser-bridge-1.1.0-signed.xpi",
+      "destination": "Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi",
+      "sha256": "1bd3d27439192afe5c47f27ca64a381fd17d1f679d3bc578b2da56efd5726d86",
+      "mode": "0644"
     }
   }
 }

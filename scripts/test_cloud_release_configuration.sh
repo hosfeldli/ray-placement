@@ -27,7 +27,7 @@ with open(manifest_path, encoding="utf-8") as source:
     manifest = json.load(source)
 assert manifest.get("schemaVersion") == 1
 assets = manifest.get("assets")
-assert set(assets) == {"whisperModel", "harper"}
+assert set(assets) == {"whisperModel", "harper", "browserBridgeSignedXPI"}
 for name, asset in assets.items():
     assert re.fullmatch(r"[0-9a-f]{64}", asset["sha256"]), name
     assert asset["mode"] in {"0644", "0755"}, name
@@ -46,6 +46,7 @@ grep -Fq 'id-token: write' "$WORKFLOW"
 grep -Fq 'google-github-actions/auth@v3' "$WORKFLOW"
 grep -Fq 'google-github-actions/setup-gcloud@v3' "$WORKFLOW"
 grep -Fq './scripts/prepare_build_assets.sh' "$WORKFLOW"
+grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi' "$WORKFLOW"
 grep -Fq './scripts/ci_prepare_signing.sh' "$WORKFLOW"
 grep -Fq './scripts/archive_release_to_gcs.sh' "$WORKFLOW"
 grep -Fq './scripts/ci_cleanup_signing.sh' "$WORKFLOW"
