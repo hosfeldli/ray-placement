@@ -405,8 +405,7 @@ struct AIOutputItem: Hashable, Sendable {
     }
 
     private static func errorMessage(from value: Any?) -> String? {
-        if let error = value as? [String: Any] { return error["message"] as? String }
-        return value as? String
+        AIProviderFailure.toolMessage(value)
     }
 }
 
@@ -450,17 +449,41 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
     ) {
         self.id = id
         self.stage = stage
-        self.endpoint = endpoint
-        self.httpStatus = httpStatus
-        self.model = model
-        self.responseID = responseID
-        self.eventType = eventType
-        self.outputItemType = outputItemType
-        self.toolName = toolName
-        self.errorCode = errorCode
-        self.errorParameter = errorParameter
-        self.message = message
+        self.endpoint = endpoint == "/v1/responses" ? endpoint : "provider"
+        self.httpStatus = httpStatus.flatMap { (100...599).contains($0) ? $0 : nil }
+        // Caller-provided model names, IDs and tool labels may contain user content.
+        self.model = nil
+        self.responseID = nil
+        self.eventType = AIProviderFailure.diagnosticEvent(eventType)
+        self.outputItemType = outputItemType.map {
+            ["message", "reasoning", "function_call", "mcp_call", "mcp_approval_request"].contains($0) ? $0 : "unknown"
+        }
+        self.toolName = nil
+        self.errorCode = AIProviderFailure.code(errorCode)
+        self.errorParameter = AIProviderFailure.parameter(errorParameter)
+        self.message = AIProviderFailure.diagnosticMessage(message, status: self.httpStatus)
         self.createdAt = createdAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, stage, endpoint, httpStatus, model, responseID, eventType, outputItemType
+        case toolName, errorCode, errorParameter, message, createdAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            id: try c.decode(UUID.self, forKey: .id),
+            stage: try c.decode(Stage.self, forKey: .stage),
+            endpoint: try c.decode(String.self, forKey: .endpoint),
+            httpStatus: try c.decodeIfPresent(Int.self, forKey: .httpStatus),
+            eventType: try c.decodeIfPresent(String.self, forKey: .eventType),
+            outputItemType: try c.decodeIfPresent(String.self, forKey: .outputItemType),
+            errorCode: try c.decodeIfPresent(String.self, forKey: .errorCode),
+            errorParameter: try c.decodeIfPresent(String.self, forKey: .errorParameter),
+            message: try c.decode(String.self, forKey: .message),
+            createdAt: try c.decode(Date.self, forKey: .createdAt)
+        )
     }
 
     var developerSummary: String {
@@ -841,23 +864,37 @@ struct MCPHTTPClient {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw ClientError.invalidResponse
         }
-        var event = ""
-        var dataLines: [String] = []
-        for try await line in bytes.lines {
-            if line.isEmpty {
-                if event == "endpoint", let value = dataLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines).removingPercentEncoding,
-                   let endpoint = URL(string: value, relativeTo: url)?.absoluteURL {
-                    return endpoint
-                }
-                event = ""
-                dataLines = []
-            } else if line.hasPrefix("event:") {
-                event = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            } else if line.hasPrefix("data:") {
-                dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+        var framer = AIProviderSSEFramer(maximumLineBytes: 64_000, maximumEventBytes: 64_000,
+                                         maximumStreamBytes: 256_000, maximumDataLines: 256)
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            if let frame = try framer.append(byte), frame.event == "endpoint" {
+                return try Self.validatedSSEEndpoint(frame.data, relativeTo: url)
             }
         }
+        if let frame = try framer.finish(), frame.event == "endpoint" {
+            return try Self.validatedSSEEndpoint(frame.data, relativeTo: url)
+        }
         throw ClientError.invalidResponse
+    }
+
+    /// Discovery cannot redirect a saved MCP credential to a different origin.
+    static func validatedSSEEndpoint(_ raw: String, relativeTo base: URL) throws -> URL {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.utf8.count <= 4_096,
+              !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              let url = URL(string: value, relativeTo: base)?.absoluteURL,
+              let candidate = URLComponents(url: url, resolvingAgainstBaseURL: true),
+              let original = URLComponents(url: base, resolvingAgainstBaseURL: true),
+              candidate.scheme?.lowercased() == original.scheme?.lowercased(),
+              ["http", "https"].contains(candidate.scheme?.lowercased() ?? ""),
+              candidate.host?.lowercased() == original.host?.lowercased(),
+              (candidate.port ?? (candidate.scheme == "https" ? 443 : 80)) ==
+                (original.port ?? (original.scheme == "https" ? 443 : 80)),
+              candidate.user == nil, candidate.password == nil, candidate.fragment == nil else {
+            throw ClientError.invalidResponse
+        }
+        return url
     }
 
     private func jsonObject(from data: Data) throws -> [String: Any] {
@@ -887,10 +924,7 @@ struct MCPHTTPClient {
     }
 
     private static func safeResponseText(_ data: Data) -> String {
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let error = object["error"] as? [String: Any],
-           let message = error["message"] as? String { return message }
-        return String(decoding: data.prefix(1_000), as: UTF8.self)
+        AIProviderFailure.message(data: data)
     }
 }
 
@@ -2623,16 +2657,16 @@ enum AIResponsesEventDecoder {
             result.append(.completed(responseID))
             return result
         case "response.failed", "error":
-            let error = value["error"] as? [String: Any]
-            let message = (error?["message"] as? String) ?? (value["message"] as? String) ?? "The provider reported a failed response."
+            let error = value["error"] as? [String: Any] ?? response?["error"] as? [String: Any] ?? value
+            let message = AIProviderFailure.message(error: error)
             return [
                 .diagnostic(AIChatDiagnostic(
                     stage: .api,
                     model: model,
                     responseID: responseID,
                     eventType: type,
-                    errorCode: error?["code"] as? String,
-                    errorParameter: error?["param"] as? String,
+                    errorCode: AIProviderFailure.code(error["code"]),
+                    errorParameter: AIProviderFailure.parameter(error["param"]),
                     message: message
                 )),
                 .failed(message)
@@ -2680,8 +2714,7 @@ enum AIResponsesEventDecoder {
     }
 
     private static func errorMessage(from value: Any?) -> String? {
-        if let error = value as? [String: Any] { return error["message"] as? String }
-        return value as? String
+        AIProviderFailure.toolMessage(value)
     }
 }
 
@@ -2690,59 +2723,37 @@ enum AIResponsesEventDecoder {
 /// raw line-boundary behavior directly testable.
 struct AIResponsesSSEParser {
     private let model: String?
-    private var eventType = ""
-    private var dataLines: [String] = []
-    private var rawLineBytes: [UInt8] = []
+    private var framer = AIProviderSSEFramer()
+    private(set) var failed = false
 
-    init(model: String?) {
-        self.model = model
-    }
+    init(model: String?) { self.model = model }
 
-    /// Feed one decoded line when a caller already preserves blank SSE delimiters.
     mutating func append(line: String) -> [AIChatStreamEvent] {
-        if line.isEmpty {
-            return flush()
-        }
-        if line.hasPrefix("event:") {
-            eventType = String(line.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-        } else if line.hasPrefix("data:") {
-            dataLines.append(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-        }
-        return []
+        guard !failed else { return [] }
+        do { return decode(try framer.append(line: line)) }
+        catch { return fail() }
     }
 
-    /// Feed raw response bytes. The URLSession line iterator can omit empty
-    /// lines, which are the SSE event boundary; byte framing retains them.
     mutating func append(byte: UInt8) -> [AIChatStreamEvent] {
-        guard byte == 0x0A else {
-            rawLineBytes.append(byte)
-            return []
-        }
-
-        let line = String(decoding: rawLineBytes, as: UTF8.self)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-        rawLineBytes.removeAll(keepingCapacity: true)
-        return append(line: line)
+        guard !failed else { return [] }
+        do { return decode(try framer.append(byte)) }
+        catch { return fail() }
     }
 
     mutating func finish() -> [AIChatStreamEvent] {
-        var events: [AIChatStreamEvent] = []
-        if !rawLineBytes.isEmpty {
-            let line = String(decoding: rawLineBytes, as: UTF8.self)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-            rawLineBytes.removeAll(keepingCapacity: true)
-            events += append(line: line)
-        }
-        events += flush()
-        return events
+        guard !failed else { return [] }
+        do { return decode(try framer.finish()) }
+        catch { return fail() }
     }
 
-    private mutating func flush() -> [AIChatStreamEvent] {
-        defer {
-            eventType = ""
-            dataLines = []
-        }
-        return AIResponsesEventDecoder.events(eventType: eventType, dataLines: dataLines, model: model)
+    private func decode(_ frame: AIProviderSSEFrame?) -> [AIChatStreamEvent] {
+        guard let frame else { return [] }
+        return AIResponsesEventDecoder.events(eventType: frame.event, dataLines: [frame.data], model: model)
+    }
+
+    private mutating func fail() -> [AIChatStreamEvent] {
+        failed = true
+        return [.failed("The provider stream exceeded Lima's safety limit.")]
     }
 }
 

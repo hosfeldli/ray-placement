@@ -77,61 +77,7 @@ enum AIProviderClientRegistry {
     }
 }
 
-private struct AIProviderSSEFrame {
-    var event: String
-    var data: String
-}
-
-/// Preserves blank-line event delimiters from URLSession's byte stream.
-private struct AIProviderSSEFramer {
-    private var line: [UInt8] = []
-    private var event = ""
-    private var dataLines: [String] = []
-
-    mutating func append(_ byte: UInt8) -> AIProviderSSEFrame? {
-        guard byte == 0x0A else {
-            line.append(byte)
-            return nil
-        }
-        let value = String(decoding: line, as: UTF8.self)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-        line.removeAll(keepingCapacity: true)
-        if value.isEmpty {
-            guard !dataLines.isEmpty else {
-                event = ""
-                return nil
-            }
-            let frame = AIProviderSSEFrame(event: event, data: dataLines.joined(separator: "\n"))
-            event = ""
-            dataLines = []
-            return frame
-        }
-        if value.hasPrefix("event:") {
-            event = String(value.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-        } else if value.hasPrefix("data:") {
-            dataLines.append(String(value.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-        }
-        return nil
-    }
-
-    mutating func finish() -> AIProviderSSEFrame? {
-        if !line.isEmpty {
-            let value = String(decoding: line, as: UTF8.self)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\r"))
-            line.removeAll()
-            if value.hasPrefix("event:") {
-                event = String(value.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            } else if value.hasPrefix("data:") {
-                dataLines.append(String(value.dropFirst(5)).trimmingCharacters(in: .whitespaces))
-            }
-        }
-        guard !dataLines.isEmpty else { return nil }
-        let frame = AIProviderSSEFrame(event: event, data: dataLines.joined(separator: "\n"))
-        event = ""
-        dataLines = []
-        return frame
-    }
-}
+// Byte framing is shared with Responses and MCP discovery in AIProviderSSEFramer.
 
 enum AIProviderHTTP {
     static func request(
@@ -152,13 +98,7 @@ enum AIProviderHTTP {
     }
 
     static func failure(_ status: Int, _ data: Data) -> String {
-        let raw = String(decoding: data.prefix(2_000), as: UTF8.self)
-        if let object = try? JSONSerialization.jsonObject(with: Data(raw.utf8)) as? [String: Any] {
-            let error = object["error"] as? [String: Any]
-            if let message = error?["message"] as? String { return String(message.prefix(500)) }
-            if let message = object["message"] as? String { return String(message.prefix(500)) }
-        }
-        return "Provider request failed (HTTP \(status))."
+        AIProviderFailure.message(data: data, status: status)
     }
 
     static func validateBaseURL(_ raw: String) -> URL? {
@@ -311,7 +251,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
                 return [.completed(responseID)]
             case "error":
                 let error = object["error"] as? [String: Any]
-                return [.failed((error?["message"] as? String) ?? "Anthropic reported a failed response.")]
+                return [.failed(AIProviderFailure.message(error: error))]
             default:
                 return []
             }
@@ -369,7 +309,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
             let body = Self.body(model: model, history: messages, tools: localTools, systemInstructions: systemInstructions)
             return stream(body: body, model: model, apiKey: apiKey)
         } catch {
-            return Self.failed(error.localizedDescription)
+            return Self.failed("The request could not be prepared. Check the selected attachments and model.")
         }
     }
 
@@ -438,11 +378,11 @@ struct AnthropicAIProviderClient: AIProviderClient {
                     var decoder = StreamDecoder(model: model)
                     for try await byte in bytes {
                         if Task.isCancelled { break }
-                        if let frame = framer.append(byte) {
+                        if let frame = try framer.append(byte) {
                             for event in decoder.decode(frame) { continuation.yield(event) }
                         }
                     }
-                    if let frame = framer.finish() {
+                    if let frame = try framer.finish() {
                         for event in decoder.decode(frame) { continuation.yield(event) }
                     }
                     continuation.finish()
@@ -514,7 +454,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
             }
             return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
         } catch {
-            return Self.failed(error.localizedDescription)
+            return Self.failed("The request could not be prepared. Check the selected attachments and model.")
         }
     }
 
@@ -620,7 +560,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                     var tools: [Int: ToolDelta] = [:]
                     for try await byte in bytes {
                         if Task.isCancelled { break }
-                        guard let frame = framer.append(byte) else { continue }
+                        guard let frame = try framer.append(byte) else { continue }
                         if frame.data == "[DONE]" {
                             for (index, tool) in tools.sorted(by: { $0.key < $1.key }) {
                                 let id = tool.id.isEmpty ? "tool-\(index)" : tool.id
@@ -632,7 +572,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                         guard let data = frame.data.data(using: .utf8),
                               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
                         if let error = object["error"] as? [String: Any] {
-                            continuation.yield(.failed((error["message"] as? String) ?? "The provider reported an error."))
+                            continuation.yield(.failed(AIProviderFailure.message(error: error)))
                             continue
                         }
                         if let usage = object["usage"] as? [String: Any] {
@@ -656,7 +596,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                     }
                     continuation.finish()
                 } catch {
-                    if !Task.isCancelled { continuation.yield(.failed("The provider could not complete the request.")) }
+                    if !Task.isCancelled { continuation.yield(.failed(AIProviderFailure.message())) }
                     continuation.finish()
                 }
             }
@@ -724,7 +664,7 @@ struct GeminiAIProviderClient: AIProviderClient {
             }
             return stream(messages: messages, model: model, apiKey: apiKey, tools: localTools, systemInstructions: systemInstructions)
         } catch {
-            return Self.failed(error.localizedDescription)
+            return Self.failed("The request could not be prepared. Check the selected attachments and model.")
         }
     }
 
@@ -830,7 +770,7 @@ struct GeminiAIProviderClient: AIProviderClient {
                     var framer = AIProviderSSEFramer()
                     for try await byte in bytes {
                         if Task.isCancelled { break }
-                        guard let frame = framer.append(byte), frame.data != "[DONE]",
+                        guard let frame = try framer.append(byte), frame.data != "[DONE]",
                               let data = frame.data.data(using: .utf8),
                               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
                         let candidate = (object["candidates"] as? [[String: Any]])?.first
@@ -848,7 +788,7 @@ struct GeminiAIProviderClient: AIProviderClient {
                             continuation.yield(.usage(AIUsageMetrics(inputTokens: usage["promptTokenCount"] as? Int, outputTokens: usage["candidatesTokenCount"] as? Int)))
                         }
                     }
-                    if let frame = framer.finish(),
+                    if let frame = try framer.finish(),
                        let data = frame.data.data(using: .utf8),
                        let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                        let usage = object["usageMetadata"] as? [String: Any] {

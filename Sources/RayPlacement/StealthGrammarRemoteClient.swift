@@ -171,7 +171,7 @@ final class StealthGrammarRemoteClient {
         let task = session.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let error {
-                    completion(.failure(error))
+                    completion(.failure(AIProviderFailure.sanitizedError(error)))
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
@@ -444,7 +444,7 @@ final class StealthGrammarRemoteClient {
         let task = session.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let error {
-                    completion(.failure(error))
+                    completion(.failure(AIProviderFailure.sanitizedError(error)))
                     return
                 }
                 guard let http = response as? HTTPURLResponse else {
@@ -482,19 +482,7 @@ final class StealthGrammarRemoteClient {
 
     private static func responseDetail(_ data: Data?) -> String? {
         guard let data, !data.isEmpty else { return nil }
-        let raw = String(decoding: data, as: UTF8.self)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !raw.isEmpty else { return nil }
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            for key in ["error", "message", "detail"] {
-                if let value = object[key] as? String, !value.isEmpty { return String(value.prefix(500)) }
-                if let value = object[key] as? [String: Any],
-                   let message = value["message"] as? String, !message.isEmpty {
-                    return String(message.prefix(500))
-                }
-            }
-        }
-        return String(raw.prefix(500))
+        return AIProviderFailure.message(data: data)
     }
 
     private static func validatedBaseURL(_ rawValue: String) -> String? {

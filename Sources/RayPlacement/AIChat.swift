@@ -391,7 +391,7 @@ final class AIConversationStore: ObservableObject {
                 try Self.persist(snapshot, to: url)
                 DispatchQueue.main.async { self?.lastError = nil }
             } catch {
-                DispatchQueue.main.async { self?.lastError = error.localizedDescription }
+                DispatchQueue.main.async { self?.lastError = "AI chat history could not be saved. Check local storage access." }
             }
         }
         pendingSave = work
@@ -653,7 +653,7 @@ struct AIChatResponsesClient: AIChatTransport {
             return stream(body: body, apiKey: apiKey)
         } catch {
             return AsyncThrowingStream { continuation in
-                continuation.yield(.failed(error.localizedDescription))
+                continuation.yield(.failed(AIProviderFailure.message()))
                 continuation.finish(throwing: error)
             }
         }
@@ -682,7 +682,8 @@ struct AIChatResponsesClient: AIChatTransport {
             input: [approval],
             previousResponseID: previousResponseID,
             reasoningEffort: reasoningEffort,
-            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
+            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+            systemInstructions: systemInstructions
         )
         return stream(body: body, apiKey: apiKey)
     }
@@ -703,7 +704,8 @@ struct AIChatResponsesClient: AIChatTransport {
             input: outputs,
             previousResponseID: previousResponseID,
             reasoningEffort: reasoningEffort,
-            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload)
+            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+            systemInstructions: systemInstructions
         )
         return stream(body: body, apiKey: apiKey)
     }
@@ -783,12 +785,12 @@ struct AIChatResponsesClient: AIChatTransport {
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
                     guard (200...299).contains(http.statusCode) else {
-                        var errorText = ""
-                        for try await line in bytes.lines {
-                            errorText += line
-                            if errorText.count > 2_000 { break }
+                        var errorData = Data()
+                        for try await byte in bytes {
+                            errorData.append(byte)
+                            if errorData.count >= 64_000 { break }
                         }
-                        throw ClientError.requestFailed(http.statusCode, Self.safeErrorMessage(from: Data(errorText.utf8)))
+                        throw ClientError.requestFailed(http.statusCode, AIProviderFailure.message(data: errorData, status: http.statusCode))
                     }
 
                     var parser = AIResponsesSSEParser(model: model)
@@ -797,6 +799,7 @@ struct AIChatResponsesClient: AIChatTransport {
                         for event in parser.append(byte: byte) {
                             continuation.yield(event)
                         }
+                        if parser.failed { break }
                     }
                     for event in parser.finish() {
                         continuation.yield(event)
@@ -806,7 +809,7 @@ struct AIChatResponsesClient: AIChatTransport {
                     continuation.finish()
                 } catch {
                     continuation.yield(.diagnostic(Self.diagnostic(for: error, model: model)))
-                    continuation.yield(.failed(error.localizedDescription))
+                    continuation.yield(.failed(AIProviderFailure.transport(error)))
                     continuation.finish(throwing: error)
                 }
             }
@@ -815,23 +818,13 @@ struct AIChatResponsesClient: AIChatTransport {
     }
 
     private static func safeErrorMessage(from data: Data) -> String {
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return "The provider returned an unreadable error response."
-        }
-        let error = (object["error"] as? [String: Any]) ?? object
-        let message = (error["message"] as? String) ?? "The provider returned an error."
-        let code = error["code"] as? String
-        let parameter = error["param"] as? String
-        return [message, code.map { "code: \($0)" }, parameter.map { "param: \($0)" }]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+        AIProviderFailure.message(data: data)
     }
 
     private static func diagnostic(for error: Error, model: String?) -> AIChatDiagnostic {
-        if case ClientError.requestFailed(let status, let message) = error {
-            return AIChatDiagnostic(stage: .transport, httpStatus: status, model: model, message: message)
-        }
-        return AIChatDiagnostic(stage: .transport, model: model, message: error.localizedDescription)
+        let status: Int?
+        if case ClientError.requestFailed(let code, _) = error { status = code } else { status = nil }
+        return AIChatDiagnostic(stage: .transport, httpStatus: status, message: AIProviderFailure.transport(error))
     }
 
 }
@@ -1289,7 +1282,7 @@ final class AIChatViewModel: ObservableObject {
                 let cancelled = Task.isCancelled || error is CancellationError
                 self.taskRegistry.finish(taskID, state: cancelled ? .cancelled : .failed)
                 guard self.provider == selectedProvider, self.selectedConversationID == conversationID else { return }
-                self.providerConnectionMessage = cancelled ? "Connection check stopped." : error.localizedDescription
+                self.providerConnectionMessage = cancelled ? "Connection check stopped." : AIProviderFailure.transport(error)
             }
         }
     }

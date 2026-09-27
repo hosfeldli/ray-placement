@@ -726,7 +726,7 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
         "id": "future_1"
     ])
     #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .unknown }; return false })
-    #expect(events.contains { if case .diagnostic(let diagnostic) = $0 { return diagnostic.outputItemType == "future_output_item" }; return false })
+    #expect(events.contains { if case .diagnostic(let diagnostic) = $0 { return diagnostic.outputItemType == "unknown" }; return false })
     #expect(events.contains { if case .failed = $0 { return true }; return false } == false)
 }
 
@@ -737,7 +737,7 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
         Issue.record("Expected an unknown-event diagnostic")
         return
     }
-    #expect(diagnostic.eventType == "response.future_event")
+    #expect(diagnostic.eventType == "unknown")
 }
 
 @Test func responsesDecoderReportsMalformedJSONSafely() {
