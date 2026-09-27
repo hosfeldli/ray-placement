@@ -189,9 +189,56 @@ exposes only the existing opt-in read tools.
   installation, rebuilt-app acceptance, remaining browser/provider/device gates
   and public deployment are pending at this checkpoint.
 
+## Local signed companion delivery update (1.1.0)
+
+The user placed the approved Mozilla-signed 1.1.0 XPI in Downloads. Its SHA-256 is
+`1bd3d27439192afe5c47f27ca64a381fd17d1f679d3bc578b2da56efd5726d86`; its bytes
+match the packaged companion and the existing source/signature receipt. The app
+was rebuilt as `build/Lima.app` (3.14.2) without repacking or modifying the XPI.
+
+- Deep/strict `codesign --verify`, app verification, companion source/signature
+  metadata verification, digest equality, `git diff --check`, Python syntax, and
+  release-script shell syntax passed.
+- The app contains **Save Companion XPI…** (save panel defaults to Downloads) and
+  **Setup Guide…** in Settings → Browser Bridge. The comprehensive guide is also
+  available at `docs/BROWSER_BRIDGE.md` and in the app's packaged companion files.
+- Moved to the previously unused `~/Applications/Lima.app`, launched from that
+  deployed path, and verified the moved app and bundled XPI afterward. The visual
+  pass opened Browser Bridge Settings, confirmed **Save Companion XPI…** is enabled
+  and its save dialog defaults to Downloads with the `.xpi` filename, then opened
+  the complete numbered Setup Guide. The dialog was cancelled without exporting a
+  duplicate file. Live browser acceptance still requires user-side installation.
+- Local build remains signed by the pinned **local** code-signing identity; it is
+  not Developer ID notarization and is not a published deployment.
+- The repository build copy was moved to `~/Applications/Lima.app`, freeing its
+  roughly 560 MiB bundle; release preflight must be rerun before any release build.
+  At the preceding check, preflight was blocked by the dirty worktree, 32 commits
+  ahead of upstream, and about 398 MiB free versus the 5 GiB minimum. Existing
+  `dist` artifacts were not deleted. Published v3.14.2 was not overwritten.
+- The user confirmed that the Zen integration works and instructed us to assume
+  it works for this deployment request. Record this as user-reported acceptance,
+  not an independently reproduced test in this session. The broader provider/device
+  matrix and complete browser release matrix remain unverified; full release sign-off
+  remains pending.
+
+## Deployment request checkpoint
+
+The user explicitly requested deployment and said to assume the Zen integration
+works. The deployed local app remains `~/Applications/Lima.app` (3.14.2) with the
+verified Mozilla-signed companion 1.1.0 XPI. The browser integration status is
+user-reported, not independently re-tested in this session.
+
+A new distributable release could not be started: `scripts/release_preflight.sh
+--tag v3.14.3` stopped at the dirty-worktree gate. At the latest check the branch
+was 32 commits ahead of `origin/reliability/grammar-and-notes-routing`, with 14
+modified/untracked paths, and the volume had only 569 MiB free against the 5 GiB
+release-build minimum. The existing public `v3.14.2` release was left untouched;
+no commit, push, tag, draft, upload, or publication was made. Full release sign-off
+remains pending.
+
 ## Delivery boundary
 
-The earlier local app contains signed companion 1.0.0. The new source targets
-1.1.0 and must be packaged with its own source-matching signed XPI. No new release
-version/tag, GitHub publication, installed-app replacement, or production
+The locally deployed app is `~/Applications/Lima.app`; its signature, version,
+bundle ID, and bundled signed-XPI digest were verified previously. No new release
+version/tag, GitHub publication, replacement in `/Applications`, or production
 notarization has occurred. Full release sign-off remains pending.

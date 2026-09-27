@@ -1,6 +1,7 @@
 import AppKit
 import RayPlacementCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor
 struct BrowserBridgeSettingsView: View {
@@ -9,6 +10,7 @@ struct BrowserBridgeSettingsView: View {
     @State private var installed = false
     @State private var confirmInstall = false
     @State private var confirmRemove = false
+    @State private var showSetupGuide = false
     @State private var busy = false
     @State private var grants: [String] = []
     @State private var interactionGrants: Set<String> = []
@@ -48,7 +50,7 @@ struct BrowserBridgeSettingsView: View {
         return bundled
     }
 
-    private var signedPackage: URL { packageDirectory.appendingPathComponent("lima-browser-bridge-signed.xpi") }
+    private var signedPackageAvailable: Bool { BrowserBridgeCompanion.isAvailable(in: packageDirectory) }
 
     var body: some View {
         Form {
@@ -61,18 +63,22 @@ struct BrowserBridgeSettingsView: View {
                 HStack {
                     Button(installed ? "Repair Native Helper…" : "Install Native Helper…") { confirmInstall = true }
                     Button("Remove Helper…") { confirmRemove = true }.disabled(!installed)
-                    Button("Show Companion Files") {
-                        NSWorkspace.shared.activateFileViewerSelecting([packageDirectory])
-                    }
-                    if FileManager.default.fileExists(atPath: signedPackage.path) {
-                        Button("Show Companion XPI") {
-                            NSWorkspace.shared.activateFileViewerSelecting([signedPackage])
+                }
+                HStack {
+                    Button("Save Companion XPI…") { saveCompanion() }
+                        .disabled(!signedPackageAvailable)
+                    Button("Setup Guide…") { showSetupGuide = true }
+                    Menu("More") {
+                        Button("Show Companion Files") {
+                            NSWorkspace.shared.activateFileViewerSelecting([packageDirectory])
                         }
                     }
                 }
-                Text("For a bundled signed XPI, use Install Add-on From File in the browser\'s Add-ons manager. Load manifest.json via about:debugging for development. Permanent installation requires a Mozilla-signed XPI; an unsigned package is not a production installer. No browser security settings need to be disabled.")
+                Text(signedPackageAvailable
+                     ? "Save the bundled Mozilla-signed companion to Downloads, then install it in Zen or Firefox using about:addons → Install Add-on From File. No network download is needed."
+                     : "This build does not include a signed companion. Install an official Lima release with the signed XPI; unsigned development packages cannot be installed permanently.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("In the companion popup, grant only the sites needed, then connect to Lima. Helper installation is per-user and must be repaired if Lima moves.")
+                Text("New here? Open Setup Guide for installation, separate reading and interaction access, updates, and troubleshooting. Never disable browser signature checks.")
                     .font(.caption).foregroundStyle(.secondary)
                 if bridge.sessions.count > 1 {
                     Picker("Browser connection", selection: $bridge.selectedSession) {
@@ -171,6 +177,7 @@ struct BrowserBridgeSettingsView: View {
             }
         }
         .formStyle(.grouped).scrollContentBackground(.hidden).controlSize(.small)
+        .sheet(isPresented: $showSetupGuide) { BrowserBridgeSetupGuide() }
         .onAppear { isPresented = true; installed = BrowserBridgeInstallation.isInstalled(executable: executable) }
         // Leaving Settings is navigation; pending work remains stoppable in Activity Shelf.
         .onDisappear { isPresented = false; inspection = "" }
@@ -198,6 +205,23 @@ struct BrowserBridgeSettingsView: View {
                     message = "Native-host manifests removed. Browser site grants remain manageable in the companion."
                 } catch { message = "Could not remove helper manifests; unrelated files were left untouched." }
             }
+        }
+    }
+
+    private func saveCompanion() {
+        let panel = NSSavePanel()
+        panel.title = "Save Lima Browser Companion"
+        panel.nameFieldStringValue = BrowserBridgeCompanion.fileName
+        panel.allowedContentTypes = [UTType(filenameExtension: "xpi") ?? .data]
+        panel.allowsOtherFileTypes = false
+        panel.canCreateDirectories = true
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        do {
+            try BrowserBridgeCompanion.export(from: packageDirectory, to: destination)
+            message = nil
+        } catch {
+            message = "Could not save the signed companion. Choose a writable location or reinstall Lima."
         }
     }
 

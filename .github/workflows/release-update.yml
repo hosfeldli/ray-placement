@@ -7,6 +7,11 @@ on:
         description: Existing immutable tag to build and stage (for example v3.14.3)
         required: true
         type: string
+      publish:
+        description: Promote the verified draft to a public GitHub release after all hosted checks pass
+        required: true
+        default: false
+        type: boolean
 
 permissions: {}
 
@@ -104,6 +109,15 @@ jobs:
           set -euo pipefail
           ./scripts/release_stage.sh --tag "$RELEASE_TAG"
           ./scripts/release_verify.sh --tag "$RELEASE_TAG" --remote-only
+
+      - name: Publish verified GitHub release
+        if: ${{ inputs.publish }}
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          ./scripts/release_publish.sh --tag "$RELEASE_TAG" --yes
 
       - name: Remove ephemeral signing material
         if: ${{ always() }}

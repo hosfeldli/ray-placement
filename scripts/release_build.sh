@@ -36,6 +36,23 @@ fi
 lima_release_export_packaging_policy
 release_assert_exact_tag_identity "$TAG"
 
+SIGNED_XPI="${LIMA_BROWSER_BRIDGE_SIGNED_XPI:-}"
+if [[ -n "$SIGNED_XPI" ]]; then
+    [[ -f "$SIGNED_XPI" && ! -L "$SIGNED_XPI" ]] || {
+        print -u2 "Signed browser companion must be a regular, non-symlink XPI file."
+        exit 1
+    }
+    [[ "${SIGNED_XPI:l}" == *.xpi ]] || { print -u2 "Signed browser companion must use the .xpi extension."; exit 1; }
+    python3 "$SCRIPT_DIRECTORY/verify_browser_bridge_package.py" "$SIGNED_XPI" --require-signature
+
+    SIGNED_XPI_SHA256="$(shasum -a 256 "$SIGNED_XPI" | awk '{print $1}')"
+    export LIMA_BROWSER_BRIDGE_SIGNED_XPI="$SIGNED_XPI"
+    export LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256"
+else
+    print -u2 "No LIMA_BROWSER_BRIDGE_SIGNED_XPI supplied; release will omit permanent-install companion."
+    exit 1
+fi
+
 DIST="$PROJECT_DIRECTORY/dist"
 
 reuse_complete=1
@@ -51,8 +68,8 @@ if (( reuse_complete )); then
 fi
 if (( REUSE && reuse_complete )); then
     print "Reusing complete checksum-matching build for $TAG."
-    RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$PROJECT_DIRECTORY/build/Lima.app"
-    RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_dmg.sh" "$DIST/Lima.dmg"
+    LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256" RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$PROJECT_DIRECTORY/build/Lima.app"
+    LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256" RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 "$SCRIPT_DIRECTORY/verify_liamflow_dmg.sh" "$DIST/Lima.dmg"
     release_assert_distribution_metadata "$TAG"
     print "Reuse verification passed."
     exit 0
@@ -76,15 +93,15 @@ print '==> Running installer and update-verifier tests'
 /bin/zsh "$SCRIPT_DIRECTORY/test_approved_lima_update.sh"
 
 print '==> Building model-free signed update app'
-RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
+LIMA_BROWSER_BRIDGE_SIGNED_XPI="$SIGNED_XPI" LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256" RAYPLACEMENT_MODEL_FREE_UPDATE=1 RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
     "$SCRIPT_DIRECTORY/package_liamflow_app.sh"
 "$SCRIPT_DIRECTORY/create_update_archive.sh" "$DIST"
 "$SCRIPT_DIRECTORY/create_sparkle_update_archive.sh" "$DIST"
 
 print '==> Building full signed DMG app'
-RAYPLACEMENT_MODEL_FREE_UPDATE=0 RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
+LIMA_BROWSER_BRIDGE_SIGNED_XPI="$SIGNED_XPI" LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256" RAYPLACEMENT_MODEL_FREE_UPDATE=0 RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
     "$SCRIPT_DIRECTORY/package_liamflow_app.sh"
-RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
+LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="$SIGNED_XPI_SHA256" RAYPLACEMENT_REQUIRE_STABLE_SIGNING=1 \
     "$SCRIPT_DIRECTORY/create_liamflow_dmg.sh" "$DIST"
 
 codesign --verify --deep --strict "$PROJECT_DIRECTORY/build/Lima.app"
@@ -100,3 +117,4 @@ release_assert_distribution_metadata "$TAG"
 print "Build complete for $TAG"
 print "  metadata: $DIST/Lima-release.json"
 print "  next:     ./scripts/release_stage.sh --tag $TAG"
+print "  browser:  companion SHA-256 $SIGNED_XPI_SHA256"

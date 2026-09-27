@@ -7,6 +7,8 @@ source "$SCRIPT_DIRECTORY/release_config.sh"
 lima_release_validate_signing_policy
 lima_release_export_packaging_policy
 APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
+export LIMA_BROWSER_BRIDGE_SIGNED_XPI="${LIMA_BROWSER_BRIDGE_SIGNED_XPI:-}"
+export LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}"
 
 if [[ "${RAYPLACEMENT_DISABLE_LOCAL_SIGNING:-0}" == "1" ]]; then
     "$PROJECT_DIRECTORY/scripts/package_app.sh"

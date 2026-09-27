@@ -31,6 +31,18 @@ jobs:
             /bin/zsh -n "$file"
           done
 
+      - name: Validate browser release-package gates
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          /bin/zsh -n scripts/release_build.sh scripts/package_app.sh scripts/package_liamflow_app.sh scripts/create_liamflow_dmg.sh scripts/verify_liamflow_app.sh scripts/verify_liamflow_dmg.sh
+          /usr/bin/grep -q 'LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256' scripts/release_build.sh
+          /usr/bin/grep -q 'verify_browser_bridge_package.py' scripts/package_app.sh
+          /usr/bin/grep -q 'LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256' scripts/verify_liamflow_dmg.sh
+          python3 -m py_compile scripts/verify_browser_bridge_package.py
+          python3 scripts/package_browser_bridge.py build/lima-browser-bridge-unsigned.xpi
+          python3 scripts/verify_browser_bridge_package.py build/lima-browser-bridge-unsigned.xpi
+
       - name: Lint GitHub Actions workflows
         shell: bash
         run: |
@@ -42,7 +54,13 @@ jobs:
         run: make test
 
       - name: Validate extension manifests against the public schema
-        run: python3 scripts/validate_extension_schema.py
+        shell: bash
+        run: |
+          set -euo pipefail
+          validator_venv="$RUNNER_TEMP/lima-extension-schema"
+          python3 -m venv "$validator_venv"
+          "$validator_venv/bin/python" -m pip install --disable-pip-version-check 'jsonschema==4.23.0'
+          "$validator_venv/bin/python" scripts/validate_extension_schema.py
 
       - name: Run release metadata and updater tests
         shell: zsh {0}
@@ -54,6 +72,7 @@ jobs:
           ./scripts/test_lima_installer.sh
           ./scripts/test_update_verifier.sh
           /bin/zsh ./scripts/test_approved_lima_update.sh
+          ./scripts/test_cloud_release_configuration.sh
 
       - name: Run package smoke checks
         shell: zsh {0}

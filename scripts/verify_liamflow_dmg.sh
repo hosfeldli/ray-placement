@@ -15,5 +15,5 @@ trap cleanup EXIT
 hdiutil verify "$DMG" >/dev/null
 DEVICE="$(hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$MOUNT_POINT" "$DMG" | awk 'END {print $1}')"
 [[ -d "$MOUNT_POINT/Lima.app" && ! -L "$MOUNT_POINT/Lima.app" ]] || { echo 'Verification failed: DMG does not contain Lima.app' >&2; exit 1; }
-RAYPLACEMENT_MODEL_FREE_UPDATE=0 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$MOUNT_POINT/Lima.app"
+LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256="${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}" RAYPLACEMENT_MODEL_FREE_UPDATE=0 "$SCRIPT_DIRECTORY/verify_liamflow_app.sh" "$MOUNT_POINT/Lima.app"
 echo "Verified Lima.dmg"

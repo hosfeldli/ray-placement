@@ -49,6 +49,7 @@ grep -Fq './scripts/prepare_build_assets.sh' "$WORKFLOW"
 grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi' "$WORKFLOW"
 grep -Fq './scripts/ci_prepare_signing.sh' "$WORKFLOW"
 grep -Fq './scripts/archive_release_to_gcs.sh' "$WORKFLOW"
+grep -Fq './scripts/release_publish.sh --tag "$RELEASE_TAG" --yes' "$WORKFLOW"
 grep -Fq './scripts/ci_cleanup_signing.sh' "$WORKFLOW"
 if grep -Eq 'LIMA_SIGNING_P12_B64|LIMA_SIGNING_P12_PASSWORD|SPARKLE_EDDSA_PRIVATE_KEY:.*secrets\.' "$WORKFLOW"; then
     print -u2 'Release workflow still references a GitHub release secret.'

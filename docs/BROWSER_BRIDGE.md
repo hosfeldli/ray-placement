@@ -1,5 +1,63 @@
 # Lima Browser Bridge (Zen / Firefox)
 
+## Install from Lima (recommended)
+
+1. Put **Lima.app** in Applications (or its final location), launch it, and leave
+   it running. Use desktop Zen or Firefox with Gecko 140+ on macOS.
+2. Open **Lima Settings → Browser Bridge → Save Companion XPI…**. Save the
+   bundled Mozilla-signed companion to Downloads. The copy works offline and
+   preserves the signed bytes. A disabled button means this build has no signed
+   companion; obtain an official release, not the unsigned development package.
+3. In the intended browser/profile, open **about:addons**, choose the gear menu
+   → **Install Add-on From File…**, and select the saved XPI. Review the browser's
+   permission/data-consent prompts. Verify **Lima Browser Bridge 1.1.0** is enabled.
+   Repeat separately for other browsers/profiles. Never disable signature checks.
+4. In Lima, enable **Enable browser bridge**, choose **Install Native Helper…**,
+   and confirm. Open the companion popup and choose **Reconnect to Lima**.
+5. Choose **Test Connection & Refresh Sites** in Lima. Expect **End-to-end
+   connection verified**. With multiple sessions, select the intended one first.
+6. Visit a normal HTTPS page such as `https://example.com`. In the companion
+   popup choose **Always allow reading on this site** and accept the site prompt.
+   Refresh sites in Lima, choose **Refresh Granted Tabs**, select the page, and
+   choose **Read Page**. Reading persists until revoked; private/internal pages
+   are excluded.
+7. Leave interactions at **Ask every time** unless needed. An open/focus/navigate/
+   close action started in Lima appears in the companion's pending actions.
+   Explicitly approve or deny it there. **Always allow interactions…** is a
+   separate, site-named confirmation; navigation/closing may discard unsaved work.
+8. To verify revocation, choose **Revoke all access**, refresh, and start a *new*
+   read: it must be denied. **Ask every time** removes only persistent interaction
+   access. Test persistence by restarting the browser and reconnecting. Changing
+   policy cancels pending mutations rather than approving them.
+9. Browser AI tools are separately off by default. Enable only needed read tools
+   in AI Tools; site grants still apply. Browser context sent to AI goes to the
+   selected conversation provider. Revocation does not erase past conversations.
+
+**Setup Guide…** in the same Settings pane provides the complete offline guide,
+including updates, troubleshooting, removal, privacy, and Stop/Escape semantics.
+**More → Show Companion Files** reveals packaged technical documentation.
+
+### Updating, troubleshooting, and removing
+
+- Updating Lima does **not** install/update the add-on in browsers. Save the newly
+  bundled XPI, use **Install Add-on From File…** in each profile, review consent,
+  check its version, reconnect, and retest. The unlisted companion is bundled
+  with Lima, not a public AMO store listing.
+- If Lima moves, choose **Repair Native Helper…** from its new location. Keep
+  Lima running, enable the bridge, reconnect, and restart the browser if needed.
+- Signature/incompatibility error: update the browser and obtain a fresh official
+  XPI; do not disable security settings or use temporary loading as a release fix.
+- Empty tabs or denied reads: use a normal HTTPS tab, grant its exact site, and
+  refresh. A different origin/subdomain requires its own grant.
+- Waiting actions: open the companion popup or choose **Stop** and retry. If the
+  tab navigated, refresh tabs before retrying. Cross-site navigation requires both
+  sites; persistent interactions require both sites to be explicitly trusted.
+- **Stop** cancels pending work; **Escape** navigates. Cancellation cannot undo
+  an action already dispatched. Connection tests are not full live acceptance.
+- Turn off the bridge to stop connections. **Remove Helper…** removes only Lima's
+  native registrations. Uninstall the companion separately in **about:addons**;
+  disabling the bridge does not itself erase browser grants or past AI context.
+
 ## What is implemented
 
 Lima hosts a user-only Unix socket. A bundled native-messaging executable relays
@@ -93,7 +151,7 @@ Packaging checks source equality and signature metadata, signs the native helper
 with the same identity as Lima, and verifies the helper's signature. Only the
 browser can establish Mozilla signature trust. Install the signed XPI using the
 browser Add-ons manager's **Install Add-on From File** action. Settings reveals
-the bundled XPI when one is supplied.
+the bundled XPI with **Save Companion XPI…** (defaulting to Downloads) and **Setup Guide…**. The guide and packaged README cover installation, per-site reading versus interaction permissions, AI data flow, revocation, updates, and troubleshooting. The package verifier is bundled for Lima's exporter.
 
 The companion currently uses Firefox WebExtension manifest v2. This is separate
 from **Lima extension manifest v3**, which remains unchanged for Lima commands,
@@ -175,8 +233,14 @@ claim cryptographic Mozilla trust or live acceptance.
 
 ### Package and release
 
-Pass the exact returned/downloaded XPI into the existing packaging and release
-workflow, not a repacked ZIP:
+Every release must carry a newly signed XPI when companion sources/version change.
+Preserve the exact downloaded `.xpi` bytes: verify its source and signature metadata,
+then supply its absolute path as `LIMA_BROWSER_BRIDGE_SIGNED_XPI` to both the
+model-free and full package builds. Never overwrite an older published tag/release;
+stage a new app version as a draft. Verify each built app contains the XPI matching
+the approved receipt digest before verifying app signatures and release assets.
+
+For a local package, pass the exact XPI, not a repacked ZIP:
 
 ```sh
 LIMA_BROWSER_BRIDGE_SIGNED_XPI=/absolute/path/to/signed.xpi make package
@@ -253,4 +317,4 @@ helper's split-frame duplex stdio/socket relay.
 - Verify Activity Shelf Stop and Escape navigation while an approval is pending.
 - Test with multiple browser profiles/sessions and explicitly choose the session.
 
-No signed artifact or live-browser installation is implied by automated test success.
+No signed artifact or live-browser installation is implied by automated test success. When source/version changes, provide a newly signed source-matching XPI to the release build; this supplies a safe replacement for the bundled companion in a future app release without rewriting its signed bytes.

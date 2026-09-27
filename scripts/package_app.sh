@@ -66,6 +66,13 @@ python3 "$PROJECT_DIRECTORY/scripts/package_browser_bridge.py" "$CONTENTS_DIRECT
 if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI:-}" ]]; then
     python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$LIMA_BROWSER_BRIDGE_SIGNED_XPI" --require-signature
     cp "$LIMA_BROWSER_BRIDGE_SIGNED_XPI" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-signed.xpi"
+    if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}" ]]; then
+        actual_xpi_sha="$(shasum -a 256 "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-signed.xpi" | awk '{print $1}')"
+        [[ "$actual_xpi_sha" == "$LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256" ]] || {
+            echo "The bundled signed XPI does not match LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256." >&2
+            exit 1
+        }
+    fi
 fi
 install_name_tool -add_rpath '@loader_path/../Frameworks' "$CONTENTS_DIRECTORY/MacOS/Lima"
 # SwiftPM's executable links Sparkle through @rpath/@loader_path. Copy the
@@ -142,6 +149,8 @@ mkdir -p "$CONTENTS_DIRECTORY/Resources/Documentation"
 cp "$PROJECT_DIRECTORY/docs/EXTENSION_AUTHORING_FOR_AI.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSION_AUTHORING_FOR_AI.md"
 cp "$PROJECT_DIRECTORY/docs/EXTENSIONS.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSIONS.md"
 cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY/Resources/Documentation/extension-manifest.schema.json"
+cp "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
+chmod 644 "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension"
 cp "$PROJECT_DIRECTORY/docs/starter-extension/manifest.json" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/manifest.json"
 cp "$PROJECT_DIRECTORY/docs/starter-extension/README.md" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/README.md"

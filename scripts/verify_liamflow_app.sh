@@ -23,6 +23,10 @@ require "the browser helper signature is invalid" codesign --verify --strict "$A
 require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"
 if [[ -f "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" ]]; then
     require "the signed browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" --require-signature
+    if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}" ]]; then
+        actual_xpi_sha="$(shasum -a 256 "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" | awk '{print $1}')"
+        [[ "$actual_xpi_sha" == "$LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256" ]] || { echo "Verification failed: bundled browser companion SHA-256 does not match the approved input" >&2; exit 1; }
+    fi
 fi
 require "Sparkle.framework is missing" test -d "$SPARKLE_FRAMEWORK"
 require "the Sparkle framework binary is missing" test -x "$SPARKLE_FRAMEWORK/Versions/B/Sparkle"
@@ -38,6 +42,7 @@ if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
     [[ "$(shasum -a 256 "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | awk '{print $1}')" == ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4 ]] || { echo 'Verification failed: the dictation model checksum is incorrect' >&2; exit 1; }
 fi
 require "the extension documentation is missing" test -f "$RESOURCES/Documentation/EXTENSIONS.md"
+require "the bundled browser verifier is missing" test -f "$RESOURCES/Documentation/verify_browser_bridge_package.py"
 require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
 require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"
