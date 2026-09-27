@@ -7,3 +7,6 @@ dist/
 Downloads/
 Packaging/RayPlacement.iconset/
 Packaging/Vendor/Whisper/model/ggml-small.en*.bin
+# Ephemeral GitHub OIDC credentials and verified GCS release-only companion input.
+gha-creds-*.json
+Packaging/Vendor/BrowserBridge/

@@ -15,6 +15,12 @@ for script in \
     /bin/zsh -n "$ROOT/scripts/$script"
 done
 
+# These runner-created inputs are never source changes. Their locations are
+# ignored while their expected digest and destination remain tracked in the
+# manifest above and are verified by prepare_build_assets.sh.
+git -C "$ROOT" check-ignore -q gha-creds-ci.json
+git -C "$ROOT" check-ignore -q Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi
+
 /usr/bin/python3 - "$MANIFEST" "$ROOT" <<'PY'
 import hashlib
 import json

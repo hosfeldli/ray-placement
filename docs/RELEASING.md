@@ -540,6 +540,11 @@ It stages a verified draft by default. The manual dispatch has a default-off
 `release_publish.sh --tag vX.Y.Z --yes` step on that ephemeral runner only after
 draft verification succeeds. Leaving it off keeps the draft for separate review.
 
+GitHub’s temporary `gha-creds-*.json` file and the GCS-delivered signed companion
+path are ignored as runner material, not source. The companion’s repository-tracked
+asset manifest still pins its destination and SHA-256, and
+`prepare_build_assets.sh` verifies it before packaging.
+
 ### Persistent cloud resources
 
 The isolated project is `lima-build-prod`. It contains the private build-input
