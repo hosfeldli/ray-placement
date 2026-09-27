@@ -67,6 +67,105 @@ from **Lima extension manifest v3**, which remains unchanged for Lima commands,
 tools, skills, and agents. A signed artifact and successful installation in the
 target Zen/Firefox versions remain required release checks.
 
+## AMO signing workflow (unlisted)
+
+The companion uses Mozilla's **unlisted** channel and is bundled with Lima's
+existing GitHub app distribution. This is not an AMO public listing and does not
+change Lima's local application-signing trust anchor.
+
+The manifest declares `browsingActivity` and `websiteContent` because URLs,
+titles, visible text, links and selection can leave the browser for Lima.
+Desktop Gecko **140+** is required for built-in data consent; the Android
+declaration uses 142 to avoid implying support for an older consent flow.
+The native helper is **macOS-only**; that declaration is not Android support.
+Exact-site grants remain separately required. Installed Zen 1.22.3b reports
+Gecko 156.0.1, which meets the declared minimum; this is not installation proof.
+
+### Local credentials
+
+Create an AMO developer account and API credentials through the
+[Mozilla Developer Hub](https://addons.mozilla.org/en-US/developers/).
+Do not paste credentials in chat or put them in shell arguments, source files,
+`.env` files, or logs. Run locally in an interactive Terminal:
+
+```sh
+swift scripts/setup_browser_bridge_signing.swift
+python3 scripts/browser_bridge_signing.py status
+```
+
+The Swift helper uses hidden prompts and stores the issuer and secret directly
+in macOS Keychain under account `lima-browser-bridge`, services
+`com.lima.browser-bridge.amo-issuer` and
+`com.lima.browser-bridge.amo-secret`. It replaces only these two entries.
+A macOS Keychain access prompt may need local approval. The status command only
+checks entry presence; it does not establish successful AMO authentication.
+`swift scripts/setup_browser_bridge_signing.swift --check` compiles the helper
+without reading or changing Keychain.
+
+### Prepare, then explicitly submit
+
+Use a supported Node runtime (Node 22.13+ on the 22 line, or Node 24+).
+Install pinned local tooling without npm lifecycle scripts:
+
+```sh
+npm install --prefix build/browser-bridge-tools --no-audit --no-fund --ignore-scripts --save-exact web-ext@10.7.0
+make bridge-signing-prepare
+make bridge-test
+```
+
+Preparation lints with warnings treated as errors, stages only the seven reviewed
+companion files, builds an unsigned package and verifies its source contents.
+It does not contact AMO. Signing is a distinct upload:
+
+```sh
+python3 scripts/browser_bridge_signing.py sign --submit
+```
+
+The helper retrieves the two Keychain values into the signing subprocess
+environment, never command arguments. It disables web-ext config discovery,
+discards ambient web-ext/Node/proxy overrides, fixes Mozilla's production API and
+the unlisted channel, and suppresses raw network output. A per-version receipt
+under `build/browser-bridge-signing/` prevents blind repeat submissions after an
+interruption. Approval may outlast the local wait: check the AMO dashboard before
+retrying. Do not delete a submission receipt merely to force another upload.
+Download an already-approved XPI from AMO rather than submitting the same version
+again, then verify it with:
+
+```sh
+python3 scripts/verify_browser_bridge_package.py /absolute/path/to/signed.xpi --require-signature
+```
+
+A successful synchronous submission writes
+`build/browser-bridge-signing/<version>/lima-browser-bridge-signed.xpi`
+and records its SHA-256 and source digest. Neither the receipt nor offline tests
+claim cryptographic Mozilla trust or live acceptance.
+
+### Package and release
+
+Pass the exact returned/downloaded XPI into the existing packaging and release
+workflow, not a repacked ZIP:
+
+```sh
+LIMA_BROWSER_BRIDGE_SIGNED_XPI=/absolute/path/to/signed.xpi make package
+```
+
+Install that XPI in Zen through `about:addons` → gear menu →
+**Install Add-on From File**, accept the browser's permission/consent prompt, and
+run the manual matrix below against the packaged app. Firefox acceptance is a
+separate gate if Firefox support is claimed.
+
+Only after signing, installation and live acceptance pass, use
+`docs/RELEASING.md` to prepare a **new** app version/tag and stage a GitHub draft.
+Keep `LIMA_BROWSER_BRIDGE_SIGNED_XPI` set for the release build so both app
+variants include the same companion. Do not overwrite an existing published
+release. Public publication remains a separate reviewed step; the generic
+release scripts do not by themselves certify the manual bridge/provider/device
+matrix. Updating the website is outside this app-release workflow.
+
+References:
+- [Mozilla signing](https://extensionworkshop.com/documentation/develop/getting-started-with-web-ext/)
+- [Firefox built-in data consent](https://extensionworkshop.com/documentation/develop/firefox-builtin-data-consent/)
+
 ## Privacy and lifecycle
 
 - HTTPS origins only; no credential-bearing URLs, nondefault ports, wildcard

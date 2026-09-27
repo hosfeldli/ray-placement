@@ -108,6 +108,44 @@ UI previews use fixture data. Screenshots/accessibility inspection are not
 substitutes for these interaction checks. The inspected AI menu expansion defect
 is visibly corrected; the Notes table fixture is readable and aligned.
 
+## AMO preparation follow-up
+
+Starting checkpoint: `f439b29`. The chosen route is an **unlisted** Mozilla-signed
+companion bundled through Lima's existing GitHub app release workflow.
+
+- Added `scripts/browser_bridge_signing.py`: pinned web-ext, exact seven-file
+  staging, Keychain-only credentials, fixed AMO destination/channel, explicit
+  submission, private diagnostics and per-version no-blind-retry receipts.
+- Added `scripts/setup_browser_bridge_signing.swift`: local hidden prompts and
+  direct Security-framework Keychain writes; its no-side-effect compile check
+  passed.
+- Declared browsing activity and website content transmission; required built-in
+  browser data consent and clarified the popup disclosure. Per-site grants and
+  private-window exclusion are unchanged.
+- **11 offline signing tests passed**, **16 companion tests passed**, and the
+  real debug native-helper smoke test passed. Simulated signing in unit tests
+  uses deliberately fake signature metadata, not Mozilla-signed artifacts.
+- Mozilla `web-ext 10.7.0` lint completed with **0 errors, notices or warnings**.
+  Python syntax and `git diff --check` passed. Tool installation under Node
+  23.10.0 emitted transitive engine warnings; use the documented supported Node
+  22/24 runtime for reproducible tooling.
+- Updated unsigned XPI source verification passed; its SHA-256 is
+  `c6c756ac6333187930051e477e421075f2e770c290b78b368a35f4b4741aa868`.
+  The earlier hash above belongs to the preceding reviewed companion source.
+- Zen **is installed**: 1.22.3b, bundled Gecko 156.0.1. This meets the manifest
+  minimum but is not evidence of companion installation. Standalone Firefox was
+  not found at `/Applications/Firefox.app`.
+- GitHub authentication was available; the branch was 30 commits ahead of its
+  upstream before this preparation checkpoint. No push, release version change,
+  immutable tag, draft upload or public publication was performed.
+- AMO credential provisioning/authentication, actual submission/download, signed
+  XPI browser trust, packaged-app acceptance and live browser/provider/device
+  checks are **pending**. The existing app package predates these companion
+  changes and must be rebuilt with the actual signed XPI.
+- See `docs/BROWSER_BRIDGE.md` for setup and interrupted-submission recovery.
+  The full application suite's prior **237-test** checkpoint above is retained;
+  this follow-up did not rerun or claim new live-provider tests.
+
 ## Delivery boundary
 
 `build/Lima.app` is a locally signed, verified build of the source checkpoint.

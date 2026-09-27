@@ -6,12 +6,16 @@ MODULE_CACHE_DIRECTORY := $(SCRATCH_DIRECTORY)/module-cache
 SWIFT_ENV := CLANG_MODULE_CACHE_PATH=$(MODULE_CACHE_DIRECTORY) SWIFTPM_MODULECACHE_OVERRIDE=$(MODULE_CACHE_DIRECTORY)
 VISUAL_SCENARIO ?= ai-conversation
 
-.PHONY: build test package verify run visual visual-lab clean bridge-test bridge-package
+.PHONY: build test package verify run visual visual-lab clean bridge-test bridge-package bridge-signing-prepare
 
 bridge-test:
+	python3 Tests/BrowserBridgeTests/signing_test.py
 	node --test Tests/BrowserBridgeTests/*.test.cjs
 	swift build --product LimaBrowserBridgeHost
 	python3 Tests/BrowserBridgeTests/native_host_smoke.py
+
+bridge-signing-prepare:
+	python3 scripts/browser_bridge_signing.py prepare
 
 bridge-package:
 	python3 scripts/package_browser_bridge.py
