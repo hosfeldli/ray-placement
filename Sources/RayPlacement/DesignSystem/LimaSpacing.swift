@@ -85,30 +85,30 @@ enum LimaDesign {
     static var borderOpacity: Double { AppContrastMode.current.borderOpacity }
     static var selectedBorderOpacity: Double { AppContrastMode.current.selectedBorderOpacity }
 
-    static var windowBackground: Color { LimaColors.windowBackground }
-    static var sidebarBackground: Color { LimaColors.sidebarBackground }
-    static var controlFill: Color { LimaColors.raisedSurface }
-    static var controlHoverFill: Color { LimaColors.hoverFill }
-    static var selectedFill: Color { LimaColors.selectedFill }
-    static var recessedFill: Color { LimaColors.recessedSurface }
-    static var editorFill: Color { LimaColors.editorBackground }
-    static var statusFill: Color { LimaColors.raisedSurface }
-    static var separator: Color { LimaColors.separator.opacity(AppContrastMode.current.separatorOpacity > 0.13 ? 0.95 : 0.72) }
-    static var controlBorder: Color { LimaColors.border }
-    static var controlHoverBorder: Color { LimaColors.focusedBorder.opacity(0.66) }
-    static var activeControlFill: Color { LimaColors.accentSoft }
-    static var activeControlBorder: Color { LimaColors.focusedBorder.opacity(0.78) }
-    static var primaryText: Color { LimaColors.primaryText }
-    static var secondaryText: Color { LimaColors.secondaryText }
-    static var tertiaryText: Color { LimaColors.tertiaryText }
-    static var disabledText: Color { LimaColors.tertiaryText.opacity(0.72) }
+    static var windowBackground: Color { LimaTheme.windowBackground }
+    static var sidebarBackground: Color { LimaTheme.surfaceSecondary }
+    static var controlFill: Color { LimaTheme.surfaceRaised }
+    static var controlHoverFill: Color { LimaTheme.surfaceSecondary }
+    static var selectedFill: Color { LimaTheme.surfaceSelected }
+    static var recessedFill: Color { LimaTheme.surfaceSecondary }
+    static var editorFill: Color { LimaTheme.fieldBackground }
+    static var statusFill: Color { LimaTheme.surfaceRaised }
+    static var separator: Color { LimaTheme.borderSubtle }
+    static var controlBorder: Color { LimaTheme.fieldBorder }
+    static var controlHoverBorder: Color { LimaTheme.borderStrong }
+    static var activeControlFill: Color { LimaTheme.accentSoft }
+    static var activeControlBorder: Color { LimaTheme.fieldFocusedBorder }
+    static var primaryText: Color { LimaTheme.textPrimary }
+    static var secondaryText: Color { LimaTheme.textSecondary }
+    static var tertiaryText: Color { LimaTheme.textTertiary }
+    static var disabledText: Color { LimaTheme.textDisabled }
     static let disabledOpacity: Double = 0.46
-    static var focusFill: Color { LimaColors.accentSoft }
-    static var focusBorder: Color { LimaColors.focusedBorder }
-    static var highContrastBorder: Color { LimaColors.primaryText.opacity(0.62) }
-    static var highContrastFocus: Color { LimaColors.focusedBorder }
-    static var surfaceHighlight: Color { LimaColors.primaryText.opacity(0.10) }
-    static var surfaceBorder: Color { LimaColors.border }
+    static var focusFill: Color { LimaTheme.accentSoft }
+    static var focusBorder: Color { LimaTheme.fieldFocusedBorder }
+    static var highContrastBorder: Color { LimaTheme.borderStrong }
+    static var highContrastFocus: Color { LimaTheme.fieldFocusedBorder }
+    static var surfaceHighlight: Color { LimaTheme.surfaceSecondary }
+    static var surfaceBorder: Color { LimaTheme.borderSubtle }
     static var success: Color { LimaColors.success }
     static var warning: Color { LimaColors.warning }
     static var danger: Color { LimaColors.danger }

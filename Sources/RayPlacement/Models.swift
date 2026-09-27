@@ -16,6 +16,108 @@ enum PickerSurface: Equatable {
     case timezone
 }
 
+enum ExtensionSurfaceKind: Equatable {
+    case form
+    case generator
+    case picker
+    case textTool
+    case liveOutput
+}
+
+struct ExtensionSurfaceSession: Equatable {
+    let id: String
+    let handler: ExtensionSurfaceHandlerKey
+    let title: String
+    let kind: ExtensionSurfaceKind
+    let preferredHeight: CGFloat
+    let canPopOut: Bool
+    let remembersState: Bool
+    let timeoutPolicy: LauncherSurfaceTimeoutPolicy
+    var isPinned: Bool
+    var lastInteractionAt: Date
+
+    init(
+        id: String,
+        handler: ExtensionSurfaceHandlerKey = .generic,
+        title: String,
+        kind: ExtensionSurfaceKind,
+        preferredHeight: CGFloat,
+        canPopOut: Bool,
+        remembersState: Bool = true,
+        timeoutPolicy: LauncherSurfaceTimeoutPolicy = .global,
+        isPinned: Bool = false,
+        lastInteractionAt: Date? = nil
+    ) {
+        self.id = id
+        self.handler = handler
+        self.title = title
+        self.kind = kind
+        self.preferredHeight = preferredHeight
+        self.canPopOut = canPopOut
+        self.remembersState = remembersState
+        self.timeoutPolicy = timeoutPolicy
+        self.isPinned = isPinned
+        self.lastInteractionAt = lastInteractionAt ?? Date()
+    }
+}
+
+@MainActor
+final class InlineExtensionSurfaceModel: ObservableObject {
+    @Published private(set) var form: ExtensionFormViewModel?
+    private(set) var command: LoadedExtensionCommand?
+    var onExecutionStateChanged: ((Bool) -> Void)?
+    private var rememberedForms: [String: ExtensionFormViewModel] = [:]
+
+    var canRun: Bool { form?.canRun == true }
+    var hasOutput: Bool { form?.result?.output.isEmpty == false }
+
+    func configure(
+        command: LoadedExtensionCommand,
+        remembersState: Bool = true,
+        execute: @escaping ([String: String], @escaping (Result<ExtensionExecutor.FormResult, Error>) -> Void) -> Void
+    ) {
+        self.command = command
+        let key = "\(command.extensionID).\(command.command.id)"
+        let definition = command.command.action.form!
+        // Secure fields may be used while the current form is open, but must
+        // never be retained in the reusable surface cache. Forms containing a
+        // secure field therefore start clean when reopened.
+        let mayRemember = remembersState && !definition.fields.contains { $0.type == .secure }
+        if mayRemember,
+           let remembered = rememberedForms[key],
+           remembered.definition == definition {
+            remembered.onExecutionStateChanged = onExecutionStateChanged
+            form = remembered
+            return
+        }
+        if !mayRemember {
+            rememberedForms.removeValue(forKey: key)
+            // A previously remembered version of the same command must not
+            // leak into a no-memory or secure-field session later.
+            SurfaceStateCache.shared.remove(surfaceID: key)
+        }
+        let fresh = ExtensionFormViewModel(
+            command: command,
+            definition: definition,
+            remembersState: mayRemember,
+            execute: execute
+        )
+        fresh.onExecutionStateChanged = onExecutionStateChanged
+        if mayRemember {
+            rememberedForms[key] = fresh
+        }
+        form = fresh
+    }
+
+    func run() {
+        form?.run()
+    }
+
+    func copyOutput() {
+        form?.copyOutput()
+    }
+}
+
 enum LauncherMode: Equatable {
     case root
     case files
@@ -23,7 +125,10 @@ enum LauncherMode: Equatable {
     case clipboard
     case history
     case terminal
+    case contextShelf
     case writingReview(WritingReview)
+    case extensionSurface(ExtensionSurfaceSession)
+    case surface(LauncherSurfaceSession)
     case output(title: String, text: String, state: LauncherOutputState)
 
     var title: String? {
@@ -37,7 +142,10 @@ enum LauncherMode: Equatable {
         case .clipboard: return "Clipboard History"
         case .history: return "Command History"
         case .terminal: return "Terminal"
+        case .contextShelf: return "Context Shelf"
         case .writingReview: return "Writing Review"
+        case .extensionSurface(let session): return session.title
+        case .surface(let session): return session.surface.title
         case .output(let title, _, _): return title
         }
     }
@@ -118,6 +226,14 @@ enum WindowLayout: String, CaseIterable {
     }
 }
 
+enum BuiltinInvocation: Equatable {
+    case password(length: Int)
+    case timezone(query: String)
+    case note(title: String)
+    case terminal(path: String)
+    case format(kind: String)
+}
+
 enum SystemAction {
     case lockScreen
     case sleep
@@ -127,20 +243,60 @@ enum SystemAction {
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
+    case openAIChat
     case openQuickNote
     case toggleNoteDictation
     case openTerminal
+    case openContextShelf
+    case addSelectionToShelf
     case openPermissionCenter
     case exportDiagnostics
     case openWorkflows
     case openSettings
+    case checkForUpdates
     case openDeveloperGrammarSettings
+    case openGrammarDebugger
     case quit
+}
+
+enum LauncherFileAction: String, CaseIterable {
+    case open
+    case quickLook
+    case reveal
+    case copyPath
+    case openTerminalHere
+    case addToShelf
+    case sendToNote
+
+    var title: String {
+        switch self {
+        case .open: return "Open"
+        case .quickLook: return "Quick Look"
+        case .reveal: return "Reveal"
+        case .copyPath: return "Copy Path"
+        case .openTerminalHere: return "Open Terminal Here"
+        case .addToShelf: return "Add to Shelf"
+        case .sendToNote: return "Send to Note"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .open: return "arrow.up.forward.app"
+        case .quickLook: return "eye"
+        case .reveal: return "finder"
+        case .copyPath: return "doc.on.doc"
+        case .openTerminalHere: return "terminal"
+        case .addToShelf: return "tray.and.arrow.down"
+        case .sendToNote: return "note.text.badge.plus"
+        }
+    }
 }
 
 enum LauncherAction {
     case launchApplication(URL)
     case openFile(URL)
+    case fileAction(URL, LauncherFileAction)
     case revealFile(URL)
     case openURL(URL)
     case copyText(String)
@@ -153,10 +309,41 @@ enum LauncherAction {
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
     case universalSearch(LimaSearchResult)
+    case builtinInvocation(BuiltinInvocation)
     case workflow(UUID)
+    case macro(UUID)
+    case extensionOutput(UUID)
+    case note(UUID)
+    case shelfItem(UUID)
+    case clipboardEntry(UUID)
     case window(WindowLayout)
     case system(SystemAction)
     case noOp
+    case useWith(LimaContextValue)
+    case toggleFavorite(String)
+    case forgetRanking(String)
+}
+
+enum LauncherActionRole: String, Hashable {
+    case primary
+    case secondary
+    case destructive
+}
+
+struct LauncherItemAction: Identifiable {
+    let id: String
+    let title: String
+    let symbol: String
+    let shortcut: String?
+    let role: LauncherActionRole
+    let action: LauncherAction
+}
+
+enum LimaAliasKind: String, Codable, Sendable {
+    case exactTitle
+    case builtInAlias
+    case extensionAlias
+    case userAlias
 }
 
 struct LauncherItem: Identifiable {
@@ -168,6 +355,8 @@ struct LauncherItem: Identifiable {
     let action: LauncherAction
     var shortcut: String?
     var accessory: String?
+    /// Search provenance used to keep exact titles ahead of aliases.
+    var aliasKind: LimaAliasKind?
 
     var searchableText: String {
         ([title, subtitle] + keywords).joined(separator: " ")
@@ -232,8 +421,17 @@ extension Notification.Name {
     static let rayPlacementActionShortcutsChanged = Notification.Name("RayPlacementActionShortcutsChanged")
     static let rayPlacementAccentChanged = Notification.Name("RayPlacementAccentChanged")
     static let rayPlacementAppearanceChanged = Notification.Name("RayPlacementAppearanceChanged")
+    static let rayPlacementNotesAppearanceChanged = Notification.Name("RayPlacementNotesAppearanceChanged")
     static let rayPlacementClipboardSettingsChanged = Notification.Name("RayPlacementClipboardSettingsChanged")
     static let rayPlacementExtensionsReloadRequested = Notification.Name("RayPlacementExtensionsReloadRequested")
     static let rayPlacementExtensionShortcutsChanged = Notification.Name("RayPlacementExtensionShortcutsChanged")
     static let rayPlacementCommandProfilesChanged = Notification.Name("RayPlacementCommandProfilesChanged")
+}
+
+
+extension LauncherMode {
+    var surfaceHandler: LauncherSurfaceHandlerKey? {
+        if case .surface(let session) = self { return session.surface.handler }
+        return nil
+    }
 }

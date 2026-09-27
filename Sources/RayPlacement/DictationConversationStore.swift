@@ -160,6 +160,38 @@ final class DictationConversationStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Appends a stable live-recognition delta to the current transcript segment
+    /// without inserting paragraph breaks between every speech callback.
+    func appendCommittedDelta(_ delta: String, to conversationID: UUID? = nil) {
+        guard !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        if conversationID == nil, activeConversationID == nil { beginConversation() }
+        guard let identifier = conversationID ?? activeConversationID else { return }
+        let index: Int
+        if let existingIndex = conversations.firstIndex(where: { $0.id == identifier }) {
+            index = existingIndex
+        } else {
+            guard conversationID != nil, conversations.count < Self.maximumConversations else {
+                lastError = "Dictation could not be saved because its target conversation is unavailable."
+                return
+            }
+            conversations.insert(DictationConversation(id: identifier), at: 0)
+            index = 0
+        }
+
+        let currentLength = conversations[index].characterCount
+        let available = Self.maximumCharactersPerConversation - currentLength
+        guard available > 0 else { return }
+        let boundedDelta = String(delta.prefix(available))
+        if conversations[index].segments.isEmpty {
+            conversations[index].segments = [boundedDelta.trimmingCharacters(in: .whitespacesAndNewlines)]
+        } else if let last = conversations[index].segments.indices.last {
+            conversations[index].segments[last] += boundedDelta
+        }
+        conversations[index].modifiedAt = Date()
+        selectedConversationID = identifier
+        scheduleSave()
+    }
+
     func updateTranscript(_ transcript: String, for conversationID: UUID? = nil) {
         let identifier = conversationID ?? selectedConversationID
         guard let identifier,
@@ -193,6 +225,14 @@ final class DictationConversationStore: ObservableObject {
         self.activeConversationID = nil
         resumableConversationID = nil
         currentConversationID = lastSessionConversationID
+        scheduleSave()
+    }
+
+    func finishConversation(_ conversationID: UUID) {
+        guard let index = conversations.firstIndex(where: { $0.id == conversationID }) else { return }
+        conversations[index].isComplete = true
+        conversations[index].modifiedAt = Date()
+        selectedConversationID = conversationID
         scheduleSave()
     }
 

@@ -1,0 +1,86 @@
+name: Rehearse Lima cloud release credentials
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  rehearsal:
+    name: Verify WIF, secrets, assets, and archive
+    runs-on: macos-15
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
+      RAYPLACEMENT_SIGNING_MODE: self-signed-local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 1
+          lfs: true
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Configure Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Verify GCS build asset retrieval
+        shell: zsh {0}
+        env:
+          LIMA_BUILD_ASSET_BUCKET: ${{ vars.GCP_BUILD_ASSET_BUCKET }}
+        run: |
+          set -euo pipefail
+          rm -f Packaging/Vendor/Harper/harper-cli
+          ./scripts/prepare_build_assets.sh
+          ./scripts/test_cloud_release_configuration.sh
+
+      - name: Prepare and verify ephemeral signing identity
+        shell: zsh {0}
+        env:
+          LIMA_RELEASE_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+          LIMA_GCP_SIGNING_P12_SECRET: lima-signing-p12
+          LIMA_GCP_SIGNING_P12_PASSWORD_SECRET: lima-signing-p12-password
+          LIMA_GCP_SPARKLE_PRIVATE_KEY_SECRET: lima-sparkle-private-key
+        run: |
+          set -euo pipefail
+          ./scripts/ci_prepare_signing.sh
+          cp /usr/bin/true "$RUNNER_TEMP/lima-signing/codesign-probe"
+          codesign --force --sign 'RayPlacement Local Code Signing' "$RUNNER_TEMP/lima-signing/codesign-probe"
+          codesign --verify --strict "$RUNNER_TEMP/lima-signing/codesign-probe"
+
+      - name: Verify persisted signing environment
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          test -s "$SPARKLE_EDDSA_PRIVATE_KEY_FILE"
+          test -f "$LIMA_RELEASE_SIGNING_KEYCHAIN"
+          security find-identity -v -p codesigning "$LIMA_RELEASE_SIGNING_KEYCHAIN" | grep -Fq 'RayPlacement Local Code Signing'
+
+      - name: Verify private archive write and read
+        shell: zsh {0}
+        env:
+          LIMA_RELEASE_ARCHIVE_BUCKET: ${{ vars.GCP_RELEASE_ARCHIVE_BUCKET }}
+        run: |
+          set -euo pipefail
+          probe="$RUNNER_TEMP/lima-archive-probe.json"
+          printf '{"schemaVersion":1,"kind":"credential-rehearsal","runId":"%s"}\n' "$GITHUB_RUN_ID" > "$probe"
+          remote="gs://$LIMA_RELEASE_ARCHIVE_BUCKET/builds/rehearsal-$GITHUB_RUN_ID/credential-probe.json"
+          gcloud storage cp --if-generation-match=0 "$probe" "$remote"
+          gcloud storage cp "$remote" "$RUNNER_TEMP/lima-archive-probe-restored.json"
+          cmp -s "$probe" "$RUNNER_TEMP/lima-archive-probe-restored.json"
+
+      - name: Remove ephemeral signing material
+        if: ${{ always() }}
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
+          ./scripts/ci_cleanup_signing.sh

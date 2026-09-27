@@ -164,6 +164,11 @@ final class MusicNowPlayingService: ObservableObject {
         outputVolume = clamped
     }
 
+    func adjustOutputVolume(by scrollDelta: Double) {
+        let step = min(0.12, max(0.01, abs(scrollDelta) / 160.0))
+        setOutputVolume(outputVolume + (scrollDelta > 0 ? step : -step))
+    }
+
     private func refreshOutputVolume() {
         outputVolume = Self.defaultOutputVolume() ?? outputVolume
         if !hasLiveOutputMeter { outputAudioLevel = outputVolume }

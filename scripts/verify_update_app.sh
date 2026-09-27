@@ -44,9 +44,30 @@ LEAF="$CERTIFICATE_DIRECTORY/cert0"
 CERTIFICATE_HASH="$(/usr/bin/openssl x509 -inform der -in "$LEAF" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print toupper($1)}')"
 [[ "${CERTIFICATE_HASH:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || fail 'the signing certificate fingerprint is not pinned'
 
-# Never accept links or special files anywhere inside the candidate bundle.
-while IFS= read -r item; do
-    [[ -L "$item" ]] && fail "symbolic link found: $item"
-    [[ -f "$item" || -d "$item" ]] || fail "special file found: $item"
-done < <(/usr/bin/find "$APP" -mindepth 1 -print)
+# Accept only safe relative symlinks that resolve inside the app bundle. Signed
+# frameworks such as Sparkle intentionally use internal links (Headers,
+# Versions/Current, and framework executables); rejecting every symlink would
+# make a valid framework impossible to update. Reject absolute, escaping,
+# broken, and special-file entries before code-signature checks.
+APP_ROOT="$APP" /usr/bin/python3 - <<'PY'
+import os
+import stat
+
+root = os.path.abspath(os.environ["APP_ROOT"])
+for parent, directories, files in os.walk(root, followlinks=False):
+    for name in directories + files:
+        path = os.path.join(parent, name)
+        info = os.lstat(path)
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            if os.path.isabs(target):
+                raise SystemExit(f"Update verification failed: absolute symbolic link found: {path}")
+            resolved = os.path.realpath(path)
+            if os.path.commonpath((root, resolved)) != root:
+                raise SystemExit(f"Update verification failed: symbolic link escapes app: {path}")
+            if not os.path.exists(path):
+                raise SystemExit(f"Update verification failed: broken symbolic link found: {path}")
+        elif not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+            raise SystemExit(f"Update verification failed: special file found: {path}")
+PY
 echo "Verified signed Lima update: $APP"

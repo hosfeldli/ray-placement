@@ -7,6 +7,7 @@ source "$SCRIPT_DIRECTORY/release_config.sh"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
+SPARKLE_FRAMEWORK="$APP_DIRECTORY/Contents/Frameworks/Sparkle.framework"
 SOURCE_INFO="$PROJECT_DIRECTORY/Packaging/Info.plist"
 
 require() {
@@ -17,6 +18,20 @@ require() {
 
 require "Lima.app is missing" test -d "$APP_DIRECTORY"
 require "the Lima executable is missing" test -x "$BINARY"
+require "the browser native helper is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the browser helper signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"
+if [[ -f "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" ]]; then
+    require "the signed browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" --require-signature
+    if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}" ]]; then
+        actual_xpi_sha="$(shasum -a 256 "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" | awk '{print $1}')"
+        [[ "$actual_xpi_sha" == "$LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256" ]] || { echo "Verification failed: bundled browser companion SHA-256 does not match the approved input" >&2; exit 1; }
+    fi
+fi
+require "Sparkle.framework is missing" test -d "$SPARKLE_FRAMEWORK"
+require "the Sparkle framework binary is missing" test -x "$SPARKLE_FRAMEWORK/Versions/B/Sparkle"
+require "Sparkle's updater helper is missing" test -d "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+require "Sparkle's XPC services are missing" test -d "$SPARKLE_FRAMEWORK/Versions/B/XPCServices"
 require "the app icon is missing" test -f "$RESOURCES/RayPlacement.icns"
 require "the Harper executable is missing" test -x "$RESOURCES/Tools/harper-cli"
 require "the Python grammar checker is missing" test -x "$RESOURCES/Tools/PythonGrammar/grammar_check.py"
@@ -27,6 +42,7 @@ if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
     [[ "$(shasum -a 256 "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | awk '{print $1}')" == ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4 ]] || { echo 'Verification failed: the dictation model checksum is incorrect' >&2; exit 1; }
 fi
 require "the extension documentation is missing" test -f "$RESOURCES/Documentation/EXTENSIONS.md"
+require "the bundled browser verifier is missing" test -f "$RESOURCES/Documentation/verify_browser_bridge_package.py"
 require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
 require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"
@@ -36,6 +52,7 @@ require "the update verifier is missing" test -x "$RESOURCES/Updater/verify_upda
 require "the trusted approval helper is missing" test -x "$RESOURCES/Updater/request_lima_update_approval.sh"
 require "the administrator approval dialog is missing" test -f "$RESOURCES/Updater/authorize_lima_update.applescript"
 require "Info.plist is invalid" plutil -lint "$APP_DIRECTORY/Contents/Info.plist"
+require "the executable is not linked to the embedded Sparkle framework" sh -c "(xcrun otool -L '$BINARY' 2>/dev/null || otool -L '$BINARY') | grep -q '@rpath/Sparkle.framework'"
 require "the app signature is invalid" codesign --verify --deep --strict "$APP_DIRECTORY"
 
 EXPECTED_IDENTITY="$(/usr/libexec/PlistBuddy -c 'Print :LimaUpdateExpectedSigningIdentity' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)"
@@ -52,13 +69,15 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     CERT_DIR="$(mktemp -d "${TMPDIR%/}/lima-package-cert.XXXXXX")"
     trap 'rm -rf "$CERT_DIR"' EXIT
     codesign -d --extract-certificates="$CERT_DIR/cert" "$APP_DIRECTORY" >/dev/null 2>&1
-    ACTUAL_CERTIFICATE="$(openssl x509 -in "$CERT_DIR/cert0" -outform der | shasum -a 256 | awk '{print toupper($1)}')"
+    ACTUAL_CERTIFICATE="$(openssl x509 -inform der -in "$CERT_DIR/cert0" -outform der | shasum -a 256 | awk '{print toupper($1)}')"
     [[ "${ACTUAL_CERTIFICATE:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || { echo 'Verification failed: signing certificate does not match policy' >&2; exit 1; }
 fi
 
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the display name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the executable name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIRECTORY/Contents/Info.plist")" == "dev.liam.lima" ]] || { echo "Verification failed: the bundle identifier is incorrect" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP_DIRECTORY/Contents/Info.plist")" == "https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml" ]] || { echo "Verification failed: Sparkle feed URL is missing or incorrect" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$APP_DIRECTORY/Contents/Info.plist")" == "fyOhQjqcI/f18TiRvtKyCSD5PM8RHUZtitjnZKLs+08=" ]] || { echo "Verification failed: Sparkle public EdDSA key is missing or incorrect" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :LSUIElement' "$APP_DIRECTORY/Contents/Info.plist")" == "false" ]] || { echo "Verification failed: Lima is not configured to appear in the Dock" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_DIRECTORY/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$SOURCE_INFO")" ]] || { echo "Verification failed: the app version does not match the release version" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_DIRECTORY/Contents/Info.plist")" == "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$SOURCE_INFO")" ]] || { echo "Verification failed: the app build number does not match the release build" >&2; exit 1; }

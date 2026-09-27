@@ -176,6 +176,11 @@ final class UpdateService: ObservableObject {
     }
 
     func checkForUpdates(manual: Bool) {
+        if SparkleMigrationBoundary.activeBackend == .sparkle {
+            statusText = "Sparkle is checking for Lima updates…"
+            SparkleUpdateService.shared.checkForUpdates()
+            return
+        }
         guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking for Lima updates…"
@@ -675,7 +680,7 @@ final class UpdateService: ObservableObject {
         if let result = consumePreviousUpdateResult(), !result.succeeded {
             finishWithError(UpdateError.helperFailed(result.message))
         } else if process.terminationStatus != 0 {
-            finishWithError(UpdateError.helperFailed("The local updater stopped unexpectedly. Open Settings → About for the update log location."))
+            finishWithError(UpdateError.helperFailed("The local updater stopped unexpectedly. Open Settings → General to check again or view release information."))
         }
     }
 }

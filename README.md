@@ -1,4 +1,4 @@
-# Lima 3.12.8
+# Lima 3.14.3
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, a small capability-oriented extension platform, Markdown notes, a real developer terminal, and private local dictation conversations without accounts or analytics.
 
@@ -6,7 +6,7 @@ Lima does not include or download a text-generation model. Writing correction ru
 
 ## Distribution note
 
-The `3.12.8` package is signed with Lima’s pinned local self-signed certificate because this release is distributed without an Apple Developer account. macOS may identify it as an application from an unidentified developer; use **Control-click → Open** the first time, then confirm the dialog. Updates are accepted only when they match Lima’s pinned local certificate.
+The `3.14.3` package is signed with Lima’s pinned local self-signed certificate because this release is distributed without an Apple Developer account. macOS may identify it as an application from an unidentified developer; use **Control-click → Open** the first time, then confirm the dialog. Updates are accepted only when they match Lima’s pinned local certificate.
 
 ## Install
 
@@ -84,7 +84,7 @@ Writing Check captures the exact current selection through a Copy transaction, i
 
 ## Other bundled extensions
 
-- **Password Generator** — cryptographically secure local passwords, length 8–128, selected character classes, ambiguous-character exclusion, entropy display, and copy
+- **Password Generator** — cryptographically secure local passwords, length 8–20, selected character classes, ambiguous-character exclusion, entropy display, and copy
 - **Document Formatter** — a dedicated temporary workspace for EDI, JSON, and XML; pretty/minify, validation, search, EDI delimiter detection and swapping, field inspection, and common transaction/envelope checks
 - **Emoji Picker** — the complete paged Unicode keyboard set with ranked aliases, fast bounded lookup, focus-aware paste, and automatic clipboard restoration; default double Command
 - **Focused File Launcher** — Finder-backed file/folder selection with a choice of any installed destination app
@@ -97,7 +97,7 @@ Formatter is separate from Notes and never appears as a note type.
 
 ## Extensions
 
-Extensions live under `~/Library/Application Support/Lima/Extensions/`. A manifest can open resources, use generic application/window/system/clipboard/picker capabilities, run a reviewed executable, or create a native form and output workflow. Schema v2 supports sections, conditional visibility, file and directory pickers, secure fields, dates, sliders, key/value editors, and bounded native action chains.
+Extensions live under `~/Library/Application Support/Lima/Extensions/`. Extension API v3 is inline-first. Commands can provide aliases, structured launcher arguments, reusable launcher surfaces, contextual input compatibility, and typed outputs. Lima renders supported forms, pickers, generators, and outputs inside the central launcher and provides shared Copy, Paste, Context Shelf, Notes, timeout, and pop-out behavior.
 
 See [docs/EXTENSIONS.md](docs/EXTENSIONS.md), the JSON [manifest schema](docs/extension-manifest.schema.json), and the [coding-agent authoring guide](docs/EXTENSION_AUTHORING_FOR_AI.md). `Examples/project-tools` is a small working example.
 
@@ -111,7 +111,7 @@ Writing resources are process-based and exit after each correction. Whisper proc
 
 ## Updates
 
-Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu and Settings. It never installs silently. After confirmation, the updater verifies the archive SHA-256 and prebuilt app version/build/signature, preserves the dictation model outside the app, and replaces the exact running app path using a staged bundle and rollback backup. It never redirects an installation in `/Applications` to `~/Applications`. Relaunch uses the exact installed path, and the new process checks a version/build/path receipt before reporting success. Settings → About → Update details can reveal the running copy in Finder.
+Lima checks its configured product-site update feed after startup and also offers **Check for Updates** in the menu, **Settings → General → Software Updates**, and the launcher command of the same name. It never installs silently. After confirmation, the updater verifies the archive SHA-256 and prebuilt app version/build/signature, preserves the dictation model outside the app, and replaces the exact running app path using a staged bundle and rollback backup. It never redirects an installation in `/Applications` to `~/Applications`. Relaunch uses the exact installed path, and the new process checks a version/build/path receipt before reporting success.
 
 No compiler or local signing key is required on another Mac. The downloaded signature is preserved; an existing local signing identity is reused only when it matches the currently installed app. On a fresh Mac, Lima verifies the bundled public certificate against its pinned SHA-256 fingerprint and the incoming app signature before asking macOS to add that certificate to the login keychain as a code-signing-only trust root. No private key is distributed. This one-time approval gives subsequent builds a stable identity for Accessibility; these builds are not Apple-notarized Developer ID distributions.
 

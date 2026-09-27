@@ -3,12 +3,14 @@ import RayPlacementCore
 import SwiftUI
 
 @MainActor
-final class FormatterWindowController: NSWindowController {
-    private let model = FormatterWorkspaceModel()
+final class FormatterWindowController: NSWindowController, NSWindowDelegate {
+    let model: FormatterWorkspaceModel
 
-    convenience init() {
+    init(model: FormatterWorkspaceModel) {
+        self.model = model
+
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1_020, height: 690),
+            contentRect: NSRect(x: 0, y: 0, width: 1_180, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -17,21 +19,27 @@ final class FormatterWindowController: NSWindowController {
             window,
             title: "Document Formatter",
             accessibilityLabel: "Lima document formatter",
-            minSize: NSSize(width: 760, height: 520)
+            minSize: NSSize(width: 900, height: 580)
         )
-        self.init(window: window)
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ZStack {
-            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+        super.init(window: window)
+        window.delegate = self
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content:
             FormatterWorkspaceView(model: model)
-                .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                .padding(10)
-        }))
+                .background(LimaColors.windowBackground)
+        ))
     }
+
+    required init?(coder: NSCoder) { nil }
 
     func present() {
         window?.center()
         if let window { WorkspaceWindowCoordinator.shared.present(window) }
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let closingWindow = notification.object as? NSWindow, closingWindow === window else { return }
+        LimaSurfaceCoordinator.shared.dismiss(.formatter)
     }
 
     func shutdown() { model.reset() }
@@ -67,16 +75,67 @@ final class FormatterWorkspaceModel: ObservableObject {
         }
     }
 
-    @Published var source = ""
-    @Published var output = ""
-    @Published var kind: FormatterDocumentKind = .automatic
-    @Published var style: FormatterOutputStyle = .pretty
-    @Published var segmentEnding: SegmentEnding = .detected
-    @Published var searchQuery = "" { didSet { refreshSearch() } }
+    @Published var source = "" {
+        didSet { persist(.string(source), key: "source") }
+    }
+    @Published var output = "" {
+        didSet { persist(.string(output), key: "output") }
+    }
+    @Published var kind: FormatterDocumentKind = .automatic {
+        didSet { persist(.string(kind.rawValue), key: "kind") }
+    }
+    @Published var style: FormatterOutputStyle = .pretty {
+        didSet { persist(.string(style.rawValue), key: "style") }
+    }
+    @Published var segmentEnding: SegmentEnding = .detected {
+        didSet { persist(.string(segmentEnding.rawValue), key: "segmentEnding") }
+    }
+    @Published var searchQuery = "" {
+        didSet {
+            persist(.string(searchQuery), key: "searchQuery")
+            refreshSearch()
+        }
+    }
     @Published private(set) var searchLines: [Int] = []
     @Published private(set) var result: DocumentFormatResult?
     @Published private(set) var errorMessage: String?
+    var onProcessingStateChanged: ((Bool) -> Void)?
     private let maximumCharacters = 1_000_000
+
+    init() {
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "source") {
+            source = value
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "output") {
+            output = value
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "kind"),
+           let restored = FormatterDocumentKind(rawValue: value) {
+            kind = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "style"),
+           let restored = FormatterOutputStyle(rawValue: value) {
+            style = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "segmentEnding"),
+           let restored = SegmentEnding(rawValue: value) {
+            segmentEnding = restored
+        }
+        if let value = SurfaceStateCache.shared.string(for: "formatter", key: "searchQuery") {
+            searchQuery = value
+        }
+        refreshSearch()
+    }
+
+    private func persist(_ value: SurfaceStateValue, key: String) {
+        // Empty editor values are meaningful: they clear the cached workspace
+        // value rather than leaving stale text to be restored next time.
+        SurfaceStateCache.shared.set(
+            value.isEmptyString ? nil : value,
+            for: "formatter",
+            key: key
+        )
+    }
 
     var statusText: String {
         if let errorMessage { return errorMessage }
@@ -88,6 +147,13 @@ final class FormatterWorkspaceModel: ObservableObject {
     }
 
     func format() {
+        let measurementID = PerformanceMonitor.shared.begin("Formatter parse")
+        var succeeded = false
+        onProcessingStateChanged?(true)
+        defer {
+            onProcessingStateChanged?(false)
+            PerformanceMonitor.shared.end(measurementID, succeeded: succeeded)
+        }
         do {
             let formatted = try DocumentFormatterService.format(
                 source,
@@ -95,6 +161,7 @@ final class FormatterWorkspaceModel: ObservableObject {
                 style: style,
                 ediSegmentDelimiter: segmentEnding.delimiter
             )
+            succeeded = true
             result = formatted
             output = formatted.output
             errorMessage = nil
@@ -175,6 +242,13 @@ final class FormatterWorkspaceModel: ObservableObject {
     }
 }
 
+private extension SurfaceStateValue {
+    var isEmptyString: Bool {
+        if case .string(let value) = self { return value.isEmpty }
+        return false
+    }
+}
+
 struct FormatterWorkspaceView: View {
     @ObservedObject var model: FormatterWorkspaceModel
     @State private var inspectorMode = 0
@@ -231,7 +305,7 @@ struct FormatterWorkspaceView: View {
         }
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .padding(.vertical, 7)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.panel, border: LimaColors.border)
+        .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
@@ -245,7 +319,7 @@ struct FormatterWorkspaceView: View {
                         .frame(width: 150)
                     if !model.searchQuery.isEmpty {
                         Text(model.searchLines.isEmpty ? "No matches" : "Lines \(model.searchLines.prefix(6).map(String.init).joined(separator: ", "))")
-                            .limaFont(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
                     }
                     Button { model.copyOutput() } label: { Image(systemName: "doc.on.doc") }
                         .buttonStyle(LimaToolbarIconButtonStyle(tint: SettingsStore.shared.accentTheme.primary))
@@ -277,9 +351,9 @@ struct FormatterWorkspaceView: View {
             }
         }
         .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-        .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
+        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
         .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
     }
 
     private var inspector: some View {
@@ -295,7 +369,7 @@ struct FormatterWorkspaceView: View {
                 Spacer()
                 if let edi = model.result?.edi {
                     Text("Elements \(edi.elementDelimiter.description) · Segments \(delimiterName(edi.segmentDelimiter)) · \(edi.segmentCount) segments")
-                        .limaFont(.caption.monospaced()).foregroundStyle(.secondary)
+                        .limaFont(.caption.monospaced()).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             .padding(.horizontal, LimaDesign.toolbarPadding)
@@ -324,7 +398,7 @@ struct FormatterWorkspaceView: View {
                                 Text(field.path).limaFont(.caption.monospaced().bold()).frame(width: 64, alignment: .leading)
                                 Text(field.value.isEmpty ? "(empty)" : field.value).limaFont(.caption.monospaced()).textSelection(.enabled)
                                 Spacer()
-                                Text("segment \(field.segmentIndex)").limaFont(.caption2).foregroundStyle(.tertiary)
+                                Text("segment \(field.segmentIndex)").limaFont(.caption2).foregroundStyle(LimaTheme.textTertiary)
                             }
                         }
                     }

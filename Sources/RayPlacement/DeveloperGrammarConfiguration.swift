@@ -1,6 +1,6 @@
 import Foundation
 
-enum DeveloperGrammarProvider: String, CaseIterable, Identifiable, Sendable {
+enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     case openAI
     case anthropic
     case gemini
@@ -29,10 +29,12 @@ enum DeveloperGrammarProvider: String, CaseIterable, Identifiable, Sendable {
         modelOptions.first?.id ?? "local-model"
     }
 
-    var modelOptions: [DeveloperGrammarModelOption] {
+    var modelOptions: [AIModelDescriptor] {
         switch self {
         case .openAI:
             return [
+                .init(id: "gpt-5.6-luna", title: "GPT-5.6 Luna · Fast"),
+                .init(id: "gpt-5.6-terra", title: "GPT-5.6 Terra · Quality"),
                 .init(id: "gpt-4o-mini", title: "GPT-4o mini"),
                 .init(id: "gpt-4.1-mini", title: "GPT-4.1 mini"),
                 .init(id: "gpt-4.1", title: "GPT-4.1"),
@@ -95,14 +97,60 @@ enum DeveloperGrammarProvider: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct DeveloperGrammarModelOption: Identifiable, Hashable, Sendable {
+struct AIModelDescriptor: Identifiable, Hashable, Sendable {
     let id: String
     let title: String
 }
 
-struct DeveloperGrammarConfiguration: Sendable {
-    let provider: DeveloperGrammarProvider
+struct AIProviderConfiguration: Sendable {
+    let provider: AIProvider
     let apiKey: String
     let model: String
     let baseURL: String
+}
+
+/// Compatibility aliases keep grammar feature call sites source-compatible
+/// while the shared AI provider layer is adopted feature by feature.
+typealias DeveloperGrammarProvider = AIProvider
+typealias DeveloperGrammarModelOption = AIModelDescriptor
+typealias DeveloperGrammarConfiguration = AIProviderConfiguration
+
+/// Preferences persist model identity, never provider credentials.
+struct AIModelReference: Codable, Hashable, Sendable {
+    var provider: AIProvider
+    var modelID: String
+
+    init(provider: AIProvider, modelID: String) {
+        self.provider = provider
+        self.modelID = modelID
+    }
+}
+
+extension AIProvider {
+    static let chatProviders: [AIProvider] = [.openAI, .anthropic, .gemini, .openAICompatible]
+
+    var chatModels: [AIModelOption] {
+        switch self {
+        case .openAI:
+            return AIModelOption.fallbackModels
+        case .anthropic:
+            return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
+        case .gemini:
+            return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
+        case .openAICompatible:
+            return [AIModelOption(id: "local-model", displayName: "Custom model", supportsReasoning: false)]
+        case .mistral, .xAI, .deepSeek, .openRouter:
+            return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
+        }
+    }
+
+    var defaultChatModel: String {
+        switch self {
+        case .openAI: return "gpt-5.4"
+        case .anthropic: return "claude-sonnet-4-20250514"
+        case .gemini: return "gemini-2.5-flash"
+        case .openAICompatible: return "local-model"
+        case .mistral, .xAI, .deepSeek, .openRouter: return defaultModel
+        }
+    }
 }

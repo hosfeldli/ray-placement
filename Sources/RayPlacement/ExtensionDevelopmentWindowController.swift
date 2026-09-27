@@ -28,7 +28,7 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
     }
 }
 
-private struct ExtensionDevelopmentView: View {
+struct ExtensionDevelopmentView: View {
     private let manuals = ExtensionGuide.manuals
     @State private var selectedManualID = ExtensionGuide.manuals.first?.id ?? "builder"
     @State private var selectedSectionID: String?

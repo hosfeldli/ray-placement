@@ -2,6 +2,28 @@ import Foundation
 import RayPlacementCore
 import ServiceManagement
 
+enum GrammarCorrectionMode: String, CaseIterable, Identifiable, Codable {
+    case proofread
+    case polish
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var detail: String {
+        switch self {
+        case .proofread: return "Correct spelling, grammar, and punctuation while preserving your voice."
+        case .polish: return "Make conservative clarity and flow improvements in addition to proofreading."
+        }
+    }
+}
+
+enum GrammarEngineMode: String, CaseIterable, Identifiable, Codable {
+    case local
+    case externalAPI
+
+    var id: String { rawValue }
+    var title: String { self == .local ? "Local" : "External API" }
+}
+
 enum AppAppearance: String, CaseIterable, Identifiable {
     case system, light, dark
     var id: String { rawValue }
@@ -247,6 +269,8 @@ enum ApplicationPaths {
     static let usage = applicationSupport.appendingPathComponent("Usage", isDirectory: true)
     static let usageLog = usage.appendingPathComponent("usage-log.json")
     static let workspaceProfiles = applicationSupport.appendingPathComponent("workspace-profiles.json")
+    static let contextShelf = applicationSupport.appendingPathComponent("context-shelf.json")
+    static let grammarDebugDatabase = applicationSupport.appendingPathComponent("grammar-debug.sqlite")
 
     static func prepare() throws {
         try FileManager.default.createDirectory(at: applicationSupport, withIntermediateDirectories: true)
@@ -257,6 +281,69 @@ enum ApplicationPaths {
         try FileManager.default.createDirectory(at: noteAssets, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: updates, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: usage, withIntermediateDirectories: true)
+    }
+}
+
+enum LauncherSurfaceTimeoutOption: String, CaseIterable, Identifiable {
+    case never = "never"
+    case fiveSeconds = "5"
+    case tenSeconds = "10"
+    case fifteenSeconds = "15"
+    case thirtySeconds = "30"
+    case oneMinute = "60"
+    case twoMinutes = "120"
+    case fiveMinutes = "300"
+
+    var id: String { rawValue }
+    var seconds: TimeInterval { Double(rawValue) ?? 0 }
+    var title: String {
+        switch self {
+        case .never: return "Never"
+        case .fiveSeconds: return "5 seconds"
+        case .tenSeconds: return "10 seconds"
+        case .fifteenSeconds: return "15 seconds"
+        case .thirtySeconds: return "30 seconds"
+        case .oneMinute: return "1 minute"
+        case .twoMinutes: return "2 minutes"
+        case .fiveMinutes: return "5 minutes"
+        }
+    }
+}
+
+enum MusicHUDPresentation: String, Codable, CaseIterable, Identifiable {
+    case mini
+    case compact
+    case expanded
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+}
+
+enum HUDDockPosition: String, Codable, CaseIterable, Identifiable {
+    case topLeft
+    case topCenter
+    case topRight
+    case bottomLeft
+    case bottomCenter
+    case bottomRight
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .topLeft: return "Top Left"
+        case .topCenter: return "Top Center"
+        case .topRight: return "Top Right"
+        case .bottomLeft: return "Bottom Left"
+        case .bottomCenter: return "Bottom Center"
+        case .bottomRight: return "Bottom Right"
+        }
+    }
+
+    var isTop: Bool {
+        switch self {
+        case .topLeft, .topCenter, .topRight: return true
+        case .bottomLeft, .bottomCenter, .bottomRight: return false
+        }
     }
 }
 
@@ -279,6 +366,8 @@ final class SettingsStore: ObservableObject {
         static let notesDockRightHotkeyEnabled = "notesDockRightHotkeyEnabled"
         static let terminalShortcut = "terminalShortcut"
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
+        static let contextShelfCaptureShortcut = "contextShelfCaptureShortcut"
+        static let contextShelfCaptureHotkeyEnabled = "contextShelfCaptureHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
@@ -290,6 +379,10 @@ final class SettingsStore: ObservableObject {
         static let notesLineSpacing = "notesLineSpacing"
         static let notesContentWidth = "notesContentWidth"
         static let notesShowMetadata = "notesShowMetadata"
+        static let quickNoteOpacity = "quickNoteOpacity"
+        static let quickNoteAutoHide = "quickNoteAutoHide"
+        static let quickNotePerSpaceMemory = "quickNotePerSpaceMemory"
+        static let quickNoteDisplayLocked = "quickNoteDisplayLocked"
         static let clipboardEnabled = "clipboardEnabled"
         static let clipboardLimit = "clipboardLimit"
         static let launchAtLogin = "launchAtLogin"
@@ -303,6 +396,23 @@ final class SettingsStore: ObservableObject {
         static let stealthGrammarEnabled = "stealthGrammarEnabled"
         static let stealthGrammarShortcut = "stealthGrammarShortcut"
         static let developerGrammarEnabled = "developerGrammarEnabled"
+        static let grammarEngineMode = "grammarEngineMode"
+        static let grammarCorrectionMode = "grammarCorrectionMode"
+        static let grammarEnsembleStrategy = "grammarEnsembleStrategy"
+        static let grammarJudgeOnDisagreement = "grammarJudgeOnDisagreement"
+        static let grammarCandidateSettings = "grammarCandidateSettings"
+        static let grammarJudgeConfiguration = "grammarJudgeConfiguration"
+        static let grammarScoringWeights = "grammarScoringWeights"
+        static let grammarCorrectionPolicy = "grammarCorrectionPolicy"
+        static let grammarRecordCandidatePrompts = "grammarRecordCandidatePrompts"
+        static let grammarRecordProviderResponses = "grammarRecordProviderResponses"
+        static let grammarRecordScoringComponents = "grammarRecordScoringComponents"
+        static let grammarRecordRejectedEdits = "grammarRecordRejectedEdits"
+        static let grammarStoreFullOriginalInput = "grammarStoreFullOriginalInput"
+        static let grammarStoreSanitizedDocument = "grammarStoreSanitizedDocument"
+        static let grammarDebugStoreSourceText = "grammarDebugStoreSourceText"
+        static let grammarDebugRetentionDays = "grammarDebugRetentionDays"
+        static let grammarDebugMaximumRuns = "grammarDebugMaximumRuns"
         static let developerGrammarProvider = "developerGrammarProvider"
         static let developerGrammarModel = "developerGrammarModel"
         static let developerGrammarBaseURL = "developerGrammarBaseURL"
@@ -313,6 +423,17 @@ final class SettingsStore: ObservableObject {
         static let dictationComputeMode = "dictationComputeMode"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
+        static let launcherSurfaceTimeout = "launcherSurfaceTimeout"
+        static let terminalUsesLauncherTimeout = "terminalUsesLauncherTimeout"
+        static let terminalWrapLines = "terminalWrapLines"
+        static let musicHUDPresentation = "musicHUDPresentation"
+        static let musicShowArtwork = "musicShowArtwork"
+        static let musicShowPlaybackControls = "musicShowPlaybackControls"
+        static let musicShowProgress = "musicShowProgress"
+        static let musicShowWhenPaused = "musicShowWhenPaused"
+        static let musicExpandOnClick = "musicExpandOnClick"
+        static let musicExpandedTimeout = "musicExpandedTimeout"
+        static let hudDockPosition = "hudDockPosition"
     }
 
     private let defaults = UserDefaults.standard
@@ -417,6 +538,22 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(terminalShortcut, forKey: Key.terminalShortcut); if !isRestoringActionShortcut { NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) } }
     }
 
+    @Published var contextShelfCaptureShortcut: String {
+        didSet {
+            defaults.set(contextShelfCaptureShortcut, forKey: Key.contextShelfCaptureShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var contextShelfCaptureHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(contextShelfCaptureHotkeyEnabled, forKey: Key.contextShelfCaptureHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
     @Published var terminalHotkeyEnabled: Bool {
         didSet { defaults.set(terminalHotkeyEnabled, forKey: Key.terminalHotkeyEnabled); NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil) }
     }
@@ -443,7 +580,7 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published var appearance: AppAppearance {
-        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil) }
+        didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil); NotificationCenter.default.post(name: .rayPlacementNotesAppearanceChanged, object: nil) }
     }
 
     @Published var interfaceDensity: AppInterfaceDensity {
@@ -451,7 +588,7 @@ final class SettingsStore: ObservableObject {
     }
 
     @Published var notesVisualTheme: NotesVisualTheme {
-        didSet { defaults.set(notesVisualTheme.rawValue, forKey: Key.notesVisualTheme) }
+        didSet { defaults.set(notesVisualTheme.rawValue, forKey: Key.notesVisualTheme); NotificationCenter.default.post(name: .rayPlacementNotesAppearanceChanged, object: nil) }
     }
 
     @Published var notesFontStyle: NotesFontStyle {
@@ -478,6 +615,25 @@ final class SettingsStore: ObservableObject {
 
     @Published var notesShowMetadata: Bool {
         didSet { defaults.set(notesShowMetadata, forKey: Key.notesShowMetadata) }
+    }
+
+    @Published var quickNoteOpacity: Double {
+        didSet {
+            quickNoteOpacity = min(max(quickNoteOpacity, 0.35), 1)
+            defaults.set(quickNoteOpacity, forKey: Key.quickNoteOpacity)
+        }
+    }
+
+    @Published var quickNoteAutoHide: Bool {
+        didSet { defaults.set(quickNoteAutoHide, forKey: Key.quickNoteAutoHide) }
+    }
+
+    @Published var quickNotePerSpaceMemory: Bool {
+        didSet { defaults.set(quickNotePerSpaceMemory, forKey: Key.quickNotePerSpaceMemory) }
+    }
+
+    @Published var quickNoteDisplayLocked: Bool {
+        didSet { defaults.set(quickNoteDisplayLocked, forKey: Key.quickNoteDisplayLocked) }
     }
 
     @Published var clipboardEnabled: Bool {
@@ -529,8 +685,80 @@ final class SettingsStore: ObservableObject {
         }
     }
 
-    @Published var developerGrammarEnabled: Bool {
-        didSet { defaults.set(developerGrammarEnabled, forKey: Key.developerGrammarEnabled) }
+    @Published var grammarCorrectionMode: GrammarCorrectionMode {
+        didSet { defaults.set(grammarCorrectionMode.rawValue, forKey: Key.grammarCorrectionMode) }
+    }
+
+    @Published var grammarEnsembleStrategy: GrammarEnsembleStrategy {
+        didSet { defaults.set(grammarEnsembleStrategy.rawValue, forKey: Key.grammarEnsembleStrategy) }
+    }
+
+    @Published var grammarJudgeOnDisagreement: Bool {
+        didSet {
+            defaults.set(grammarJudgeOnDisagreement, forKey: Key.grammarJudgeOnDisagreement)
+            grammarJudgeConfiguration.enabled = grammarJudgeOnDisagreement
+        }
+    }
+
+    @Published var grammarCandidateSettings: [String: GrammarCandidateSettings] {
+        didSet { saveCodable(grammarCandidateSettings, key: Key.grammarCandidateSettings) }
+    }
+
+    @Published var grammarJudgeConfiguration: GrammarJudgeConfiguration {
+        didSet { saveCodable(grammarJudgeConfiguration, key: Key.grammarJudgeConfiguration) }
+    }
+
+    @Published var grammarScoringWeights: GrammarScoringWeights {
+        didSet { saveCodable(grammarScoringWeights, key: Key.grammarScoringWeights) }
+    }
+
+    @Published var grammarCorrectionPolicy: GrammarCorrectionPolicy {
+        didSet { saveCodable(grammarCorrectionPolicy, key: Key.grammarCorrectionPolicy) }
+    }
+
+    @Published var grammarRecordCandidatePrompts: Bool {
+        didSet { defaults.set(grammarRecordCandidatePrompts, forKey: Key.grammarRecordCandidatePrompts) }
+    }
+    @Published var grammarRecordProviderResponses: Bool {
+        didSet { defaults.set(grammarRecordProviderResponses, forKey: Key.grammarRecordProviderResponses) }
+    }
+    @Published var grammarRecordScoringComponents: Bool {
+        didSet { defaults.set(grammarRecordScoringComponents, forKey: Key.grammarRecordScoringComponents) }
+    }
+    @Published var grammarRecordRejectedEdits: Bool {
+        didSet { defaults.set(grammarRecordRejectedEdits, forKey: Key.grammarRecordRejectedEdits) }
+    }
+    @Published var grammarStoreFullOriginalInput: Bool {
+        didSet { defaults.set(grammarStoreFullOriginalInput, forKey: Key.grammarStoreFullOriginalInput) }
+    }
+    @Published var grammarStoreSanitizedDocument: Bool {
+        didSet { defaults.set(grammarStoreSanitizedDocument, forKey: Key.grammarStoreSanitizedDocument) }
+    }
+
+    @Published var grammarDebugStoreSourceText: Bool {
+        didSet { defaults.set(grammarDebugStoreSourceText, forKey: Key.grammarDebugStoreSourceText) }
+    }
+
+    @Published var grammarDebugRetentionDays: Int {
+        didSet { grammarDebugRetentionDays = min(max(grammarDebugRetentionDays, 1), 3650); defaults.set(grammarDebugRetentionDays, forKey: Key.grammarDebugRetentionDays) }
+    }
+
+    @Published var grammarDebugMaximumRuns: Int {
+        didSet { grammarDebugMaximumRuns = min(max(grammarDebugMaximumRuns, 10), 100_000); defaults.set(grammarDebugMaximumRuns, forKey: Key.grammarDebugMaximumRuns) }
+    }
+
+    @Published var grammarEngineMode: GrammarEngineMode {
+        didSet {
+            defaults.set(grammarEngineMode.rawValue, forKey: Key.grammarEngineMode)
+            // Keep the legacy key synchronized for older settings exporters.
+            defaults.set(grammarEngineMode == .externalAPI, forKey: Key.developerGrammarEnabled)
+        }
+    }
+
+    // Compatibility aliases for older callers and imported settings.
+    var developerGrammarEnabled: Bool {
+        get { grammarEngineMode == .externalAPI }
+        set { grammarEngineMode = newValue ? .externalAPI : .local }
     }
 
     @Published var developerGrammarProvider: DeveloperGrammarProvider {
@@ -547,8 +775,11 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(developerGrammarBaseURL, forKey: Key.developerGrammarBaseURL) }
     }
 
-    @Published var grammarFallbackToLocal: Bool {
-        didSet { defaults.set(grammarFallbackToLocal, forKey: Key.grammarFallbackToLocal) }
+    /// If AI correction is unavailable, complete the operation locally with Harper.
+    /// The preference is intentionally independent of the selected engine.
+    var grammarFallbackToLocal: Bool {
+        get { defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true }
+        set { defaults.set(newValue, forKey: Key.grammarFallbackToLocal) }
     }
 
     @Published var inlineGrammarCheckingEnabled: Bool {
@@ -558,12 +789,37 @@ final class SettingsStore: ObservableObject {
     // User-facing aliases. The legacy developerGrammar names remain the
     // persistence and migration boundary for existing installations.
     var grammarEngineEnhanced: Bool {
-        get { developerGrammarEnabled }
-        set { developerGrammarEnabled = newValue }
+        get { grammarEngineMode == .externalAPI }
+        set { grammarEngineMode = newValue ? .externalAPI : .local }
     }
 
     var enhancedGrammarAPIKeyStored: Bool {
         !developerGrammarAPIKey.isEmpty
+    }
+
+    func grammarCandidateSettings(for profile: GrammarCandidateProfile) -> GrammarCandidateSettings {
+        grammarCandidateSettings[profile.id] ?? GrammarCandidateSettings(profile: profile)
+    }
+
+    func updateGrammarCandidateSettings(_ value: GrammarCandidateSettings, for profileID: String) {
+        grammarCandidateSettings[profileID] = value
+    }
+
+    func resetGrammarAdvancedSettings() {
+        grammarCandidateSettings = Dictionary(uniqueKeysWithValues: GrammarCandidateProfile.profiles(for: .thorough).map { ($0.id, GrammarCandidateSettings(profile: $0)) })
+        grammarJudgeConfiguration = GrammarJudgeConfiguration()
+        grammarJudgeOnDisagreement = true
+        grammarScoringWeights = GrammarScoringWeights()
+        grammarCorrectionPolicy = .safeDefaults
+    }
+
+    private func saveCodable<T: Encodable>(_ value: T, key: String) {
+        if let data = try? JSONEncoder().encode(value) { defaults.set(data, forKey: key) }
+    }
+
+    private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
     }
 
     func selectDeveloperGrammarProvider(_ provider: DeveloperGrammarProvider) {
@@ -590,7 +846,8 @@ final class SettingsStore: ObservableObject {
     var developerGrammarConfigurationForModelDiscovery: DeveloperGrammarConfiguration? {
         let key = developerGrammarAPIKey
         let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !baseURL.isEmpty else { return nil }
+        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty),
+              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
         return DeveloperGrammarConfiguration(
             provider: developerGrammarProvider,
             apiKey: key,
@@ -603,7 +860,8 @@ final class SettingsStore: ObservableObject {
         let key = developerGrammarAPIKey
         let model = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty, !model.isEmpty, !baseURL.isEmpty else { return nil }
+        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty), !model.isEmpty,
+              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
         return DeveloperGrammarConfiguration(
             provider: developerGrammarProvider,
             apiKey: key,
@@ -618,7 +876,7 @@ final class SettingsStore: ObservableObject {
     }
 
     var developerGrammarConfiguration: DeveloperGrammarConfiguration? {
-        guard developerGrammarEnabled else { return nil }
+        guard grammarEngineMode == .externalAPI else { return nil }
         return developerGrammarConfigurationForTesting
     }
 
@@ -640,6 +898,50 @@ final class SettingsStore: ObservableObject {
 
     @Published var dynamicPerformance: Bool {
         didSet { defaults.set(dynamicPerformance, forKey: Key.dynamicPerformance) }
+    }
+
+    @Published var launcherSurfaceTimeout: TimeInterval {
+        didSet { defaults.set(launcherSurfaceTimeout, forKey: Key.launcherSurfaceTimeout) }
+    }
+
+    @Published var terminalUsesLauncherTimeout: Bool {
+        didSet { defaults.set(terminalUsesLauncherTimeout, forKey: Key.terminalUsesLauncherTimeout) }
+    }
+
+    @Published var terminalWrapLines: Bool {
+        didSet { defaults.set(terminalWrapLines, forKey: Key.terminalWrapLines) }
+    }
+
+    @Published var musicHUDPresentation: MusicHUDPresentation {
+        didSet { defaults.set(musicHUDPresentation.rawValue, forKey: Key.musicHUDPresentation) }
+    }
+
+    @Published var musicShowArtwork: Bool {
+        didSet { defaults.set(musicShowArtwork, forKey: Key.musicShowArtwork) }
+    }
+
+    @Published var musicShowPlaybackControls: Bool {
+        didSet { defaults.set(musicShowPlaybackControls, forKey: Key.musicShowPlaybackControls) }
+    }
+
+    @Published var musicShowProgress: Bool {
+        didSet { defaults.set(musicShowProgress, forKey: Key.musicShowProgress) }
+    }
+
+    @Published var musicShowWhenPaused: Bool {
+        didSet { defaults.set(musicShowWhenPaused, forKey: Key.musicShowWhenPaused) }
+    }
+
+    @Published var musicExpandOnClick: Bool {
+        didSet { defaults.set(musicExpandOnClick, forKey: Key.musicExpandOnClick) }
+    }
+
+    @Published var musicExpandedTimeout: TimeInterval {
+        didSet { defaults.set(musicExpandedTimeout, forKey: Key.musicExpandedTimeout) }
+    }
+
+    @Published var hudDockPosition: HUDDockPosition {
+        didSet { defaults.set(hudDockPosition.rawValue, forKey: Key.hudDockPosition) }
     }
 
     @Published private(set) var extensionShortcutOverrides: [String: String]
@@ -666,6 +968,8 @@ final class SettingsStore: ObservableObject {
         notesDockRightShortcut = defaults.string(forKey: Key.notesDockRightShortcut) ?? "command+option+right"
         notesDockRightHotkeyEnabled = defaults.object(forKey: Key.notesDockRightHotkeyEnabled) as? Bool ?? false
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
+        contextShelfCaptureShortcut = defaults.string(forKey: Key.contextShelfCaptureShortcut) ?? "control+option+s"
+        contextShelfCaptureHotkeyEnabled = defaults.object(forKey: Key.contextShelfCaptureHotkeyEnabled) as? Bool ?? false
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
@@ -680,6 +984,11 @@ final class SettingsStore: ObservableObject {
         notesLineSpacing = storedNotesLineSpacing == 0 ? 3.5 : storedNotesLineSpacing
         notesContentWidth = NotesContentWidth(rawValue: defaults.string(forKey: Key.notesContentWidth) ?? "") ?? .wide
         notesShowMetadata = defaults.object(forKey: Key.notesShowMetadata) as? Bool ?? true
+        let storedQuickNoteOpacity = defaults.double(forKey: Key.quickNoteOpacity)
+        quickNoteOpacity = storedQuickNoteOpacity == 0 ? 0.96 : storedQuickNoteOpacity
+        quickNoteAutoHide = defaults.object(forKey: Key.quickNoteAutoHide) as? Bool ?? false
+        quickNotePerSpaceMemory = defaults.object(forKey: Key.quickNotePerSpaceMemory) as? Bool ?? true
+        quickNoteDisplayLocked = defaults.object(forKey: Key.quickNoteDisplayLocked) as? Bool ?? false
         clipboardEnabled = defaults.object(forKey: Key.clipboardEnabled) as? Bool ?? false
         let storedLimit = defaults.integer(forKey: Key.clipboardLimit)
         clipboardLimit = storedLimit == 0 ? 50 : storedLimit
@@ -693,18 +1002,58 @@ final class SettingsStore: ObservableObject {
         // Existing explicit user choices remain respected.
         stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? true
         stealthGrammarShortcut = defaults.string(forKey: Key.stealthGrammarShortcut) ?? "control+option+g"
-        developerGrammarEnabled = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
+        let legacyExternalGrammar = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
+        grammarEngineMode = GrammarEngineMode(
+            rawValue: defaults.string(forKey: Key.grammarEngineMode) ?? ""
+        ) ?? (defaults.object(forKey: Key.developerGrammarEnabled) == nil
+            ? .externalAPI
+            : (legacyExternalGrammar ? .externalAPI : .local))
+        grammarCorrectionMode = GrammarCorrectionMode(
+            rawValue: defaults.string(forKey: Key.grammarCorrectionMode) ?? ""
+        ) ?? .proofread
+        grammarEnsembleStrategy = GrammarEnsembleStrategy(
+            rawValue: defaults.string(forKey: Key.grammarEnsembleStrategy) ?? ""
+        ) ?? .balanced
+        let loadedJudgeEnabled = defaults.object(forKey: Key.grammarJudgeOnDisagreement) as? Bool ?? true
+        grammarJudgeOnDisagreement = loadedJudgeEnabled
+        let defaultCandidateSettings = Dictionary(uniqueKeysWithValues: GrammarCandidateProfile.profiles(for: .thorough).map { ($0.id, GrammarCandidateSettings(profile: $0)) })
+        grammarCandidateSettings = Self.loadCodable([String: GrammarCandidateSettings].self, key: Key.grammarCandidateSettings) ?? defaultCandidateSettings
+        var loadedJudgeConfiguration = Self.loadCodable(GrammarJudgeConfiguration.self, key: Key.grammarJudgeConfiguration) ?? GrammarJudgeConfiguration()
+        loadedJudgeConfiguration.enabled = loadedJudgeEnabled
+        grammarJudgeConfiguration = loadedJudgeConfiguration
+        grammarScoringWeights = Self.loadCodable(GrammarScoringWeights.self, key: Key.grammarScoringWeights) ?? GrammarScoringWeights()
+        grammarCorrectionPolicy = Self.loadCodable(GrammarCorrectionPolicy.self, key: Key.grammarCorrectionPolicy) ?? .safeDefaults
+        grammarRecordCandidatePrompts = defaults.object(forKey: Key.grammarRecordCandidatePrompts) as? Bool ?? true
+        grammarRecordProviderResponses = defaults.object(forKey: Key.grammarRecordProviderResponses) as? Bool ?? true
+        grammarRecordScoringComponents = defaults.object(forKey: Key.grammarRecordScoringComponents) as? Bool ?? true
+        grammarRecordRejectedEdits = defaults.object(forKey: Key.grammarRecordRejectedEdits) as? Bool ?? true
+        grammarStoreFullOriginalInput = defaults.object(forKey: Key.grammarStoreFullOriginalInput) as? Bool ?? false
+        grammarStoreSanitizedDocument = defaults.object(forKey: Key.grammarStoreSanitizedDocument) as? Bool ?? false
+        grammarDebugStoreSourceText = defaults.object(forKey: Key.grammarDebugStoreSourceText) as? Bool ?? false
+        grammarDebugRetentionDays = min(max(defaults.object(forKey: Key.grammarDebugRetentionDays) as? Int ?? 30, 1), 3650)
+        grammarDebugMaximumRuns = min(max(defaults.object(forKey: Key.grammarDebugMaximumRuns) as? Int ?? 500, 10), 100_000)
         let storedDeveloperProvider = DeveloperGrammarProvider(rawValue: defaults.string(forKey: Key.developerGrammarProvider) ?? "") ?? .openAI
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
         developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
-        grammarFallbackToLocal = false
+        defaults.set(false, forKey: Key.grammarFallbackToLocal)
         inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false
+        launcherSurfaceTimeout = defaults.object(forKey: Key.launcherSurfaceTimeout) as? Double ?? 30
+        terminalUsesLauncherTimeout = defaults.object(forKey: Key.terminalUsesLauncherTimeout) as? Bool ?? false
+        terminalWrapLines = defaults.object(forKey: Key.terminalWrapLines) as? Bool ?? true
+        musicHUDPresentation = MusicHUDPresentation(rawValue: defaults.string(forKey: Key.musicHUDPresentation) ?? "") ?? .compact
+        musicShowArtwork = defaults.object(forKey: Key.musicShowArtwork) as? Bool ?? true
+        musicShowPlaybackControls = defaults.object(forKey: Key.musicShowPlaybackControls) as? Bool ?? true
+        musicShowProgress = defaults.object(forKey: Key.musicShowProgress) as? Bool ?? true
+        musicShowWhenPaused = defaults.object(forKey: Key.musicShowWhenPaused) as? Bool ?? true
+        musicExpandOnClick = defaults.object(forKey: Key.musicExpandOnClick) as? Bool ?? true
+        musicExpandedTimeout = defaults.object(forKey: Key.musicExpandedTimeout) as? Double ?? 5
+        hudDockPosition = HUDDockPosition(rawValue: defaults.string(forKey: Key.hudDockPosition) ?? "") ?? .bottomCenter
         extensionShortcutOverrides = defaults.dictionary(forKey: Key.extensionShortcutOverrides) as? [String: String] ?? [:]
         extensionEnabledOverrides = defaults.dictionary(forKey: Key.extensionEnabledOverrides) as? [String: Bool] ?? [:]
         extensionPackEnabledOverrides = defaults.dictionary(forKey: Key.extensionPackEnabledOverrides) as? [String: Bool] ?? [:]
@@ -823,6 +1172,12 @@ final class SettingsStore: ObservableObject {
     func restoreNotesDockRightShortcut(_ shortcut: String) {
         isRestoringActionShortcut = true
         notesDockRightShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreContextShelfCaptureShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        contextShelfCaptureShortcut = shortcut
         isRestoringActionShortcut = false
     }
 
@@ -981,6 +1336,8 @@ final class SettingsStore: ObservableObject {
         case Key.notesDockRightHotkeyEnabled: if let value = bool() { notesDockRightHotkeyEnabled = value }
         case Key.terminalShortcut: if let value = string() { terminalShortcut = value }
         case Key.terminalHotkeyEnabled: if let value = bool() { terminalHotkeyEnabled = value }
+        case Key.contextShelfCaptureShortcut: if let value = string() { contextShelfCaptureShortcut = value }
+        case Key.contextShelfCaptureHotkeyEnabled: if let value = bool() { contextShelfCaptureHotkeyEnabled = value }
         case Key.accentTheme:
             if let value = string(), let parsed = AppAccentTheme(rawValue: value) { accentTheme = parsed }
         case Key.contrastMode:
@@ -998,6 +1355,10 @@ final class SettingsStore: ObservableObject {
         case Key.notesContentWidth:
             if let value = string(), let parsed = NotesContentWidth(rawValue: value) { notesContentWidth = parsed }
         case Key.notesShowMetadata: if let value = bool() { notesShowMetadata = value }
+        case Key.quickNoteOpacity: if let value = double() { quickNoteOpacity = value }
+        case Key.quickNoteAutoHide: if let value = bool() { quickNoteAutoHide = value }
+        case Key.quickNotePerSpaceMemory: if let value = bool() { quickNotePerSpaceMemory = value }
+        case Key.quickNoteDisplayLocked: if let value = bool() { quickNoteDisplayLocked = value }
         case Key.clipboardEnabled: if let value = bool() { clipboardEnabled = value }
         case Key.clipboardLimit: if let value = int() { clipboardLimit = value }
         case Key.showInDock: if let value = bool() { showInDock = value }
@@ -1006,12 +1367,20 @@ final class SettingsStore: ObservableObject {
             if let value = string(), let parsed = PerformanceScale(rawValue: value) { writingPerformance = parsed }
         case Key.stealthGrammarEnabled: if let value = bool() { stealthGrammarEnabled = value }
         case Key.stealthGrammarShortcut: if let value = string() { stealthGrammarShortcut = value }
-        case Key.developerGrammarEnabled: if let value = bool() { developerGrammarEnabled = value }
+        case Key.developerGrammarEnabled: if let value = bool() { grammarEngineMode = value ? .externalAPI : .local }
+        case Key.grammarCorrectionMode:
+            if let value = string(), let parsed = GrammarCorrectionMode(rawValue: value) { grammarCorrectionMode = parsed }
+        case Key.grammarEnsembleStrategy:
+            if let value = string(), let parsed = GrammarEnsembleStrategy(rawValue: value) { grammarEnsembleStrategy = parsed }
+        case Key.grammarJudgeOnDisagreement: if let value = bool() { grammarJudgeOnDisagreement = value }
+        case Key.grammarDebugStoreSourceText: if let value = bool() { grammarDebugStoreSourceText = value }
+        case Key.grammarDebugRetentionDays: if let value = int() { grammarDebugRetentionDays = value }
+        case Key.grammarDebugMaximumRuns: if let value = int() { grammarDebugMaximumRuns = value }
         case Key.developerGrammarProvider:
             if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
         case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
-        case Key.grammarFallbackToLocal: if let value = bool() { grammarFallbackToLocal = value }
+        case Key.grammarFallbackToLocal: defaults.set(false, forKey: Key.grammarFallbackToLocal)
         case Key.inlineGrammarCheckingEnabled: if let value = bool() { inlineGrammarCheckingEnabled = value }
         case Key.dictationPerformance:
             if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }

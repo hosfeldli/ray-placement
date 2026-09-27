@@ -14,6 +14,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
     var lineSpacing: Double = 3.5
     var theme: NotesVisualTheme = .prism
     var inlineGrammarCheckingEnabled: Bool = true
+    var editable: Bool = true
+    var wikiLinkCandidates: [MarkdownNote] = []
 
     init(
         text: Binding<String>,
@@ -23,7 +25,9 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         fontSize: Double = 15.5,
         lineSpacing: Double = 3.5,
         theme: NotesVisualTheme = .prism,
-        inlineGrammarCheckingEnabled: Bool = true
+        inlineGrammarCheckingEnabled: Bool = true,
+        editable: Bool = true,
+        wikiLinkCandidates: [MarkdownNote] = []
     ) {
         _text = text
         self.compact = compact
@@ -33,10 +37,12 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         self.lineSpacing = lineSpacing
         self.theme = theme
         self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        self.editable = editable
+        self.wikiLinkCandidates = wikiLinkCandidates
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled)
+        Coordinator(text: $text, fontStyle: fontStyle, fontSize: fontSize, lineSpacing: lineSpacing, theme: theme, inlineGrammarCheckingEnabled: inlineGrammarCheckingEnabled, editable: editable, wikiLinkCandidates: wikiLinkCandidates)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -49,7 +55,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
 
         let textView = MarkdownTextView()
         textView.delegate = context.coordinator
-        textView.isEditable = true
+        textView.isEditable = editable
         textView.isSelectable = true
         textView.isRichText = true
         textView.importsGraphics = false
@@ -63,6 +69,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.isContinuousSpellCheckingEnabled = false
         textView.isGrammarCheckingEnabled = false
         textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        textView.wikiLinkCandidates = wikiLinkCandidates
+        textView.isEditable = editable
         scrollView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.backgroundColor = NotesEditorPalette(theme: theme).background
         textView.insertionPointColor = NotesEditorPalette(theme: theme).accent
@@ -105,6 +113,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         textView.richContentRenderHandler = { [weak coordinator = context.coordinator] in
             coordinator?.rerenderCurrentDocument()
         }
+        textView.wikiLinkCandidates = wikiLinkCandidates
+        textView.registerForDraggedTypes([.fileURL, .string, .tiff, .png, NSPasteboard.PasteboardType(ContextShelfIntegration.itemUTType.identifier)])
         context.coordinator.render(markdown: text, preservingSelection: false)
         context.coordinator.applyStyles(immediately: true)
         scrollView.documentView = textView
@@ -129,6 +139,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         context.coordinator.theme = theme
         let inlineGrammarSettingChanged = context.coordinator.inlineGrammarCheckingEnabled != inlineGrammarCheckingEnabled
         context.coordinator.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+        context.coordinator.editable = editable
+        context.coordinator.wikiLinkCandidates = wikiLinkCandidates
         textView.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
         if inlineGrammarSettingChanged {
             if inlineGrammarCheckingEnabled {
@@ -173,12 +185,14 @@ struct InlineMarkdownEditor: NSViewRepresentable {
         var lineSpacing: Double
         var theme: NotesVisualTheme
         var inlineGrammarCheckingEnabled: Bool
+        var editable: Bool
+        var wikiLinkCandidates: [MarkdownNote]
         private var stylingWorkItem: DispatchWorkItem?
         private var grammarWorkItem: DispatchWorkItem?
         private var grammarGeneration = 0
         private var grammarChecker: RuleBasedWritingChecker?
 
-        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool) {
+        init(text: Binding<String>, fontStyle: NotesFontStyle, fontSize: Double, lineSpacing: Double, theme: NotesVisualTheme, inlineGrammarCheckingEnabled: Bool, editable: Bool, wikiLinkCandidates: [MarkdownNote]) {
             self.text = text
             self.scrollOffset = .constant(0)
             self.fontStyle = fontStyle
@@ -186,6 +200,8 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             self.lineSpacing = lineSpacing
             self.theme = theme
             self.inlineGrammarCheckingEnabled = inlineGrammarCheckingEnabled
+            self.editable = editable
+            self.wikiLinkCandidates = wikiLinkCandidates
             self.grammarChecker = RuleBasedWritingChecker()
         }
 
@@ -386,6 +402,8 @@ enum MarkdownEditorActions {
     static func checklist() { withEditor { $0.applyListPrefix("- [ ] ") } }
     static func bullets() { withEditor { $0.applyListPrefix("- ") } }
     static func insert(_ markdown: String) { withEditor { $0.insertMarkdownBlock(markdown) } }
+    static func scrollToLine(_ line: Int) { withEditor { $0.scrollToLine(line) } }
+    static func slashCommand(_ command: MarkdownNoteSlashCommand) { withEditor { $0.insertSlashCommand(command) } }
 }
 
 final class MarkdownTextView: NSTextView {
@@ -395,6 +413,8 @@ final class MarkdownTextView: NSTextView {
     var richContentRenderHandler: (() -> Void)?
     private var tableOverlays: [ObjectIdentifier: MarkdownNativeTableView] = [:]
     var inlineGrammarCheckingEnabled = true
+    var wikiLinkCandidates: [MarkdownNote] = []
+    private var popupMenu: NSMenu?
 
     func clearGrammarAnnotations() {
         guard let layoutManager, let textStorage else { return }
@@ -472,6 +492,125 @@ final class MarkdownTextView: NSTextView {
             view.removeFromSuperview()
             tableOverlays.removeValue(forKey: identifier)
         }
+    }
+
+    func scrollToLine(_ line: Int) {
+        let lines = string.components(separatedBy: .newlines)
+        let clamped = min(max(0, line), max(0, lines.count - 1))
+        let location = lines.prefix(clamped).reduce(0) { $0 + $1.utf16.count + 1 }
+        setSelectedRange(NSRange(location: min(location, (string as NSString).length), length: 0))
+        scrollRangeToVisible(selectedRange())
+    }
+
+    override func insertText(_ insertString: Any, replacementRange: NSRange) {
+        super.insertText(insertString, replacementRange: replacementRange)
+        guard isEditable else { return }
+        DispatchQueue.main.async { [weak self] in self?.offerInlineCommandIfNeeded() }
+    }
+
+    private func offerInlineCommandIfNeeded() {
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let lineRange = source.lineRange(for: NSRange(location: cursor, length: 0))
+        let line = source.substring(with: lineRange)
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("/") && !trimmed.contains(" ") && !trimmed.contains("\t") {
+            let prefix = String(trimmed.dropFirst()).lowercased()
+            let commands = MarkdownNoteSlashCommand.allCases.filter { prefix.isEmpty || $0.rawValue.hasPrefix(prefix) }
+            guard !commands.isEmpty else { return }
+            let menu = NSMenu(title: "Slash Commands")
+            for command in commands {
+                let item = NSMenuItem(title: "/\(command.rawValue)", action: #selector(performSlashCommand(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = command.rawValue
+                item.toolTip = command.detail
+                menu.addItem(item)
+            }
+            popupMenu = menu
+            let rect = firstRect(forCharacterRange: NSRange(location: cursor, length: 0), actualRange: nil)
+            menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.minY), in: self)
+            return
+        }
+
+        guard !wikiLinkCandidates.isEmpty else { return }
+        let before = source.substring(to: cursor)
+        guard let opening = before.range(of: "[[", options: .backwards) else { return }
+        let start = before.utf16.distance(from: before.startIndex, to: opening.lowerBound)
+        let prefix = before.substring(from: opening.upperBound)
+        guard !prefix.contains("]") else { return }
+        let candidates = MarkdownNoteAnalysis.wikiLinkSuggestions(in: string, prefix: prefix, candidates: wikiLinkCandidates)
+        guard !candidates.isEmpty else { return }
+        let menu = NSMenu(title: "Wiki Links")
+        for note in candidates {
+            let item = NSMenuItem(title: note.displayTitle, action: #selector(performWikiLink(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = note.displayTitle
+            menu.addItem(item)
+        }
+        popupMenu = menu
+        let rect = firstRect(forCharacterRange: NSRange(location: cursor, length: 0), actualRange: nil)
+        menu.popUp(positioning: nil, at: NSPoint(x: rect.minX, y: rect.minY), in: self)
+    }
+
+    @objc private func performSlashCommand(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String,
+              let command = MarkdownNoteSlashCommand(rawValue: raw) else { return }
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let lineRange = source.lineRange(for: NSRange(location: cursor, length: 0))
+        let line = source.substring(with: lineRange)
+        guard let slash = line.firstIndex(of: "/") else { return }
+        let offset = line.utf16.distance(from: line.startIndex, to: slash)
+        replaceAndSelect(range: NSRange(location: lineRange.location + offset, length: cursor - lineRange.location - offset), replacement: command.markdown, selectionOffset: 0, selectionLength: command.markdown.utf16.count)
+        popupMenu = nil
+    }
+
+    @objc private func performWikiLink(_ sender: NSMenuItem) {
+        guard let title = sender.representedObject as? String else { return }
+        let source = string as NSString
+        let cursor = min(selectedRange().location, source.length)
+        let before = source.substring(to: cursor)
+        guard let opening = before.range(of: "[[", options: .backwards) else { return }
+        let start = before.utf16.distance(from: before.startIndex, to: opening.lowerBound)
+        replaceAndSelect(range: NSRange(location: start, length: cursor - start), replacement: "[[\(title)]]", selectionOffset: title.utf16.count + 4, selectionLength: 0)
+        popupMenu = nil
+    }
+
+    func insertSlashCommand(_ command: MarkdownNoteSlashCommand) {
+        let insertion = command.markdown
+        replaceAndSelect(range: selectedRange(), replacement: insertion, selectionOffset: 0, selectionLength: insertion.utf16.count)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isEditable ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard isEditable else { return false }
+        let pasteboard = sender.draggingPasteboard
+        let shelfType = NSPasteboard.PasteboardType(ContextShelfIntegration.itemUTType.identifier)
+        if let data = pasteboard.data(forType: shelfType),
+           let rawID = String(data: data, encoding: .utf8),
+           let id = UUID(uuidString: rawID),
+           let item = ContextShelfStore.shared.items.first(where: { $0.id == id }) {
+            insertMarkdownBlock(ContextShelfMarkdownFormatter.format(item))
+            return true
+        }
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty {
+            let markdown = urls.map { url in
+                if let image = NSImage(contentsOf: url), let reference = MarkdownNoteAssetStore.importImage(image) {
+                    return "![\(url.deletingPathExtension().lastPathComponent)](\(reference))"
+                }
+                return "[\(url.lastPathComponent)](\(url.absoluteString))"
+            }.joined(separator: "\n")
+            insertMarkdownBlock(markdown)
+            return true
+        }
+        if let text = pasteboard.string(forType: .string), !text.isEmpty {
+            insertPlainText(text)
+            return true
+        }
+        return false
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -581,6 +720,77 @@ final class MarkdownTextView: NSTextView {
         let lineRange = source.lineRange(for: NSRange(location: selection.location, length: 0))
         let line = source.substring(with: lineRange).trimmingCharacters(in: .newlines)
 
+        // `line` has already had its paragraph terminator removed. Derive the
+        // terminator from the original storage instead of checking the
+        // trimmed value; otherwise the semantic path can mistake the caret
+        // before CRLF/LF for a mid-line caret and skip continuation entirely.
+        let lineEnd = NSMaxRange(lineRange)
+        let lineTerminator: String
+        if lineRange.length >= 2,
+           source.substring(with: NSRange(location: lineEnd - 2, length: 2)) == "\r\n" {
+            lineTerminator = "\r\n"
+        } else if lineRange.length >= 1,
+                  source.character(at: lineEnd - 1) == 10 {
+            lineTerminator = "\n"
+        } else if lineRange.length >= 1,
+                  source.character(at: lineEnd - 1) == 13 {
+            lineTerminator = "\r"
+        } else {
+            lineTerminator = ""
+        }
+        let lineContentEnd = lineEnd - lineTerminator.utf16.count
+
+        // Rich Markdown stores the checkbox as one attachment character. Use
+        // that semantic state first; the textual matcher below is only for
+        // raw Markdown that has not yet been enriched. Continuation is an
+        // end-of-line gesture; pressing Return in the middle of a task must
+        // remain an ordinary newline operation.
+        if selection.length == 0,
+           selection.location == lineContentEnd,
+           let task = semanticTaskOnCurrentLine(lineRange: lineRange) {
+            let attachmentRange = task.range
+            let linePrefix = source.substring(with: NSRange(location: lineRange.location, length: max(0, attachmentRange.location - lineRange.location)))
+            let bodyStart = NSMaxRange(attachmentRange)
+            let body = source.substring(with: NSRange(location: bodyStart, length: max(0, NSMaxRange(lineRange) - bodyStart)))
+                .trimmingCharacters(in: .newlines)
+                .trimmingCharacters(in: .whitespaces)
+            if body.isEmpty {
+                // An empty task is an exit gesture: remove the rendered task
+                // marker while retaining the paragraph break, leaving a plain
+                // empty line instead of creating an endless checklist.
+                var contentLength = lineRange.length
+                while contentLength > 0 {
+                    let character = source.character(at: lineRange.location + contentLength - 1)
+                    if character == 10 || character == 13 { contentLength -= 1 } else { break }
+                }
+                replaceRichText(
+                    range: NSRange(location: lineRange.location, length: contentLength),
+                    with: NSAttributedString(string: "")
+                )
+            } else {
+                let insertionTerminator = lineTerminator.isEmpty ? "\n" : lineTerminator
+                let insertion = NSMutableAttributedString(string: "\(insertionTerminator)\(linePrefix)")
+                let fresh = MarkdownTaskAttachment(checked: false)
+                fresh.onChange = { [weak self] in self?.attachmentChangeHandler?() }
+                insertion.append(NSAttributedString(attachment: fresh))
+                insertion.append(NSAttributedString(string: " "))
+                // `lineRange` includes the paragraph terminator, while the
+                // insertion point at the end of a line is immediately before
+                // it. Consume that existing terminator so Return creates one
+                // continuation line rather than an unintended blank line.
+                var replacementRange = selection
+                if selection.location < source.length {
+                    if source.substring(with: NSRange(location: selection.location, length: min(2, source.length - selection.location))) == "\r\n" {
+                        replacementRange.length = 2
+                    } else if source.character(at: selection.location) == 10 || source.character(at: selection.location) == 13 {
+                        replacementRange.length = 1
+                    }
+                }
+                replaceRichText(range: replacementRange, with: insertion)
+            }
+            return
+        }
+
         let continuation: String?
         if let match = line.firstMatch(pattern: #"^(\s*)- (?:\[[ xX]\]|\u{FFFC}) (.*)$"#) {
             continuation = match[2].isEmpty ? nil : "\n\(match[1])- [ ] "
@@ -600,6 +810,64 @@ final class MarkdownTextView: NSTextView {
             return
         }
         insertText(continuation, replacementRange: selection)
+    }
+
+    private func semanticTaskOnCurrentLine(lineRange: NSRange) -> (task: MarkdownTaskAttachment, range: NSRange)? {
+        guard let attributed = textStorage else { return nil }
+        var found: (MarkdownTaskAttachment, NSRange)?
+        attributed.enumerateAttribute(.attachment, in: lineRange) { value, range, stop in
+            if let task = value as? MarkdownTaskAttachment {
+                found = (task, range)
+                stop.pointee = true
+            }
+        }
+        return found.map { (task: $0.0, range: $0.1) }
+    }
+
+    private func replaceRichText(range: NSRange, with replacement: NSAttributedString) {
+        guard shouldChangeText(in: range, replacementString: replacement.string) else { return }
+        textStorage?.replaceCharacters(in: range, with: replacement)
+        didChangeText()
+        setSelectedRange(NSRange(location: range.location + replacement.length, length: 0))
+    }
+
+    override func insertTab(_ sender: Any?) {
+        guard let task = semanticTaskOnCurrentLine(lineRange: (string as NSString).lineRange(for: selectedRange())) else {
+            super.insertTab(sender)
+            return
+        }
+        indentChecklistLine(task.range, outdent: false)
+    }
+
+    private func indentChecklistLine(_ taskRange: NSRange, outdent: Bool) {
+        let source = string as NSString
+        let lineRange = source.lineRange(for: taskRange)
+        let line = source.substring(with: lineRange)
+        let indentation = String(line.prefix { $0 == " " || $0 == "\t" })
+        if outdent {
+            guard !indentation.isEmpty else { return }
+            let removeCount = indentation.hasPrefix("\t") ? 1 : min(4, indentation.count)
+            replaceAndSelect(range: NSRange(location: lineRange.location, length: removeCount), replacement: "", selectionOffset: max(0, selectedRange().location - lineRange.location - removeCount), selectionLength: selectedRange().length)
+        } else {
+            replaceAndSelect(range: NSRange(location: lineRange.location, length: 0), replacement: "    ", selectionOffset: selectedRange().location - lineRange.location + 4, selectionLength: selectedRange().length)
+        }
+    }
+
+    override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if event.keyCode == 36, flags.contains(.shift) {
+            super.insertNewline(nil)
+            return
+        }
+        if event.keyCode == 48, flags.contains(.shift) {
+            guard let task = semanticTaskOnCurrentLine(lineRange: (string as NSString).lineRange(for: selectedRange())) else {
+                super.keyDown(with: event)
+                return
+            }
+            indentChecklistLine(task.range, outdent: true)
+            return
+        }
+        super.keyDown(with: event)
     }
 
     func toggleBold() {
@@ -858,7 +1126,7 @@ private enum MarkdownInlineStyler {
             if task.checked, textRange.length > 0 {
                 storage.addAttributes([
                     .strikethroughStyle: NSUnderlineStyle.single.rawValue,
-                    .foregroundColor: palette.secondaryText
+                    .foregroundColor: palette.taskCompletedText
                 ], range: textRange)
             }
         }
@@ -942,16 +1210,20 @@ private enum MarkdownInlineStyler {
         apply(pattern: #"(?m)^(\s*)- \[([ xX])\]\s+(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             let checked = source.substring(with: match.range(at: 2)).lowercased() == "x"
-            storage.addAttribute(.foregroundColor, value: checked ? NSColor.systemGreen : palette.accent, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
+            storage.addAttribute(.foregroundColor, value: checked ? palette.taskChecked : palette.accent, range: NSRange(location: match.range.location, length: match.range(at: 3).location - match.range.location))
             if checked {
-                storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: NSColor.secondaryLabelColor], range: match.range(at: 3))
+                storage.addAttributes([.strikethroughStyle: NSUnderlineStyle.single.rawValue, .foregroundColor: palette.taskCompletedText], range: match.range(at: 3))
             }
         }
         apply(pattern: #"(?m)^(\s*>\s?)(.*)$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
             storage.addAttribute(.foregroundColor, value: palette.accent, range: match.range(at: 1))
             let italic = NSFontManager.shared.convert(baseFont, toHaveTrait: .italicFontMask)
-            storage.addAttributes([.font: italic, .foregroundColor: palette.secondaryText], range: match.range(at: 2))
+            storage.addAttributes([
+                .font: italic,
+                .foregroundColor: palette.secondaryText,
+                .backgroundColor: palette.quoteBackground
+            ], range: match.range(at: 2))
         }
         apply(pattern: #"(?m)^(---|\*\*\*|___)[ \t]*$"#, to: source) { match in
             guard !intersects(match.range, any: fencedCodeRanges) else { return }
@@ -1034,6 +1306,7 @@ private enum MarkdownInlineStyler {
 
 }
 
+@MainActor
 private struct NotesEditorPalette {
     let background: NSColor
     let text: NSColor
@@ -1041,6 +1314,9 @@ private struct NotesEditorPalette {
     let separator: NSColor
     let accent: NSColor
     let codeBackground: NSColor
+    let quoteBackground: NSColor
+    let taskChecked: NSColor
+    let taskCompletedText: NSColor
 
     var selectionAttributes: [NSAttributedString.Key: Any] {
         [
@@ -1050,26 +1326,16 @@ private struct NotesEditorPalette {
     }
 
     init(theme: NotesVisualTheme) {
-        background = NSColor.textBackgroundColor
-        text = NSColor.textColor
-        secondaryText = NSColor.secondaryLabelColor
-        separator = NSColor.separatorColor.withAlphaComponent(1)
-        switch theme {
-        case .prism:
-            accent = NSColor(calibratedRed: 0.48, green: 0.28, blue: 0.84, alpha: 1)
-        case .graphite:
-            accent = NSColor.secondaryLabelColor
-        case .midnight:
-            accent = NSColor(calibratedRed: 0.08, green: 0.38, blue: 0.82, alpha: 1)
-        case .aurora:
-            accent = NSColor(calibratedRed: 0.02, green: 0.55, blue: 0.42, alpha: 1)
-        case .ink:
-            accent = NSColor(calibratedRed: 0.78, green: 0.30, blue: 0.05, alpha: 1)
-        }
-        // Blend semantic surfaces instead of hard-coding a dark palette. This
-        // keeps code blocks and inline code legible when Notes is in Light mode.
-        let control = NSColor.controlBackgroundColor
-        codeBackground = background.blended(withFraction: 0.28, of: control) ?? control
+        let palette = NotesAppearancePalette(theme: theme)
+        background = palette.background
+        text = palette.textPrimary
+        secondaryText = palette.textSecondary
+        separator = palette.separator
+        accent = palette.accent
+        codeBackground = palette.codeBackground
+        quoteBackground = palette.quoteBackground
+        taskChecked = palette.taskChecked
+        taskCompletedText = palette.taskCompletedText
     }
 }
 

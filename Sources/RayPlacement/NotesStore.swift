@@ -1,6 +1,15 @@
 import Foundation
 import RayPlacementCore
 
+private func parseTaskLine(_ line: String) -> (checked: Bool, text: String)? {
+    let pattern = #"^\s*- \[([ xX])\]\s+(.+)$"#
+    guard let expression = try? NSRegularExpression(pattern: pattern),
+          let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..<line.endIndex, in: line)),
+          let stateRange = Range(match.range(at: 1), in: line),
+          let textRange = Range(match.range(at: 2), in: line) else { return nil }
+    return (String(line[stateRange]).lowercased() == "x", String(line[textRange]))
+}
+
 @MainActor
 final class NotesStore: ObservableObject {
     static let shared = NotesStore()
@@ -13,6 +22,7 @@ final class NotesStore: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var noteBackStack: [UUID] = []
     @Published private(set) var noteForwardStack: [UUID] = []
+    @Published private(set) var userTemplates: [MarkdownUserTemplate]
 
     private var noteScrollOffsets: [String: CGFloat] = [:]
     @Published private(set) var recoveryURL: URL?
@@ -27,6 +37,7 @@ final class NotesStore: ObservableObject {
     init() {
         let loaded = Self.loadNotes()
         notes = loaded.notes
+        userTemplates = Self.loadUserTemplates()
         lastError = loaded.error
         recoveryURL = loaded.recoveryURL
         if notes.isEmpty && loaded.wasMissing {
@@ -151,6 +162,31 @@ final class NotesStore: ObservableObject {
         }
     }
 
+    func createNote(template: MarkdownUserTemplate) {
+        guard notes.count < Self.maximumNotes else { return }
+        let note = MarkdownNote(title: template.title, content: MarkdownNote.normalizedContent(template.content))
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        scheduleSave()
+    }
+
+    func saveUserTemplate(title: String, content: String, id: UUID? = nil) {
+        let cleanTitle = String(title.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
+        guard !cleanTitle.isEmpty, !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let template = MarkdownUserTemplate(id: id ?? UUID(), title: cleanTitle, content: content)
+        if let index = userTemplates.firstIndex(where: { $0.id == template.id }) {
+            userTemplates[index] = template
+        } else {
+            userTemplates.append(template)
+        }
+        persistUserTemplates()
+    }
+
+    func deleteUserTemplate(_ id: UUID) {
+        userTemplates.removeAll { $0.id == id }
+        persistUserTemplates()
+    }
+
     func createNote(template: MarkdownNoteTemplate = .blank) {
         guard notes.count < Self.maximumNotes else {
             lastError = "Lima Notes is limited to \(Self.maximumNotes) notes to keep search and autosave responsive."
@@ -246,6 +282,62 @@ final class NotesStore: ObservableObject {
         updateSelected { note in note.content = MarkdownNote.normalizedContent(content) }
     }
 
+    func appendMarkdown(_ markdown: String, to identifier: UUID) {
+        guard notes.contains(where: { $0.id == identifier }) else { return }
+        let previous = selectedNoteID
+        selectedNoteID = identifier
+        appendMarkdown(markdown)
+        selectedNoteID = previous ?? identifier
+    }
+
+    func appendClipboard(to identifier: UUID, clipboard: ClipboardHistoryService) {
+        guard let text = clipboard.entries.first?.text else { return }
+        appendMarkdown(text, to: identifier)
+    }
+
+    func appendClipboard(to identifier: UUID) {
+        appendClipboard(to: identifier, clipboard: ClipboardHistoryService.shared)
+    }
+
+    func appendDictation(_ conversation: DictationConversation, to identifier: UUID) {
+        appendMarkdown(conversation.transcript, to: identifier)
+    }
+
+    /// Appends one immutable dictation delta to a note without changing the
+    /// selected note or creating a paragraph boundary for each speech callback.
+    func appendDictationDelta(_ delta: String, to identifier: UUID) {
+        let clean = delta.trimmingCharacters(in: .newlines)
+        guard !clean.isEmpty else { return }
+        updateNote(identifier) { note in
+            let separator = note.content.isEmpty
+                || note.content.hasSuffix(" ")
+                || note.content.hasSuffix("\n")
+                || clean.hasPrefix(" ")
+                ? ""
+                : " "
+            let remaining = Self.maximumCharactersPerNote - note.content.count - separator.count
+            guard remaining > 0 else { return }
+            note.content += separator + String(clean.prefix(remaining))
+        }
+    }
+
+    struct TaskSummary: Identifiable, Equatable {
+        let id: String
+        let noteID: UUID
+        let noteTitle: String
+        let text: String
+        let checked: Bool
+    }
+
+    var taskDashboard: [TaskSummary] {
+        notes.flatMap { note in
+            note.content.components(separatedBy: .newlines).enumerated().compactMap { index, line -> TaskSummary? in
+                guard let parts = parseTaskLine(line) else { return nil }
+                return TaskSummary(id: "\(note.id.uuidString):\(index)", noteID: note.id, noteTitle: note.displayTitle, text: parts.text, checked: parts.checked)
+            }
+        }
+    }
+
     func appendMarkdown(_ markdown: String) {
         updateSelected { note in
             let separator = note.content.isEmpty || note.content.hasSuffix("\n") ? "" : "\n"
@@ -254,6 +346,49 @@ final class NotesStore: ObservableObject {
                 note.content = candidate
             }
         }
+    }
+
+    func appendShelfItems(_ items: [ContextShelfItem], to identifier: UUID? = nil) {
+        let markdown = ContextShelfMarkdownFormatter.format(items)
+        guard !markdown.isEmpty else { return }
+        if let identifier {
+            appendMarkdown(markdown, to: identifier)
+        } else {
+            appendMarkdown(markdown)
+        }
+    }
+
+    /// Appends Shelf content to the note that Quick Note would currently target.
+    /// This deliberately uses the same persisted mode and target ID as the
+    /// Quick Note controller, so Shelf actions do not silently depend on the
+    /// workspace's incidental selection.
+    func appendShelfItemsToQuickNote(_ items: [ContextShelfItem]) -> UUID? {
+        let savedTargetID = UserDefaults.standard.string(forKey: "quickNoteTargetID")
+            .flatMap(UUID.init(uuidString:))
+        let mode = UserDefaults.standard.string(forKey: "quickNoteTargetMode")
+            .flatMap(QuickNoteTargetMode.init(rawValue:)) ?? .lastQuickNote
+        let targetID = QuickNoteTargetResolver.resolve(
+            mode: mode,
+            savedTargetID: savedTargetID,
+            selectedNoteID: selectedNoteID,
+            notes: notes
+        )
+        guard let targetID else { return nil }
+        appendShelfItems(items, to: targetID)
+        UserDefaults.standard.set(targetID.uuidString, forKey: "quickNoteTargetID")
+        return targetID
+    }
+
+    func createNoteFromShelf(_ items: [ContextShelfItem]) {
+        let markdown = ContextShelfMarkdownFormatter.format(items)
+        guard !markdown.isEmpty, notes.count < Self.maximumNotes else { return }
+        let note = MarkdownNote(
+            title: "Shelf · \(Date().formatted(date: .abbreviated, time: .shortened))",
+            content: MarkdownNote.normalizedContent(markdown)
+        )
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        scheduleSave()
     }
 
     func togglePin() {
@@ -379,6 +514,20 @@ final class NotesStore: ObservableObject {
         }
         pendingSave = work
         persistenceQueue.asyncAfter(deadline: .now() + 0.55, execute: work)
+    }
+
+    private static let userTemplatesKey = "Lima.Notes.UserTemplates"
+
+    private static func loadUserTemplates() -> [MarkdownUserTemplate] {
+        guard let data = UserDefaults.standard.data(forKey: userTemplatesKey),
+              let templates = try? JSONDecoder().decode([MarkdownUserTemplate].self, from: data) else { return [] }
+        return templates
+    }
+
+    private func persistUserTemplates() {
+        if let data = try? JSONEncoder().encode(userTemplates) {
+            UserDefaults.standard.set(data, forKey: Self.userTemplatesKey)
+        }
     }
 
     private static func loadNotes() -> (notes: [MarkdownNote], error: String?, recoveryURL: URL?, wasMissing: Bool) {

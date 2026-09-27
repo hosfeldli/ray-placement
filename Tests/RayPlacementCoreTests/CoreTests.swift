@@ -10,6 +10,101 @@ private func packageRoot() -> URL {
 }
 
 
+@Test func salesforceCaseResolverFindsExactCaseNumberInCurrentPageSnapshot() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let recordURL = URL(string: "https://acme.lightning.force.com/lightning/r/Case/500000000000001AAA/view")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 0012345678 — duplicate shipment"
+            ),
+            SalesforcePageLink(
+                href: recordURL.absoluteString,
+                text: "",
+                accessibleName: "Open case #00123456",
+                title: "Customer shipment issue"
+            )
+        ]
+    )
+
+    #expect(result == .found(recordURL))
+}
+
+@Test func salesforceCaseResolverRejectsSubstringAndNonCaseLinks() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 900123456 and 001234567"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Account/001000000000001AAA/view",
+                text: "Case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "https://other.lightning.force.com/lightning/r/Case/500000000000002AAA/view",
+                text: "Case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "http://acme.lightning.force.com/lightning/r/Case/500000000000003AAA/view",
+                text: "Case 00123456"
+            )
+        ]
+    )
+
+    #expect(result == .notFound)
+}
+
+@Test func salesforceCaseResolverReportsAmbiguousRecordLinks() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let result = SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "00123456"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                accessibleName: "Open case 00123456"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000002AAA/view",
+                title: "Case #00123456"
+            )
+        ]
+    )
+
+    #expect(result == .ambiguous(matchCount: 2))
+}
+
+@Test func salesforceCaseResolverRejectsInvalidQueriesAndNonSalesforceRecordIDs() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    #expect(SalesforceCaseResolver.resolve(caseNumber: "case 00123456", pageURL: pageURL, links: []) == .notFound)
+    #expect(SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: URL(string: "http://acme.lightning.force.com/lightning/page/home")!,
+        links: []
+    ) == .notFound)
+    #expect(SalesforceCaseResolver.resolve(
+        caseNumber: "00123456",
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(
+                href: "/lightning/r/Case/001000000000001AAA/view",
+                text: "Case 00123456"
+            )
+        ]
+    ) == .notFound)
+}
+
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
@@ -31,6 +126,36 @@ private func packageRoot() -> URL {
     #expect(ShortcutSpec(string: "control+kc4294967296:q") == nil)
     #expect(ShortcutSpec(string: "control+kc12:") == nil)
     #expect(ShortcutSpec(string: "command+command")?.displayString == "⌘ twice")
+}
+
+@Test func shortcutRegistryFindsConflictsBeforeAssignmentAndSupportsReverseLookup() {
+    let registry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "notes", title: "Notes", shortcut: "command+shift+n"),
+        ShortcutAssignment(id: "launcher", title: "Launcher", shortcut: "option+space"),
+        ShortcutAssignment(id: "unused", title: "Unused", shortcut: nil)
+    ])
+
+    #expect(registry.conflict(for: "⌘⇧N", excluding: "ai")?.id == "notes")
+    #expect(registry.conflict(for: "⌘⇧N", excluding: "notes") == nil)
+    #expect(registry.reverseLookup("command+shift+n")?.title == "Notes")
+    #expect(registry.reverseLookup("option+control+q") == nil)
+    #expect(registry.conflicts.isEmpty)
+
+    let physicalKeyRegistry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "legacy", title: "Legacy", shortcut: "command+shift+n")
+    ])
+    #expect(physicalKeyRegistry.conflict(for: "command+shift+kc45:n", excluding: "captured")?.id == "legacy")
+    #expect(physicalKeyRegistry.owners(of: "command+shift+kc45:n").map(\.id) == ["legacy"])
+}
+
+@Test func shortcutRegistryReportsExistingDuplicateAssignments() {
+    let registry = ShortcutRegistry(assignments: [
+        ShortcutAssignment(id: "notes", title: "Notes", shortcut: "command+shift+n"),
+        ShortcutAssignment(id: "ai", title: "AI", shortcut: "⌘⇧N")
+    ])
+
+    #expect(registry.conflicts.count == 1)
+    #expect(registry.conflicts.first?.map(\.id) == ["ai", "notes"])
 }
 
 @Test func notesDockLayoutPinsToEitherVisibleScreenEdge() {
@@ -131,6 +256,135 @@ private func packageRoot() -> URL {
     #expect(manifest.commands.first?.action.type == .url)
 }
 
+@Test func manifestV3ContributionMetadataDecodesWithoutExecution() throws {
+    let data = #"""
+    {
+      "schemaVersion": 3,
+      "id": "local.review-tools",
+      "name": "Review Tools",
+      "capabilities": ["filesystem"],
+      "commands": [],
+      "contributions": {
+        "tools": [{
+          "id": "read_diff",
+          "title": "Read Diff",
+          "description": "Read a selected diff.",
+          "inputSchema": { "type": "object", "properties": { "path": { "type": "string" } } },
+          "capabilities": ["filesystem"],
+          "isReadOnly": true,
+          "execution": "hostReadOnly",
+          "hostAdapterID": "read_text_file"
+        }],
+        "skills": [{
+          "id": "review",
+          "name": "Code Review",
+          "instructions": "Review changes carefully.",
+          "preferredToolIDs": ["read_diff"],
+          "recommendedModelProviderID": "openai",
+          "recommendedModelID": "gpt-5"
+        }],
+        "agents": [{
+          "id": "reviewer",
+          "name": "Reviewer",
+          "instructions": "Use the review skill.",
+          "modelProviderID": "anthropic",
+          "modelID": "claude-sonnet",
+          "reasoningEffort": "high",
+          "skillIDs": ["review"],
+          "toolIDs": ["read_diff"],
+          "contextDefaults": ["selected_file"]
+        }]
+      }
+    }
+    """#.data(using: .utf8)!
+
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    try manifest.validateLifecycleMetadata()
+    #expect(manifest.contributions.tools.first?.isEligibleForReadOnlyHostAdapter == true)
+    #expect(manifest.contributions.skills.first?.preferredToolIDs == ["read_diff"])
+    #expect(manifest.contributions.skills.first?.recommendedModelProviderID == "openai")
+    #expect(manifest.contributions.agents.first?.modelProviderID == "anthropic")
+    #expect(manifest.contributions.agents.first?.reasoningEffort == "high")
+    #expect(manifest.contributions.agents.first?.contextDefaults == ["selected_file"])
+    #expect(manifest.contributions.tools.first?.hostAdapterID == "read_text_file")
+}
+
+@Test func manifestRejectsUnsafeOrUnsupportedHostAdapters() throws {
+    func manifest(for tool: ExtensionToolDefinition) -> ExtensionManifest {
+        ExtensionManifest(
+            schemaVersion: 3,
+            id: "local.adapter-test",
+            name: "Adapter Test",
+            commands: [],
+            contributions: ExtensionContributions(tools: [tool]),
+            capabilities: [.filesystem]
+        )
+    }
+
+    let missing = ExtensionToolDefinition(
+        id: "missing",
+        title: "Missing",
+        description: "No adapter.",
+        capabilities: [.filesystem],
+        execution: .hostReadOnly
+    )
+    #expect(throws: ExtensionManifest.ValidationError.hostAdapterRequired(toolID: "missing")) {
+        try manifest(for: missing).validateLifecycleMetadata()
+    }
+
+    let unsupported = ExtensionToolDefinition(
+        id: "unknown",
+        title: "Unknown",
+        description: "Unknown adapter.",
+        capabilities: [.filesystem],
+        execution: .hostReadOnly,
+        hostAdapterID: "run_extension_script"
+    )
+    #expect(throws: ExtensionManifest.ValidationError.unsupportedHostAdapter(
+        toolID: "unknown",
+        adapterID: "run_extension_script"
+    )) {
+        try manifest(for: unsupported).validateLifecycleMetadata()
+    }
+
+    let writable = ExtensionToolDefinition(
+        id: "write",
+        title: "Write",
+        description: "Must never run as a read-only host adapter.",
+        isReadOnly: false,
+        execution: .hostReadOnly,
+        hostAdapterID: "transform_text"
+    )
+    #expect(throws: ExtensionManifest.ValidationError.hostAdapterRequiresReadOnlyTool(toolID: "write")) {
+        try manifest(for: writable).validateLifecycleMetadata()
+    }
+}
+
+@Test func extensionToolArgumentsAreValidatedAgainstDeclaredObjectSchema() {
+    let schema: JSONSchema = [
+        "type": .string("object"),
+        "properties": .object([
+            "path": .object(["type": .string("string")]),
+            "range": .object([
+                "type": .string("array"),
+                "items": .object(["type": .string("integer")])
+            ])
+        ]),
+        "required": .array([.string("path")]),
+        "additionalProperties": .bool(false)
+    ]
+
+    #expect(ExtensionToolInputValidator.accepts(
+        .object(["path": .string("/tmp/review.diff"), "range": .array([.number(1), .number(10)])]),
+        schema: schema
+    ))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["range": .array([])]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .number(3)]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .string("/tmp/a"), "extra": .bool(true)]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.object(["path": .string("/tmp/a"), "range": .array([.number(1.5)])]), schema: schema))
+    #expect(!ExtensionToolInputValidator.accepts(.string("not an object"), schema: schema))
+}
+
 @Test func exampleManifestDecodes() throws {
     let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
@@ -209,7 +463,7 @@ private func packageRoot() -> URL {
         "picker:emoji",
         "picker:file",
         "picker:timezone",
-        "picker:password"
+        "generator:"
     ])
 
     let windows = try JSONDecoder().decode(
@@ -407,9 +661,68 @@ private func packageRoot() -> URL {
 }
 
 @Test func meetingDictationUsesShortRollingAudioSegments() {
-    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 15)
+    #expect(MeetingDictationPlan.localWhisperSegmentDuration == 3)
     #expect(MeetingDictationPlan.appleSpeechSegmentDuration == 8)
     #expect(MeetingDictationPlan.maximumDuration >= 60 * 60)
+}
+
+@Test func transcriptAssemblerKeepsPartialsMutableAndCommitsOnlyStablePrefix() {
+    var assembler = TranscriptAssembler(heldWordCount: 1)
+    let first = assembler.receivePartial("the shipment should")
+    #expect(first.committedDelta.isEmpty)
+    #expect(first.partialText == "the shipment should")
+
+    let second = assembler.receivePartial("the shipment should arrive")
+    #expect(second.committedDelta == "the shipment")
+    #expect(second.committedText == "the shipment")
+    #expect(second.partialText == "should arrive")
+
+    let third = assembler.receivePartial("the shipment should arrive tomorrow")
+    #expect(third.committedDelta == " should")
+    #expect(third.committedText == "the shipment should")
+    #expect(third.partialText == "arrive tomorrow")
+
+    let final = assembler.finish()
+    #expect(final.committedDelta == "arrive tomorrow")
+    #expect(final.committedText == "the shipment should arrive tomorrow")
+    #expect(final.partialText.isEmpty)
+}
+
+@Test func dictationTargetsRepresentWorkspaceAndExternalDestinations() {
+    let conversationID = UUID()
+    let noteID = UUID()
+    #expect(DictationTarget.conversation(conversationID) == .conversation(conversationID))
+    #expect(DictationTarget.note(noteID) == .note(noteID))
+    #expect(DictationTarget.aiPrompt == .aiPrompt)
+    #expect(DictationTarget.launcherQuery == .launcherQuery)
+    #expect(DictationTarget.externalApplication(processIdentifier: 42, bundleIdentifier: "com.example.Editor")
+        == .externalApplication(processIdentifier: 42, bundleIdentifier: "com.example.Editor"))
+    #expect(DictationTranscriptEvent.partial("changing preview").insertableDelta == nil)
+    #expect(DictationTranscriptEvent.committedDelta("stable words").insertableDelta == "stable words")
+    #expect(DictationTranscriptEvent.completed("whole transcript").insertableDelta == nil)
+}
+
+@Test func transcriptReconciliationAppendsOnlyUncommittedSpeech() {
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should",
+        recovered: "the shipment should arrive tomorrow"
+    ) == " arrive tomorrow")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "first committed shipment",
+        recovered: "shipment arrived"
+    ) == " arrived")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should arrive",
+        recovered: "the shipment should"
+    ).isEmpty)
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "the shipment should",
+        recovered: "The shipment should arrive!"
+    ) == " arrive!")
+    #expect(TranscriptReconciliation.uncommittedSuffix(
+        committed: "committed words",
+        recovered: "unrelated recovered audio"
+    ).isEmpty)
 }
 
 @Test func documentFormatterPrettyPrintsAndInspectsJSON() throws {
@@ -573,24 +886,31 @@ private func packageRoot() -> URL {
         "apiEnvironmentID": UUID().uuidString,
         String(["sql", "Workspace"].joined()): "removed",
         "schemaVersion": 1,
+        "terminalSessionID": UUID().uuidString,
         "windowFrames": [:]
     ]
     let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
     let legacy = try JSONDecoder().decode(WorkspaceState.self, from: legacyData)
     #expect(legacy.windowFrames.isEmpty)
-    #expect(legacy.terminalSessionID == nil)
 
     let state = WorkspaceState(
-        activeWorkspace: "terminal",
+        activeWorkspace: "workspace",
         notesSection: "favorites",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
-        terminalSessionID: UUID(),
         windowFrames: ["launcher": "{10, 20} 680 452"],
-        dockMode: "right"
+        dockMode: "right",
+        activeModule: "ai",
+        selectedAIConversationID: UUID(),
+        sidebarVisible: false,
+        focusMode: true
     )
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: JSONEncoder().encode(state))
     #expect(decoded == state)
+    #expect(decoded.activeModule == "ai")
+    #expect(decoded.selectedAIConversationID == state.selectedAIConversationID)
+    #expect(decoded.sidebarVisible == false)
+    #expect(decoded.focusMode == true)
 }
 
 @Test func commandProfilesRemainBackwardCompatible() throws {
@@ -639,20 +959,228 @@ private func packageRoot() -> URL {
 }
 
 
-@Test func currentWorkspaceStateIntegrationRoundTripsTerminalNotesAndFrames() throws {
+@Test func currentWorkspaceStateRoundTripsNotesAndFramesWithoutTerminalSessions() throws {
     let state = WorkspaceState(
-        activeWorkspace: "notes",
+        activeWorkspace: "workspace",
         notesSection: "all",
         selectedNoteID: UUID(),
         selectedDictationID: UUID(),
-        terminalSessionID: UUID(),
-        windowFrames: ["launcher": "{10, 20} 680 452", "notes": "{40, 50} 900 700"],
-        dockMode: "left"
+        windowFrames: ["launcher": "{10, 20} 680 452", "workspace": "{40, 50} 900 700"],
+        dockMode: "left",
+        activeModule: "formatter",
+        selectedAIConversationID: UUID(),
+        sidebarVisible: true,
+        focusMode: false
     )
     let data = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(WorkspaceState.self, from: data)
+    let serialized = try JSONSerialization.jsonObject(with: data) as? [String: Any]
     #expect(decoded == state)
-    #expect(decoded.activeWorkspace == "notes")
-    #expect(decoded.terminalSessionID == state.terminalSessionID)
+    #expect(decoded.activeWorkspace == "workspace")
+    #expect(decoded.activeModule == "formatter")
     #expect(decoded.windowFrames.count == 2)
+    #expect(serialized?["terminalSessionID"] == nil)
+}
+
+@Test func quickNoteTargetPrefersLastShownNoteOverWorkspaceSelection() {
+    let first = MarkdownNote(title: "First", modifiedAt: Date(timeIntervalSince1970: 10))
+    let second = MarkdownNote(title: "Second", modifiedAt: Date(timeIntervalSince1970: 20))
+    let resolved = QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: first.id,
+        selectedNoteID: second.id,
+        notes: [second, first]
+    )
+    #expect(resolved == first.id)
+}
+
+@Test func quickNoteTargetSupportsInboxAndMostRecentModes() {
+    let inbox = MarkdownNote(title: "Inbox", modifiedAt: Date(timeIntervalSince1970: 10))
+    let recent = MarkdownNote(title: "Recent", modifiedAt: Date(timeIntervalSince1970: 20))
+    #expect(QuickNoteTargetResolver.resolve(mode: .inbox, savedTargetID: nil, selectedNoteID: recent.id, notes: [recent, inbox]) == inbox.id)
+    #expect(QuickNoteTargetResolver.resolve(mode: .mostRecent, savedTargetID: nil, selectedNoteID: inbox.id, notes: [inbox, recent]) == recent.id)
+}
+
+
+@Test func quickNoteTargetFallsBackFromInvalidSavedTarget() {
+    let selected = MarkdownNote(title: "Selected", modifiedAt: Date(timeIntervalSince1970: 10))
+    let recent = MarkdownNote(title: "Recent", modifiedAt: Date(timeIntervalSince1970: 20))
+    #expect(QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: UUID(),
+        selectedNoteID: selected.id,
+        notes: [recent, selected]
+    ) == selected.id)
+
+    #expect(QuickNoteTargetResolver.resolve(
+        mode: .lastQuickNote,
+        savedTargetID: UUID(),
+        selectedNoteID: nil,
+        notes: [selected, recent]
+    ) == recent.id)
+}
+
+@Test func quickNoteTargetKeepsInboxModeWhenInboxIsMissing() {
+    let last = MarkdownNote(title: "Last Quick Note", modifiedAt: Date(timeIntervalSince1970: 10))
+    let selected = MarkdownNote(title: "Workspace Selection", modifiedAt: Date(timeIntervalSince1970: 20))
+    let resolved = QuickNoteTargetResolver.resolve(
+        mode: .inbox,
+        savedTargetID: last.id,
+        selectedNoteID: selected.id,
+        notes: [selected, last]
+    )
+    #expect(resolved == last.id)
+}
+
+
+@Test func extensionPresentationDefaultsInlineAndSurfaceMetadataDecodes() throws {
+    let data = #"""
+    {
+      "id": "dev.surface",
+      "name": "Surface",
+      "commands": [
+        {
+          "id": "generate",
+          "title": "Generate",
+          "action": { "type": "generator" },
+          "surface": { "kind": "generator", "preferredHeight": 430, "remembersState": true, "canPopOut": false }
+        }
+      ]
+    }
+    """#.data(using: .utf8)!
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.presentation == .inline)
+    let command = try #require(manifest.commands.first)
+    #expect(command.action.type == .generator)
+    #expect(command.surface?.kind == .generator)
+    #expect(command.surface?.preferredHeight == 430)
+    #expect(command.surface?.remembersState == true)
+    #expect(command.surface?.canPopOut == false)
+}
+
+@Test func extensionV3InvocationAndSurfaceCodable() throws {
+    let descriptor = ExtensionInvocationDescriptor(
+        arguments: [ExtensionInvocationArgument(id: "length", kind: .integer, required: true, minimum: 8, maximum: 20)],
+        context: [.selectedText, .contextShelfText]
+    )
+    let parsed = try ExtensionInvocationParser.parse("16", descriptor: descriptor)
+    #expect(parsed["length"] == "16")
+    #expect(descriptor.context?.contains(.selectedText) == true)
+    #expect(throws: ExtensionInvocationError.outOfRange("length")) {
+        _ = try ExtensionInvocationParser.parse("7", descriptor: descriptor)
+    }
+    let surface = ExtensionSurfaceDescriptor(kind: .liveOutput, timeoutPolicy: .global)
+    let data = try JSONEncoder().encode(surface)
+    #expect(try JSONDecoder().decode(ExtensionSurfaceDescriptor.self, from: data) == surface)
+}
+
+@Test func commandAliasStoreNormalizesWithoutChangingManifest() {
+    let suite = "lima-alias-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = CommandAliasStore(defaults: defaults)
+    store.set([" PW ", "pw", ""], for: "password")
+    #expect(store.aliases(for: "password") == ["pw"])
+}
+
+@Test func apiV3FixtureDecodesSchemaAndLifecycleMetadata() throws {
+    let fixtureURL = try #require(Bundle.module.url(forResource: "extension-v3", withExtension: "json"))
+    let data = try Data(contentsOf: fixtureURL)
+    let manifest = try JSONDecoder().decode(ExtensionManifest.self, from: data)
+    #expect(manifest.schemaVersion == 3)
+    #expect(manifest.presentation == .inline)
+    #expect(manifest.commands.count == 2)
+    #expect(manifest.commands[0].aliases == ["fmt"])
+    #expect(manifest.commands[0].invocation?.context?.contains(ExtensionContextKind.selectedText) == true)
+    #expect(manifest.commands[0].surface?.kind == .form)
+    #expect(manifest.commands[0].output?.kind == .markdown)
+    #expect(manifest.commands[1].action.chain?.count == 1)
+    try manifest.validateLifecycleMetadata()
+
+    let schemaURL = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("docs/extension-manifest.schema.json")
+    let schema = try JSONSerialization.jsonObject(with: Data(contentsOf: schemaURL)) as! [String: Any]
+    let rootProperties = try #require(schema["properties"] as? [String: Any])
+    let versions = try #require(rootProperties["schemaVersion"] as? [String: Any])
+    #expect((versions["enum"] as? [Int])?.contains(3) == true)
+    let docsURL = schemaURL.deletingLastPathComponent().appendingPathComponent("EXTENSIONS.md")
+    let docs = try String(contentsOf: docsURL)
+    #expect(docs.contains("API v3"))
+}
+
+@Test func extensionLifecycleRejectsInvalidProvenanceCombinations() throws {
+    let command = ExtensionCommand(id: "test", title: "Test", action: ExtensionAction(type: .url, value: "https://example.com"))
+    let impostor = ExtensionManifest(schemaVersion: 3, id: "impostor", name: "Impostor", bundled: false, provenance: .bundled, commands: [command], trust: .bundled)
+    #expect(throws: ExtensionManifest.ValidationError.nonBundledCannotUseBundledTrust) { try impostor.validateLifecycleMetadata() }
+    let incomplete = ExtensionManifest(schemaVersion: 3, id: "incomplete", name: "Incomplete", bundled: true, provenance: .userInstalled, commands: [command], trust: .unsigned)
+    #expect(throws: ExtensionManifest.ValidationError.bundledRequiresBundledProvenance) { try incomplete.validateLifecycleMetadata() }
+}
+
+@Test func browserBridgeResolvesOnlyLinksFromTheSuppliedSecurePage() throws {
+    let request = LimaBrowserBridgeRequest(
+        requestID: "lookup-1",
+        command: "salesforce.resolve_case",
+        caseNumber: "000123",
+        pageURL: "https://acme.my.salesforce.com/lightning/page/home",
+        links: [
+            LimaBrowserBridgeLink(
+                href: "/lightning/r/Case/500000000000001AAA/view",
+                text: "Case 000123"
+            )
+        ]
+    )
+
+    let response = LimaBrowserBridgeDispatcher.handle(request)
+    #expect(response.ok)
+    #expect(response.status == "found")
+    #expect(response.recordURL == "https://acme.my.salesforce.com/lightning/r/Case/500000000000001AAA/view")
+    #expect(response.errorCode == nil)
+}
+
+@Test func browserBridgeRejectsUnknownCommandsAndUnboundedRequests() {
+    let unknown = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(requestID: "lookup-2", command: "run_javascript")
+    )
+    #expect(!unknown.ok)
+    #expect(unknown.errorCode == "unsupported_command")
+
+    let oversized = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(
+            requestID: "lookup-3",
+            command: "salesforce.resolve_case",
+            caseNumber: "123",
+            pageURL: "https://acme.my.salesforce.com/",
+            links: Array(repeating: LimaBrowserBridgeLink(href: "/lightning/r/Case/500000000000001AAA/view", text: "Case 123"), count: LimaBrowserBridgeDispatcher.maximumLinks + 1)
+        )
+    )
+    #expect(!oversized.ok)
+    #expect(oversized.errorCode == "invalid_case_lookup")
+
+    let wrongVersion = LimaBrowserBridgeDispatcher.handle(
+        LimaBrowserBridgeRequest(version: 99, requestID: "lookup-4", command: "ping")
+    )
+    #expect(!wrongVersion.ok)
+    #expect(wrongVersion.errorCode == "unsupported_version")
+}
+
+@Test func firefoxNativeMessageFrameUsesLittleEndianLengthAndRejectsMalformedFrames() throws {
+    let payload = Data("{\"ok\":true}".utf8)
+    let framed = try FirefoxNativeMessageFrame.encode(payload)
+    #expect(Array(framed.prefix(4)) == [11, 0, 0, 0])
+    #expect(try FirefoxNativeMessageFrame.payloadLength(fromHeader: Data(framed.prefix(4))) == payload.count)
+    #expect(try FirefoxNativeMessageFrame.decode(framed) == payload)
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedHeader) {
+        try FirefoxNativeMessageFrame.payloadLength(fromHeader: Data([1, 2, 3]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedHeader) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 2, 3]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.truncatedPayload) {
+        try FirefoxNativeMessageFrame.decode(Data([4, 0, 0, 0, 1]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.trailingBytes) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 0, 0, 0, 65, 66]))
+    }
+    #expect(throws: FirefoxNativeMessageFrame.Error.payloadTooLarge) {
+        try FirefoxNativeMessageFrame.decode(Data([1, 0, 16, 0]))
+    }
 }

@@ -15,7 +15,8 @@
       "type": "integer",
       "enum": [
         1,
-        2
+        2,
+        3
       ]
     },
     "id": {
@@ -76,7 +77,8 @@
           "accessibility",
           "processControl",
           "systemControl",
-          "externalExecution"
+          "externalExecution",
+          "contextShelf"
         ]
       }
     },
@@ -86,6 +88,15 @@
       "items": {
         "$ref": "#/$defs/command"
       }
+    },
+    "presentation": {
+      "type": "string",
+      "enum": [
+        "inline",
+        "workspace",
+        "background"
+      ],
+      "default": "inline"
     }
   },
   "$defs": {
@@ -126,6 +137,31 @@
         },
         "action": {
           "$ref": "#/$defs/action"
+        },
+        "aliases": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "presentation": {
+          "type": "string",
+          "enum": [
+            "inline",
+            "workspace",
+            "background"
+          ]
+        },
+        "surface": {
+          "$ref": "#/$defs/surface"
+        },
+        "invocation": {
+          "$ref": "#/$defs/invocation"
+        },
+        "output": {
+          "$ref": "#/$defs/output"
         }
       }
     },
@@ -148,7 +184,8 @@
             "system",
             "url",
             "window",
-            "workspace"
+            "workspace",
+            "generator"
           ]
         },
         "value": {
@@ -336,6 +373,146 @@
         "timeoutSeconds": {
           "type": "integer",
           "minimum": 0
+        }
+      }
+    },
+    "surface": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "form",
+            "generator",
+            "picker",
+            "textTool",
+            "liveOutput"
+          ]
+        },
+        "preferredHeight": {
+          "type": "number",
+          "minimum": 120,
+          "maximum": 700
+        },
+        "remembersState": {
+          "type": "boolean"
+        },
+        "canPopOut": {
+          "type": "boolean"
+        },
+        "timeoutPolicy": {
+          "type": "string",
+          "enum": [
+            "global",
+            "never"
+          ]
+        }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "acceptsRemainder": {
+          "type": "boolean"
+        },
+        "arguments": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/invocationArgument"
+          }
+        },
+        "context": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "selectedText",
+              "clipboardText",
+              "file",
+              "contextShelfText"
+            ]
+          }
+        }
+      }
+    },
+    "invocationArgument": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text",
+            "integer",
+            "number",
+            "application",
+            "file",
+            "directory",
+            "choice"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "consumeRemainder": {
+          "type": "boolean"
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": [
+            "text",
+            "markdown",
+            "json",
+            "file",
+            "status"
+          ]
+        },
+        "copyable": {
+          "type": "boolean"
+        },
+        "pasteable": {
+          "type": "boolean"
+        },
+        "shelfEligible": {
+          "type": "boolean"
+        },
+        "notesEligible": {
+          "type": "boolean"
         }
       }
     }

@@ -3,12 +3,36 @@ import ApplicationServices
 import Combine
 import Foundation
 import QuartzCore
+import QuickLookUI
 import RayPlacementCore
 import RayPlacementWriting
 import SwiftUI
 
+private enum PasteTargetPolicy {
+    case exactCapturedSelection
+    case currentInsertionPoint
+}
+
+/// The live monitor delegates AI Escape to this small route so the same
+/// navigation policy can be exercised without manufacturing a window in tests.
+enum LauncherAIKeyboardRoute: Equatable {
+    case navigateBack
+    case passthrough
+
+    @MainActor
+    static func action(for event: NSEvent, coordinator: LimaSurfaceCoordinator? = nil) -> Self {
+        guard event.keyCode == 53 else { return .passthrough }
+        let coordinator = coordinator ?? .shared
+        return coordinator.escapeAction(
+            for: .launcher,
+            canNavigateBack: true,
+            hasSelection: false
+        ) == .navigateBack ? .navigateBack : .passthrough
+    }
+}
+
 @MainActor
-final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDelegate {
+final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDelegate, @preconcurrency QLPreviewPanelDataSource, QLPreviewPanelDelegate {
     let clipboard: ClipboardHistoryService
     let viewModel: LauncherViewModel
 
@@ -16,59 +40,119 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private let panel: LauncherPanel
     private let toast = ActionToastController()
+    private let contextShelfCapture = ContextShelfCaptureService()
     private let extensionExecutor = ExtensionExecutor()
     private lazy var extensionFormWindow = ExtensionFormWindowController()
     private let writingChecker = RuleBasedWritingChecker()
     // The activity shelf also hosts lightweight Apple Music controls, so it is
     // available from launch rather than only after Notes has been opened once.
-    private let notesWindow = NotesWindowController()
-    private lazy var extensionStoreWindow = ExtensionStoreWindowController { [weak self] in
-        self?.viewModel.reloadExtensions()
-    }
+    private lazy var notesWindow: NotesWindowController = {
+        let controller = NotesWindowController(
+            aiChatModel: aiChatModel,
+            terminalModel: terminalModel,
+            formatterModel: formatterModel
+        )
+        controller.onLauncherQueryDictation = { [weak self] delta in
+            guard let self, !delta.isEmpty else { return }
+            if let last = self.viewModel.query.last, let first = delta.first,
+               !last.isWhitespace, !first.isWhitespace {
+                self.viewModel.query += " "
+            }
+            self.viewModel.query += delta
+        }
+        return controller
+    }()
+    private let extensionStoreModel: ExtensionStoreModel
+    private let formatterModel: FormatterWorkspaceModel
+    private let workflowModel: WorkflowEditorModel
     private let terminalModel: DeveloperTerminalModel
-    private lazy var focusedFileLauncherWindow = FocusedFileLauncherWindowController()
-    private lazy var passwordGeneratorWindow = PasswordGeneratorWindowController()
-    private lazy var extensionDevelopmentWindow = ExtensionDevelopmentWindowController()
-    private lazy var formatterWindow = FormatterWindowController()
-    private lazy var workflowWindow = WorkflowWindowController { [weak self] workflow in
-        self?.executeWorkflow(workflow)
-    }
+    private let passwordGeneratorModel: PasswordGeneratorModel
+    private let inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
+    private let aiChatModel: AIChatViewModel
     private var previousApplication: NSRunningApplication?
     private var lastExternalApplication: NSRunningApplication?
     private var selectedTextContext: SelectedTextService.SelectionContext?
     private var keyboardSelectionContext: KeyboardSelectionService.Capture?
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
+    private var writingOperationToken: UUID?
+    private var writingHoldToken: UUID?
+    private var quickLookTimeoutHeld = false
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
+    private var aiMCPManagerObserver: NSObjectProtocol?
     private var modeSubscription: AnyCancellable?
+    private var surfaceModeSubscription: AnyCancellable?
+    private var queryInteractionSubscription: AnyCancellable?
+    private var surfaceQuerySubscriptions: [AnyCancellable] = []
+    private var settingsSubscription: AnyCancellable?
+    private var pendingFileActionURL: URL?
+    private var quickLookItem: FileQuickLookItem?
+    /// Explicit popouts must be retained by the controller for as long as the
+    /// launcher lives; otherwise the local window controller can deallocate
+    /// immediately after `present()` returns.
+    private var retainedSurfaceWindows: [NSWindowController] = []
+    private let surfaceSessionController = LauncherSurfaceSessionController()
     private let updateService: UpdateService
+    private lazy var mcpManagerWindow = MCPManagerWindowController()
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
-    private lazy var permissionWindow: NSWindowController = {
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 720, height: 430), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        LimaWindowChrome.configure(window, title: "Lima Permission Center", accessibilityLabel: "Lima Permission Center")
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: PermissionCenterView(center: .shared)))
-        return NSWindowController(window: window)
-    }()
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
         viewModel: viewModel,
+        aiChatModel: aiChatModel,
         updateService: updateService,
-        reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() }
+        reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
+        openGrammarDebugger: { [weak self] in self?.showGrammarDebugger() },
+        extensionStoreModel: extensionStoreModel
     )
 
     init(updateService: UpdateService) {
         let clipboard = ClipboardHistoryService.shared
         self.clipboard = clipboard
         self.viewModel = LauncherViewModel(clipboard: clipboard)
+        self.extensionStoreModel = ExtensionStoreModel(onInstalled: {})
+        self.formatterModel = FormatterWorkspaceModel()
+        self.workflowModel = WorkflowEditorModel(selected: nil)
         self.terminalModel = DeveloperTerminalModel()
+        self.passwordGeneratorModel = PasswordGeneratorModel()
+        self.inlineExtensionSurfaceModel = InlineExtensionSurfaceModel()
+        self.aiChatModel = AIChatViewModel()
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
+        aiMCPManagerObserver = NotificationCenter.default.addObserver(
+            forName: .limaOpenAIMCPManager,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.mcpManagerWindow.present()
+            }
+        }
+        extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
+        workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
 
         viewModel.delegate = self
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(viewModel: viewModel, terminalModel: terminalModel)))
+        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(
+                viewModel: viewModel,
+                terminalModel: terminalModel,
+                aiChatModel: aiChatModel,
+                passwordGeneratorModel: passwordGeneratorModel,
+                inlineExtensionSurfaceModel: inlineExtensionSurfaceModel,
+                formatterModel: formatterModel,
+                extensionStoreModel: extensionStoreModel,
+                workflowModel: workflowModel,
+                surfaceSessionController: surfaceSessionController,
+                onSurfaceInteraction: { [weak self] in self?.surfaceSessionController.interactionOccurred() },
+                onPinSurface: { [weak self] pinned in
+                    self?.viewModel.setSurfacePinned(pinned)
+                    self?.surfaceSessionController.setPinned(pinned)
+                },
+                onOpenSurfaceWorkspace: { [weak self] in self?.openSurfaceWorkspace() },
+                onPerformSurfacePrimaryAction: { [weak self] in self?.performCurrentSurfacePrimaryAction() }
+            )))
+        surfaceSessionController.bind(to: viewModel)
         modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
             .map { mode, results, query in
                 LauncherPanelLayout.size(
@@ -83,7 +167,69 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 guard let self else { return }
                 self.resizePanel(for: self.viewModel.mode, animated: true)
             }
+        surfaceModeSubscription = viewModel.$mode
+            .sink { [weak self] mode in
+                guard let self else { return }
+                self.surfaceSessionController.surfaceChanged(to: mode)
+                self.refreshTerminalTimeoutPolicy()
+            }
+        settingsSubscription = SettingsStore.shared.objectWillChange
+            .sink { [weak self] _ in
+                // Published values are updated immediately after
+                // objectWillChange. Re-evaluate on the next main-actor turn
+                // so a live terminal responds to the new setting.
+                Task { @MainActor in
+                    self?.refreshTerminalTimeoutPolicy()
+                }
+            }
+        inlineExtensionSurfaceModel.onExecutionStateChanged = { [weak self] active in
+            if active {
+                self?.surfaceSessionController.suspendTimeout()
+            } else {
+                self?.surfaceSessionController.resumeTimeout()
+            }
+        }
+        formatterModel.onProcessingStateChanged = { [weak self] active in
+            if active {
+                self?.surfaceSessionController.suspendTimeout()
+            } else {
+                self?.surfaceSessionController.resumeTimeout()
+            }
+        }
+        queryInteractionSubscription = viewModel.$query
+            .dropFirst()
+            .sink { [weak self] query in
+                guard let self, self.viewModel.mode != .root else { return }
+                switch self.viewModel.mode {
+                case .surface(let session):
+                    switch session.surface.handler {
+                    case .formatter: if self.formatterModel.searchQuery != query { self.formatterModel.searchQuery = query }
+                    case .extensionStore: if self.extensionStoreModel.query != query { self.extensionStoreModel.query = query }
+                    case .workflows: if self.workflowModel.commandFilter != query { self.workflowModel.commandFilter = query }
+                    default: break
+                    }
+                case .contextShelf:
+                    break // The Shelf receives the binding directly from LauncherView.
+                default: break
+                }
+                self.surfaceSessionController.interactionOccurred()
+            }
+        surfaceQuerySubscriptions = [
+            formatterModel.$searchQuery.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .formatter, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            },
+            extensionStoreModel.$query.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .extensionStore, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            },
+            workflowModel.$commandFilter.sink { [weak self] value in
+                guard let self, self.viewModel.mode.surfaceHandler == .workflows, self.viewModel.query != value else { return }
+                self.viewModel.query = value
+            }
+        ]
         resizePanel(for: viewModel.mode, animated: false)
+        surfaceSessionController.surfaceChanged(to: viewModel.mode)
         rememberExternalApplicationActivation()
         installKeyboardMonitor()
     }
@@ -93,6 +239,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         if let applicationActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(applicationActivationObserver)
         }
+        if let aiMCPManagerObserver {
+            NotificationCenter.default.removeObserver(aiMCPManagerObserver)
+        }
     }
 
     func toggle(from sourceApplication: NSRunningApplication? = nil) {
@@ -100,10 +249,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func show(from sourceApplication: NSRunningApplication? = nil) {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        let measurementID = PerformanceMonitor.shared.begin("Launcher open to visible")
+        defer { LauncherPerformanceDiagnostics.shared.mark("hotkey-visible", startedAt: startedAt, budget: 80) }
         rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
         presentPanel()
+        DispatchQueue.main.async { [weak self] in
+            PerformanceMonitor.shared.end(measurementID, succeeded: self?.panel.isVisible == true)
+        }
     }
 
     func hide() {
@@ -113,12 +268,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func shutdown() {
         extensionExecutor.cancelAll()
         writingChecker.cancel()
+        cancelWritingOperation()
+        releaseQuickLookTimeoutHold()
         toast.dismiss()
         clipboard.flush()
         notesWindow.shutdown()
         terminalModel.shutdown()
-        formatterWindow.shutdown()
-        workflowWindow.shutdown()
     }
 
     func showSettings() {
@@ -131,19 +286,38 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         developerGrammarSettingsWindow.present()
     }
 
+    func showGrammarDebugger() {
+        let descriptor = LimaSurfaceRegistry.shared.descriptor(
+            id: "grammar-debugger",
+            title: "Grammar Debugger",
+            kind: .inspector,
+            handler: .grammarDebugger,
+            preferredHeight: 680,
+            canPopOut: false,
+            supportsSearch: true
+        )
+        viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
+        presentPanel()
+    }
+
     func showNotes() {
         hide()
+        notesWindow.selectModule(.notes)
         notesWindow.toggleVisibility()
     }
 
-    func showExtensionStore() {
+    func showAIChat() {
         hide()
-        extensionStoreWindow.present()
+        notesWindow.present(module: .ai)
+    }
+
+    func showExtensionStore() {
+        showSettings()
     }
 
     func showQuickNote() {
         hide()
-        notesWindow.presentQuickNote()
+        notesWindow.toggleQuickNote()
     }
 
     func dockNotesLeft() {
@@ -162,14 +336,47 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showDeveloperTerminal() {
-        viewModel.enter(.terminal)
-        presentPanel()
-        DispatchQueue.main.async { [weak self] in
-            self?.terminalModel.startIfNeeded()
-            self?.terminalModel.focus()
+        hide()
+        notesWindow.present(module: .terminal)
+        DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
+    }
+
+    @discardableResult
+    func restoreAfterUnexpectedExit(_ snapshot: LimaRecoverySnapshot?) -> Bool {
+        guard let snapshot else { return false }
+        let availableNoteIDs = Set(NotesStore.shared.notes.map(\.id))
+        let availableAIConversationIDs = Set(aiChatModel.store.conversations.map(\.id))
+        guard let plan = CrashRecoveryPlan.make(
+            from: snapshot,
+            availableNoteIDs: availableNoteIDs,
+            availableAIConversationIDs: availableAIConversationIDs
+        ) else { return false }
+
+        WorkspaceStateRegistry.shared.update { state in
+            state.activeWorkspace = LimaSurfaceID.workspace.rawValue
+            state.activeModule = plan.module.rawValue
+            if let noteID = plan.selectedNoteID { state.selectedNoteID = noteID }
+            if let conversationID = plan.selectedAIConversationID {
+                state.selectedAIConversationID = conversationID
+            }
+        }
+        notesWindow.present(module: plan.module)
+        return true
+    }
+
+    func showFocusedFileLauncher() { viewModel.enter(.files); presentPanel() }
+
+    func captureSelectionToShelf(from sourceApplication: NSRunningApplication?) {
+        contextShelfCapture.capture(from: sourceApplication) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success:
+                self.toast.show("Added selection to Shelf")
+            case .failure(let error):
+                self.toast.show(error.localizedDescription, style: .error, duration: 3.2)
+            }
         }
     }
-    func showFocusedFileLauncher() { hide(); focusedFileLauncherWindow.present() }
 
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
@@ -180,6 +387,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func launcherViewModel(_ viewModel: LauncherViewModel, perform action: LauncherAction, item: LauncherItem) {
+        let start = DispatchTime.now().uptimeNanoseconds
+        defer { LauncherPerformanceDiagnostics.shared.record(operation: "common-local-action", budget: 100, milliseconds: Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000) }
         switch action {
         case .launchApplication(let url):
             hide()
@@ -189,10 +398,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 if let error { DispatchQueue.main.async { self?.presentError(title: item.title, error: error) } }
             }
 
-        case .openFile(let url), .openURL(let url):
+        case .openFile(let url):
+            ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
             hide()
             if !NSWorkspace.shared.open(url) {
-                presentError(title: item.title, message: "macOS could not open \(url.isFileURL ? url.path : url.absoluteString).")
+                presentError(title: item.title, message: "macOS could not open \(url.path).")
+            }
+
+        case .fileAction(let url, let fileAction):
+            performFileAction(fileAction, for: url, title: item.title)
+
+        case .openURL(let url):
+            ContextShelfIntegration.addURL(url, sourceApplication: NSRunningApplication.current.localizedName)
+            hide()
+            if !NSWorkspace.shared.open(url) {
+                presentError(title: item.title, message: "macOS could not open \(url.absoluteString).")
             }
 
         case .revealFile(let url):
@@ -200,6 +420,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.activateFileViewerSelecting([url])
 
         case .copyText(let text):
+            ContextShelfIntegration.addClipboard(text, sourceApplication: previousApplication?.localizedName)
             clipboard.copy(text)
             hide()
             toast.show("Copied to the clipboard")
@@ -216,7 +437,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .saveSelectionToQuickNote(let text):
             hide()
             notesWindow.store.createQuickNote(with: text)
-            notesWindow.presentQuickNote()
+            notesWindow.showQuickNote()
 
         case .checkSelectedText:
             performWritingCheck()
@@ -236,6 +457,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .universalSearch(let result):
             routeUniversalSearchResult(result)
 
+        case .builtinInvocation(let invocation):
+            executeBuiltinInvocation(invocation)
+
         case .workflow(let id):
             guard let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) else {
                 presentError(title: "Workflow", message: "That workflow no longer exists.")
@@ -243,14 +467,119 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
             executeWorkflow(workflow)
 
+        case .macro(let id):
+            executeMacro(id)
+
+        case .note(let id):
+            notesWindow.selectNote(id)
+            notesWindow.present()
+        case .shelfItem(let id):
+            viewModel.enter(.contextShelf)
+            ContextShelfStore.shared.selectedIDs = [id]
+            presentPanel()
+        case .clipboardEntry(let id):
+            guard let entry = clipboard.entries.first(where: { $0.id == id }) else { return }
+            clipboard.copy(entry.text)
+            toast.show("Copied clipboard entry")
+        case .extensionOutput(let id):
+            guard let output = ExtensionOutputStore.shared.outputs.first(where: { $0.id == id }) else { return }
+            if output.canCopy { clipboard.copy(output.value); toast.show("Copied output") }
+
         case .window(let layout):
             applyWindowLayout(layout)
 
         case .system(let systemAction):
             performSystemAction(systemAction)
 
+        case .useWith:
+            viewModel.openActionPanel(for: item)
+
+        case .toggleFavorite(let id):
+            CommandManager.shared.toggleFavorite(id)
+            viewModel.refreshForSettings()
+        case .forgetRanking(let id):
+            viewModel.forgetLearnedRanking(id)
+
         case .noOp:
             break
+        }
+    }
+
+    private func executeMacro(_ id: UUID) {
+        guard let macro = LimaMacroStore.shared.chains.first(where: { $0.id == id }) else {
+            presentError(title: "Macro", message: "That macro no longer exists.")
+            return
+        }
+        guard macro.steps.count <= 8, macro.steps.allSatisfy({ !$0.commandID.isEmpty }) else {
+            presentError(title: "Macro", message: "Macros may contain at most eight registered commands.")
+            return
+        }
+        hide()
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            var failures = 0
+            var lastOutput: String?
+            for step in macro.steps {
+                do {
+                    guard let command = self.viewModel.extensionCommands.first(where: { loaded in
+                        loaded.command.id == step.commandID || "extension.\(loaded.extensionID).\(loaded.command.id)" == step.commandID
+                    }) else { throw ExtensionExecutor.ExecutionError.invalidAction("Command \(step.commandID) is unavailable.") }
+                    var prepared = command
+                    var action = prepared.command.action
+                    let context = lastOutput
+                    if !step.parameters.isEmpty || context != nil {
+                        var parameters = action.parameters ?? [:]
+                        for (key, value) in step.parameters { parameters[key] = value.replacingOccurrences(of: "{{input}}", with: context ?? "") }
+                        if let context { parameters["context"] = context }
+                        action.parameters = parameters
+                        prepared.command.action = action
+                    }
+                    let output = try await self.extensionExecutor.executeAsync(prepared, clipboard: self.clipboard)
+                    lastOutput = output.value.isEmpty ? context : output.value
+                    try await self.dispatchExecutionOutput(output)
+                } catch {
+                    failures += 1
+                    if macro.failurePolicy == .stop { break }
+                }
+            }
+            self.toast.show(failures == 0 ? "\(macro.name) completed" : "\(macro.name) completed with \(failures) error\(failures == 1 ? "" : "s")", style: failures == 0 ? .success : .error)
+        }
+    }
+
+    private func dispatchExecutionOutput(_ output: ExtensionExecutionOutput) async throws {
+        switch output.payload {
+        case .text:
+            if output.isPersistable { ExtensionOutputStore.shared.record(output) }
+        case .native(let action):
+            await withCheckedContinuation { continuation in dispatchNativeAction(action) { continuation.resume() } }
+        case .nativeChain(let actions):
+            await withCheckedContinuation { continuation in dispatchNativeChain(actions) { continuation.resume() } }
+        }
+    }
+
+    private func executeBuiltinInvocation(_ invocation: BuiltinInvocation) {
+        switch invocation {
+        case .password(let length):
+            passwordGeneratorModel.setLength(length)
+            passwordGeneratorModel.generate()
+            viewModel.enter(.extensionSurface(ExtensionSurfaceSession(id: "password-generator", handler: .generator, title: "Password Generator", kind: .generator, preferredHeight: 430, canPopOut: false)))
+            presentPanel()
+        case .timezone(let query):
+            viewModel.enter(.picker(.timezone), query: query)
+            presentPanel()
+        case .note(let title):
+            notesWindow.store.createQuickNote(with: title)
+            notesWindow.showQuickNote()
+            hide()
+        case .terminal(let path):
+            terminalModel.setInitialDirectory(path)
+            hide()
+            notesWindow.present(module: .terminal)
+            DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
+        case .format(let kind):
+            formatterModel.kind = kind.lowercased() == "json" ? .json : formatterModel.kind
+            hide()
+            notesWindow.present(module: .formatter)
         }
     }
 
@@ -263,7 +592,28 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        if panel.isVisible { hide() }
+        guard panel.isVisible else { return }
+        // Focus can move briefly to a child sheet, popover, or system control
+        // while the launcher remains the user’s active surface. Defer one run
+        // loop and dismiss only for a real handoff outside Lima’s hierarchy.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.panel.isVisible, !self.panel.isKeyWindow else { return }
+            guard let keyWindow = NSApp.keyWindow else {
+                if !NSApp.isActive { self.hide() }
+                return
+            }
+            if keyWindow.parent === self.panel || keyWindow.sheetParent === self.panel { return }
+            if keyWindow is NSPanel, keyWindow.isVisible { return }
+            self.hide()
+        }
+    }
+
+    func numberOfPreviewItems(in panel: QLPreviewPanel) -> Int {
+        quickLookItem == nil ? 0 : 1
+    }
+
+    func previewPanel(_ panel: QLPreviewPanel, previewItemAt index: Int) -> QLPreviewItem {
+        quickLookItem ?? FileQuickLookItem(url: URL(fileURLWithPath: "/"))
     }
 
     private func resizePanel(for mode: LauncherMode, animated: Bool) {
@@ -303,6 +653,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func presentPanel() {
+        let startedAt = DispatchTime.now().uptimeNanoseconds
+        defer { LauncherPerformanceDiagnostics.shared.mark("surface-presentation", startedAt: startedAt, budget: 50) }
         let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         var finalOrigin = panel.frame.origin
         if let visibleFrame = targetScreen?.visibleFrame {
@@ -313,14 +665,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             finalOrigin = NSPoint(x: x, y: y)
         }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
-        panel.alphaValue = 0
-        panel.setFrameOrigin(NSPoint(x: finalOrigin.x, y: finalOrigin.y + (reduceMotion ? 0 : 8)))
+        // Every screen starts from the same calculated origin. Animating a second
+        // frame-origin change can accumulate when surfaces open in quick succession,
+        // leaving the launcher progressively lower and farther right.
+        panel.setFrameOrigin(finalOrigin)
+        panel.alphaValue = reduceMotion ? 1 : 0
         panel.makeKeyAndOrderFront(nil)
+        guard !reduceMotion else { return }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = reduceMotion ? 0.01 : 0.22
+            context.duration = 0.18
             context.timingFunction = CAMediaTimingFunction(name: .easeOut)
             panel.animator().alphaValue = 1
-            panel.animator().setFrameOrigin(finalOrigin)
         }
     }
 
@@ -340,6 +695,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         lastExternalApplication = frontmost
         previousApplication = frontmost
+        LimaScreenContextStore.shared.capture(application: frontmost)
         focusedTextContext = try? SelectedTextService.editableContext(in: frontmost.processIdentifier)
         selectedTextContext = try? SelectedTextService.selectionContext(in: frontmost.processIdentifier)
         keyboardSelectionContext = nil
@@ -369,8 +725,28 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         return NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) }
     }
 
+    private func performCurrentSurfacePrimaryAction() {
+        switch viewModel.mode {
+        case .surface(let session):
+            switch session.surface.handler {
+            case .formatter: formatterModel.format()
+            case .workflows: workflowModel.executeSelected()
+            default: break
+            }
+        case .extensionSurface(let session):
+            if session.kind == .form {
+                inlineExtensionSurfaceModel.run()
+            } else if session.kind == .generator {
+                passwordGeneratorModel.generate()
+            }
+        default:
+            break
+        }
+        surfaceSessionController.interactionOccurred()
+    }
+
     private func installKeyboardMonitor() {
-        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] (event: NSEvent) -> NSEvent? in
             guard let self, self.panel.isVisible else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
@@ -386,6 +762,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return event
             }
 
+            // AI Chat owns ordinary typing, navigation, Return, and copy/paste.
+            // Escape is navigation only: leave the embedded chat for root search
+            // while any streamed task remains available in the Activity Shelf.
+            // An explicit End Task or shelf Stop action is the only cancellation
+            // path.
+            if case .surface(let session) = viewModel.mode,
+               session.surface.handler == .aiChat {
+                if LauncherAIKeyboardRoute.action(for: event) == .navigateBack {
+                    viewModel.enter(.root)
+                    return nil
+                }
+                return event
+            }
+
+            if viewModel.mode != .root { surfaceSessionController.interactionOccurred() }
+
             if flags.contains(.command) {
                 if characters == "," {
                     self.showSettings()
@@ -395,8 +787,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     NSApp.terminate(nil)
                     return nil
                 }
-                if characters == "k", self.viewModel.mode == .root {
-                    self.viewModel.enter(.history)
+                if characters == "k" {
+                    self.viewModel.openActionPanel()
+                    return nil
+                }
+                if characters == "r", flags.contains(.shift) {
+                    self.viewModel.repeatLastAction()
                     return nil
                 }
                 if characters == "c", case .writingReview(let review) = self.viewModel.mode {
@@ -451,20 +847,98 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.viewModel.moveSelection(by: self.viewModel.isEmojiPicker ? -LauncherViewModel.emojiGridColumnCount : -1)
                 return nil
             }
+            if event.keyCode == 124 {
+                self.viewModel.openActionPanel()
+                return nil
+            }
+            if flags.contains(.command), event.keyCode == 36 {
+                self.viewModel.openActionPanel()
+                return nil
+            }
             if event.keyCode == 36 || event.keyCode == 76 {
                 if case .writingReview(let review) = self.viewModel.mode {
                     self.viewModel.pasteWritingResult(review)
                     return nil
                 }
+                if case .extensionSurface(let session) = self.viewModel.mode {
+                    if session.kind == .generator {
+                        passwordGeneratorModel.copy()
+                        if !flags.contains(.command) { self.viewModel.enter(.root) }
+                    } else if session.kind == .form {
+                        inlineExtensionSurfaceModel.run()
+                    }
+                    return nil
+                }
+                if case .surface = self.viewModel.mode {
+                    self.performCurrentSurfacePrimaryAction()
+                    return nil
+                }
                 self.viewModel.executeSelected()
                 return nil
             }
-            if event.keyCode == 53 {
-                if case .output(_, _, .running(let canCancel)) = self.viewModel.mode, canCancel {
-                    self.extensionExecutor.cancelAll()
-                    self.writingChecker.cancel()
-                    self.writingTaskID = nil
+            if flags.contains(.command), characters == "r" {
+                switch self.viewModel.mode {
+                case .extensionSurface(let session):
+                    if session.kind == .generator {
+                        passwordGeneratorModel.generate()
+                    } else if session.kind == .form {
+                        inlineExtensionSurfaceModel.run()
+                    }
+                case .surface(let session):
+                    switch session.surface.handler {
+                    case .formatter: formatterModel.format()
+                    case .workflows: workflowModel.executeSelected()
+                    default: break
+                    }
+                default:
+                    break
                 }
+                return nil
+            }
+            if flags.contains(.command), characters == "c" {
+                switch self.viewModel.mode {
+                case .extensionSurface(let session):
+                    if session.kind == .generator {
+                        passwordGeneratorModel.copy()
+                    } else if session.kind == .form {
+                        inlineExtensionSurfaceModel.copyOutput()
+                    }
+                case .surface(let session) where session.surface.handler == .formatter:
+                    formatterModel.copyOutput()
+                case .output(_, let text, _):
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                default:
+                    break
+                }
+                return nil
+            }
+            if flags.contains(.command), characters == "o" {
+                switch self.viewModel.mode {
+                case .surface(let session) where session.surface.canPopOut:
+                    self.openSurfaceWorkspace()
+                    return nil
+                case .extensionSurface(let session):
+                    guard session.kind == .form,
+                          session.canPopOut,
+                          let command = inlineExtensionSurfaceModel.command else { break }
+                    hide()
+                    extensionFormWindow.present(command: command, remembersState: session.remembersState) { [weak self] values, completion in
+                        self?.extensionExecutor.executeForm(command, values: values, completion: completion)
+                    }
+                    return nil
+                default:
+                    break
+                }
+            }
+            if event.keyCode == 53 {
+                if self.viewModel.actionPanelItem != nil {
+                    self.viewModel.closeActionPanel()
+                    return nil
+                }
+                // Escape is navigation, not cancellation. Long-running work
+                // stays visible in the Activity Shelf and ends only through an
+                // explicit Stop control owned by that task.
                 self.viewModel.handleEscape()
                 return nil
             }
@@ -475,21 +949,151 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func executeExtension(_ command: LoadedExtensionCommand) {
-        if command.command.action.type == .form {
-            hide()
-            extensionFormWindow.present(command: command) { [weak self] values, completion in
+    private func refreshTerminalTimeoutPolicy() {
+        // A live shell is not active work by itself. When enabled, Terminal
+        // should use the normal inactivity timeout; when disabled, its surface
+        // descriptor supplies `.never`. Reapply the policy without holding the
+        // timer for the lifetime of the PTY.
+        guard case .terminal = viewModel.mode else { return }
+        surfaceSessionController.surfaceChanged(to: viewModel.mode)
+    }
+
+    @discardableResult
+    private func beginWritingOperation() -> UUID {
+        if writingOperationToken != nil || writingHoldToken != nil {
+            writingChecker.cancel()
+            cancelWritingOperation()
+        }
+        let token = UUID()
+        writingOperationToken = token
+        writingHoldToken = token
+        surfaceSessionController.suspendTimeout(for: "writing")
+        return token
+    }
+
+    private func isCurrentWritingOperation(_ token: UUID) -> Bool {
+        writingOperationToken == token
+    }
+
+    private func releaseWritingHold(token: UUID) {
+        guard writingHoldToken == token else { return }
+        writingHoldToken = nil
+        surfaceSessionController.resumeTimeout(for: "writing")
+    }
+
+    private func completeWritingOperation(_ token: UUID) {
+        guard writingOperationToken == token else { return }
+        writingTaskID = nil
+        releaseWritingHold(token: token)
+        writingOperationToken = nil
+    }
+
+    private func cancelWritingOperation() {
+        writingTaskID = nil
+        writingOperationToken = nil
+        if let token = writingHoldToken {
+            releaseWritingHold(token: token)
+        }
+    }
+
+    private func sessionMode(_ session: ExtensionSurfaceSession) -> LauncherMode {
+        .extensionSurface(session)
+    }
+
+    private func surfaceKind(for command: LoadedExtensionCommand) -> ExtensionSurfaceKind? {
+        if let kind = command.command.surface?.kind {
+            switch kind {
+            case .form: return .form
+            case .generator: return .generator
+            case .picker: return .picker
+            case .textTool: return .textTool
+            case .liveOutput: return .liveOutput
+            }
+        }
+        switch command.command.action.type {
+        case .form: return .form
+        case .generator: return .generator
+        default: return nil
+        }
+    }
+
+    private func presentInlineSurface(for command: LoadedExtensionCommand, kind: ExtensionSurfaceKind) {
+        guard command.presentation != .background else {
+            presentError(
+                title: command.command.title,
+                message: "Interactive extension surfaces need inline or workspace presentation; background surfaces cannot collect input."
+            )
+            return
+        }
+        let descriptor = command.command.surface
+        let remembersState = descriptor?.remembersState ?? true
+        let preferredHeight = CGFloat(min(max(descriptor?.preferredHeight ?? (kind == .generator ? 430 : 600), 300), 900))
+        let canPopOut = descriptor?.canPopOut ?? (kind == .form)
+        let session = ExtensionSurfaceSession(
+            id: command.extensionID + "." + command.command.id,
+            handler: kind == .form ? .form : (kind == .generator ? .generator : .generic),
+            title: command.command.title,
+            kind: kind,
+            preferredHeight: preferredHeight,
+            canPopOut: canPopOut,
+            remembersState: remembersState
+        )
+
+        if kind == .form {
+            guard command.command.action.form != nil else {
+                presentError(title: command.command.title, message: "The inline form definition is missing.")
+                return
+            }
+            inlineExtensionSurfaceModel.configure(command: command, remembersState: remembersState) { [weak self] values, completion in
                 self?.extensionExecutor.executeForm(command, values: values, completion: completion)
             }
+        } else if kind == .generator {
+            // Preferences survive launches, but generated credentials do not.
+            // Generate a fresh value whenever the surface is opened.
+            passwordGeneratorModel.generate()
+        }
+        viewModel.enter(sessionMode(session))
+        presentPanel()
+    }
+
+    private func enterGenericSurface(
+        id: String,
+        title: String,
+        kind: LauncherSurfaceKind,
+        height: CGFloat,
+        canPopOut: Bool,
+        handler: LauncherSurfaceHandlerKey = .generic,
+        primaryActionTitle: String? = nil,
+        supportsCopy: Bool = false
+    ) {
+        let descriptor = LauncherSurfaceDescriptor(
+            id: id,
+            title: title,
+            kind: kind,
+            preferredSize: CGSize(width: 680, height: height),
+            canPopOut: canPopOut,
+            preservesState: true,
+            handler: handler,
+            primaryActionTitle: primaryActionTitle,
+            supportsCopy: supportsCopy
+        )
+        viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
+        presentPanel()
+    }
+
+    private func executeExtension(_ command: LoadedExtensionCommand) {
+        if let kind = surfaceKind(for: command) {
+            presentInlineSurface(for: command, kind: kind)
             return
         }
 
         let isShell = command.command.action.type == .shell
         let runsInBackground = isShell && command.command.runInBackground == true
-        if runsInBackground {
+        let suppressPersistentUI = command.presentation == .background || runsInBackground
+        if suppressPersistentUI {
             hide()
-            toast.show("\(command.command.title) is running", style: .working, duration: 3_600)
-        } else if isShell {
+            if isShell { toast.show("\(command.command.title) is running", style: .working, duration: 3_600) }
+        } else if isShell && command.presentation != .workspace {
             viewModel.showOutput(
                 title: command.command.title,
                 text: "Running extension with the configured performance budget…",
@@ -497,42 +1101,164 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             )
             if !panel.isVisible { presentPanel() }
         } else {
-            hide()
+            // Native picker/action commands already dispatch their own launcher
+            // surface after execution. Keep the launcher present for the inline
+            // default so the command/search surface remains the product shell.
         }
 
+        surfaceSessionController.suspendTimeout(for: "extension-execution")
         extensionExecutor.execute(command, clipboard: clipboard) { [weak self] result in
             guard let self else { return }
+            self.surfaceSessionController.resumeTimeout(for: "extension-execution")
             switch result {
-            case .success(.completed(let output)):
+            case .success(let executionOutput):
+                if executionOutput.isPersistable { ExtensionOutputStore.shared.record(executionOutput) }
+                switch executionOutput.payload {
+                case .text(let output):
                 if let output, !output.isEmpty {
-                    if runsInBackground {
+                    if suppressPersistentUI {
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
                         self.viewModel.showOutput(title: command.command.title, text: output, state: .success)
                         if !self.panel.isVisible { self.presentPanel() }
                     }
                 } else if isShell {
-                    if runsInBackground {
+                    if suppressPersistentUI {
                         self.toast.show("\(command.command.title) completed", style: .success)
                     } else {
                         self.viewModel.showOutput(title: command.command.title, text: "Command completed.", state: .success)
                         if !self.panel.isVisible { self.presentPanel() }
                     }
                 }
-
-            case .success(.native(let action)):
-                self.dispatchNativeAction(action)
-
-            case .success(.nativeChain(let actions)):
-                self.dispatchNativeChain(actions)
+                case .native(let action):
+                    self.dispatchNativeAction(action)
+                case .nativeChain(let actions):
+                    self.dispatchNativeChain(actions)
+                }
 
             case .failure(let error):
-                if runsInBackground {
+                if suppressPersistentUI {
                     self.toast.show("\(command.command.title) failed · \(error.localizedDescription)", style: .error, duration: 5)
                 } else {
                     self.presentError(title: command.command.title, error: error)
                 }
             }
+        }
+    }
+
+    private func performFileAction(_ action: LauncherFileAction, for url: URL, title: String) {
+        switch action {
+        case .open:
+            ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
+            hide()
+            if !NSWorkspace.shared.open(url) {
+                presentError(title: title, message: "macOS could not open \(url.path).")
+            }
+        case .quickLook:
+            beginQuickLookTimeoutHold()
+            showQuickLook(for: url)
+        case .reveal:
+            hide()
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        case .copyPath:
+            clipboard.copy(url.path)
+            toast.show("Copied file path")
+        case .openTerminalHere:
+            let directory = url.hasDirectoryPath ? url.path : url.deletingLastPathComponent().path
+            terminalModel.setInitialDirectory(directory)
+            viewModel.enter(.terminal)
+            presentPanel()
+            DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
+        case .addToShelf:
+            ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
+            toast.show("Added file to Shelf")
+        case .sendToNote:
+            notesWindow.store.createQuickNote(with: url.path)
+            notesWindow.showQuickNote()
+            hide()
+        }
+    }
+
+    private func presentFileActionMenu(for url: URL) {
+        pendingFileActionURL = url
+        let menu = NSMenu(title: "File Actions")
+        menu.autoenablesItems = false
+        for action in LauncherFileAction.allCases {
+            let item = NSMenuItem(title: action.title, action: #selector(performFileActionMenuItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = action.rawValue
+            item.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: action.title)
+            menu.addItem(item)
+        }
+        let point = NSPoint(x: panel.contentView?.bounds.midX ?? panel.frame.width / 2, y: 24)
+        menu.popUp(positioning: nil, at: point, in: panel.contentView)
+    }
+
+    @objc private func performFileActionMenuItem(_ sender: NSMenuItem) {
+        guard let rawValue = sender.representedObject as? String,
+              let action = LauncherFileAction(rawValue: rawValue),
+              let url = pendingFileActionURL else { return }
+        performFileAction(action, for: url, title: url.lastPathComponent)
+        pendingFileActionURL = nil
+    }
+
+    private func showQuickLook(for url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            releaseQuickLookTimeoutHold()
+            presentError(title: "Quick Look", message: "The file no longer exists.")
+            return
+        }
+        quickLookItem = FileQuickLookItem(url: url)
+        guard let panel = QLPreviewPanel.shared() else {
+            // Quick Look is an optional system UI surface. If the panel cannot
+            // be created, preserve the explicit action with the safe macOS
+            // opener and balance the hold immediately.
+            quickLookItem = nil
+            releaseQuickLookTimeoutHold()
+            _ = NSWorkspace.shared.open(url)
+            return
+        }
+        panel.dataSource = self
+        panel.delegate = self
+        panel.reloadData()
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    func previewPanelWillClose(_ panel: QLPreviewPanel) {
+        guard panel === QLPreviewPanel.shared() else { return }
+        quickLookItem = nil
+        panel.dataSource = nil
+        panel.delegate = nil
+        releaseQuickLookTimeoutHold()
+    }
+
+    private func beginQuickLookTimeoutHold() {
+        guard !quickLookTimeoutHeld else { return }
+        quickLookTimeoutHeld = true
+        surfaceSessionController.suspendTimeout(for: "quick-look")
+    }
+
+    private func releaseQuickLookTimeoutHold() {
+        guard quickLookTimeoutHeld else { return }
+        quickLookTimeoutHeld = false
+        surfaceSessionController.resumeTimeout(for: "quick-look")
+    }
+
+    private func openSurfaceWorkspace() {
+        guard case .surface(let session) = viewModel.mode else { return }
+        switch session.surface.handler {
+        case .formatter:
+            notesWindow.present(module: .formatter)
+        case .workflows:
+            let window = WorkflowWindowController { [weak self] workflow in self?.executeWorkflow(workflow) }
+            retainedSurfaceWindows.append(window)
+            window.present()
+        case .extensionDevelopment:
+            let window = ExtensionDevelopmentWindowController()
+            retainedSurfaceWindows.append(window)
+            window.present()
+        default:
+            break
         }
     }
 
@@ -577,12 +1303,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 viewModel.enterDisplayPicker(operation: action.parameters?["windowOperation"] ?? "moveToDisplay")
                 presentPanel()
             case "file":
-                focusedFileLauncherWindow.present()
+                viewModel.enter(.files)
+                presentPanel()
             case "timezone":
                 viewModel.enter(.picker(.timezone), query: query ?? "")
                 presentPanel()
             case "password":
-                passwordGeneratorWindow.present()
+                passwordGeneratorModel.generate()
+                viewModel.enter(.extensionSurface(ExtensionSurfaceSession(
+                    id: "password-generator",
+                    handler: .generator,
+                    title: "Password Generator",
+                    kind: .generator,
+                    preferredHeight: 430,
+                    canPopOut: false
+                )))
+                presentPanel()
             default:
                 presentError(title: "Picker", message: "Unsupported picker operation: \(operation)")
             }
@@ -593,11 +1329,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             case "writingReview":
                 performWritingCheck()
             case "focusedFileLauncher":
-                focusedFileLauncherWindow.present()
+                viewModel.enter(.files)
+                presentPanel()
             case "formatter":
-                formatterWindow.present()
+                enterGenericSurface(id: "formatter", title: "Formatter", kind: .textEditor, height: 600, canPopOut: true, handler: .formatter, primaryActionTitle: "Format", supportsCopy: true)
             case "extensionDevelopment":
-                extensionDevelopmentWindow.present()
+                enterGenericSurface(id: "extension-development", title: "Extension Development", kind: .inspector, height: 600, canPopOut: true, handler: .extensionDevelopment)
             case "repairExtensions":
                 toast.show(viewModel.repairBundledExtensions())
             case "uninstall":
@@ -628,7 +1365,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .system:
             dispatchSystemAction(action, completion: completion)
 
-        case .form, .shell, .url, .file:
+        case .form, .generator, .shell, .url, .file:
             // These action types are completed by ExtensionExecutor and should
             // never arrive here. Keep the fallback explicit for safety.
             completion()
@@ -860,6 +1597,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             title = "Perform System Action?"
             detail = "Continue with the requested system operation?"
         }
+        let reason = "system-confirmation"
+        surfaceSessionController.suspendTimeout(for: reason)
+        defer { surfaceSessionController.resumeTimeout(for: reason) }
         return LimaConfirmationService.confirm(
             title: title,
             detail: detail,
@@ -880,6 +1620,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         let names = applications.compactMap(\.localizedName)
         let detail = "Ask \(applications.count) normal user application\(applications.count == 1 ? "" : "s") to quit gracefully?\n\n\(names.prefix(8).joined(separator: ", "))"
+        let reason = "quit-confirmation"
+        surfaceSessionController.suspendTimeout(for: reason)
+        defer { surfaceSessionController.resumeTimeout(for: reason) }
         guard LimaConfirmationService.confirm(
             title: "Quit All Applications?",
             detail: detail,
@@ -911,6 +1654,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func presentUninstaller() {
+        let reason = "uninstaller-confirmation"
+        surfaceSessionController.suspendTimeout(for: reason)
+        defer { surfaceSessionController.resumeTimeout(for: reason) }
         guard LimaConfirmationService.confirm(
             title: "Move Lima to Trash?",
             detail: "Lima will close. Your notes, extensions, and settings stay on this Mac.",
@@ -961,12 +1707,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         hide()
-        // Copy is the broadest public selected-text API on macOS. It works in
-        // browser, Electron, Office, and custom editors that omit AXSelectedText.
-        captureWritingSelectionWithKeyboard(from: previousApplication)
+        // Fix Writing is a background action: correct the captured selection and
+        // replace it in place. It must never open the legacy review surface.
+        captureWritingSelectionWithKeyboard(from: previousApplication, stealth: true)
     }
 
     private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication, stealth: Bool = false) {
+        let operationToken = beginWritingOperation()
         let retainedAccessibilityContext = selectedTextContext.flatMap { context in
             context.processIdentifier == application.processIdentifier ? context : nil
         }
@@ -976,7 +1723,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             toast.show("Reading the highlight with Copy…", style: .working, duration: 3_600)
         }
         KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             switch result {
             case .success(let capture):
                 self.previousApplication = application
@@ -988,9 +1735,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     : nil
                 self.keyboardSelectionContext = capture
                 if stealth {
-                    self.runStealthCorrection(for: capture.text)
+                    self.runStealthCorrection(for: capture.text, operationToken: operationToken)
                 } else {
-                    self.showWritingReview(for: capture.text)
+                    self.showWritingReview(for: capture.text, operationToken: operationToken)
                 }
             case .failure(let keyboardError):
                 do {
@@ -1000,11 +1747,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self.keyboardSelectionContext = nil
                     self.selectedTextContext = target.context
                     if stealth {
-                        self.runStealthCorrection(for: target.context.text)
+                        self.runStealthCorrection(for: target.context.text, operationToken: operationToken)
                     } else {
-                        self.showWritingReview(for: target.context.text)
+                        self.showWritingReview(for: target.context.text, operationToken: operationToken)
                     }
                 } catch {
+                    self.completeWritingOperation(operationToken)
                     if stealth {
                         self.selectedTextContext = nil
                         self.keyboardSelectionContext = nil
@@ -1059,106 +1807,151 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func runStealthCorrection(for text: String) {
+    private func runStealthCorrection(for text: String, operationToken: UUID) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         let taskID = UUID()
         writingTaskID = taskID
         toast.showStealth("Editing…")
-        // The keyboard command is privacy-preserving by default. The regular
-        // Writing review command remains the opt-in path for Enhanced Grammar.
-        writingChecker.checkLocal(text, progress: { [weak self] message in
-            guard let self, self.writingTaskID == taskID else { return }
+        // Explicit correction commands use the selected engine. Live Notes
+        // underlining remains on the separate local-only path.
+        writingChecker.checkStealth(text, progress: { [weak self] message in
+            guard let self,
+                  self.isCurrentWritingOperation(operationToken),
+                  self.writingTaskID == taskID else { return }
             self.toast.showStealth(message)
         }) { [weak self] result in
-            guard let self, self.writingTaskID == taskID else { return }
+            guard let self,
+                  self.isCurrentWritingOperation(operationToken),
+                  self.writingTaskID == taskID else { return }
             self.writingTaskID = nil
             switch result {
-            case .success(let review) where review.suggestedText == text:
+            case .success(let corrected) where corrected == text:
+                self.completeWritingOperation(operationToken)
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
-                self.toast.showStealth("No changes needed", style: .success, duration: 1.6)
-            case .success(let review):
-                self.replaceStealthText(review.suggestedText)
+                // A normal no-op correction needs no notification.
+            case .success(let corrected):
+                self.replaceStealthText(corrected, operationToken: operationToken)
             case .failure(let error):
+                self.completeWritingOperation(operationToken)
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
                 self.presentError(
                     title: "Check and Correct Selected Text",
-                    message: "The local grammar check could not complete. \(error.localizedDescription)"
+                    message: "The selected grammar engine could not complete. \(error.localizedDescription)"
                 )
             }
         }
     }
 
-    private func replaceStealthText(_ text: String) {
+    private func replaceStealthText(_ text: String, operationToken: UUID) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         guard let application = previousApplication, !application.isTerminated else {
-            clipboard.copy(text)
-            toast.showStealth("Couldn’t replace selection · corrected text copied", style: .error, duration: 3.2)
+            finishReplacementOutcome(
+                .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),
+                text: text,
+                stealth: true,
+                operationToken: operationToken
+            )
             return
         }
         application.unhide()
         application.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.16) { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             if self.selectedTextContext == nil,
                self.keyboardSelectionContext?.processIdentifier == application.processIdentifier {
-                self.pasteStealthReplacement(text, into: application)
+                self.pasteStealthReplacement(text, into: application, operationToken: operationToken)
                 return
             }
             do {
                 let context = try self.replacementContext(in: application)
                 try SelectedTextService.replaceSelectedText(text, using: context)
-                self.finishDirectStealthReplacement(text, using: context, attempt: 0)
+                self.finishDirectStealthReplacement(
+                    text,
+                    using: context,
+                    attempt: 0,
+                    operationToken: operationToken
+                )
             } catch SelectedTextService.SelectionError.replacementUnavailable {
-                self.pasteStealthReplacement(text, into: application)
+                self.pasteStealthReplacement(text, into: application, operationToken: operationToken)
             } catch {
-                self.clipboard.copy(text)
-                self.toast.showStealth("Couldn’t replace selection · corrected text copied", style: .error, duration: 3.2)
-            }
-        }
-    }
-
-    private func pasteStealthReplacement(_ text: String, into application: NSRunningApplication) {
-        let originalText = keyboardSelectionContext?.text
-        KeyboardSelectionService.paste(
-            text,
-            into: application,
-            originalText: originalText,
-            clipboardHistory: clipboard
-        ) { [weak self] result in
-            guard let self else { return }
-            switch result {
-            case .success(let receipt):
-                self.verifyKeyboardReplacement(receipt, attempt: 0, stealth: true)
-            case .failure(let error):
-                self.clipboard.copy(text)
-                self.presentError(
-                    title: "Check and Correct Selected Text",
-                    message: "Lima could not paste the correction. The corrected text is on the clipboard. \(error.localizedDescription)"
+                self.finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: true,
+                    operationToken: operationToken
                 )
             }
         }
     }
 
-    private func showWritingReview(for text: String) {
+    private func pasteStealthReplacement(
+        _ text: String,
+        into application: NSRunningApplication,
+        operationToken: UUID
+    ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
+        let originalText = keyboardSelectionContext?.text
+        KeyboardSelectionService.paste(
+            text,
+            into: application,
+            originalText: originalText,
+            selectionContext: selectedTextContext,
+            clipboardHistory: clipboard
+        ) { [weak self] result in
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
+            switch result {
+            case .success(let receipt):
+                self.verifyKeyboardReplacement(
+                    receipt,
+                    attempt: 0,
+                    stealth: true,
+                    operationToken: operationToken
+                )
+            case .failure(let error):
+                self.finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: true,
+                    operationToken: operationToken
+                )
+            }
+        }
+    }
+
+    private func showWritingReview(for text: String, operationToken: UUID) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         let taskID = UUID()
         writingTaskID = taskID
         hide()
-        toast.show("Checking \(text.count) characters locally…", style: .working, duration: 3_600)
+        let engineDescription: String
+        switch SettingsStore.shared.grammarEngineMode {
+        case .local:
+            engineDescription = "locally"
+        case .externalAPI:
+            engineDescription = "with External Grammar"
+        }
+        toast.show("Checking \(text.count) characters \(engineDescription)…", style: .working, duration: 3_600)
         writingChecker.check(text, progress: { [weak self] message in
-            guard let self, self.writingTaskID == taskID else { return }
+            guard let self,
+                  self.isCurrentWritingOperation(operationToken),
+                  self.writingTaskID == taskID else { return }
             self.toast.show(message, style: .working, duration: 3_600)
         }) { [weak self] result in
-            guard let self else { return }
-            guard self.writingTaskID == taskID else { return }
+            guard let self,
+                  self.isCurrentWritingOperation(operationToken),
+                  self.writingTaskID == taskID else { return }
             self.writingTaskID = nil
             switch result {
             case .success(let review):
-                self.toast.show("Correction verified · opening review", style: .success)
+                self.completeWritingOperation(operationToken)
                 self.viewModel.showWritingReview(review)
                 if !self.panel.isVisible { self.presentPanel() }
             case .failure(let error):
+                self.completeWritingOperation(operationToken)
                 self.toast.dismiss()
                 self.presentError(title: "Check Spelling & Grammar", error: error)
             }
@@ -1166,18 +1959,22 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func pasteIntoPreviousApplication(completion: @escaping () -> Void = {}) {
+        let operationToken = beginWritingOperation()
         hide()
         guard let text = NSPasteboard.general.string(forType: .string) else {
+            completeWritingOperation(operationToken)
             presentError(title: "Paste", message: "The clipboard does not contain text to paste.")
             completion()
             return
         }
-        guard let previousApplication else {
+        guard let previousApplication, !previousApplication.isTerminated else {
+            completeWritingOperation(operationToken)
             presentError(title: "Paste", message: "The app that should receive the text is no longer available.")
             completion()
             return
         }
         guard WindowManager.trusted(prompt: true) else {
+            completeWritingOperation(operationToken)
             presentError(title: "Paste", message: "Enable Lima in System Settings → Privacy & Security → Accessibility to paste automatically.")
             completion()
             return
@@ -1185,49 +1982,39 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         previousApplication.unhide()
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-            guard let self else { completion(); return }
-            do {
-                let context: SelectedTextService.SelectionContext
-                if let focusedTextContext = self.focusedTextContext,
-                   focusedTextContext.processIdentifier == previousApplication.processIdentifier {
-                    context = focusedTextContext
-                } else {
-                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
-                }
-                try SelectedTextService.replaceSelectedText(text, using: context)
-                self.focusedTextContext = nil
-                self.toast.show("Pasted as plain text")
-                completion()
-            } catch SelectedTextService.SelectionError.selectionChanged {
-                self.presentError(
-                    title: "Paste",
-                    message: "The original insertion point changed. Put the cursor back where you want the text and try again."
-                )
-                completion()
-            } catch {
-                self.pasteTextWithKeyboard(
-                    text,
-                    into: previousApplication,
-                    successMessage: "Pasted as plain text",
-                    completion: completion
-                )
-            }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
+            // Plain-text paste intentionally never restores a historical
+            // Accessibility selection. Cmd-V targets the insertion point that
+            // is current after the destination application becomes active.
+            self.pasteTextWithKeyboard(
+                text,
+                into: previousApplication,
+                successMessage: "Pasted as plain text",
+                operationToken: operationToken,
+                selectionContext: nil,
+                originalText: nil,
+                completion: completion
+            )
         }
     }
 
     private func pasteTextIntoPreviousApplication(
         _ text: String,
         successMessage: String,
+        targetPolicy: PasteTargetPolicy = .currentInsertionPoint,
         completion: @escaping () -> Void = {}
     ) {
+        let operationToken = beginWritingOperation()
         hide()
         guard let previousApplication, !previousApplication.isTerminated else {
+            completeWritingOperation(operationToken)
             clipboard.copy(text)
             presentError(title: "Paste", message: "The source app is no longer available. The text was copied instead.")
             completion()
             return
         }
         guard WindowManager.trusted(prompt: true) else {
+            completeWritingOperation(operationToken)
             clipboard.copy(text)
             presentError(title: "Paste", message: "Enable Lima in Accessibility to paste automatically. The text was copied instead.")
             completion()
@@ -1236,28 +2023,30 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         previousApplication.unhide()
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-            guard let self else { completion(); return }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             // Prefer the live Accessibility insertion range. This avoids a
             // clipboard/key-event race in native editors and is especially
             // important for multi-scalar emoji. Browser, Electron, Office,
             // terminal, and protected fields fall back to an atomic Cmd-V.
             do {
                 let context: SelectedTextService.SelectionContext
-                if let focused = self.focusedTextContext,
+                if targetPolicy == .exactCapturedSelection,
+                   let focused = self.focusedTextContext,
                    focused.processIdentifier == previousApplication.processIdentifier {
                     context = focused
+                    try SelectedTextService.replaceSelectedText(text, using: context)
                 } else {
-                    context = try SelectedTextService.editableContext(in: previousApplication.processIdentifier)
+                    throw SelectedTextService.SelectionError.selectionChanged
                 }
-                try SelectedTextService.replaceSelectedText(text, using: context)
                 self.focusedTextContext = nil
-                self.toast.show(successMessage)
+                self.completeWritingOperation(operationToken)
                 completion()
             } catch {
                 self.pasteTextWithKeyboard(
                     text,
                     into: previousApplication,
                     successMessage: successMessage,
+                    operationToken: operationToken,
                     completion: completion
                 )
             }
@@ -1268,43 +2057,72 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         _ text: String,
         into application: NSRunningApplication,
         successMessage: String,
+        operationToken: UUID,
+        selectionContext: SelectedTextService.SelectionContext? = nil,
+        originalText: String? = nil,
         completion: @escaping () -> Void = {}
     ) {
         KeyboardSelectionService.paste(
             text,
             into: application,
-            originalText: keyboardSelectionContext?.text,
+            originalText: originalText,
+            selectionContext: selectionContext,
             clipboardHistory: clipboard
         ) { [weak self] result in
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             switch result {
             case .success(let receipt):
-                self?.verifyKeyboardReplacement(receipt, attempt: 0)
+                self.verifyKeyboardReplacement(
+                    receipt,
+                    attempt: 0,
+                    operationToken: operationToken,
+                    completion: completion
+                )
             case .failure(let error):
-                self?.clipboard.copy(text)
-                self?.presentError(title: "Paste", message: "Lima could not restore focus and paste. The text was copied instead. \(error.localizedDescription)")
+                self.finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: false,
+                    operationToken: operationToken,
+                    completion: completion
+                )
             }
-            completion()
         }
     }
 
     private func replaceSelectedText(_ text: String) {
+        let operationToken = beginWritingOperation()
         hide()
         toast.show("Reconnecting to the original highlight…", style: .working, duration: 12)
         guard let previousApplication else {
-            presentError(title: "Replace Selected Text", message: "The app containing the original selection is no longer available.")
+            finishReplacementOutcome(
+                .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),
+                text: text,
+                stealth: false,
+                operationToken: operationToken
+            )
             return
         }
         guard WindowManager.trusted(prompt: true) else {
-            presentError(title: "Replace Selected Text", error: SelectedTextService.SelectionError.accessibilityRequired)
+            finishReplacementOutcome(
+                .failedBeforeDelivery(SelectedTextService.SelectionError.accessibilityRequired),
+                text: text,
+                stealth: false,
+                operationToken: operationToken
+            )
             return
         }
         previousApplication.unhide()
         previousApplication.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-            guard let self else { return }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             if self.selectedTextContext == nil,
                self.keyboardSelectionContext?.processIdentifier == previousApplication.processIdentifier {
-                self.pasteReplacementWithKeyboard(text, in: previousApplication)
+                self.pasteReplacementWithKeyboard(
+                    text,
+                    in: previousApplication,
+                    operationToken: operationToken
+                )
                 return
             }
             do {
@@ -1313,12 +2131,27 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.toast.show("Selection found · replacing text…", style: .working, duration: 10)
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
-                    self?.finishDirectReplacement(text, using: context, retryCount: 0)
+                    guard let self, self.isCurrentWritingOperation(operationToken) else { return }
+                    self.finishDirectReplacement(
+                        text,
+                        using: context,
+                        retryCount: 0,
+                        operationToken: operationToken
+                    )
                 }
             } catch SelectedTextService.SelectionError.replacementUnavailable {
-                self.pasteReplacementFallback(text, in: previousApplication)
+                self.pasteReplacementFallback(
+                    text,
+                    in: previousApplication,
+                    operationToken: operationToken
+                )
             } catch {
-                self.presentError(title: "Replace Selected Text", error: error)
+                self.finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: false,
+                    operationToken: operationToken
+                )
             }
         }
     }
@@ -1326,68 +2159,91 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func finishDirectStealthReplacement(
         _ text: String,
         using context: SelectedTextService.SelectionContext,
-        attempt: Int
+        attempt: Int,
+        operationToken: UUID
     ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         switch SelectedTextService.observeReplacement(text, using: context) {
         case .replaced:
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
+            finishReplacementOutcome(.verified, text: text, stealth: true, operationToken: operationToken)
         case .originalStillPresent where attempt < 5:
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.finishDirectStealthReplacement(text, using: context, attempt: attempt + 1)
+                self?.finishDirectStealthReplacement(
+                    text,
+                    using: context,
+                    attempt: attempt + 1,
+                    operationToken: operationToken
+                )
             }
-        case .originalStillPresent, .changed, .unavailable:
-            clipboard.copy(text)
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            presentError(
-                title: "Check and Correct Selected Text",
-                message: "Lima changed the target, but could not verify the final text. The corrected text is on the clipboard; review the target before pasting again."
-            )
+        case .originalStillPresent, .changed:
+            finishReplacementOutcome(.targetChanged, text: text, stealth: true, operationToken: operationToken)
+        case .unavailable:
+            finishReplacementOutcome(.sentUnverified, text: text, stealth: true, operationToken: operationToken)
         }
     }
 
     private func finishDirectReplacement(
         _ text: String,
         using context: SelectedTextService.SelectionContext,
-        retryCount: Int
+        retryCount: Int,
+        operationToken: UUID
     ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         switch SelectedTextService.observeReplacement(text, using: context) {
         case .replaced:
-            selectedTextContext = nil
-            focusedTextContext = nil
-            toast.show("Replaced the exact highlighted text")
+            finishReplacementOutcome(.verified, text: text, stealth: false, operationToken: operationToken)
         case .originalStillPresent where retryCount < 5:
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.finishDirectReplacement(text, using: context, retryCount: retryCount + 1)
+                self?.finishDirectReplacement(
+                    text,
+                    using: context,
+                    retryCount: retryCount + 1,
+                    operationToken: operationToken
+                )
             }
-        case .originalStillPresent, .changed, .unavailable:
-            clipboard.copy(text)
-            selectedTextContext = nil
-            focusedTextContext = nil
-            presentError(title: "Replace Selected Text", message: "Lima could not verify the direct replacement. The replacement text is on the clipboard.")
+        case .originalStillPresent, .changed:
+            finishReplacementOutcome(.targetChanged, text: text, stealth: false, operationToken: operationToken)
+        case .unavailable:
+            finishReplacementOutcome(.sentUnverified, text: text, stealth: false, operationToken: operationToken)
         }
     }
 
-    private func pasteReplacementFallback(_ text: String, in application: NSRunningApplication) {
+    private func pasteReplacementFallback(
+        _ text: String,
+        in application: NSRunningApplication,
+        operationToken: UUID
+    ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         do {
             let context = try replacementContext(in: application)
-            pasteReplacement(text, using: context)
+            pasteReplacement(text, using: context, operationToken: operationToken)
         } catch {
             if keyboardSelectionContext?.processIdentifier == application.processIdentifier {
-                pasteReplacementWithKeyboard(text, in: application)
+                pasteReplacementWithKeyboard(text, in: application, operationToken: operationToken)
             } else {
-                presentError(title: "Replace Selected Text", error: error)
+                finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: false,
+                    operationToken: operationToken
+                )
             }
         }
     }
 
-    private func pasteReplacementWithKeyboard(_ text: String, in application: NSRunningApplication) {
+    private func pasteReplacementWithKeyboard(
+        _ text: String,
+        in application: NSRunningApplication,
+        operationToken: UUID
+    ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         guard !application.isTerminated else {
-            presentError(title: "Replace Selected Text", message: "The source app is no longer running.")
+            finishReplacementOutcome(
+                .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),
+                text: text,
+                stealth: false,
+                operationToken: operationToken
+            )
             return
         }
         toast.show("Returning to the source selection…", style: .working, duration: 5)
@@ -1396,90 +2252,157 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             text,
             into: application,
             originalText: originalText,
+            selectionContext: selectedTextContext,
             clipboardHistory: clipboard
         ) { [weak self] result in
-            guard let self else { return }
+            guard let self, self.isCurrentWritingOperation(operationToken) else { return }
             switch result {
             case .success(let receipt):
-                self.verifyKeyboardReplacement(receipt, attempt: 0)
+                self.verifyKeyboardReplacement(
+                    receipt,
+                    attempt: 0,
+                    operationToken: operationToken
+                )
             case .failure(let error):
-                self.clipboard.copy(text)
-                self.presentError(
-                    title: "Replace Selected Text",
-                    message: "Lima could not return focus and send Command-V. The corrected text is on the clipboard. \(error.localizedDescription)"
+                self.finishReplacementOutcome(
+                    .failedBeforeDelivery(error),
+                    text: text,
+                    stealth: false,
+                    operationToken: operationToken
                 )
             }
         }
     }
 
+    private func finishReplacementOutcome(
+        _ outcome: ReplacementOutcome,
+        text: String,
+        stealth: Bool,
+        operationToken: UUID,
+        completion: (() -> Void)? = nil
+    ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
+        completeWritingOperation(operationToken)
+        selectedTextContext = nil
+        keyboardSelectionContext = nil
+        focusedTextContext = nil
+
+        switch outcome.feedback {
+        case .silent:
+            // Successful delivery remains quiet even when read-back is unavailable.
+            break
+        case .targetChanged:
+            clipboard.copy(text)
+            presentError(
+                title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
+                message: "The target changed before replacement could be verified. The corrected text is on the clipboard."
+            )
+        case .deliveryFailed:
+            guard case .failedBeforeDelivery(let error) = outcome else {
+                assertionFailure("Delivery-failure feedback requires a delivery error")
+                return
+            }
+            clipboard.copy(text)
+            presentError(
+                title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
+                message: "The correction was not delivered. The corrected text is on the clipboard. \(error.localizedDescription)"
+            )
+        }
+        completion?()
+    }
+
     private func verifyKeyboardReplacement(
         _ receipt: KeyboardSelectionService.PasteReceipt,
         attempt: Int,
-        stealth: Bool = false
+        stealth: Bool = false,
+        operationToken: UUID,
+        completion: (() -> Void)? = nil
     ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
+        let outcome: ReplacementOutcome
         switch SelectedTextService.observeReplacementText(
             receipt.text,
             originalText: receipt.originalText,
+            selectionContext: receipt.selectionContext,
             in: receipt.processIdentifier
         ) {
         case .replaced:
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            if stealth {
-                toast.showStealth("Text corrected and verified", style: .success, duration: 1.8)
-            } else {
-                toast.show("Correction pasted and verified", style: .success, duration: 2.4)
-            }
+            outcome = .verified
         case .pending where attempt < 6:
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.20) { [weak self] in
-                self?.verifyKeyboardReplacement(receipt, attempt: attempt + 1, stealth: stealth)
+                self?.verifyKeyboardReplacement(
+                    receipt,
+                    attempt: attempt + 1,
+                    stealth: stealth,
+                    operationToken: operationToken,
+                    completion: completion
+                )
             }
-        case .changed, .unavailable, .pending:
-            clipboard.copy(receipt.text)
-            selectedTextContext = nil
-            keyboardSelectionContext = nil
-            focusedTextContext = nil
-            presentError(
-                title: stealth ? "Check and Correct Selected Text" : "Replace Selected Text",
-                message: "Lima sent the correction, but could not verify that the target accepted it. The corrected text is on the clipboard; review the target before pasting again."
-            )
+            return
+        case .changed:
+            outcome = .targetChanged
+        case .unavailable, .pending:
+            outcome = .sentUnverified
         }
+        finishReplacementOutcome(
+            outcome,
+            text: receipt.text,
+            stealth: stealth,
+            operationToken: operationToken,
+            completion: completion
+        )
     }
 
     private func pasteReplacement(
         _ text: String,
-        using context: SelectedTextService.SelectionContext
+        using context: SelectedTextService.SelectionContext,
+        operationToken: UUID
     ) {
+        guard isCurrentWritingOperation(operationToken) else { return }
         do {
             let refreshed = (try? SelectedTextService.reconnectedContext(using: context)) ?? context
             try SelectedTextService.restoreSelection(using: refreshed)
             toast.show("Direct edit was unavailable · pasting into the restored highlight…", style: .working, duration: 8)
             guard let application = NSRunningApplication(processIdentifier: refreshed.processIdentifier) else {
-                clipboard.copy(text)
-                presentError(title: "Replace Selected Text", message: "The source app is no longer running. The correction is on the clipboard.")
+                finishReplacementOutcome(
+                    .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),
+                    text: text,
+                    stealth: false,
+                    operationToken: operationToken
+                )
                 return
             }
             KeyboardSelectionService.paste(
                 text,
                 into: application,
                 originalText: refreshed.text,
+                selectionContext: refreshed,
                 clipboardHistory: clipboard
             ) { [weak self] result in
-                guard let self else { return }
+                guard let self, self.isCurrentWritingOperation(operationToken) else { return }
                 switch result {
                 case .success(let receipt):
-                    self.verifyKeyboardReplacement(receipt, attempt: 0)
+                    self.verifyKeyboardReplacement(
+                        receipt,
+                        attempt: 0,
+                        operationToken: operationToken
+                    )
                 case .failure(let error):
-                    self.clipboard.copy(text)
-                    self.presentError(
-                        title: "Replace Selected Text",
-                        message: "Automatic paste was blocked. The correction is on the clipboard. \(error.localizedDescription)"
+                    self.finishReplacementOutcome(
+                        .failedBeforeDelivery(error),
+                        text: text,
+                        stealth: false,
+                        operationToken: operationToken
                     )
                 }
             }
         } catch {
-            presentError(title: "Replace Selected Text", error: error)
+            finishReplacementOutcome(
+                .failedBeforeDelivery(error),
+                text: text,
+                stealth: false,
+                operationToken: operationToken
+            )
         }
     }
 
@@ -1496,6 +2419,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         name: String,
         completion: @escaping () -> Void = {}
     ) {
+        let reason = "force-quit-confirmation"
+        surfaceSessionController.suspendTimeout(for: reason)
+        defer { surfaceSessionController.resumeTimeout(for: reason) }
         guard LimaConfirmationService.confirm(
             title: "Force Quit \(name)?",
             detail: "The app will close immediately. Any unsaved work may be lost.",
@@ -1543,6 +2469,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let list = remaining == 0 ? preview : "\(preview), and \(remaining) more"
 
         NSApp.activate(ignoringOtherApps: true)
+        let reason = "force-quit-confirmation"
+        surfaceSessionController.suspendTimeout(for: reason)
+        defer { surfaceSessionController.resumeTimeout(for: reason) }
         guard LimaConfirmationService.confirm(
             title: "Force Quit All \(applications.count) Applications?",
             detail: "Lima will stay open. The following apps will close immediately and unsaved work may be lost:\n\n\(list)",
@@ -1596,12 +2525,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             notesWindow.present()
 
         case .terminal:
-            guard let id = UUID(uuidString: String(result.id.dropFirst("terminal:".count))) else {
-                presentError(title: result.title, message: "The terminal session identifier is invalid.")
-                return
-            }
-            TerminalSessionStore.shared.select(id)
-            terminalModel.selectSession(id)
             viewModel.enter(.terminal)
             presentPanel()
             terminalModel.startIfNeeded()
@@ -1622,13 +2545,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func executeWorkflow(_ workflow: WorkflowDefinition) {
+        surfaceSessionController.suspendTimeout(for: "workflow-confirmation")
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Run \(workflow.name)?"
         alert.informativeText = "This workflow contains \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s"). Each step will be reported individually."
         alert.addButton(withTitle: "Run Workflow")
         alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            surfaceSessionController.resumeTimeout(for: "workflow-confirmation")
+            return
+        }
         hide()
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -1644,6 +2571,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     message: failed.map { "\($0.commandID): \($0.message ?? "Failed")" }.joined(separator: "\n")
                 )
             }
+            self.surfaceSessionController.resumeTimeout(for: "workflow-confirmation")
         }
     }
 
@@ -1658,8 +2586,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
-        switch result {
-        case .completed:
+        switch result.payload {
+        case .text:
             return
         case .native(let action):
             await withCheckedContinuation { continuation in
@@ -1709,7 +2637,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.open(ApplicationPaths.extensions)
 
         case .openExtensionStore:
-            showExtensionStore()
+            showSettings()
 
         case .reloadExtensions:
             viewModel.reloadExtensions()
@@ -1720,6 +2648,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openNotes:
             showNotes()
 
+        case .openAIChat:
+            showAIChat()
+
         case .openQuickNote:
             showQuickNote()
 
@@ -1729,12 +2660,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openTerminal:
             showDeveloperTerminal()
 
+        case .openContextShelf:
+            viewModel.enter(.contextShelf)
+
+        case .addSelectionToShelf:
+            captureSelectionToShelf(from: previousApplication ?? lastExternalApplication)
+
         case .openPermissionCenter:
-            hide()
             PermissionCenter.shared.refresh()
-            permissionWindow.showWindow(nil)
-            permissionWindow.window?.center()
-            NSApp.activate(ignoringOtherApps: true)
+            enterGenericSurface(id: "permissions", title: "Permissions", kind: .inspector, height: 480, canPopOut: false, handler: .permissions)
 
         case .exportDiagnostics:
             do {
@@ -1745,14 +2679,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
         case .openWorkflows:
-            hide()
-            workflowWindow.present()
+            enterGenericSurface(id: "workflows", title: "Workflows", kind: .results, height: 600, canPopOut: true, handler: .workflows, primaryActionTitle: "Run Workflow")
 
         case .openSettings:
             showSettings()
 
+        case .checkForUpdates:
+            hide()
+            updateService.checkForUpdates(manual: true)
+
         case .openDeveloperGrammarSettings:
             showDeveloperGrammarSettings()
+
+        case .openGrammarDebugger:
+            showGrammarDebugger()
 
         case .quit:
             NSApp.terminate(nil)

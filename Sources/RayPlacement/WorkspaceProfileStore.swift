@@ -77,10 +77,9 @@ final class WorkspaceProfileStore: ObservableObject {
 
     func restoreActiveState() {
         guard let profile = activeProfile else { return }
+        // Legacy terminal session IDs remain in WorkspaceState for
+        // backwards-compatible decoding, but the terminal is now one shell.
         WorkspaceStateRegistry.shared.update { state in state = profile.state }
-        if let terminalID = profile.state.terminalSessionID {
-            TerminalSessionStore.shared.select(terminalID)
-        }
     }
 
     private func save() {

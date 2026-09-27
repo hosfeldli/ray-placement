@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "assets": {
+    "whisperModel": {
+      "object": "whisper/ggml-small.en-tdrz.bin",
+      "destination": "Packaging/Vendor/Whisper/model/ggml-small.en-tdrz.bin",
+      "sha256": "ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4",
+      "mode": "0644"
+    },
+    "harper": {
+      "object": "harper/harper-cli",
+      "destination": "Packaging/Vendor/Harper/harper-cli",
+      "sha256": "2b0a75c7387d24af7dbe66e00b9e13e0fa0bbb7ddb679b5404dab3ce7e15513f",
+      "mode": "0755"
+    },
+    "browserBridgeSignedXPI": {
+      "object": "browser-bridge/lima-browser-bridge-1.1.0-signed.xpi",
+      "destination": "Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi",
+      "sha256": "1bd3d27439192afe5c47f27ca64a381fd17d1f679d3bc578b2da56efd5726d86",
+      "mode": "0644"
+    }
+  }
+}

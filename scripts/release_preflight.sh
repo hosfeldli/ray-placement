@@ -37,6 +37,7 @@ release_assert_clean_tree
 "$SCRIPT_DIRECTORY/check_release_consistency.sh"
 release_assert_tag_matches_source "$TAG"
 release_assert_exact_tag_identity "$TAG"
+release_assert_build_increases_over_previous_release "$TAG"
 
 branch="$(git -C "$PROJECT_DIRECTORY" branch --show-current)"
 upstream="$(git -C "$PROJECT_DIRECTORY" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
@@ -52,10 +53,11 @@ elif [[ "${GITHUB_ACTIONS:-0}" == true || "${CI:-0}" == true ]]; then
     [[ "$remote_ref" == refs/tags/* || "$remote_ref" == refs/remotes/origin/* ]] || {
         print -u2 "Unsupported CI expected ref: $remote_ref"; exit 1;
     }
-    remote_commit="$(git -C "$PROJECT_DIRECTORY" rev-parse "$remote_ref" 2>/dev/null || true)"
-    [[ -n "$remote_commit" && "$remote_commit" == "$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)" ]] || {
-        print -u2 "CI HEAD is not the pushed commit for $remote_ref; refusing release."; exit 1
-    }
+    # release_assert_exact_tag_identity above already proves that HEAD is the
+    # peeled commit for the requested immutable tag. Do not resolve the
+    # annotated ref a second time here: actions/checkout may omit the synthetic
+    # refs/tags namespace even while the tag name is locally verifiable.
+    remote_commit="$(git -C "$PROJECT_DIRECTORY" rev-parse HEAD)"
     branch="${GITHUB_REF_NAME:-detached-ci}"
     upstream="$remote_ref"
 else
@@ -87,8 +89,10 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     release_is_draft=1
     print "Existing draft found: $TAG (resume is safe)."
 fi
-if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1 && (( ! release_is_draft )); then
-    print -u2 "Remote tag $TAG already exists without a resumable draft release; refusing to reuse it."; exit 1
+if (( ! release_exists )); then
+    # A pushed immutable tag is the expected state between `release_tag.sh` and
+    # `release_stage.sh`. Staging creates the first draft for this exact tag.
+    print "No GitHub release exists yet: stage will create a draft for $TAG."
 fi
 
 available_kb="$(df -Pk "$PROJECT_DIRECTORY" | awk 'NR==2 {print $4}')"

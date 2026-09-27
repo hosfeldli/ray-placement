@@ -24,10 +24,16 @@ final class ExtensionFormWindowController: NSWindowController {
 
     func present(
         command: LoadedExtensionCommand,
+        remembersState: Bool = true,
         execute: @escaping ([String: String], @escaping (Result<ExtensionExecutor.FormResult, Error>) -> Void) -> Void
     ) {
         guard let definition = command.command.action.form else { return }
-        let model = ExtensionFormViewModel(command: command, definition: definition, execute: execute)
+        let model = ExtensionFormViewModel(
+            command: command,
+            definition: definition,
+            remembersState: remembersState,
+            execute: execute
+        )
         self.model = model
         window?.title = definition.title ?? command.command.title
         window?.contentView = NSHostingView(rootView: LimaTypographyRoot(content: ExtensionFormView(model: model)))
@@ -37,26 +43,58 @@ final class ExtensionFormWindowController: NSWindowController {
 }
 
 @MainActor
-private final class ExtensionFormViewModel: ObservableObject {
+final class ExtensionFormViewModel: ObservableObject {
     enum Phase { case ready, running, finished }
 
     let command: LoadedExtensionCommand
     let definition: ExtensionFormDefinition
-    @Published var values: [String: String]
+    @Published var values: [String: String] {
+        didSet { persistSafeValues() }
+    }
     @Published var phase: Phase = .ready
     @Published var result: ExtensionExecutor.FormResult?
     @Published var error: String?
+    var onExecutionStateChanged: ((Bool) -> Void)?
     private let execute: ([String: String], @escaping (Result<ExtensionExecutor.FormResult, Error>) -> Void) -> Void
+
+    private let remembersState: Bool
 
     init(
         command: LoadedExtensionCommand,
         definition: ExtensionFormDefinition,
+        remembersState: Bool = true,
         execute: @escaping ([String: String], @escaping (Result<ExtensionExecutor.FormResult, Error>) -> Void) -> Void
     ) {
         self.command = command
         self.definition = definition
-        values = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.id, $0.defaultValue ?? "") })
+        // Secure forms may use non-secure companion fields, but the complete
+        // form is still a sensitive interaction. Treat the entire form as
+        // non-restorable so the explicit popout follows the same policy as the
+        // inline surface.
+        self.remembersState = remembersState && !definition.fields.contains { $0.type == .secure }
+        var restored = Dictionary(uniqueKeysWithValues: definition.fields.map { ($0.id, $0.defaultValue ?? "") })
+        let surfaceID = "\(command.extensionID).\(command.command.id)"
+        if self.remembersState {
+            for field in definition.fields where field.type != .secure {
+                if let value = SurfaceStateCache.shared.string(for: surfaceID, key: "field.\(field.id)") {
+                    restored[field.id] = value
+                }
+            }
+        }
+        values = restored
         self.execute = execute
+    }
+
+    private func persistSafeValues() {
+        guard remembersState else { return }
+        let surfaceID = "\(command.extensionID).\(command.command.id)"
+        for field in definition.fields where field.type != .secure {
+            SurfaceStateCache.shared.set(
+                .string(values[field.id, default: ""]),
+                for: surfaceID,
+                key: "field.\(field.id)"
+            )
+        }
     }
 
     func binding(for field: ExtensionFormField) -> Binding<String> {
@@ -111,11 +149,14 @@ private final class ExtensionFormViewModel: ObservableObject {
         phase = .running
         result = nil
         error = nil
+        onExecutionStateChanged?(true)
         execute(values) { [weak self] result in
             guard let self else { return }
             self.phase = .finished
+            self.onExecutionStateChanged?(false)
             switch result {
-            case .success(let output): self.result = output
+            case .success(let output):
+                self.result = output
             case .failure(let error): self.error = error.localizedDescription
             }
         }
@@ -128,16 +169,18 @@ private final class ExtensionFormViewModel: ObservableObject {
     }
 }
 
-private struct ExtensionFormView: View {
+struct ExtensionFormView: View {
     @ObservedObject var model: ExtensionFormViewModel
-    @Environment(\.dismiss) private var dismiss
+    var showsHeader = true
 
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
             VStack(spacing: LimaDesign.panelGap) {
-                header
-                GlassHairline()
+                if showsHeader {
+                    header
+                    GlassHairline()
+                }
                 HSplitView {
                     form
                         .frame(minWidth: 280, idealWidth: 330, maxWidth: 390)

@@ -62,6 +62,7 @@ final class ClipboardHistoryService: ObservableObject {
     }
 
     func copy(_ text: String) {
+        ContextShelfIntegration.addClipboard(text, sourceApplication: NSRunningApplication.current.localizedName)
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
@@ -91,6 +92,7 @@ final class ClipboardHistoryService: ObservableObject {
         guard excludedTypes.isDisjoint(with: typeNames) else { return }
         guard let text = pasteboard.string(forType: .string) else { return }
         insert(text)
+        ContextShelfIntegration.addClipboard(text, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
     }
 
     private func insert(_ rawText: String) {

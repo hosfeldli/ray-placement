@@ -11,6 +11,10 @@ enum RayPlacementMain {
             runUIPreview(application, mode: previewMode)
             return
         }
+        if CommandLine.arguments.contains("--ai-ui-lab") {
+            runAIUIVisualLab(application)
+            return
+        }
         if CommandLine.arguments.contains("--terminal-preview") {
             // Isolated UI smoke test: no global hotkeys, dictation, credential
             // access, or update checks. Preview preferences use its own bundle.
@@ -77,6 +81,30 @@ private extension RayPlacementMain {
             minSize: mode.size
         )
         window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LimaUIPreviewGallery(mode: mode)))
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        application.activate(ignoringOtherApps: true)
+        withExtendedLifetime(window) { application.run() }
+    }
+
+    @MainActor
+    static func runAIUIVisualLab(_ application: NSApplication) {
+        application.setActivationPolicy(.regular)
+        configurePreviewMenu(application)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1_400, height: 860),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        LimaWindowChrome.configure(
+            window,
+            title: "Lima UI Lab — TEST DATA",
+            accessibilityLabel: "Lima UI Lab test data",
+            minSize: NSSize(width: 1_050, height: 650)
+        )
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: AIChatVisualLab()))
         window.center()
         window.makeKeyAndOrderFront(nil)
         application.activate(ignoringOtherApps: true)

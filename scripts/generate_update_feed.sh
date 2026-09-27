@@ -25,6 +25,7 @@ release_url="$(jq -er '.releaseUrl' "$METADATA")"
 update_url="$(jq -er '.updateUrl' "$METADATA")"
 update_sha="$(jq -er '.update.sha256' "$METADATA")"
 update_bytes="$(jq -er '.update.bytes' "$METADATA")"
+sparkle_update_url="$(jq -er '.sparkleUpdateUrl' "$METADATA")"
 generated_at="$(jq -er '.generatedAt' "$METADATA")"
 commit="$(jq -er '.commit' "$METADATA")"
 build="$(jq -er '.build' "$METADATA")"
@@ -35,12 +36,13 @@ jq -n \
     --arg tag "$tag" \
     --arg releaseUrl "$release_url" \
     --arg update "$update_url" \
+    --arg sparkleUpdateUrl "$sparkle_update_url" \
     --arg updateDigest "sha256:${update_sha}" \
     --arg generatedAt "$generated_at" \
     --arg commit "$commit" \
     --arg build "$build" \
     --argjson updateSize "$update_bytes" \
-    '{schemaVersion: 1, version: $version, tag: $tag, build: $build, commit: $commit, releaseUrl: $releaseUrl, publishedAt: $generatedAt, update: $update, updateDigest: $updateDigest, updateSize: $updateSize, publication: {channel: "stable", source: "github-release", tag: $tag, commit: $commit, generatedAt: $generatedAt}}' \
+    '{schemaVersion: 1, version: $version, tag: $tag, build: $build, commit: $commit, releaseUrl: $releaseUrl, updateUrl: $update, sparkleUpdateUrl: $sparkleUpdateUrl, publishedAt: $generatedAt, update: $update, updateDigest: $updateDigest, updateSize: $updateSize, publication: {channel: "stable", source: "github-release", tag: $tag, commit: $commit, generatedAt: $generatedAt}}' \
     > "$OUTPUT"
 plutil -lint /dev/null >/dev/null 2>&1 || true
 jq -e '(.schemaVersion == 1) and (.version | strings) and (.tag | strings) and (.releaseUrl | startswith("https://")) and (.update | startswith("https://")) and (.updateDigest | test("^sha256:[0-9a-f]{64}$")) and (.updateSize > 0)' "$OUTPUT" >/dev/null

@@ -59,6 +59,8 @@ chmod 600 "$PASSWORD_PATH"
 openssl req \
     -new -newkey rsa:2048 -x509 -sha256 -days 3650 -nodes \
     -subj "/CN=$IDENTITY_NAME/O=RayPlacement Local Development" \
+    -addext "subjectKeyIdentifier=hash" \
+    -addext "authorityKeyIdentifier=keyid:always" \
     -addext "basicConstraints=critical,CA:FALSE" \
     -addext "keyUsage=critical,digitalSignature" \
     -addext "extendedKeyUsage=codeSigning" \

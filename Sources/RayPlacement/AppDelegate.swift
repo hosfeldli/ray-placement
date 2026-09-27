@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
+    // Keep Sparkle alive for production updates. UpdateService routes to the
+    // legacy signed-custom updater only when explicitly requested.
+    private let sparkleUpdateService = SparkleUpdateService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -20,6 +23,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredNotesDockRightShortcut: ShortcutSpec?
     private var registeredTerminalShortcut: ShortcutSpec?
     private var registeredStealthGrammarShortcut: ShortcutSpec?
+    private var registeredContextShelfCaptureShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -29,7 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        DiagnosticsService.shared.markAppStarted()
         try? ApplicationPaths.prepare()
+        CrashRecoveryStore.shared.beginLaunch()
         let launchPath = Bundle.main.bundleURL.path
         if launchPath.hasPrefix("/Volumes/") || launchPath.contains("/AppTranslocation/") {
             let alert = NSAlert()
@@ -55,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureAccessoryMouseBindings()
         registerExtensionHotkeys()
         installObservers()
+        BrowserBridgeService.shared.start()
         NotificationCenter.default.addObserver(
             forName: .rayPlacementAppearanceChanged,
             object: nil,
@@ -65,13 +72,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSApp.windows.forEach { $0.appearance = SettingsStore.shared.appearance.nsAppearance }
             }
         }
+        let pendingRecovery = CrashRecoveryStore.shared.pendingRestoration
         let isShowingUpdateResult = configureUpdates()
+        if pendingRecovery?.workWasActive == true {
+            TaskRegistry.shared.recordInterruptedWork()
+        }
+        let restoredWorkspace = !isShowingUpdateResult && launcher.restoreAfterUnexpectedExit(pendingRecovery)
+        CrashRecoveryStore.shared.discardPendingRestoration()
 
         let launchEvent = NSAppleEventManager.shared().currentAppleEvent
         let launchedAsLoginItem = launchEvent?
             .paramDescriptor(forKeyword: AEKeyword(keyAELaunchedAsLogInItem))?
             .booleanValue ?? false
-        if !launchedAsLoginItem, !isShowingUpdateResult {
+        if !launchedAsLoginItem, !isShowingUpdateResult, !restoredWorkspace {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { [weak self] in
                 self?.launcher.show()
             }
@@ -94,8 +107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        BrowserBridgeService.shared.stop()
         launcher?.shutdown()
         UsageMonitor.shared.flush()
+        CrashRecoveryStore.shared.markCleanShutdown()
         hotKeys.unregisterAll()
         accessoryMouse.stop()
         observers.forEach(NotificationCenter.default.removeObserver)
@@ -104,6 +119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showAIChat() { launcher.showAIChat() }
     @objc func showExtensionStore() { launcher.showExtensionStore() }
     @objc func showQuickNote() { launcher.showQuickNote() }
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
@@ -114,6 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func registerActivationHotkey() {
         guard SettingsStore.shared.activationHotkeyEnabled else {
+            hotKeys.unregister(identifier: "activation")
+            registeredActivationShortcut = nil
+            return
+        }
+        guard !SettingsStore.shared.activationShortcut.isEmpty else {
             hotKeys.unregister(identifier: "activation")
             registeredActivationShortcut = nil
             return
@@ -208,6 +229,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ) { [weak self] application in
             self?.launcher.runStealthGrammar(from: application)
         }
+        registerActionHotkeyFromApplication(
+            identifier: "builtin.context-shelf.capture-selection",
+            displayName: "Add Selection to Shelf",
+            enabled: SettingsStore.shared.contextShelfCaptureHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.contextShelfCaptureShortcut,
+            previous: &registeredContextShelfCaptureShortcut,
+            restore: SettingsStore.shared.restoreContextShelfCaptureShortcut
+        ) { [weak self] application in
+            self?.launcher.captureSelectionToShelf(from: application)
+        }
+        CommandManager.shared.validateShortcuts(launcher.viewModel.extensionCommands)
     }
 
     private func configureAccessoryMouseBindings() {
@@ -309,6 +341,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             previous = nil
             return
         }
+        guard !rawShortcut.isEmpty else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            SettingsStore.shared.lastError = nil
+            return
+        }
         guard let shortcut = ShortcutSpec(string: rawShortcut) else {
             SettingsStore.shared.lastError = "The \(displayName) shortcut is invalid."
             if let previous { restore(previous.storageString) }
@@ -336,6 +374,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard enabled else {
             hotKeys.unregister(identifier: identifier)
             previous = nil
+            return
+        }
+        guard !rawShortcut.isEmpty else {
+            hotKeys.unregister(identifier: identifier)
+            previous = nil
+            SettingsStore.shared.lastError = nil
             return
         }
         guard let shortcut = ShortcutSpec(string: rawShortcut) else {
@@ -379,6 +423,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 ))
             }
         }
+        CommandManager.shared.validateShortcuts(launcher.viewModel.extensionCommands)
         launcher.viewModel.setExtensionHotkeyIssues(issues)
     }
 
@@ -446,6 +491,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         menu.addItem(notes)
+        let aiChat = NSMenuItem(title: "AI Chat…", action: #selector(showAIChat), keyEquivalent: "")
+        aiChat.target = self
+        menu.addItem(aiChat)
         let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self
@@ -482,6 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notes.keyEquivalentModifierMask = [.command, .shift]
         notes.target = self
         appMenu.addItem(notes)
+        let aiChat = NSMenuItem(title: "AI Chat…", action: #selector(showAIChat), keyEquivalent: "")
+        aiChat.target = self
+        appMenu.addItem(aiChat)
         let quickNote = NSMenuItem(title: "Quick Note Sidebar", action: #selector(showQuickNote), keyEquivalent: "n")
         quickNote.keyEquivalentModifierMask = [.command, .option]
         quickNote.target = self
@@ -538,7 +589,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return true
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            self?.updateService.checkForUpdates(manual: false)
+            guard let self else { return }
+            if SparkleMigrationBoundary.activeBackend == .sparkle {
+                self.sparkleUpdateService.checkForUpdatesInBackground()
+            } else {
+                self.updateService.checkForUpdates(manual: false)
+            }
         }
         return false
     }

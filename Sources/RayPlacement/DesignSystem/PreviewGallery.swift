@@ -23,8 +23,16 @@ enum LimaUIPreviewMode: String, CaseIterable {
     case settingsWritingLocal = "settings-writing-local"
     case settingsWritingEnhanced = "settings-writing-enhanced"
     case settingsPrivacy = "settings-privacy"
+    case settingsAI = "settings-ai"
     case confirmation
     case toast
+    case aiEmpty = "ai-empty"
+    case aiConversation = "ai-conversation"
+    case aiMarkdown = "ai-markdown"
+    case aiStreaming = "ai-streaming"
+    case aiApproval = "ai-approval"
+    case aiFailure = "ai-failure"
+    case aiManyChats = "ai-many-chats"
 
     var title: String {
         switch self {
@@ -32,6 +40,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .launcherResults, .launcherResultsLight: return "Launcher Results Preview"
         case .emoji: return "Emoji Picker Preview"
         case .settings: return "Settings Preview"
+        case .settingsAI: return "AI Settings — TEST DATA"
         case .extensions: return "Extensions Preview"
         case .notes: return "Notes Preview"
         case .formatter: return "Formatter Preview"
@@ -39,6 +48,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .settingsGeneral, .settingsWritingLocal, .settingsWritingEnhanced, .settingsPrivacy: return "Settings Preview"
         case .confirmation: return "Confirmation Preview"
         case .toast: return "Toast Preview"
+        case .aiEmpty, .aiConversation, .aiMarkdown, .aiStreaming, .aiApproval, .aiFailure, .aiManyChats: return "Lima UI Lab — TEST DATA"
         }
     }
 
@@ -48,6 +58,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .launcher, .launcherResults, .launcherResultsLight: return NSSize(width: 704, height: 466)
         case .emoji: return NSSize(width: 704, height: 520)
         case .settings: return NSSize(width: 820, height: 590)
+        case .settingsAI: return NSSize(width: 620, height: 680)
         case .extensions: return NSSize(width: 820, height: 590)
         case .notes: return NSSize(width: 1_020, height: 700)
         case .formatter: return NSSize(width: 1_020, height: 690)
@@ -55,6 +66,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .settingsGeneral, .settingsWritingLocal, .settingsWritingEnhanced, .settingsPrivacy: return NSSize(width: 820, height: 590)
         case .confirmation: return NSSize(width: 520, height: 330)
         case .toast: return NSSize(width: 520, height: 300)
+        case .aiEmpty, .aiConversation, .aiMarkdown, .aiStreaming, .aiApproval, .aiFailure, .aiManyChats: return NSSize(width: 1_060, height: 700)
         }
     }
 }
@@ -75,6 +87,8 @@ struct LimaUIPreviewGallery: View {
             PreviewEmojiPicker()
         case .settings:
             PreviewSettings()
+        case .settingsAI:
+            PreviewAISettings()
         case .settingsGeneral:
             PreviewSettings(initialSelection: 0, variant: "general")
         case .settingsWritingLocal:
@@ -99,6 +113,42 @@ struct LimaUIPreviewGallery: View {
             PreviewConfirmation()
         case .toast:
             PreviewToast()
+        case .aiEmpty:
+            AIChatVisualPreview(scenario: .empty)
+        case .aiConversation:
+            AIChatVisualPreview(scenario: .conversation)
+        case .aiMarkdown:
+            AIChatVisualPreview(scenario: .markdown)
+        case .aiStreaming:
+            AIChatVisualPreview(scenario: .streaming)
+        case .aiApproval:
+            AIChatVisualPreview(scenario: .approval)
+        case .aiFailure:
+            AIChatVisualPreview(scenario: .failure)
+        case .aiManyChats:
+            AIChatVisualPreview(scenario: .manyChats)
+        }
+    }
+}
+
+@MainActor
+private struct PreviewAISettings: View {
+    @StateObject private var model = AIChatViewModel(
+        store: AIConversationStore(fixtures: [AIConversation(provider: .openAICompatible, model: "local-model")]),
+        credentials: AIChatCredentialStore(configuration: .missingFixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard,
+        taskRegistry: TaskRegistry(),
+        providerPreferences: AIProviderPreferences(defaults: UserDefaults(suiteName: "dev.liam.lima.preview.providers")!)
+    )
+
+    var body: some View {
+        PreviewWindowSurface {
+            VStack(spacing: 0) {
+                PreviewToolbar(symbol: "sparkles", title: "AI Chat", detail: "TEST DATA · No live provider requests")
+                AIProviderSettingsView(model: model)
+            }
         }
     }
 }
@@ -404,7 +454,7 @@ private struct PreviewSettingsContent: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if variant == "writing-local" || variant == "writing-enhanced" {
                         PreviewSettingsSection(title: "Grammar Engine") {
-                            PreviewSegmented(labels: ["Local", "Enhanced"], selected: variant == "writing-enhanced" ? 1 : 0)
+                            PreviewSegmented(labels: ["Local", "External API"], selected: variant == "writing-enhanced" ? 1 : 0)
                             Text(variant == "writing-enhanced" ? "Use Local + your AI provider · text is sent for checking" : "Everything stays on this Mac")
                                 .limaFont(LimaTypography.caption)
                                 .foregroundStyle(LimaColors.secondaryText)
@@ -412,7 +462,6 @@ private struct PreviewSettingsContent: View {
                             if variant == "writing-enhanced" {
                                 PreviewSettingLine(title: "API key", detail: "Stored securely", symbol: "key.fill")
                             }
-                            PreviewSettingLine(title: "Fall back to Local", detail: "On", symbol: "arrow.uturn.backward")
                         }
                         PreviewSettingsSection(title: "Stealth Grammar") {
                             PreviewSettingLine(title: "Shortcut", detail: "⌃ ⌥ G", symbol: "wand.and.stars")
@@ -423,7 +472,7 @@ private struct PreviewSettingsContent: View {
                             PreviewSettingLine(title: "Accessibility", detail: "Allowed", symbol: "checkmark.shield.fill")
                             PreviewSettingLine(title: "Microphone", detail: "Allowed", symbol: "mic.fill")
                             PreviewSettingLine(title: "Speech Recognition", detail: "Allowed", symbol: "waveform")
-                            PreviewSettingLine(title: "Enhanced Grammar", detail: "OpenAI · Connected", symbol: "lock.shield.fill")
+                            PreviewSettingLine(title: "Correction Engine", detail: "External API · Connected", symbol: "lock.shield.fill")
                         }
                         PreviewSettingsSection(title: "Local storage") {
                             Text("Notes, dictation, and clipboard data stay in Lima’s private local storage. Remote grammar is opt-in and clearly identified.")
@@ -562,10 +611,21 @@ private struct PreviewExtensionPack: View {
 }
 
 private struct PreviewNotes: View {
+    @State private var markdown = """
+    Track each release workstream here. Click a cell to edit; **Tab** moves across and **Return** moves down.
+
+    | Workstream | Owner | Status | Next action |
+    | :--- | :---: | :--- | :--- |
+    | Notes editor | Liam | In progress | Verify table keyboard flow |
+    | Dictation | Morgan | Ready | Test live partial insertion |
+    | AI workspace | Liam | Review | Check provider and tool states |
+    | Extension store | Team | Pending | Validate install and update |
+    """
+
     var body: some View {
         PreviewWindowSurface {
             VStack(spacing: 0) {
-                PreviewToolbar(symbol: "note.text", title: "Notes", detail: "Local Markdown workspace")
+                PreviewToolbar(symbol: "note.text", title: "Workspace", detail: "Notes · AI · Dictation")
                 HStack(spacing: 0) {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
@@ -575,7 +635,7 @@ private struct PreviewNotes: View {
                         .padding(9)
                         .limaNativeSurface(fill: LimaColors.recessedSurface, radius: LimaRadius.control, border: LimaColors.border)
                         Text("PINNED").limaFont(.system(size: 9, weight: .bold)).foregroundStyle(LimaColors.tertiaryText).padding(.top, 9)
-                        PreviewNoteRow(title: "Weekly plan", detail: "Today · 12:40 PM", selected: true)
+                        PreviewNoteRow(title: "Release readiness", detail: "Today · 12:40 PM", selected: true)
                         Text("RECENT").limaFont(.system(size: 9, weight: .bold)).foregroundStyle(LimaColors.tertiaryText).padding(.top, 7)
                         PreviewNoteRow(title: "Garden notes", detail: "Yesterday", selected: false)
                         PreviewNoteRow(title: "Incident checklist", detail: "Monday", selected: false)
@@ -585,26 +645,32 @@ private struct PreviewNotes: View {
                     .padding(12)
                     .frame(width: 250)
                     .background(LimaColors.sidebarBackground)
+                    Rectangle().fill(LimaColors.separator).frame(width: LimaDesign.hairlineWidth)
                     VStack(alignment: .leading, spacing: 0) {
-                        Text("Weekly plan").limaFont(.system(size: 24, weight: .semibold))
-                        Text("Updated today · 12:40 PM").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
-                        Divider().padding(.vertical, 13)
-                        Text("This is a calm document surface. The content owns the hierarchy, while metadata and formatting remain quiet.")
-                            .limaFont(.system(size: 15))
-                            .lineSpacing(4)
-                        Text("\n- [x] Review extension packs\n- [ ] Test Light and Dark appearance\n- [ ] Verify dictation retry")
-                            .limaFont(.system(size: 15, design: .monospaced))
-                            .lineSpacing(4)
-                        Spacer()
-                        HStack {
-                            Label("Tasks 1 of 3", systemImage: "circle.dashed")
+                        HStack(alignment: .firstTextBaseline) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Release readiness").limaFont(.system(size: 22, weight: .semibold))
+                                Text("Updated today · 12:40 PM").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
+                            }
                             Spacer()
-                            Text("Bold   Italic   Link   Table").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
+                            Text("Saved").limaFont(LimaTypography.caption).foregroundStyle(LimaColors.secondaryText)
                         }
-                        .padding(10)
-                        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                        .padding(.bottom, 12)
+                        Divider()
+                        InlineMarkdownEditor(text: $markdown, compact: true, inlineGrammarCheckingEnabled: false)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        HStack(spacing: 8) {
+                            Label("Table", systemImage: "tablecells")
+                            Spacer()
+                            Text("4 rows · 4 columns")
+                                .foregroundStyle(LimaColors.secondaryText)
+                        }
+                        .limaFont(LimaTypography.caption)
+                        .padding(.top, 9)
                     }
-                    .padding(28)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 18)
+                    .padding(.bottom, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .background(LimaColors.editorBackground)
                 }

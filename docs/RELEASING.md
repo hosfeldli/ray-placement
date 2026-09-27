@@ -18,6 +18,11 @@ a separate future project.
     source files. Tagging is an explicit operation handled only by
     `release_tag.sh`.
 * `release_stage.sh` creates or resumes **draft** releases only.
+* Bridge-enabled releases require a source-matching Mozilla-signed companion XPI
+    via `LIMA_BROWSER_BRIDGE_SIGNED_XPI`; preserve the downloaded signed bytes.
+    `release_build.sh` rejects a missing/invalid artifact, computes its digest, and
+    verifies it inside the built app/DMG. Future companion updates use a newly
+    approved XPI and a new app version/tag; never replace a published release.
 * Published releases are never overwritten by the release scripts.
 * `release_publish.sh` is the only publication step and requires `--yes`.
     Publication is public and should be treated as irreversible.
@@ -56,7 +61,7 @@ self-signed local defaults are:
 |---|---|
 | Signing mode | `self-signed-local` |
 | Identity | `RayPlacement Local Code Signing` |
-| Certificate SHA-256 | `ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da` |
+| Certificate SHA-256 | `3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12` |
 | DMG part size | `24m` |
 | DMG part suffix length | `2` |
 | Minimum free space | `5242880` KiB |
@@ -107,7 +112,43 @@ Other supported overrides are `RAYPLACEMENT_SIGNING_DIRECTORY`,
 Do not pass a stale certificate fingerprint. The same policy is embedded in the
 app, used by the local verifier, and recorded in `dist/Lima-release.json`.
 
+### Signing trust-anchor rotation
+
+On 2026-09-10 the signing certificate was intentionally rotated. The previous
+SHA-256 fingerprint was `ade4836267093fbf4b18658d6aad3bdac25cbf162e022ca7bdf89f4898f3d4da`; the active fingerprint is `3dfe6a7f48bff98946a3b309f733c58b515d026daca0cfe63bf03f6a09142f12`.
+Existing installations signed with the previous certificate may not accept a
+newly signed application through the legacy updater. Treat the first release
+after this rotation as a migration release: validate a manual installation
+or an explicitly implemented dual-trust path before claiming seamless updates.
+The pre-rotation local materials are retained under the dated rollback backup.
+
+## Fast paths
+
+Use the dispatcher for routine releases; it owns the normal command sequence and
+prints one concise outcome. It does not bypass source identity, signing, asset
+digest, or draft-verification checks.
+
+```sh
+# Create, build, stage, and verify the next patch as a GitHub draft.
+LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.1.0.xpi" \
+    ./scripts/release.sh ship --bump patch
+
+# Do the same and make the verified draft public.
+./scripts/release.sh ship --bump patch --publish --yes
+
+# Inspect the next version without changing the working tree or GitHub.
+./scripts/release.sh ship --bump patch --dry-run
+```
+
+`ship` commits and pushes version metadata, creates and pushes the immutable tag,
+then runs preflight, one local build, draft staging, and verification. Publication
+requires both `--publish` and `--yes` before it begins a workflow that can make
+an existing draft public. Use `deploy --tag vX.Y.Z` only to resume an already
+prepared/tagged release.
+
 ## Normal release lifecycle
+
+The individual commands remain available for diagnosis, CI, and recovery.
 
 ### 1. Prepare the version
 
@@ -159,14 +200,18 @@ unrelated changes are intentional and will not be included in the release.
 ```
 
 Preflight requires a clean worktree and a branch whose upstream has the exact
-same commit. It refuses an existing published release. An existing draft for the
-same tag is resumable.
+same commit. It refuses an existing published release, resumes an existing draft,
+and accepts a newly pushed tag with no release yet; the stage command creates that
+first draft.
 
 ### 4. Build locally
 
 ```sh
-LIMA_RELEASE_SKIP_PREFLIGHT=1 ./scripts/release_build.sh --tag v3.12.6
+./scripts/release_build.sh --tag v3.12.6
 ```
+
+`release_build.sh` runs preflight when invoked directly. The dispatcher skips only
+that duplicate check after it has completed preflight in the same invocation.
 
 This phase runs:
 
@@ -271,25 +316,20 @@ The script requires a clean tree, a draft release, matching source/tag metadata,
 and a successful verification. It only changes the GitHub draft to public and
 prints the final release URL. It does not rebuild or upload anything.
 
-The dispatcher provides the same lifecycle:
+For an already tagged release, the dispatcher resumes the complete staged flow:
 
 ```sh
-./scripts/release.sh preflight --tag v3.12.6
-./scripts/release.sh build --tag v3.12.6
-./scripts/release.sh stage --tag v3.12.6
-./scripts/release.sh verify --tag v3.12.6
-./scripts/release.sh publish --tag v3.12.6 --yes
+# Build, stage, and verify a draft.
+./scripts/release.sh deploy --tag v3.12.6
+
+# Re-run every gate, then publish the verified draft.
+./scripts/release.sh deploy --tag v3.12.6 --publish --yes
 ```
 
-The compatibility command is now staged rather than monolithic:
-
-```sh
-./scripts/deploy_lima.sh --tag v3.12.6
-./scripts/deploy_lima.sh --tag v3.12.6 --publish --yes
-```
-
-The first command remains draft-only. The second is equivalent to running all
-phases followed by explicit publication.
+`deploy_lima.sh` remains a compatibility alias for `release.sh deploy`. The
+`ship` fast path is preferred for a new release because it also prepares and tags
+the source commit. Both commands create a missing draft from the existing
+immutable tag and never overwrite a published release.
 
 ## Resume and recovery
 
@@ -477,3 +517,92 @@ The pull-request and branch workflow runs:
 * a debug package smoke build plus plist and package-resolution checks.
 
 The CI workflow does not sign, upload, stage, or publish a release.
+
+## Hosted GCP release environment
+
+Routine release builds run on the manual **Build and stage Lima release** workflow,
+not on a developer Mac. The workflow checks out the immutable annotated tag on an
+ephemeral GitHub macOS runner, authenticates to GCP through GitHub OIDC, retrieves
+only its temporary release inputs, and runs the existing release scripts in order:
+
+```text
+prepare verified build assets
+→ prepare temporary Keychain and Sparkle key file
+→ release_preflight.sh
+→ release_build.sh
+→ archive_release_to_gcs.sh
+→ release_stage.sh
+→ release_verify.sh --remote-only
+```
+
+It stages a verified draft by default. The manual dispatch has a default-off
+**publish** option; selecting it invokes the same
+`release_publish.sh --tag vX.Y.Z --yes` step on that ephemeral runner only after
+draft verification succeeds. Leaving it off keeps the draft for separate review.
+
+### Persistent cloud resources
+
+The isolated project is `lima-build-prod`. It contains the private build-input
+bucket `lima-build-assets-940267100054`, private archive bucket
+`lima-release-archive-940267100054`, and three Secret Manager secrets:
+`lima-signing-p12`, `lima-signing-p12-password`, and
+`lima-sparkle-private-key`. Neither bucket is a public distribution endpoint;
+GitHub Releases remains the sole public artifact and updater source.
+
+The GitHub OIDC provider is limited to the immutable repository ID `1342815274`
+and owner ID `43440666`. It has no service-account JSON key. `lima-ci` is
+reserved for read-only build assets; `lima-release` is the only release principal
+and receives secret access only to the three named secrets plus read/create access
+to the private archive. The pinned signing identity and certificate SHA-256 remain
+source-controlled policy in `release_config.sh`.
+
+An IAM administrator completes or reapplies those narrow bindings with:
+
+```sh
+./scripts/provision_gcp_release_iam.sh lima-build-prod 940267100054
+```
+
+This is intentionally separate from normal release operations. It creates no
+secrets and grants no project-wide Owner, Editor, or service-account-key access.
+
+### Build assets and recovery
+
+`Packaging/build-assets.json` pins the GCS object name, installation location,
+SHA-256, and mode for the Whisper model and Harper binary.
+`prepare_build_assets.sh` uses a valid local file first, then GCS, and preserves
+the existing verified installed/upstream fallback for Whisper. The first cloud
+migration retains Harper Git LFS so local and CI development do not depend on GCS;
+remove that LFS dependency only after a hosted rehearsal succeeds.
+
+After a verified build, artifacts are archived before draft staging under both
+`builds/<commit>/` and `releases/<version>/`. Existing remote bytes must match
+exactly; archive collisions are refused. A failed stage can be recovered on the
+matching checked-out tag without rebuilding:
+
+```sh
+LIMA_RELEASE_ARCHIVE_BUCKET=lima-release-archive-940267100054 \
+  ./scripts/restore_release_from_gcs.sh --tag vX.Y.Z --replace
+./scripts/release_stage.sh --tag vX.Y.Z
+```
+
+The restore command rechecks all archive sidecars, metadata digest fields, tag
+identity, stable feed, and signed appcast before placing bytes in `dist/`.
+
+### Developer and migration boundaries
+
+Local `make test` and developer builds remain supported. Normal CI stays unsigned
+and has neither GCP authentication nor release-secret access. The release workflow
+uses GCP Secret Manager instead of the GitHub P12/password/Sparkle secret values;
+the old GitHub secrets are retained only as rollback material until a disposable
+hosted draft rehearsal and a subsequent real N→N+1 updater test pass. Do not remove
+them or local emergency material before those acceptance checks. Do not use
+`gsutil` in the workflow; use `gcloud storage` so OIDC credentials are honored.
+
+Run the offline integration check with:
+
+```sh
+./scripts/test_cloud_release_configuration.sh
+```
+
+It validates the workflow contract, manifest digests, and cloud-neutral signing
+variables without authenticating to GCP or retrieving a secret.

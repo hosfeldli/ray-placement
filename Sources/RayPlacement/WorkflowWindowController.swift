@@ -46,7 +46,7 @@ final class WorkflowWindowController: NSWindowController {
 }
 
 @MainActor
-private final class WorkflowEditorModel: ObservableObject {
+final class WorkflowEditorModel: ObservableObject {
     @Published var workflows: [WorkflowDefinition] = []
     @Published var selectedID: UUID?
     @Published var commandFilter = ""
@@ -143,7 +143,7 @@ private final class WorkflowEditorModel: ObservableObject {
     }
 }
 
-private struct WorkflowEditorView: View {
+struct WorkflowEditorView: View {
     @ObservedObject var model: WorkflowEditorModel
     @ObservedObject private var store = WorkflowStore.shared
 

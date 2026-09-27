@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 3,
+  "id": "fixture.v3.rich",
+  "name": "Rich v3 Fixture",
+  "version": "3.0.0",
+  "description": "A complete API v3 manifest fixture.",
+  "pack": "Fixture Pack",
+  "category": "Developer Tools",
+  "bundled": false,
+  "provenance": "userInstalled",
+  "trust": "unsigned",
+  "capabilities": ["clipboard", "contextShelf", "filesystem"],
+  "presentation": "inline",
+  "commands": [
+    {
+      "id": "format",
+      "title": "Format Text",
+      "subtitle": "Format selected text",
+      "keywords": ["format", "text"],
+      "aliases": ["fmt"],
+      "icon": "textformat",
+      "hotkey": "cmd+shift+f",
+      "runInBackground": false,
+      "presentation": "inline",
+      "invocation": {
+        "acceptsRemainder": true,
+        "arguments": [{"id": "style", "kind": "choice", "required": false, "options": ["compact", "pretty"]}],
+        "context": ["selectedText", "contextShelfText"]
+      },
+      "surface": {"kind": "form", "preferredHeight": 320, "remembersState": true, "canPopOut": true, "timeoutPolicy": "global"},
+      "output": {"kind": "markdown", "copyable": true, "pasteable": true, "shelfEligible": true, "notesEligible": true},
+      "action": {
+        "type": "form",
+        "value": "",
+        "form": {
+          "title": "Format Text",
+          "submitLabel": "Format",
+          "fields": [{"id": "style", "label": "Style", "type": "picker", "options": ["compact", "pretty"], "required": true, "section": "Format", "helpText": "Choose an output style."}],
+          "execution": {"type": "shell", "executable": "/usr/bin/printf", "arguments": ["%s", "{{style}}"], "timeoutSeconds": 20}
+        }
+      }
+    },
+    {
+      "id": "open",
+      "title": "Open Fixture",
+      "aliases": ["fixture-open"],
+      "surface": {"kind": "picker", "canPopOut": false},
+      "output": {"kind": "text", "copyable": true},
+      "action": {
+        "type": "url",
+        "value": "https://example.com/fixture",
+        "chain": [{"type": "clipboard", "operation": "copy"}]
+      }
+    }
+  ]
+}

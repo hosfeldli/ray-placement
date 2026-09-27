@@ -1,6 +1,7 @@
 import Foundation
 import RayPlacementCore
 
+@MainActor
 final class ExtensionLoader {
     func prepareFolder() {
         do {
@@ -87,6 +88,20 @@ final class ExtensionLoader {
         }
     }
 
+    /// A package's declarative v3 metadata. It is intentionally separate from
+    /// `LoadedExtensionCommand`: reading this catalog never prepares folders,
+    /// registers packages, runs commands, installs content, or changes approval.
+    struct ContributionCatalogEntry: Identifiable {
+        let extensionID: String
+        let extensionName: String
+        let capabilities: Set<ExtensionManifest.Capability>
+        let tools: [ExtensionToolDefinition]
+        let skills: [ExtensionSkillDefinition]
+        let agents: [ExtensionAgentDefinition]
+
+        var id: String { extensionID }
+    }
+
     /// Reinstalls the copies shipped inside Lima without touching unrelated
     /// user extensions. Existing bundled copies are moved to a timestamped
     /// backup first, so repairing an extension is reversible instead of a
@@ -146,8 +161,69 @@ final class ExtensionLoader {
         return candidates.first { fileManager.fileExists(atPath: $0.path) }
     }
 
-    func load() -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
-        prepareFolder()
+    /// Read schema-v3 contribution metadata from packages that would be eligible
+    /// to load. This intentionally avoids `prepareFolder()` and package
+    /// registration so callers such as AI catalog inspection remain read-only.
+    func contributionCatalog() -> [ContributionCatalogEntry] {
+        let fileManager = FileManager.default
+        guard let contents = try? fileManager.contentsOfDirectory(
+            at: ApplicationPaths.extensions,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+
+        let manifestFiles = contents.compactMap { url -> URL? in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return nil }
+            if isDirectory.boolValue {
+                let manifest = url.appendingPathComponent("manifest.json")
+                return fileManager.fileExists(atPath: manifest.path) ? manifest : nil
+            }
+            return url.pathExtension.lowercased() == "json" ? url : nil
+        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+
+        let decoder = JSONDecoder()
+        var catalog: [ContributionCatalogEntry] = []
+        var seenIDs = Set<String>()
+        for file in manifestFiles {
+            guard let data = try? Data(contentsOf: file),
+                  let manifest = try? decoder.decode(ExtensionManifest.self, from: data),
+                  (1...3).contains(manifest.schemaVersion),
+                  (try? manifest.validateLifecycleMetadata()) != nil else { continue }
+
+            let isBundled = manifest.bundled
+                || manifest.provenance == .bundled
+                || manifest.trust == .bundled
+                || manifest.trust == .builtIn
+            guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) else { continue }
+            if !isBundled {
+                let hash = ExtensionSecurityPolicy.manifestHash(data)
+                guard let approval = ExtensionApprovalStore.record(for: manifest.id),
+                      approval.manifestHash == hash,
+                      approval.capabilities.isSuperset(of: manifest.capabilities) else { continue }
+            }
+            guard seenIDs.insert(manifest.id).inserted else { continue }
+            let contributions = manifest.contributions
+            guard !contributions.tools.isEmpty || !contributions.skills.isEmpty || !contributions.agents.isEmpty else { continue }
+            catalog.append(
+                ContributionCatalogEntry(
+                    extensionID: manifest.id,
+                    extensionName: manifest.name,
+                    capabilities: manifest.capabilities,
+                    tools: contributions.tools,
+                    skills: contributions.skills,
+                    agents: contributions.agents
+                )
+            )
+        }
+        return catalog
+    }
+
+    /// The default loader prepares and registers extension packages for the launcher.
+    /// AI catalog inspection passes both flags as false so it only reads existing
+    /// manifests and cannot create, update, approve, or otherwise alter a pack.
+    func load(prepare: Bool = true, registerPackages: Bool = true) -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
+        if prepare { prepareFolder() }
         let fileManager = FileManager.default
         guard let contents = try? fileManager.contentsOfDirectory(
             at: ApplicationPaths.extensions,
@@ -178,7 +254,11 @@ final class ExtensionLoader {
         for (file, directory) in manifestFiles {
             do {
                 let manifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: file))
-                guard (1...2).contains(manifest.schemaVersion) else {
+                try manifest.validateLifecycleMetadata()
+                if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
+                    continue
+                }
+                guard (1...3).contains(manifest.schemaVersion) else {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Unsupported schema version \(manifest.schemaVersion)."))
                     continue
                 }
@@ -189,6 +269,9 @@ final class ExtensionLoader {
                 let manifestData = try Data(contentsOf: file)
                 let manifestHash = ExtensionSecurityPolicy.manifestHash(manifestData)
                 let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
+                if registerPackages {
+                    ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (manifest.provenance == .unsigned ? .localDeveloper : .userInstalled), manifestHash: manifestHash)
+                }
                 if isBundled {
                     // Bundled packs are shipped and verified with Lima; they do not
                     // require the interactive approval flow used by user extensions.
@@ -240,16 +323,38 @@ final class ExtensionLoader {
                         issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) requires undeclared capabilities: \(missing)."))
                         continue
                     }
-                    if command.action.type == .form {
-                        guard let form = command.action.form, !form.fields.isEmpty else {
-                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                    if let surface = command.surface {
+                        switch surface.kind {
+                        case .form where command.action.type != .form:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a form surface but its action is not a form."))
+                            continue
+                        case .generator where command.action.type != .generator:
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) declares a generator surface but its action is not a generator."))
+                            continue
+                        case .picker, .textTool, .liveOutput:
+                            // Descriptor-driven surfaces are valid API v3 metadata.
+                            // The host may choose the appropriate renderer at execution time.
+                            break
+                        default:
+                            break
+                        }
+                    }
+                    if command.action.type == .form || command.action.type == .generator {
+                        guard (command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)) != .background else {
+                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Interactive command \(command.id) cannot use background presentation because it requires input."))
                             continue
                         }
-                        let fieldIDs = form.fields.map(\.id)
-                        guard Set(fieldIDs).count == fieldIDs.count,
-                              fieldIDs.allSatisfy({ !$0.isEmpty }) else {
-                            issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
-                            continue
+                        if command.action.type == .form {
+                            guard let form = command.action.form, !form.fields.isEmpty else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) needs a form definition and at least one field."))
+                                continue
+                            }
+                            let fieldIDs = form.fields.map(\.id)
+                            guard Set(fieldIDs).count == fieldIDs.count,
+                                  fieldIDs.allSatisfy({ !$0.isEmpty }) else {
+                                issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Form command \(command.id) has an empty or duplicate field id."))
+                                continue
+                            }
                         }
                     }
                     do {
@@ -273,7 +378,8 @@ final class ExtensionLoader {
                         pack: manifest.pack,
                         category: manifest.category,
                         bundled: manifest.bundled,
-                        version: manifest.version
+                        version: manifest.version,
+                        presentation: command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)
                     ))
                 }
             } catch {
@@ -313,8 +419,12 @@ final class ExtensionLoader {
             default: return []
             }
         case .form:
-            guard action.form != nil else { return [] }
-            return [.shell, .filesystem]
+            guard let form = action.form else { return [] }
+            var required: Set<ExtensionManifest.Capability> = [.shell]
+            if form.fields.contains(where: { $0.type == .file || $0.type == .directory }) { required.insert(.filesystem) }
+            return required
+        case .generator:
+            return []
         }
     }
 

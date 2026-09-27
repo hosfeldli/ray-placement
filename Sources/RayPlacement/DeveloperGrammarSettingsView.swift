@@ -30,14 +30,41 @@ struct DeveloperGrammarSettingsView: View {
     var body: some View {
         Form {
             Section("Grammar Engine") {
-                Toggle("Use Enhanced Grammar", isOn: $settings.developerGrammarEnabled)
-                Text("Local keeps all text on this Mac. Enhanced sends the text being checked to your selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected.")
+                Picker("Correction engine", selection: $settings.grammarEngineMode) {
+                    Text("Local").tag(GrammarEngineMode.local)
+                    Text("External API").tag(GrammarEngineMode.externalAPI)
+                }
+                .pickerStyle(.segmented)
+                Text(settings.grammarEngineMode == .local
+                     ? "Local keeps all text on this Mac."
+                     : "External API sends checked text to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected. External failures are reported directly; there is no fallback.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
-                Toggle("Fall back to Local", isOn: $settings.grammarFallbackToLocal)
-                Text("If Enhanced is unavailable, Lima keeps the local result and shows a quiet status instead of replacing text with an unsafe response.")
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+
+            Section("Grammar Ensemble") {
+                Picker("Strategy", selection: $settings.grammarEnsembleStrategy) {
+                    ForEach(GrammarEnsembleStrategy.allCases) { strategy in
+                        Text("\(strategy.title) · \(strategy.detail)").tag(strategy)
+                    }
+                }
+                Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                Toggle("Use judge when candidates disagree", isOn: $settings.grammarJudgeOnDisagreement)
+                Text("The judge may select only an existing candidate edit or reject the disputed edit; it cannot invent a replacement.")
+                    .font(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+
+            Section("Grammar Debugger") {
+                Toggle("Store source text and sanitized context", isOn: $settings.grammarDebugStoreSourceText)
+                Text("Off by default. Candidate metadata, prompts, edits, errors, latency, and aggregate analytics are stored locally without source text.")
+                    .font(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                Stepper("Retain runs for \(settings.grammarDebugRetentionDays) days", value: $settings.grammarDebugRetentionDays, in: 1...3650)
+                Stepper("Keep at most \(settings.grammarDebugMaximumRuns) runs", value: $settings.grammarDebugMaximumRuns, in: 10...100_000, step: 10)
+                Button { NSApp.activate(ignoringOtherApps: true); } label: { Label("Open Grammar Debugger from the launcher", systemImage: "ladybug") }
             }
 
             Section("Provider and model") {
@@ -80,7 +107,7 @@ struct DeveloperGrammarSettingsView: View {
                             .textFieldStyle(.roundedBorder)
                         Text("Usually no change is needed. Use this only for a custom or OpenAI-compatible endpoint.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
                 HStack {
@@ -97,7 +124,7 @@ struct DeveloperGrammarSettingsView: View {
                     if let modelsMessage {
                         Text(modelsMessage)
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
             }
@@ -133,7 +160,7 @@ struct DeveloperGrammarSettingsView: View {
                     }
                 }
                 if let saveMessage {
-                    Text(saveMessage).font(.caption).foregroundStyle(.secondary)
+                    Text(saveMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
 
@@ -157,16 +184,16 @@ struct DeveloperGrammarSettingsView: View {
                 }
                 Text("Tests authentication, the selected endpoint, and the selected model with a minimal request. It does not proofread text.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
 
                 HStack {
                     Button {
-                        testGrammarCompatibility()
+                        testExternalGrammar()
                     } label: {
                         if isTestingCompatibility {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Test Grammar Compatibility", systemImage: "text.badge.checkmark")
+                            Label("Test External Grammar", systemImage: "text.badge.checkmark")
                         }
                     }
                     .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
@@ -176,14 +203,14 @@ struct DeveloperGrammarSettingsView: View {
                             .foregroundStyle(compatibilityMessage.hasPrefix("Compatible") ? .green : .secondary)
                     }
                 }
-                Text("Sends a protected sample, requests structured UTF-16 edits, and validates the provider response without changing your notes.")
+                Text("Sends a sanitized full-context sample, requests atomic find/replacement edits, and validates protected values without changing your notes.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Available providers") {
                 Text("OpenAI, Anthropic, Google Gemini, Mistral, xAI, DeepSeek, OpenRouter, and generic OpenAI-compatible endpoints are supported. Credentials are stored in macOS Keychain and are not written to UserDefaults, logs, usage records, or the source tree.")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(LimaTheme.textSecondary)
             }
         }
         .formStyle(.grouped)
@@ -239,34 +266,26 @@ struct DeveloperGrammarSettingsView: View {
         }
     }
 
-    private func testGrammarCompatibility() {
+    private func testExternalGrammar() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
             compatibilityMessage = "Save a key, model, and base URL first."
             return
         }
         isTestingCompatibility = true
         compatibilityMessage = nil
-        let source = "This are a grammer sentence with Lima and https://example.com."
+        let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
         let started = Date()
-        StealthGrammarRemoteClient().correctEdits(protected.maskedText, configuration: configuration) { result in
+        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
             let latency = Int(Date().timeIntervalSince(started) * 1_000)
             isTestingCompatibility = false
             switch result {
-            case .success(let edits):
-                do {
-                    guard !edits.isEmpty else {
-                        throw StealthGrammarRemoteClient.ClientError.compatibilityFailed
-                    }
-                    let correctedMasked = try StealthGrammarService.apply(edits, to: protected.maskedText)
-                    guard let corrected = protected.restore(correctedMasked),
-                          corrected != source,
-                          StealthGrammarService.isSafeReplacement(source, corrected) else {
-                        throw StealthGrammarRemoteClient.ClientError.safetyRejected
-                    }
-                    compatibilityMessage = "Compatible · structured edits and protected text passed · \(latency) ms"
-                } catch {
-                    compatibilityMessage = "Failed: \(error.localizedDescription)"
+            case .success(let changes):
+                let report = protected.applyingDocumentChanges(changes)
+                if ExternalGrammarCompatibility.validate(source: source, protected: protected, report: report) {
+                    compatibilityMessage = "Compatible · applied \(report.appliedCount) · rejected \(report.rejectedCount) · \(latency) ms"
+                } else {
+                    compatibilityMessage = "Failed · the provider did not return safe atomic document changes"
                 }
             case .failure(let error):
                 compatibilityMessage = "Failed: \(error.localizedDescription)"
