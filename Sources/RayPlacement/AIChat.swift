@@ -1603,7 +1603,7 @@ final class AIChatViewModel: ObservableObject {
             if let latestResponseID {
                 persistResponseID(latestResponseID, conversationID: conversationID)
             }
-            guard pendingApproval == nil,
+            guard !Task.isCancelled, streamError == nil, pendingApproval == nil,
                   let responseID = latestResponseID else { break }
 
             let calls = cycle.functionCalls.filter {
@@ -1622,11 +1622,12 @@ final class AIChatViewModel: ObservableObject {
 
             var outputs: [[String: Any]] = []
             for call in calls {
+                guard !Task.isCancelled, streamError == nil else { break }
                 if let output = await executeLocalTool(call, conversationID: conversationID) {
                     outputs.append(output)
                 }
             }
-            guard !outputs.isEmpty else { break }
+            guard !Task.isCancelled, streamError == nil, !outputs.isEmpty else { break }
             let toolUses = calls.compactMap { call -> AIProviderMessage.Content? in
                 guard let id = call.callID, let name = call.name else { return nil }
                 return .toolUse(id: id, name: name, arguments: call.arguments ?? "{}")
@@ -1662,9 +1663,11 @@ final class AIChatViewModel: ObservableObject {
     ) async -> StreamCycle {
         var responseID = initialResponseID
         var functionCalls: [AIOutputItem] = []
+        var completed = false
         do {
             for try await event in stream {
                 guard !Task.isCancelled else { break }
+                if case .completed = event { completed = true }
                 if let call = apply(event, conversationID: conversationID, assistantID: assistantID, responseID: &responseID) {
                     functionCalls.append(call)
                 }
@@ -1674,7 +1677,10 @@ final class AIChatViewModel: ObservableObject {
                 streamError = "AI Chat couldn’t complete this request."
             }
         }
-        return StreamCycle(responseID: responseID, functionCalls: functionCalls)
+        if !Task.isCancelled, streamError == nil, pendingApproval == nil, !completed {
+            streamError = "The provider stream ended before the response completed."
+        }
+        return StreamCycle(responseID: responseID, functionCalls: streamError == nil ? functionCalls : [])
     }
 
     private func queueLocalApproval(for call: AIOutputItem, conversationID: UUID) {

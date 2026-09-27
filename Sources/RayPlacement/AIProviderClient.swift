@@ -517,30 +517,32 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         return stream(request: request, model: model)
     }
 
-    private static func chatMessages(_ history: [AIProviderMessage], systemInstructions: String) -> [[String: Any]] {
+    static func chatMessages(_ history: [AIProviderMessage], systemInstructions: String) -> [[String: Any]] {
         var messages: [[String: Any]] = [["role": "system", "content": systemInstructions]]
         for message in history {
+            var content: [[String: Any]] = []
+            var calls: [[String: Any]] = []
+            var results: [[String: Any]] = []
             for item in message.content {
                 switch item {
-                case .text(let text):
-                    messages.append(["role": message.role == .assistant ? "assistant" : "user", "content": text])
+                case .text(let text): content.append(["type": "text", "text": text])
                 case .image(let mediaType, let base64):
-                    let url = "data:\(mediaType);base64,\(base64)"
-                    messages.append(["role": message.role == .assistant ? "assistant" : "user", "content": [["type": "image_url", "image_url": ["url": url]]]])
+                    content.append(["type": "image_url", "image_url": ["url": "data:\(mediaType);base64,\(base64)"]])
                 case .toolUse(let id, let name, let arguments):
-                    messages.append(["role": "assistant", "tool_calls": [["id": id, "type": "function", "function": ["name": name, "arguments": arguments]]]])
+                    calls.append(["id": id, "type": "function", "function": ["name": name, "arguments": arguments]])
                 case .toolResult(let id, let output):
-                    messages.append(["role": "tool", "tool_call_id": id, "content": output])
+                    results.append(["role": "tool", "tool_call_id": id, "content": output])
                 }
             }
+            if !content.isEmpty || !calls.isEmpty {
+                var row: [String: Any] = ["role": message.role == .assistant ? "assistant" : "user"]
+                if !content.isEmpty { row["content"] = content }
+                if !calls.isEmpty { row["tool_calls"] = calls }
+                messages.append(row)
+            }
+            messages += results
         }
         return messages
-    }
-
-    private struct ToolDelta {
-        var id = ""
-        var name = ""
-        var arguments = ""
     }
 
     private func stream(request: URLRequest, model: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -557,43 +559,19 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                         return
                     }
                     var framer = AIProviderSSEFramer()
-                    var tools: [Int: ToolDelta] = [:]
+                    var decoder = AICompatibleStreamDecoder()
+                    continuation.yield(.responseCreated(decoder.responseID))
                     for try await byte in bytes {
-                        if Task.isCancelled { break }
-                        guard let frame = try framer.append(byte) else { continue }
-                        if frame.data == "[DONE]" {
-                            for (index, tool) in tools.sorted(by: { $0.key < $1.key }) {
-                                let id = tool.id.isEmpty ? "tool-\(index)" : tool.id
-                                continuation.yield(.outputItem(AIOutputItem(phase: .completed, apiType: "function_call", id: id, callID: id, name: tool.name, arguments: tool.arguments)))
-                            }
-                            continuation.yield(.completed(nil))
-                            continue
+                        try Task.checkCancellation()
+                        if let frame = try framer.append(byte) {
+                            for event in decoder.decode(frame) { continuation.yield(event) }
                         }
-                        guard let data = frame.data.data(using: .utf8),
-                              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                        if let error = object["error"] as? [String: Any] {
-                            continuation.yield(.failed(AIProviderFailure.message(error: error)))
-                            continue
-                        }
-                        if let usage = object["usage"] as? [String: Any] {
-                            continuation.yield(.usage(AIUsageMetrics(inputTokens: usage["prompt_tokens"] as? Int, outputTokens: usage["completion_tokens"] as? Int)))
-                        }
-                        guard let choice = (object["choices"] as? [[String: Any]])?.first,
-                              let delta = choice["delta"] as? [String: Any] else { continue }
-                        if let text = delta["content"] as? String, !text.isEmpty { continuation.yield(.textDelta(text)) }
-                        if let fragments = delta["tool_calls"] as? [[String: Any]] {
-                            for fragment in fragments {
-                                let index = fragment["index"] as? Int ?? 0
-                                var tool = tools[index] ?? ToolDelta()
-                                if let id = fragment["id"] as? String { tool.id += id }
-                                if let function = fragment["function"] as? [String: Any] {
-                                    if let name = function["name"] as? String { tool.name += name }
-                                    if let arguments = function["arguments"] as? String { tool.arguments += arguments }
-                                }
-                                tools[index] = tool
-                            }
-                        }
+                        if decoder.terminated { break }
                     }
+                    if !decoder.terminated, let frame = try framer.finish() {
+                        for event in decoder.decode(frame) { continuation.yield(event) }
+                    }
+                    for event in decoder.finish() { continuation.yield(event) }
                     continuation.finish()
                 } catch {
                     if !Task.isCancelled { continuation.yield(.failed(AIProviderFailure.message())) }
