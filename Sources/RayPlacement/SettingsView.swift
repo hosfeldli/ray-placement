@@ -535,7 +535,7 @@ struct SettingsView: View {
                     }
                 }
                 if settings.dictationEngine == .localWhisper {
-                    Label("Semi-live · completed segments appear in the conversation while recording", systemImage: "waveform.badge.mic")
+                    Label("Live on-device preview when available · Whisper finalizes short segments", systemImage: "waveform.badge.mic")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -821,7 +821,7 @@ struct SettingsView: View {
                     enabled: $settings.dictationHotkeyEnabled,
                     shortcut: shortcutBinding(for: "builtin.dictation")
                 )
-                Text("Recordings and transcripts remain on this Mac. Start Dictation from the launcher or its keyboard shortcut.")
+                Text("Speech recognition runs on this Mac. Start from the launcher, shortcut, or a Notes/AI microphone. Committed text goes to the selected target; sending an AI prompt shares it with that conversation’s provider.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -838,9 +838,8 @@ struct SettingsView: View {
     private var usageTab: some View {
         let summary = usageMonitor.summary
         let latencySamples = Array(LauncherPerformanceDiagnostics.shared.samples.suffix(8))
-        let provider = AIConversationStore.shared.conversations.first?.provider ?? .openAI
-        let credentialConfigured = provider == .openAICompatible
-            || AIProviderCredentialStore.shared.hasAPIKey(for: provider)
+        let provider = aiChatModel.provider
+        let credentialConfigured = aiChatModel.hasProviderAPIKey
         let runtime = DiagnosticsService.shared.runtimeSnapshot(
             provider: provider,
             providerCredentialConfigured: credentialConfigured,

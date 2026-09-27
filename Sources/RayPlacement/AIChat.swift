@@ -1369,11 +1369,20 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func deleteSelectedConversation() {
-        guard !canEndTask, let selectedConversationID else { return }
+        guard let selectedConversationID else { return }
+        deleteConversation(selectedConversationID)
+    }
+
+    func deleteConversation(_ id: UUID) {
+        guard !canEndTask, store.conversation(id: id) != nil else { return }
+        let deletingSelection = selectedConversationID == id
+        store.delete(id: id)
+        guard deletingSelection else { return }
         draft = ""
-        store.delete(id: selectedConversationID)
+        attachments = []
+        streamError = nil
         if let next = store.conversations.first { select(next.id) }
-        else { self.selectedConversationID = nil; attachments = []; draft = "" }
+        else { selectedConversationID = nil }
     }
 
     func appendDictationText(_ delta: String) {
@@ -2281,6 +2290,8 @@ struct AIChatWorkspaceView: View {
                     .frame(width: 30, height: 28)
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
             .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
             .help("Conversation actions")
         }
@@ -2306,7 +2317,7 @@ struct AIChatWorkspaceView: View {
                         .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                     Text(conversationSearchQuery.isEmpty ? "No conversations yet" : "No matching chats")
                         .limaFont(.callout.weight(.semibold))
-                    Text(conversationSearchQuery.isEmpty ? "Start a private chat stored on this Mac." : "Try another title or phrase.")
+                    Text(conversationSearchQuery.isEmpty ? "History stays on this Mac. Messages are sent to the selected provider." : "Try another title or phrase.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -2367,10 +2378,7 @@ struct AIChatWorkspaceView: View {
                 .disabled(model.canEndTask)
                 .contextMenu {
                     Button("Delete Chat", role: .destructive) {
-                        model.store.delete(id: conversation.id)
-                        if model.selectedConversationID == conversation.id {
-                            model.select(model.store.conversations.first?.id ?? conversation.id)
-                        }
+                        model.deleteConversation(conversation.id)
                     }
                 }
             }
@@ -2418,7 +2426,7 @@ struct AIChatWorkspaceView: View {
                     .limaFont(.headline)
                     .foregroundStyle(LimaTheme.textPrimary)
                     .lineLimit(1)
-                Text(model.hasProviderAPIKey ? "Private · local history · " + model.provider.title : "Setup required · " + model.provider.title)
+                Text(model.hasProviderAPIKey ? "Local history · " + model.provider.title : "Setup required · " + model.provider.title)
                     .limaFont(.caption2)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -2456,6 +2464,8 @@ struct AIChatWorkspaceView: View {
                     .frame(width: 28, height: 28)
             }
             .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: true, vertical: false)
             .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
             .help("Conversation actions")
             .accessibilityLabel("Conversation actions")
@@ -2674,6 +2684,8 @@ struct AIChatWorkspaceView: View {
                 .frame(width: 28, height: 28)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .help("Provider, skills, and reasoning settings")
         .accessibilityLabel("AI options")
     }
@@ -2725,6 +2737,8 @@ struct AIChatWorkspaceView: View {
                 .frame(minWidth: 98, minHeight: 28)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
         .disabled(model.canEndTask)
         .help("Add context or choose read-only tools")
@@ -2751,6 +2765,8 @@ struct AIChatWorkspaceView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask)
         .help("Configure this conversation with an agent")
         .accessibilityLabel("Agent")
@@ -2781,6 +2797,8 @@ struct AIChatWorkspaceView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask)
         .help("Apply one or more instruction-only skills")
         .accessibilityLabel("Skills")
@@ -2802,6 +2820,8 @@ struct AIChatWorkspaceView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask)
         .help("Choose an AI provider")
         .accessibilityLabel("AI provider")
@@ -2823,6 +2843,8 @@ struct AIChatWorkspaceView: View {
                 .lineLimit(1)
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask || model.isLoadingModels)
         .help("Choose a model for " + model.provider.title)
     }
@@ -2846,6 +2868,8 @@ struct AIChatWorkspaceView: View {
             )
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
         .disabled(!model.selectedModelOption.supportsReasoning || model.canEndTask)
         .help("Choose reasoning effort")
     }

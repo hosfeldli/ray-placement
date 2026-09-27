@@ -23,6 +23,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
     case settingsWritingLocal = "settings-writing-local"
     case settingsWritingEnhanced = "settings-writing-enhanced"
     case settingsPrivacy = "settings-privacy"
+    case settingsAI = "settings-ai"
     case confirmation
     case toast
     case aiEmpty = "ai-empty"
@@ -39,6 +40,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .launcherResults, .launcherResultsLight: return "Launcher Results Preview"
         case .emoji: return "Emoji Picker Preview"
         case .settings: return "Settings Preview"
+        case .settingsAI: return "AI Settings — TEST DATA"
         case .extensions: return "Extensions Preview"
         case .notes: return "Notes Preview"
         case .formatter: return "Formatter Preview"
@@ -56,6 +58,7 @@ enum LimaUIPreviewMode: String, CaseIterable {
         case .launcher, .launcherResults, .launcherResultsLight: return NSSize(width: 704, height: 466)
         case .emoji: return NSSize(width: 704, height: 520)
         case .settings: return NSSize(width: 820, height: 590)
+        case .settingsAI: return NSSize(width: 620, height: 680)
         case .extensions: return NSSize(width: 820, height: 590)
         case .notes: return NSSize(width: 1_020, height: 700)
         case .formatter: return NSSize(width: 1_020, height: 690)
@@ -84,6 +87,8 @@ struct LimaUIPreviewGallery: View {
             PreviewEmojiPicker()
         case .settings:
             PreviewSettings()
+        case .settingsAI:
+            PreviewAISettings()
         case .settingsGeneral:
             PreviewSettings(initialSelection: 0, variant: "general")
         case .settingsWritingLocal:
@@ -122,6 +127,28 @@ struct LimaUIPreviewGallery: View {
             AIChatVisualPreview(scenario: .failure)
         case .aiManyChats:
             AIChatVisualPreview(scenario: .manyChats)
+        }
+    }
+}
+
+@MainActor
+private struct PreviewAISettings: View {
+    @StateObject private var model = AIChatViewModel(
+        store: AIConversationStore(fixtures: [AIConversation(provider: .openAICompatible, model: "local-model")]),
+        credentials: AIChatCredentialStore(configuration: .missingFixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard,
+        taskRegistry: TaskRegistry(),
+        providerPreferences: AIProviderPreferences(defaults: UserDefaults(suiteName: "dev.liam.lima.preview.providers")!)
+    )
+
+    var body: some View {
+        PreviewWindowSurface {
+            VStack(spacing: 0) {
+                PreviewToolbar(symbol: "sparkles", title: "AI Chat", detail: "TEST DATA · No live provider requests")
+                AIProviderSettingsView(model: model)
+            }
         }
     }
 }

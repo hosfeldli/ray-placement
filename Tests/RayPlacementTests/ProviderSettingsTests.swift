@@ -113,6 +113,24 @@ private func providerSettingsFixture(
     #expect(model.selectedConversationID == second.id)
 }
 
+@Test @MainActor func sidebarDeletionPreservesOtherDraftsAndClearsLastSelection() {
+    let attachment = AIAttachment(kind: .selection, displayName: "Fixture", text: "Private fixture")
+    let first = AIConversation(provider: .openAI, model: "custom", attachments: [attachment])
+    let other = AIConversation(provider: .anthropic, model: "other")
+    let model = providerSettingsFixture(conversations: [first, other])
+    model.select(first.id)
+    model.draft = "unsent"
+    model.deleteConversation(other.id)
+    #expect(model.selectedConversationID == first.id)
+    #expect(model.draft == "unsent")
+    #expect(model.attachments == [attachment])
+    model.deleteConversation(first.id)
+    #expect(model.selectedConversationID == nil)
+    #expect(model.store.conversations.isEmpty)
+    #expect(model.draft.isEmpty)
+    #expect(model.attachments.isEmpty)
+}
+
 @Test @MainActor func providerCheckRegistersWorkAndStopsOnlyExplicitly() async throws {
     let registry = TaskRegistry()
     var transport = FixtureAITransport.standard
@@ -148,6 +166,7 @@ private func providerSettingsFixture(
     #expect(!model.selectCustomModel("another"))
     model.newConversation()
     model.deleteSelectedConversation()
+    model.deleteConversation(conversation.id)
     #expect(model.provider == .openAI)
     #expect(model.model == "custom")
     #expect(model.selectedConversationID == conversation.id)
