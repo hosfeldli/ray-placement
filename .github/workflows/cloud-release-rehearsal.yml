@@ -8,6 +8,7 @@ on:
     paths:
       - .github/workflows/cloud-release-rehearsal.yml
       - scripts/ci_prepare_signing.sh
+      - Packaging/build-assets.json
 
 permissions: {}
 
