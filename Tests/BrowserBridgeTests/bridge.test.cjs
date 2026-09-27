@@ -13,12 +13,16 @@ function event() {
   return {addListener: handler => handlers.push(handler),
     emit: (...args) => Promise.all(handlers.map(handler => handler(...args)))};
 }
-function harness() {
+function harness(storage = {}) {
   const ports = [], grants = new Set(["https://example.com/*"]), changes = [], timers = new Map();
   const tabs = new Map([[1, {id: 1, url: "https://example.com/case", title: "Case", windowId: 2, active: true}],
     [2, {id: 2, url: "https://private.example/no", title: "Secret", windowId: 2}],
     [3, {id: 3, url: "https://example.com/private", incognito: true, windowId: 3}]]);
   const browser = {
+    storage: {local: {
+      get: async key => ({[key]: storage[key]}),
+      set: async values => { Object.assign(storage, JSON.parse(JSON.stringify(values))); }
+    }},
     runtime: {id: "lima-browser-bridge@liamhosfeld.com", onMessage: event(),
       getURL: name => "moz-extension://fixture/" + name,
       connectNative() {
@@ -44,7 +48,7 @@ function harness() {
     clearTimeout(id) { timers.delete(id); }};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), context);
   const sender = {id: browser.runtime.id, url: browser.runtime.getURL("popup.html")};
-  return {browser, ports, grants, changes, timers, tabs, sender,
+  return {browser, ports, grants, changes, timers, tabs, sender, storage,
     popup: (m, from = sender) => browser.runtime.onMessage.emit(m, from),
     send: m => ports.at(-1).onMessage.emit(m)};
 }
@@ -163,4 +167,149 @@ test("manifest has no automatic host grants or externally callable scripts", () 
   assert.equal(m.incognito, "not_allowed"); assert(!m.content_scripts);
   assert(!m.externally_connectable); assert(!m.web_accessible_resources);
   assert.equal(m.browser_specific_settings.gecko.id, "lima-browser-bridge@liamhosfeld.com");
+  assert(m.permissions.includes("storage"));
+});
+
+const site = "https://example.com/*", key = "interactionOriginsV1";
+async function trust(h, origin = site) {
+  const [result] = await h.popup({action: "set-interactions", origin, allow: true});
+  assert(!result.error);
+}
+test("persistent reading does not silently allow interactions; only exact popup can opt in", async () => {
+  const h = harness(); await flush();
+  for (const from of [{...h.sender, tab: {id: 1}}, {...h.sender, id: "other"},
+    {...h.sender, url: h.sender.url + ".spoof"}]) {
+    await h.popup({action: "set-interactions", origin: site, allow: true}, from);
+  }
+  assert.deepEqual(h.storage[key], []);
+  for (const origin of ["https://*.example.com/*", "https://example.com/path", "https://private.example/*"]) {
+    const [result] = await h.popup({action: "set-interactions", origin, allow: true});
+    assert(result.error);
+  }
+  const m = request("browser.open", {url: "https://example.com", active: false});
+  const waiting = h.send(m); await flush();
+  assert.equal(h.changes.length, 0);
+  await h.popup({action: "decision", id: m.id, allow: false}); await waiting;
+});
+test("interaction opt-in persists across restart without promoting other sites", async () => {
+  const storage = {}, h = harness(storage);
+  await trust(h);
+  assert.deepEqual(storage[key], [site]);
+  const restarted = harness(storage);
+  await restarted.send(request("browser.open", {url: "https://example.com/new", active: false}));
+  assert.equal(restarted.changes.length, 1);
+  assert.equal(restarted.changes[0][1].active, false);
+  const status = (await restarted.popup({action: "status"}))[0];
+  assert.equal(status.pending.length, 0);
+  assert.deepEqual(Array.from(status.interactionOrigins), [site]);
+  const other = request("browser.open", {url: "https://private.example/", active: false});
+  const pending = restarted.send(other); await flush();
+  assert.equal(restarted.changes.length, 1);
+  await restarted.popup({action: "decision", id: other.id, allow: false}); await pending;
+});
+test("all four typed tab actions honor opt-in but private tabs and stale URLs stay blocked", async () => {
+  for (const command of ["browser.focus", "browser.close", "browser.navigate"]) {
+    const h = harness(); await trust(h);
+    const args = {tabID: 1, expectedURL: h.tabs.get(1).url};
+    if (command === "browser.navigate") args.url = "https://example.com/new";
+    await h.send(request(command, args)); assert(h.changes.length > 0);
+    h.changes.length = 0;
+    await h.send(request(command, {...args, expectedURL: "https://example.com/stale"}));
+    assert.equal(h.changes.length, 0);
+    assert.equal(h.ports[0].replies.at(-1).error, "page_changed");
+    await h.send(request(command, {...args, tabID: 3, expectedURL: h.tabs.get(3).url}));
+    assert.equal(h.changes.length, 0);
+    assert.equal(h.ports[0].replies.at(-1).error, "site_not_granted");
+  }
+});
+test("cross-site navigation requires both source and destination interaction grants", async () => {
+  const h = harness(); h.grants.add("https://private.example/*"); await trust(h);
+  const m = request("browser.navigate", {tabID: 1, expectedURL: h.tabs.get(1).url, url: "https://private.example/new"});
+  const pending = h.send(m); await flush(); assert.equal(h.changes.length, 0);
+  await h.popup({action: "decision", id: m.id, allow: false}); await pending;
+  await trust(h, "https://private.example/*");
+  await h.send({...m, id: randomUUID()}); assert.equal(h.changes.length, 1);
+});
+test("Ask every time revokes interaction trust while preserving reading", async () => {
+  const h = harness(); await trust(h);
+  await h.popup({action: "set-interactions", origin: site, allow: false});
+  assert(h.grants.has(site)); assert.deepEqual(h.storage[key], []);
+  await h.send(request("browser.read", {tabID: 1}));
+  assert.equal(h.ports[0].replies.at(-1).result.text, "Visible");
+  const m = request("browser.close", {tabID: 1, expectedURL: h.tabs.get(1).url});
+  const pending = h.send(m); await flush(); assert.equal(h.changes.length, 0);
+  await h.popup({action: "decision", id: m.id, allow: false}); await pending;
+});
+test("read revocation clears persisted interaction trust even after regrant and restart", async () => {
+  const storage = {}, h = harness(storage); await trust(h);
+  h.grants.delete(site);
+  const removal = h.browser.permissions.onRemoved.emit({origins: [site]});
+  h.grants.add(site); await removal;
+  assert.deepEqual(storage[key], []);
+  const restarted = harness(storage), m = request("browser.open", {url: "https://example.com", active: false});
+  const pending = restarted.send(m); await flush(); assert.equal(restarted.changes.length, 0);
+  await restarted.popup({action: "decision", id: m.id, allow: false}); await pending;
+});
+test("changing mode cancels pending actions instead of retroactively approving them", async () => {
+  const h = harness(), m = request("browser.open", {url: "https://example.com", active: false});
+  const pending = h.send(m); await flush(); await trust(h); await pending;
+  assert.equal(h.changes.length, 0);
+  assert.equal(h.ports[0].replies.at(-1).error, "cancelled");
+});
+test("revocation or Stop during automatic grant lookup prevents dispatch", async () => {
+  for (const action of ["ask", "revoke", "stop", "reconnect"]) {
+    const h = harness(); await trust(h);
+    let finish; h.browser.permissions.contains = () => new Promise(r => { finish = r; });
+    const m = request("browser.open", {url: "https://example.com", active: false});
+    const pending = h.send(m); await flush();
+    if (action === "ask") await h.popup({action: "set-interactions", origin: site, allow: false});
+    if (action === "revoke") await h.browser.permissions.onRemoved.emit({origins: [site]});
+    if (action === "stop") await h.send({...m, kind: "cancel"});
+    if (action === "reconnect") await h.popup({action: "connect"});
+    finish(true); await pending; assert.equal(h.changes.length, 0);
+  }
+});
+test("malformed, wildcard, stale, or unreadable storage never enables automatic interactions", async () => {
+  for (const value of [{}, ["https://*.example.com/*"], ["https://private.example/*"], Array(257).fill(site)]) {
+    const h = harness({[key]: value}); await flush();
+    const state = (await h.popup({action: "status"}))[0];
+    assert.equal(state.interactionOrigins.length, 0);
+  }
+  const h = harness();
+  h.browser.storage.local.set = async () => { throw Error("Private storage failure"); };
+  await flush();
+  const state = (await h.popup({action: "status"}))[0];
+  assert.equal(state.interactionPolicyAvailable, false);
+  const [result] = await h.popup({action: "set-interactions", origin: site, allow: true});
+  assert.equal(result.error, "site_policy_update_failed");
+});
+test("failed persistence never enables a new grant and native requests cannot change policy", async () => {
+  const h = harness(); await flush();
+  h.browser.storage.local.set = async () => { throw Error("Sensitive details"); };
+  const [result] = await h.popup({action: "set-interactions", origin: site, allow: true});
+  assert.equal(result.error, "site_policy_update_failed");
+  assert.equal((await h.popup({action: "status"}))[0].interactionOrigins.length, 0);
+  await h.send(request("set-interactions", {origin: site, allow: true}));
+  assert.equal(h.changes.length, 0);
+});
+test("revocation racing a preference save cannot restore trust on restart", async () => {
+  const h = harness(); await flush();
+  const save = h.browser.storage.local.set;
+  let finish;
+  h.browser.storage.local.set = values => new Promise(resolve => {
+    finish = async () => { await save(values); resolve(); };
+  });
+  const enable = h.popup({action: "set-interactions", origin: site, allow: true});
+  await flush();
+  const removal = h.browser.permissions.onRemoved.emit({origins: [site]});
+  h.browser.storage.local.set = save;
+  await finish(); await enable; await removal;
+  assert.deepEqual(h.storage[key], []);
+  assert.equal((await h.popup({action: "status"}))[0].interactionOrigins.length, 0);
+});
+test("source-only trust cannot navigate out of an untrusted source into a trusted destination", async () => {
+  const h = harness(); h.grants.add("https://private.example/*"); await trust(h);
+  const m = request("browser.navigate", {tabID: 2, expectedURL: h.tabs.get(2).url, url: "https://example.com"});
+  const pending = h.send(m); await flush(); assert.equal(h.changes.length, 0);
+  await h.popup({action: "decision", id: m.id, allow: false}); await pending;
 });

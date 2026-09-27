@@ -69,7 +69,7 @@ def checked_manifest(source):
     if gecko.get("data_collection_permissions") != {
             "required": ["browsingActivity", "websiteContent"]}:
         raise SigningError("The reviewed browser data disclosure is missing or changed.")
-    if manifest.get("permissions") != ["nativeMessaging", "tabs", "activeTab"] or \
+    if manifest.get("permissions") != ["nativeMessaging", "tabs", "activeTab", "storage"] or \
             manifest.get("optional_permissions") != ["https://*/*"] or \
             manifest.get("incognito") != "not_allowed":
         raise SigningError("Browser access policy differs from the reviewed scope.")

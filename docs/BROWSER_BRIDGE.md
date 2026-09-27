@@ -12,13 +12,46 @@ Settings → Browser Bridge contains:
 - Connection test, browser-session selection, and granted-site inspection.
 - Granted tabs, visible-text preview, and deterministic Salesforce case lookup.
 - Background-tab preference and open/focus/close/navigate operations.
-  Every mutation requires **Allow once** in the companion popup.
+  Mutations default to **Ask every time**; the companion can explicitly remember
+  **Always allow interactions** for each exact site.
 
 AI exposes only read tools: `browser_tabs`, `browser_current`, `browser_read`,
 and `salesforce_resolve_case`. They are **off by default** and must be enabled in
 the existing AI Tools controls. Browser text is untrusted data, not instructions.
 AI context is sent to the selected conversation provider; revoking a site does
 not erase text already included in a conversation.
+
+## Persistent site access (companion 1.1.0)
+
+The popup separates two choices:
+- **Always allow reading on this site**: Firefox remembers the exact HTTPS-origin
+  grant until revoked; this was already persistent in 1.0.0. It does not enable
+  tab mutations.
+- **Always allow interactions…**: a second, site-named confirmation lets Lima
+  open, focus, navigate and close tabs for that site without another popup.
+  It does **not** enable arbitrary clicks, scripts, form filling, or new AI tools.
+  Cross-site navigation needs both source and destination interaction grants.
+
+Both choices survive browser restarts. Interaction preferences use local
+extension storage, not sync storage, with at most 256 exact sites. There is no
+global "always allow" switch. **Ask every time** removes only interaction trust;
+**Revoke all access** removes reading and clears remembered interactions.
+Removing browser host access outside the popup also clears interaction trust,
+including remove-and-regrant. Changes cancel pending mutations rather than
+retroactively accepting queued requests; start a new action after changing mode.
+Storage failures disable automatic interactions and display a generic error;
+a failed save is not reported as a successful persisted change.
+
+Private windows, expected-URL checks, grant checks, explicit Stop and connection
+generation isolation still apply. Cancellation cannot undo an already-dispatched
+tab action. Revoking access does not erase previously shared context.
+The popup confirmation defaults keyboard focus to Cancel. Lima Settings displays
+both modes after **Test Connection & Refresh Sites**; it cannot silently grant
+interaction access. Existing 1.0.0 installations keep Ask every time.
+
+Version 1.1.0 requires a newly signed XPI. Do not modify, overwrite or re-submit
+the approved 1.0.0 package under the same version. Its earlier acceptance results
+do not certify the new persistent-interaction path.
 
 ## Development setup
 
@@ -204,7 +237,17 @@ helper's split-frame duplex stdio/socket relay.
 - Install the signed XPI in both target Zen and Firefox builds; verify discovery.
 - Confirm denied sites/private windows cannot be read.
 - Read a granted page, revoke during an active operation, verify no result.
-- Approve/deny/expire each tab action; verify background opens do not steal focus.
+- In Ask every time mode, approve/deny/expire each tab action; verify background
+  opens do not steal focus.
+- Confirm persistent reading does not enable interactions. Cancel the Always
+  interactions confirmation and verify no mode change.
+- Opt in on a non-sensitive site and test all four tab actions without a prompt;
+  restart the browser and confirm both preferences persist.
+- Verify cross-site navigation still asks unless both sites have interaction
+  grants; unrelated sites and private windows remain excluded.
+- Downgrade to Ask every time without losing read access, then revoke reading,
+  re-grant it and verify interaction access was not restored. Test in-flight
+  revocation/Stop; previously dispatched tab actions cannot be undone.
 - Verify exact Salesforce Case links without guessing IDs or navigating on lookup.
 - Restart browser/Lima, move the app and repair, remove/reinstall helper.
 - Verify Activity Shelf Stop and Escape navigation while an approval is pending.

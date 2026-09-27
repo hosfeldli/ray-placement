@@ -146,9 +146,52 @@ companion bundled through Lima's existing GitHub app release workflow.
   The full application suite's prior **237-test** checkpoint above is retained;
   this follow-up did not rerun or claim new live-provider tests.
 
+## Signed 1.0.0 installation and initial live checks
+
+Following preparation commit `2e03f79`, the AMO attempt ended without a returned
+XPI. The user confirmed approval and downloaded the artifact; no duplicate
+submission was made. The downloaded XPI matched the submitted source and
+contained signature metadata. SHA-256:
+`8767caf28b43eacc07edca6c633b53cbe98fe49f0bbb6ee63a446ad6abc42c22`.
+
+- The user reported signed 1.0.0 installed and enabled in Zen with normal
+  signature enforcement, an end-to-end connection, successful granted
+  example.com reading, and rejection of a new read after revocation.
+- Both native-host manifests were independently checked against the packaged
+  helper path and fixed companion allowlist.
+- Packaging with the unchanged XPI passed, including app/helper verification;
+  evidence: `.build/amo-signed-package.log`.
+- Release versioning, dispatcher, installer, update-verifier and
+  certificate-backed replacement regressions passed. The certificate-backed
+  follow-up is recorded in `.build/amo-certificate-update-tests.log`.
+- The user requested persistent interaction access before reporting the remaining
+  action-consent/Stop/Escape checks. Those checks are **not** recorded as passed.
+
+## Persistent access follow-up (companion 1.1.0)
+
+At the user's request, the companion now separates persistent reading from
+explicitly confirmed persistent interaction access for each exact HTTPS site.
+Read grants are not automatically promoted. The interaction choice covers only
+the four existing typed tab actions. Cross-site navigation requires both sites.
+Ask every time, revocation, restart, storage failure, stale URLs, private tabs,
+connection generations and cancellation retain fail-closed behavior. AI still
+exposes only the existing opt-in read tools.
+
+- **34 companion/popup tests**, **11 offline signing tests**, real debug-helper
+  smoke and Mozilla lint (zero errors/notices/warnings) passed.
+- **237 Swift tests passed**, including compiling the updated Settings surface.
+- Evidence: `.build/bridge-access-tests.log`,
+  `.build/bridge-access-swift-tests.log`; whitespace checks passed.
+- Unsigned 1.1.0 package SHA-256:
+  `20a97b2597221f8a56213c20816d394a6ec0064706ea20a47b17b8d979611bbf`.
+- These are automated checks, not live persistent-mode acceptance. The installed
+  signed 1.0.0 and running app have not been overwritten. New 1.1.0 signing,
+  installation, rebuilt-app acceptance, remaining browser/provider/device gates
+  and public deployment are pending at this checkpoint.
+
 ## Delivery boundary
 
-`build/Lima.app` is a locally signed, verified build of the source checkpoint.
-No release upload, installed-app replacement, production notarization, AMO
-submission, native-host registration, or permanent companion installation is
-implied by this review.
+The earlier local app contains signed companion 1.0.0. The new source targets
+1.1.0 and must be packaged with its own source-matching signed XPI. No new release
+version/tag, GitHub publication, installed-app replacement, or production
+notarization has occurred. Full release sign-off remains pending.

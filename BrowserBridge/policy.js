@@ -34,7 +34,19 @@
       (!keys.includes("active") || typeof a.active === "boolean");
   }
   const validCancel = m => m && m.version === 1 && m.kind === "cancel" && uuid(m.id) && commands.has(m.command);
-  const policy = { site, validRequest, validCancel, tabID, commands };
+  function mutationSites(m) {
+    const a = m.arguments;
+    let urls;
+    switch (m.command) {
+      case "browser.open": urls = [a.url]; break;
+      case "browser.navigate": urls = [a.expectedURL, a.url]; break;
+      case "browser.focus": case "browser.close": urls = [a.expectedURL]; break;
+      default: return [];
+    }
+    const sites = urls.map(site);
+    return sites.every(Boolean) ? [...new Set(sites)] : [];
+  }
+  const policy = { site, validRequest, validCancel, tabID, commands, mutationSites };
   root.LimaBridgePolicy = policy;
   if (typeof module !== "undefined") module.exports = policy;
 })(globalThis);

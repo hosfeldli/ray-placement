@@ -5,9 +5,89 @@ const HOST = "com.lima.browser_bridge";
 let port = null, reconnectTimer = null, lastError = null;
 const active = new Map();
 const mutations = new Map();
+// Reading uses Firefox's persistent exact-site grants. Tab interactions are a
+// separate, local-only opt-in; never infer them from a read grant or page text.
+const INTERACTION_KEY = "interactionOriginsV1", MAX_INTERACTION_SITES = 256;
+let interactionOrigins = new Set(), policyEpoch = 0, storageAvailable = true;
+let policyQueue = loadInteractionPolicy();
+async function loadInteractionPolicy() {
+  try {
+    const stored = (await browser.storage.local.get(INTERACTION_KEY))[INTERACTION_KEY];
+    const grantedOrigins = new Set((await browser.permissions.getAll()).origins || []);
+    if (stored !== undefined && (!Array.isArray(stored) || stored.length > MAX_INTERACTION_SITES)) {
+      error("invalid_site_policy");
+    }
+    interactionOrigins = new Set((stored || []).filter(site => P.site(site) === site && grantedOrigins.has(site)));
+    await browser.storage.local.set({[INTERACTION_KEY]: [...interactionOrigins]});
+  } catch { failInteractionStorage(); }
+}
+function cancelMutations() {
+  for (const [id, state] of active) {
+    if (["browser.open", "browser.navigate", "browser.focus", "browser.close"].includes(state.command)) cancel(id);
+  }
+}
+function failInteractionStorage() {
+  storageAvailable = false; interactionOrigins.clear(); cancelMutations();
+}
+function enqueuePolicy(change) {
+  const result = policyQueue.then(change);
+  policyQueue = result.catch(() => {});
+  return result;
+}
+async function persistInteractionPolicy(sites) {
+  try { await browser.storage.local.set({[INTERACTION_KEY]: [...sites]}); }
+  catch { failInteractionStorage(); error("site_policy_unavailable"); }
+}
+async function setInteractionPolicy(site, allow) {
+  if (P.site(site) !== site || typeof allow !== "boolean") error("invalid_site_policy");
+  const epoch = ++policyEpoch;
+  cancelMutations();
+  // Revocation takes effect before any storage or browser lookup can yield.
+  if (!allow) interactionOrigins.delete(site);
+  return enqueuePolicy(async () => {
+    if (!storageAvailable) error("site_policy_unavailable");
+    if (epoch !== policyEpoch) error("cancelled");
+    if (allow) {
+      const origins = (await browser.permissions.getAll()).origins || [];
+      if (!origins.includes(site)) error("site_not_granted");
+      if (epoch !== policyEpoch) error("cancelled");
+      if (interactionOrigins.size >= MAX_INTERACTION_SITES && !interactionOrigins.has(site)) error("too_many_sites");
+    }
+    const next = new Set(interactionOrigins);
+    if (allow) next.add(site); else next.delete(site);
+    await persistInteractionPolicy(next);
+    if (epoch !== policyEpoch) error("cancelled");
+    interactionOrigins = next;
+    return {};
+  });
+}
+function removedSiteAccess(removed) {
+  ++policyEpoch;
+  for (const id of active.keys()) cancel(id);
+  const origins = removed.origins || [];
+  const clear = !origins.length || origins.some(site => P.site(site) !== site);
+  if (clear) interactionOrigins.clear();
+  else for (const site of origins) interactionOrigins.delete(site);
+  return enqueuePolicy(async () => {
+    // Repeat after loading/older writes so remove-and-regrant never restores trust.
+    if (clear) interactionOrigins.clear();
+    else for (const site of origins) interactionOrigins.delete(site);
+    await persistInteractionPolicy(interactionOrigins);
+  }).catch(() => {});
+}
+async function alwaysAllowsMutation(m, state) {
+  await policyQueue;
+  check(state);
+  const sites = P.mutationSites(m);
+  if (!storageAvailable || !sites.length || !sites.every(site => interactionOrigins.has(site))) return false;
+  state.interactionSites = sites;
+  return true;
+}
 function error(code) { throw new Error(code); }
 function check(state) {
   if (state.cancelled || state.connection !== port) error("cancelled");
+  if (state.interactionSites && (!storageAvailable ||
+      !state.interactionSites.every(site => interactionOrigins.has(site)))) error("cancelled");
 }
 function response(connection, m, result, code) {
   if (connection !== port) return;
@@ -37,7 +117,9 @@ async function execute(m, state) {
   check(state);
   switch (m.command) {
     case "bridge.status":
-      return {connected: true, origins: (await browser.permissions.getAll()).origins || []};
+      await policyQueue;
+      return {connected: true, origins: (await browser.permissions.getAll()).origins || [],
+        interactionOrigins: [...interactionOrigins], interactionPolicyAvailable: storageAvailable};
     case "browser.tabs": {
       const result = [];
       for (const tab of (await browser.tabs.query({})).slice(0, 500)) {
@@ -62,7 +144,10 @@ async function execute(m, state) {
       return snapshot;
     }
     default:
-      // Approval is a real click in the companion popup, bound to this request.
+      if (await alwaysAllowsMutation(m, state)) return performMutation(m, state);
+      check(state);
+      // Otherwise require a real popup click bound to this request. Changing a
+      // site's mode never retroactively approves a queued action.
       return await new Promise((resolve, reject) => {
         const timer = setTimeout(() => { mutations.delete(m.id); badge(); reject(new Error("approval_expired")); }, 60000);
         mutations.set(m.id, {m, state, resolve, reject, timer});
@@ -148,13 +233,21 @@ function connect() {
   }
 }
 // Even remove-and-regrant must invalidate pending reads and approvals.
-browser.permissions.onRemoved.addListener(() => { for (const id of active.keys()) cancel(id); });
+browser.permissions.onRemoved.addListener(removedSiteAccess);
 browser.runtime.onMessage.addListener(async (m, sender) => {
   // Exact popup identity: no content script, tab, or other extension can approve.
   if (!m || sender.id !== browser.runtime.id || sender.tab ||
       sender.url !== browser.runtime.getURL("popup.html")) return;
-  if (m.action === "status") return {connected: !!port, error: lastError,
-    pending: [...mutations.values()].map(({m}) => ({id: m.id, command: m.command, arguments: m.arguments}))};
+  if (m.action === "status") {
+    await policyQueue;
+    return {connected: !!port, error: lastError, interactionOrigins: [...interactionOrigins],
+      interactionPolicyAvailable: storageAvailable,
+      pending: [...mutations.values()].map(({m}) => ({id: m.id, command: m.command, arguments: m.arguments}))};
+  }
+  if (m.action === "set-interactions") {
+    try { return await setInteractionPolicy(m.origin, m.allow); }
+    catch { return {error: "site_policy_update_failed"}; }
+  }
   if (m.action === "connect") {
     if (port) { const old = port; disconnect(old); old.disconnect(); }
     connect(); return {};

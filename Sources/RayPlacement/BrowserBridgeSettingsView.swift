@@ -11,6 +11,7 @@ struct BrowserBridgeSettingsView: View {
     @State private var confirmRemove = false
     @State private var busy = false
     @State private var grants: [String] = []
+    @State private var interactionGrants: Set<String> = []
     @State private var tabs: [BridgeTab] = []
     @State private var selectedTab: Int?
     @State private var destination = ""
@@ -90,8 +91,16 @@ struct BrowserBridgeSettingsView: View {
                     Text("No granted sites reported. Grant a site using the browser companion, then refresh.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(grants, id: \.self) { Text($0).font(.caption.monospaced()) }
-                Text("Revoke access in the companion popup. Revocations invalidate pending reads and approvals. Data already added to a conversation is not erased. Browser context used by AI is sent to the conversation's selected provider.")
+                ForEach(grants, id: \.self) { site in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(site).font(.caption.monospaced())
+                        Text(interactionGrants.contains(site)
+                             ? "Reading: Always allowed · Interactions: Always allowed"
+                             : "Reading: Always allowed · Interactions: Ask every time")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Manage reading and interaction access separately in the companion popup, then refresh here. Reading stays allowed until revoked. Interactions default to Ask every time; Always allow interactions is an explicit per-site choice. Revoking reading clears both modes and invalidates pending work. Data already added to a conversation is not erased. Browser context used by AI is sent to the conversation's selected provider.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Browser interactions") {
@@ -151,7 +160,7 @@ struct BrowserBridgeSettingsView: View {
                     }
                     if busy { Button("Stop") { operation?.cancel() } }
                 }
-                Text("Tab changes wait for Allow Once in the companion popup (badge !). Destinations must also have an explicit site grant.")
+                Text("Tab changes ask in the companion popup unless Always allow interactions is enabled for every involved site. Cross-site navigation requires source and destination access. These choices cover only tab actions, not form filling or arbitrary scripts.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !inspection.isEmpty {
                     DisclosureGroup("Page preview (not saved)") {
@@ -165,8 +174,8 @@ struct BrowserBridgeSettingsView: View {
         .onAppear { isPresented = true; installed = BrowserBridgeInstallation.isInstalled(executable: executable) }
         // Leaving Settings is navigation; pending work remains stoppable in Activity Shelf.
         .onDisappear { isPresented = false; inspection = "" }
-        .onChange(of: bridge.selectedSession) { _ in grants = []; tabs = []; selectedTab = nil; inspection = ""; destination = "" }
-        .onChange(of: bridge.enabled) { _ in grants = []; tabs = []; selectedTab = nil; inspection = "" }
+        .onChange(of: bridge.selectedSession) { _ in grants = []; interactionGrants = []; tabs = []; selectedTab = nil; inspection = ""; destination = "" }
+        .onChange(of: bridge.enabled) { _ in grants = []; interactionGrants = []; tabs = []; selectedTab = nil; inspection = "" }
         .alert("Install browser native helper?", isPresented: $confirmInstall) {
             Button("Cancel", role: .cancel) {}
             Button("Install") {
@@ -198,6 +207,11 @@ struct BrowserBridgeSettingsView: View {
             throw BrowserBridgeError.invalidResponse
         }
         grants = sites.compactMap { if case .string(let value) = $0 { return value }; return nil }.sorted()
+        // Version 1.0 companions omit this field and retain Ask every time.
+        if case .array(let sites)? = fields["interactionOrigins"] {
+            interactionGrants = Set(sites.compactMap { if case .string(let value) = $0 { return value }; return nil })
+                .intersection(Set(grants))
+        } else { interactionGrants = [] }
         message = "End-to-end connection verified."
     }
 
@@ -207,7 +221,7 @@ struct BrowserBridgeSettingsView: View {
             arguments["tabID"] = .number(Double(tab.id))
             arguments["expectedURL"] = .string(tab.url)
         }
-        message = "Review this action in the browser companion popup."
+        message = "Applying site access settings. If prompted, review this action in the browser companion popup."
         run { _ = try await bridge.request(command, arguments: arguments); message = nil }
     }
 

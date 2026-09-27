@@ -1,8 +1,26 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><title>Lima Browser Bridge</title><link rel="stylesheet" href="popup.css"></head>
-<body><h1>Lima Browser Bridge</h1><p id="status" role="status">Checking connection…</p>
+<html lang="en">
+<head><meta charset="utf-8"><title>Lima Browser Bridge</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+<h1>Lima Browser Bridge</h1>
+<p id="status" role="status">Checking connection…</p>
 <button id="connect">Reconnect to Lima</button>
-<section><h2>Site access</h2><p id="site"></p><button id="grant">Allow this HTTPS site</button>
-<p>Only explicitly granted sites are shared with the Lima desktop app: tab URLs/titles, visible page text, links, and selection. AI context may be sent to the provider selected in Lima. Private windows and form fields are excluded. Revoke site access below; this does not erase context already shared.</p>
-<ul id="grants"></ul></section><section><h2>Pending actions</h2><div id="pending"></div></section>
-<script src="policy.js"></script><script src="popup.js"></script></body></html>
+<section aria-labelledby="access-title">
+  <h2 id="access-title">Site access</h2>
+  <p id="site"></p>
+  <button id="grant">Always allow reading on this site</button>
+  <p class="detail">Reading stays allowed until revoked. Only explicitly granted sites share tab URLs/titles, visible text, links, and selection with Lima. AI context may go to the provider selected in Lima. Private windows and form fields are excluded.</p>
+  <ul id="grants"></ul>
+  <p class="detail">Interaction access is separate and defaults to Ask every time. It covers opening, focusing, navigating, and closing tabs—not arbitrary scripts, form filling, or clicks. Revoking reading also clears interaction access; it does not erase context already shared.</p>
+</section>
+<section id="confirmation" hidden aria-labelledby="confirmation-title">
+  <h2 id="confirmation-title">Always allow interactions?</h2>
+  <p id="confirmation-detail"></p>
+  <p>Lima will be able to open, focus, navigate, and close tabs for this exact site without asking each time, including after restarting the browser. Navigation or closing may discard unsaved work. Cross-site navigation requires interaction access on both sites.</p>
+  <button id="cancel-always">Cancel</button>
+  <button id="confirm-always">Always allow interactions</button>
+</section>
+<section><h2>Pending actions</h2><div id="pending"></div></section>
+<script src="policy.js"></script><script src="popup.js"></script>
+</body>
+</html>
