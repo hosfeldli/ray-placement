@@ -67,6 +67,35 @@ struct CommandCenterEntry: Identifiable, Equatable {
 }
 
 enum CommandCenterCatalog {
+    static func shortcutAssignmentID(for commandID: String) -> String {
+        switch commandID {
+        case "builtin.note-dictation": return "builtin.dictation"
+        case "builtin.add-selection-to-shelf": return "builtin.context-shelf.capture-selection"
+        default: return commandID
+        }
+    }
+
+    static func nativeToolEntries(
+        definitions: [LimaAIToolDefinition],
+        enabledIDs: Set<String>
+    ) -> [CommandCenterEntry] {
+        definitions.filter { $0.extensionBinding == nil }.map { tool in
+            let eligible = tool.risk == .read
+            let schema = (try? JSONSerialization.data(withJSONObject: tool.parameters, options: [.sortedKeys]))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            return CommandCenterEntry(
+                id: tool.id, title: tool.displayName, subtitle: tool.userSummary,
+                kind: .tool, source: "Built-in",
+                isEnabled: eligible && enabledIDs.contains(tool.id),
+                isFavorite: false, shortcut: "", isConflict: false,
+                capabilities: [], presentation: nil, version: nil,
+                detail: tool.description, risk: eligible ? "Read-only" : "Not eligible",
+                availableToAI: eligible, schema: schema, provider: nil, model: nil,
+                skills: [], tools: [], reasoning: nil
+            )
+        }
+    }
+
     static func visibleEntries(
         _ entries: [CommandCenterEntry],
         filter: CommandCenterFilter,
@@ -117,6 +146,8 @@ struct CommandCenterView: View {
     let reloadExtensions: () -> Void
     let makeShortcutBinding: (String) -> Binding<String>
 
+    @ObservedObject private var nativeToolStore = LimaAIToolStore.shared
+    @State private var shortcutLookup = ""
     @State private var selectedArea: Area = .catalog
     @State private var selectedFilter: CommandCenterFilter = .all
     @State private var query = ""
@@ -149,7 +180,7 @@ struct CommandCenterView: View {
                 isEnabled: commandManager.isEnabled(descriptor.id),
                 isFavorite: commandManager.isFavorite(descriptor.id),
                 shortcut: shortcut,
-                isConflict: conflictIDs.contains(descriptor.id),
+                isConflict: conflictIDs.contains(CommandCenterCatalog.shortcutAssignmentID(for: descriptor.id)),
                 capabilities: loaded.map { $0.capabilities.map(\.rawValue).sorted() } ?? [],
                 presentation: loaded?.effectivePresentation.rawValue,
                 version: loaded?.version,
@@ -209,7 +240,8 @@ struct CommandCenterView: View {
                     subtitle: tool.description,
                     kind: .tool,
                     source: package.extensionName,
-                    isEnabled: approvedToolIDs.contains("extension:\(package.extensionID):\(tool.id)"),
+                    isEnabled: approvedToolIDs.contains("extension:\(package.extensionID):\(tool.id)")
+                        && nativeToolStore.enabledToolIDs.contains("extension:\(package.extensionID):\(tool.id)"),
                     isFavorite: false,
                     shortcut: "",
                     isConflict: false,
@@ -313,7 +345,11 @@ struct CommandCenterView: View {
             !contributionEntries.contains(where: { $0.id == existing.id })
         }
 
-        return commandEntries + contributionEntries + packageEntries + skillEntries + agentEntries
+        let nativeTools = CommandCenterCatalog.nativeToolEntries(
+            definitions: LimaAIToolRegistry.availableDefinitions,
+            enabledIDs: nativeToolStore.enabledToolIDs
+        )
+        return commandEntries + contributionEntries + packageEntries + nativeTools + skillEntries + agentEntries
     }
 
     private var visibleEntries: [CommandCenterEntry] {
@@ -377,6 +413,20 @@ struct CommandCenterView: View {
             .frame(height: 31)
             .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             .padding(10)
+
+            DisclosureGroup("Look up a shortcut") {
+                HStack {
+                    ShortcutRecorder(shortcut: $shortcutLookup, label: "Press shortcut…")
+                        .frame(width: 150, height: 28)
+                    let owners = commandManager.shortcutRegistry.owners(of: shortcutLookup)
+                    Text(owners.isEmpty ? "No assignment" : owners.map(\.title).joined(separator: ", "))
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 5)
+            }
+            .padding(.horizontal, 10)
+            .padding(.bottom, 10)
 
             HStack(spacing: 0) {
                 filterSidebar
@@ -508,7 +558,7 @@ struct CommandCenterView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Shortcut").font(.caption.weight(.semibold))
                     ShortcutRecorder(
-                        shortcut: makeShortcutBinding(entry.id),
+                        shortcut: makeShortcutBinding(CommandCenterCatalog.shortcutAssignmentID(for: entry.id)),
                         label: "Record shortcut"
                     )
                     .frame(maxWidth: .infinity, minHeight: 28)
@@ -542,9 +592,22 @@ struct CommandCenterView: View {
                 .controlSize(.small)
         case .tool:
             LabeledContent("Risk", value: entry.risk ?? "Unknown")
-            LabeledContent("Enabled for AI", value: entry.availableToAI == true ? "Available" : "Not eligible")
+            if let tool = LimaAIToolRegistry.definition(for: entry.id), tool.risk == .read {
+                Toggle("Enabled for AI", isOn: Binding(
+                    get: { nativeToolStore.isEnabled(tool) },
+                    set: { enabled in
+                        // Recheck eligibility at interaction time; never revive a revoked extension.
+                        guard let current = LimaAIToolRegistry.definition(for: entry.id), current.risk == .read else { return }
+                        nativeToolStore.setEnabled(current, enabled: enabled)
+                    }
+                ))
+                Text("Applies to future AI requests. Browser tools still require site grants.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            } else {
+                LabeledContent("Enabled for AI", value: "Not eligible")
+            }
             if !entry.capabilities.isEmpty { detailSection("Required capabilities", values: entry.capabilities) }
-            LabeledContent("Source extension", value: entry.source)
+            LabeledContent("Source", value: entry.source)
             if let schema = entry.schema {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("Input schema").font(.caption.weight(.semibold))
@@ -583,12 +646,12 @@ struct CommandCenterView: View {
 
     private func builtinShortcut(for id: String) -> String {
         let value: String
-        switch id {
+        switch CommandCenterCatalog.shortcutAssignmentID(for: id) {
         case "builtin.notes": value = settings.notesShortcut
         case "builtin.quick-note": value = settings.quickNoteShortcut
-        case "builtin.note-dictation": value = settings.dictationShortcut
+        case "builtin.dictation": value = settings.dictationShortcut
         case "builtin.terminal": value = settings.terminalShortcut
-        case "builtin.add-selection-to-shelf": value = settings.contextShelfCaptureShortcut
+        case "builtin.context-shelf.capture-selection": value = settings.contextShelfCaptureShortcut
         default: return ""
         }
         return ShortcutSpec(string: value)?.displayString ?? value
