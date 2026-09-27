@@ -62,7 +62,14 @@ jobs:
           cp /usr/bin/true "$RUNNER_TEMP/lima-signing/codesign-probe"
           codesign --force --sign 'RayPlacement Local Code Signing' "$RUNNER_TEMP/lima-signing/codesign-probe"
           codesign --verify --strict "$RUNNER_TEMP/lima-signing/codesign-probe"
+
+      - name: Verify persisted signing environment
+        shell: zsh {0}
+        run: |
+          set -euo pipefail
           test -s "$SPARKLE_EDDSA_PRIVATE_KEY_FILE"
+          test -f "$LIMA_RELEASE_SIGNING_KEYCHAIN"
+          security find-identity -v -p codesigning "$LIMA_RELEASE_SIGNING_KEYCHAIN" | grep -Fq 'RayPlacement Local Code Signing'
 
       - name: Verify private archive write and read
         shell: zsh {0}
