@@ -707,7 +707,7 @@ struct GeminiAIProviderClient: AIProviderClient {
         return stream(request: request, model: model)
     }
 
-    private static func geminiContents(_ history: [AIProviderMessage]) -> [[String: Any]] {
+    static func geminiContents(_ history: [AIProviderMessage]) -> [[String: Any]] {
         history.compactMap { message in
             let role = message.role == .assistant ? "model" : "user"
             let parts: [[String: Any]] = message.content.compactMap { item in
@@ -722,7 +722,8 @@ struct GeminiAIProviderClient: AIProviderClient {
                         if case .toolUse(let toolID, let toolName, _) = content, toolID == id { return toolName }
                         return nil
                     }.first ?? "unknown_tool"
-                    let response = (try? JSONSerialization.jsonObject(with: Data(output.utf8))) ?? output
+                    let response = (try? JSONSerialization.jsonObject(with: Data(output.utf8))) as? [String: Any]
+                        ?? ["result": output]
                     return ["functionResponse": ["name": name, "response": response]]
                 }
             }
@@ -746,33 +747,19 @@ struct GeminiAIProviderClient: AIProviderClient {
                     }
                     continuation.yield(.responseCreated(responseID))
                     var framer = AIProviderSSEFramer()
+                    var decoder = AIGeminiStreamDecoder(responseID: responseID)
                     for try await byte in bytes {
-                        if Task.isCancelled { break }
-                        guard let frame = try framer.append(byte), frame.data != "[DONE]",
-                              let data = frame.data.data(using: .utf8),
-                              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-                        let candidate = (object["candidates"] as? [[String: Any]])?.first
-                        let parts = ((candidate?["content"] as? [String: Any])?["parts"] as? [[String: Any]]) ?? []
-                        for part in parts {
-                            if let text = part["text"] as? String, !text.isEmpty { continuation.yield(.textDelta(text)) }
-                            if let call = part["functionCall"] as? [String: Any], let name = call["name"] as? String {
-                                let arguments = call["args"] as? [String: Any] ?? [:]
-                                let encoded = (try? JSONSerialization.data(withJSONObject: arguments, options: [.sortedKeys])).flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
-                                let id = "gemini-\(UUID().uuidString)"
-                                continuation.yield(.outputItem(AIOutputItem(phase: .completed, apiType: "function_call", id: id, callID: id, name: name, arguments: encoded)))
-                            }
+                        try Task.checkCancellation()
+                        if let frame = try framer.append(byte) {
+                            for event in decoder.decode(frame) { continuation.yield(event) }
                         }
-                        if let usage = object["usageMetadata"] as? [String: Any] {
-                            continuation.yield(.usage(AIUsageMetrics(inputTokens: usage["promptTokenCount"] as? Int, outputTokens: usage["candidatesTokenCount"] as? Int)))
-                        }
+                        if decoder.terminated { break }
                     }
-                    if let frame = try framer.finish(),
-                       let data = frame.data.data(using: .utf8),
-                       let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                       let usage = object["usageMetadata"] as? [String: Any] {
-                        continuation.yield(.usage(AIUsageMetrics(inputTokens: usage["promptTokenCount"] as? Int, outputTokens: usage["candidatesTokenCount"] as? Int)))
+                    try Task.checkCancellation()
+                    if !decoder.terminated, let frame = try framer.finish() {
+                        for event in decoder.decode(frame) { continuation.yield(event) }
                     }
-                    continuation.yield(.completed(responseID))
+                    for event in decoder.finish() { continuation.yield(event) }
                     continuation.finish()
                 } catch {
                     if !Task.isCancelled { continuation.yield(.failed("Gemini could not complete the request.")) }
