@@ -2,6 +2,11 @@ name: Rehearse Lima cloud release credentials
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - reliability/grammar-and-notes-routing
+    paths:
+      - .github/workflows/cloud-release-rehearsal.yml
 
 permissions: {}
 
