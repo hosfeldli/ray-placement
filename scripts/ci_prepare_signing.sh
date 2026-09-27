@@ -59,7 +59,7 @@ security set-key-partition-list \
     -k "$signing_password" \
     "$KEYCHAIN_PATH" >/dev/null
 
-actual_certificate="$(/usr/bin/openssl x509 -inform der -in "$CERTIFICATE_FILE" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print tolower($1)}')"
+actual_certificate="$(/usr/bin/openssl x509 -in "$CERTIFICATE_FILE" -outform der | /usr/bin/shasum -a 256 | /usr/bin/awk '{print tolower($1)}')"
 [[ "$actual_certificate" == "${LIMA_RELEASE_CERTIFICATE_SHA256:l}" ]] || {
     print -u2 "Imported signing certificate does not match Lima's pinned fingerprint."
     exit 1
