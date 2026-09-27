@@ -180,13 +180,15 @@ release_write_metadata() {
         --arg updateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Update.zip" \
         --arg sparkleUpdateURL "https://github.com/hosfeldli/ray-placement/releases/download/$tag/Lima-Sparkle.zip" \
         --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg workflowRunID "${GITHUB_RUN_ID:-}" \
+        --arg workflowRunAttempt "${GITHUB_RUN_ATTEMPT:-}" \
         --arg updateSHA256 "$(shasum -a 256 "$update" | awk '{print $1}')" \
         --arg sparkleUpdateSHA256 "$(shasum -a 256 "$sparkle_update" | awk '{print $1}')" \
         --arg dmgSHA256 "$(shasum -a 256 "$dmg" | awk '{print $1}')" \
         --argjson updateBytes "$(/usr/bin/stat -f %z "$update")" \
         --argjson sparkleUpdateBytes "$(/usr/bin/stat -f %z "$sparkle_update")" \
         --argjson dmgBytes "$(/usr/bin/stat -f %z "$dmg")" \
-        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, sparkleUpdateUrl: $sparkleUpdateURL, generatedAt: $generatedAt, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, sparkleUpdate: {name: "Lima-Sparkle.zip", bytes: $sparkleUpdateBytes, sha256: $sparkleUpdateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
+        '{schemaVersion: 1, tag: $tag, version: $version, build: $build, commit: $commit, signingMode: $signingMode, signingIdentity: $signingIdentity, certificateSHA256: $certificateSHA256, releaseUrl: $releaseURL, updateUrl: $updateURL, sparkleUpdateUrl: $sparkleUpdateURL, generatedAt: $generatedAt, workflow: {runId: $workflowRunID, runAttempt: $workflowRunAttempt}, update: {name: "Lima-Update.zip", bytes: $updateBytes, sha256: $updateSHA256}, sparkleUpdate: {name: "Lima-Sparkle.zip", bytes: $sparkleUpdateBytes, sha256: $sparkleUpdateSHA256}, dmg: {name: "Lima.dmg", bytes: $dmgBytes, sha256: $dmgSHA256}}' \
         > "$metadata"
     chmod 600 "$metadata"
 }

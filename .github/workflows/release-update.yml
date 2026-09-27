@@ -4,148 +4,98 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Existing draft tag to build and stage (for example v3.12.6)
+        description: Existing immutable tag to build and stage (for example v3.14.3)
         required: true
         type: string
+
 permissions: {}
 
 jobs:
   build-and-stage:
+    name: Build, archive, and stage
     runs-on: macos-15
+    environment: release
     permissions:
       contents: write
       actions: write
+      id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
       RAYPLACEMENT_REQUIRE_STABLE_SIGNING: "1"
       RAYPLACEMENT_SIGNING_MODE: self-signed-local
       LIMA_RELEASE_EXPECTED_REF: refs/remotes/origin/ci-immutable-release
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Checkout immutable release
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           ref: ${{ inputs.release_tag }}
-          # Harper is a versioned Apple-silicon binary stored in Git LFS.
+          # Harper remains in Git LFS during the staged GCS migration.
           fetch-depth: 0
           fetch-tags: true
           lfs: true
 
-      - name: Configure ephemeral signing directory
-        shell: bash
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_RELEASE_SERVICE_ACCOUNT }}
+
+      - name: Configure Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v3
+
+      - name: Prepare verified build assets
+        shell: zsh {0}
         env:
-          SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+          LIMA_BUILD_ASSET_BUCKET: ${{ vars.GCP_BUILD_ASSET_BUCKET }}
         run: |
           set -euo pipefail
-          printf 'RAYPLACEMENT_SIGNING_DIRECTORY=%s\n' "$SIGNING_DIRECTORY" >> "$GITHUB_ENV"
+          ./scripts/prepare_build_assets.sh
 
-      - name: Import CI signing P12
-        shell: bash
+      - name: Prepare ephemeral signing identity
+        shell: zsh {0}
         env:
-          SIGNING_P12_B64: ${{ secrets.LIMA_SIGNING_P12_B64 }}
-          SIGNING_PASSWORD: ${{ secrets.LIMA_SIGNING_P12_PASSWORD }}
+          LIMA_RELEASE_SIGNING_DIRECTORY: ${{ runner.temp }}/lima-signing
+          LIMA_GCP_SIGNING_P12_SECRET: lima-signing-p12
+          LIMA_GCP_SIGNING_P12_PASSWORD_SECRET: lima-signing-p12-password
+          LIMA_GCP_SPARKLE_PRIVATE_KEY_SECRET: lima-sparkle-private-key
         run: |
           set -euo pipefail
-          test -n "$SIGNING_P12_B64" || { echo 'Missing LIMA_SIGNING_P12_B64 repository secret.' >&2; exit 1; }
-          test -n "$SIGNING_PASSWORD" || { echo 'Missing LIMA_SIGNING_P12_PASSWORD repository secret.' >&2; exit 1; }
-          mkdir -p "$RAYPLACEMENT_SIGNING_DIRECTORY"
-          P12_PATH="$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.p12"
-          KEYCHAIN_PATH="$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementSigning.keychain-db"
-          printf '%s' "$SIGNING_P12_B64" | base64 --decode > "$P12_PATH"
-          printf '%s\n' "$SIGNING_PASSWORD" > "$RAYPLACEMENT_SIGNING_DIRECTORY/keychain-password"
-          security create-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
-          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
-          security unlock-keychain -p "$SIGNING_PASSWORD" "$KEYCHAIN_PATH"
-          # Make the ephemeral keychain the active search source for codesign.
-          # GitHub-hosted runners do not necessarily search newly-created
-          # keychains, even when the import itself succeeds.
-          security list-keychains -d user -s "$KEYCHAIN_PATH"
-          security default-keychain -s "$KEYCHAIN_PATH"
-          printf 'Decoded P12 bytes: '
-          stat -f '%z' "$P12_PATH"
-          printf 'Decoded P12 SHA-256: '
-          shasum -a 256 "$P12_PATH" | awk '{print $1}'
-          set +e
-          security import "$P12_PATH" -f pkcs12 -k "$KEYCHAIN_PATH" -P "$SIGNING_PASSWORD" -T /usr/bin/codesign
-          import_status=$?
-          security find-certificate -a -p -c 'RayPlacement Local Code Signing' "$KEYCHAIN_PATH" > "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
-          # Trust the self-signed certificate in the disposable runner System
-          # keychain. Using the administrative trust domain avoids SecurityAgent
-          # and makes security find-identity classify the imported identity as
-          # valid; the GitHub-hosted runner is destroyed after this job.
-          sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$RAYPLACEMENT_SIGNING_DIRECTORY/RayPlacementLocalSigning.cer"
-          trust_status=$?
-          security set-key-partition-list \
-            -S apple-tool:,apple:,codesign: \
-            -s \
-            -k "$SIGNING_PASSWORD" \
-            "$KEYCHAIN_PATH" >/dev/null
-          partition_status=$?
-          security find-identity -v -p codesigning "$KEYCHAIN_PATH"
-          identity_status=$?
-          set -e
-          printf 'security import exit: %s\n' "$import_status"
-          printf 'certificate trust exit: %s\n' "$trust_status"
-          printf 'partition-list exit: %s\n' "$partition_status"
-          printf 'find-identity exit: %s\n' "$identity_status"
-          identity_output="$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" 2>/dev/null || true)"
-          printf '%s\n' "$identity_output"
-          # The certificate's display name can vary between macOS runner
-          # images even when its SHA-256 identity is the pinned release
-          # certificate. The release preflight performs the authoritative
-          # certificate digest and identity-policy checks below; do not reject
-          # a valid imported identity based only on display-name formatting.
-          [[ -n "$identity_output" ]] || {
-            echo 'Imported keychain contains no usable code-signing identity.' >&2
-            exit 1
-          }
-          [[ "$import_status" == 0 && "$trust_status" == 0 && "$partition_status" == 0 && "$identity_status" == 0 ]] || {
-            echo 'CI signing keychain setup failed.' >&2
-            exit 1
-          }
-          chmod 600 "$RAYPLACEMENT_SIGNING_DIRECTORY"/*
+          ./scripts/ci_prepare_signing.sh
 
-      - name: Verify source tag and signing policy
+      - name: Verify immutable source and signing policy
         shell: zsh {0}
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           ./scripts/check_release_consistency.sh
-          # The checked-out release is an annotated tag. Provide the tagged
-          # preflight helper with a temporary remote-style commit ref so its
-          # legacy CI gate compares commit-to-commit without dereferencing the
-          # annotated tag object.
+          # The checkout is an annotated tag. Supply a temporary remote-style
+          # commit ref so the CI gate compares the immutable commit itself.
           git update-ref refs/remotes/origin/ci-immutable-release "$(git rev-parse HEAD)"
           test "$(git rev-parse HEAD)" = "$(git rev-list -n1 "$RELEASE_TAG")"
           ./scripts/release_assert_tag_identity.sh --tag "$RELEASE_TAG"
           ./scripts/release_preflight.sh --tag "$RELEASE_TAG"
 
-      - name: Apply CI-only release verifier fixes
-        shell: bash
-        run: |
-          set -euo pipefail
-          # Build from the immutable release tag, but use the current branch's
-          # tested DER certificate verifier. Application source remains exactly
-          # the tagged commit and is checked below before packaging.
-          git show "${GITHUB_SHA}:scripts/verify_liamflow_app.sh" > scripts/verify_liamflow_app.sh
-          chmod 755 scripts/verify_liamflow_app.sh
-
-      - name: Build local artifacts without Git mutation
+      - name: Build and verify immutable release artifacts
         shell: zsh {0}
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           LIMA_RELEASE_SKIP_PREFLIGHT: "1"
-          SPARKLE_EDDSA_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
         run: |
           set -euo pipefail
           ./scripts/release_build.sh --tag "$RELEASE_TAG"
 
-      - name: Restore immutable tagged source before staging
-        shell: bash
+      - name: Archive verified release artifacts privately
+        shell: zsh {0}
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          LIMA_RELEASE_ARCHIVE_BUCKET: ${{ vars.GCP_RELEASE_ARCHIVE_BUCKET }}
         run: |
           set -euo pipefail
-          git checkout -- scripts/verify_liamflow_app.sh
+          ./scripts/archive_release_to_gcs.sh --tag "$RELEASE_TAG"
 
-      - name: Stage the existing draft
+      - name: Stage and verify the GitHub draft
         shell: zsh {0}
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
@@ -156,11 +106,7 @@ jobs:
 
       - name: Remove ephemeral signing material
         if: ${{ always() }}
-        shell: bash
+        shell: zsh {0}
         run: |
           set -euo pipefail
-          KEYCHAIN_PATH="${RAYPLACEMENT_SIGNING_DIRECTORY:-}/RayPlacementSigning.keychain-db"
-          if [[ -n "${RAYPLACEMENT_SIGNING_DIRECTORY:-}" ]]; then
-            security delete-keychain "$KEYCHAIN_PATH" >/dev/null 2>&1 || true
-            rm -rf -- "$RAYPLACEMENT_SIGNING_DIRECTORY"
-          fi
+          ./scripts/ci_cleanup_signing.sh
