@@ -160,15 +160,84 @@ gh workflow run release-update.yml --repo hosfeldli/ray-placement --ref main \
   -f release_tag=v3.14.5 -f publish=true
 ```
 
-Approve the `release` environment in GitHub when it pauses, then monitor the run
-from Actions or with `gh run watch RUN_ID --repo hosfeldli/ray-placement --exit-status`.
-A run with `publish=false` deliberately stops at a verified draft; use it only for
-a planned review or rehearsal, not as a shortcut around the release checks.
+Approve the `release` environment in GitHub when it pauses. A run with
+`publish=false` deliberately stops at a verified draft; use it only for a planned
+review or rehearsal, not as a shortcut around the release checks.
 
-Never change an existing release tag or replace published assets. If a hosted run
-fails, preserve its tag and logs, fix the source on `main`, obtain green CI, and
-issue a new version/tag. See [Build assets and recovery](#build-assets-and-recovery)
-for a staging-recovery case where verified bytes already exist in private GCS.
+### Low-touch CLI execution
+
+For a routine public release, use the following bounded sequence rather than
+re-discovering release state or streaming workflow logs. Substitute the new version
+once, keep the returned run ID, and perform each phase exactly once:
+
+```sh
+REPO=hosfeldli/ray-placement
+
+# Version commit (the only metadata-changing script).
+./scripts/release_prepare.sh --bump patch --commit --push
+
+# Set this to the exact version printed above, then wait for that commit's CI to pass.
+VERSION=3.14.5
+TAG=v$VERSION
+
+# After the version commit's default-branch CI is green, create the immutable tag.
+./scripts/release_tag.sh --version "$VERSION" --push
+
+# Start one hosted public-release run and capture its workflow-run ID.
+gh workflow run release-update.yml --repo "$REPO" --ref main \
+  -f release_tag="$TAG" -f publish=true
+sleep 5
+RUN_ID="$(gh run list --repo "$REPO" --workflow release-update.yml \
+  --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+printf 'Release run: %s\n' "$RUN_ID"
+```
+
+The initial `waiting` state is normally the protected `release` environment,
+not a build failure. Fetch its pending deployment and approve that exact environment
+once. Use `-F` (typed form fields) rather than `-f`; the latter serializes the
+array item as a string and GitHub rejects it.
+
+```sh
+ENV_ID="$(gh api "repos/$REPO/actions/runs/$RUN_ID/pending_deployments" \
+  --jq '.[0].environment.id')"
+gh api --method POST "repos/$REPO/actions/runs/$RUN_ID/pending_deployments" \
+  -F "environment_ids[]=$ENV_ID" -f state=approved \
+  -f comment="Approved for the requested Lima $TAG deployment."
+```
+
+After approval, poll the compact status only at milestone intervals (for example,
+every 5 minutes); builds, archive uploads, draft verification, and publication can
+legitimately take several minutes. Do not start a duplicate run, recreate the tag,
+or replay an approval while it remains `in_progress`.
+
+```sh
+gh run view "$RUN_ID" --repo "$REPO" --json status,conclusion,url,jobs
+```
+
+Avoid making `gh run watch` the release gate in automation environments with a
+command-duration limit: the observer can time out while the hosted workflow
+continues successfully. Inspect failed-step logs only when the final conclusion is
+not `success`:
+
+```sh
+gh run view "$RUN_ID" --repo "$REPO" --log-failed
+```
+
+On success, make one compact post-release check. It confirms that the release is
+public and that its expected updater metadata and downloadable artifacts were
+uploaded, without downloading the large DMG or streaming workflow output:
+
+```sh
+gh release view "$TAG" --repo "$REPO" \
+  --json tagName,isDraft,isPrerelease,publishedAt,url,assets
+```
+
+If the workflow fails, preserve the immutable tag and logs, fix the source on
+`main`, wait for green CI, and issue a new version/tag. Never retry a failed public
+release by moving the tag or replacing assets.
+
+For a staging-recovery case where verified bytes already exist in private GCS, see
+[Build assets and recovery](#build-assets-and-recovery).
 
 ## Local / legacy fast paths
 
