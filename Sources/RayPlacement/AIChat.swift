@@ -722,10 +722,16 @@ struct AIChatResponsesClient: AIChatTransport {
         var body: [String: Any] = [
             "model": model,
             "input": input,
-            "stream": true,
-            "store": true,
-            "instructions": systemInstructions
+            "stream": true
         ]
+        // `/v1/models` does not describe Responses feature support. A newly
+        // discovered family gets the smallest valid streaming request until it
+        // has an explicit capability profile; this avoids inheriting optional
+        // storage, instructions, or reasoning fields from a different model.
+        if !option.isLegacyOrUnknown {
+            body["store"] = true
+            body["instructions"] = systemInstructions
+        }
         if option.supportsReasoning {
             let effort = option.supportedReasoningEfforts.contains(reasoningEffort)
                 ? reasoningEffort
@@ -790,7 +796,18 @@ struct AIChatResponsesClient: AIChatTransport {
                             errorData.append(byte)
                             if errorData.count >= 64_000 { break }
                         }
-                        throw ClientError.requestFailed(http.statusCode, AIProviderFailure.message(data: errorData, status: http.statusCode))
+                        let failure = AIProviderFailure.details(data: errorData, status: http.statusCode)
+                        continuation.yield(.diagnostic(AIChatDiagnostic(
+                            stage: .transport,
+                            httpStatus: http.statusCode,
+                            model: model,
+                            errorCode: failure.code,
+                            errorParameter: failure.parameter,
+                            message: failure.message
+                        )))
+                        continuation.yield(.failed(failure.message))
+                        continuation.finish()
+                        return
                     }
 
                     var parser = AIResponsesSSEParser(model: model)
@@ -832,6 +849,7 @@ struct AIChatResponsesClient: AIChatTransport {
 @MainActor
 final class AIChatViewModel: ObservableObject {
     @Published private(set) var selectedConversationID: UUID?
+    @Published var conversationSearchQuery = ""
     @Published var draft = ""
     @Published var provider: AIProvider = .openAI
     @Published var model = "gpt-5"
@@ -842,6 +860,11 @@ final class AIChatViewModel: ObservableObject {
     @Published var attachments: [AIAttachment] = []
     @Published var showActivity = true
     @Published private(set) var isStreaming = false
+    /// Batched, ephemeral answer text. The transcript store is updated only at
+    /// turn checkpoints, so provider token cadence does not drive persistence.
+    @Published private(set) var streamingText = ""
+    @Published private(set) var streamingReasoningSummary = ""
+    @Published private(set) var streamingTextAssistantID: UUID?
     @Published private(set) var streamError: String?
     @Published private(set) var streamDiagnostics: [AIChatDiagnostic] = []
     @Published var showDiagnostics = false
@@ -864,6 +887,9 @@ final class AIChatViewModel: ObservableObject {
     private var registeredTaskID: UUID?
     private var performanceMeasurementID: UUID?
     private var firstTokenPerformanceMeasurementID: UUID?
+    private var pendingStreamTextChunks: [String] = []
+    private var pendingStreamReasoningChunks: [String] = []
+    private var streamTextFlushTask: Task<Void, Never>?
 
     init(
         store: AIConversationStore? = nil,
@@ -899,6 +925,14 @@ final class AIChatViewModel: ObservableObject {
 
     var selectedConversation: AIConversation? {
         selectedConversationID.flatMap(store.conversation(id:))
+    }
+
+    func visibleText(for message: AIChatMessage) -> String {
+        streamingTextAssistantID == message.id ? streamingText : message.text
+    }
+
+    func visibleReasoningSummary(for message: AIChatMessage) -> String? {
+        streamingTextAssistantID == message.id ? streamingReasoningSummary : message.reasoningSummary
     }
 
     func select(_ id: UUID) {
@@ -986,6 +1020,73 @@ final class AIChatViewModel: ObservableObject {
                     allowedIDs.contains($0.tool.id)
                 } == true
         }
+    }
+
+    /// Enabled tools are an eligibility set, not a per-request payload. Route a
+    /// small deterministic subset from explicit agent/skill choices and prompt
+    /// intent so a generic chat does not send unrelated tool schemas.
+    func routedNativeTools(for prompt: String) -> [LimaAIToolDefinition] {
+        let value = prompt.lowercased()
+        var requested = Set(selectedAgentConfiguration?.toolIDs ?? [])
+        for skill in selectedSkillConfigurations {
+            requested.formUnion(skill.preferredToolIDs)
+        }
+
+        func containsAny(_ terms: [String]) -> Bool {
+            terms.contains { value.localizedStandardContains($0) }
+        }
+
+        if isBrowserPrompt(prompt) {
+            requested.formUnion(["browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"])
+        }
+        if containsAny(["file", "folder", "directory", "path", "repository", "repo", "source code", "swift"]) {
+            requested.formUnion(["search_files", "find_files", "list_directory", "file_metadata", "read_file"])
+        }
+        if containsAny(["search the web", "web search", "research", "latest", "online", "website", "public web", "http://", "https://"]) {
+            requested.formUnion(["search_web", "read_web"])
+        }
+        if containsAny(["screen", "selected text", "current app", "window title"]) {
+            requested.insert("read_screen_context")
+        }
+        if containsAny(["extension", "plugin", "installed command"]) {
+            requested.insert("list_extensions")
+        }
+        if containsAny(["lima status", "lima version", "app status"]) {
+            requested.insert("get_lima_status")
+        }
+
+        return enabledNativeTools.filter { definition in
+            requested.contains(definition.id)
+                || definition.extensionBinding.map { requested.contains($0.tool.id) } == true
+        }
+    }
+
+    func routedMCPServers(for prompt: String) -> [MCPServer] {
+        let value = prompt.lowercased()
+        return mcpStore.servers.filter { server in
+            guard server.enabled, !AIReadOnlyPolicy.readableMCPTools(for: server).isEmpty else { return false }
+            let serverTerms = [server.name, server.apiLabel] + server.enabledTools.flatMap { [$0.name, $0.title ?? ""] }
+            return serverTerms.contains { term in
+                let candidate = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                return candidate.count >= 3 && value.localizedStandardContains(candidate)
+            }
+        }
+    }
+
+    func isBrowserPrompt(_ prompt: String) -> Bool {
+        let value = prompt.lowercased()
+        let namedBrowserContext = ["browser", "salesforce", "force.com", "lightning"].contains {
+            value.localizedStandardContains($0)
+        }
+        let standaloneTab = value.range(of: "\\btabs?\\b", options: .regularExpression) != nil
+        return namedBrowserContext || standaloneTab
+    }
+
+    private func readOnlyBrowserActionMessage(for prompt: String) -> String? {
+        let value = prompt.lowercased()
+        guard isBrowserPrompt(prompt),
+              ["open", "new", "navigate", "close", "focus"].contains(where: { value.localizedStandardContains($0) }) else { return nil }
+        return "Lima can inspect granted browser tabs and resolve Salesforce Case links, but AI Chat is read-only and cannot open, close, focus, or navigate tabs. Ask it to identify or resolve the Case links instead."
     }
 
     var systemInstructions: String {
@@ -1146,7 +1247,8 @@ final class AIChatViewModel: ObservableObject {
                     canEnd: true
                 )
             }
-            if let assistant, !assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            if !streamingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (assistant?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false) {
                 return AIChatTaskState(
                     title: "Writing response",
                     detail: "Streaming visible answer",
@@ -1156,7 +1258,8 @@ final class AIChatViewModel: ObservableObject {
                     canEnd: true
                 )
             }
-            if let assistant, !(assistant.reasoningSummary ?? "").isEmpty || activity?.kind == .reasoningSummary {
+            if !streamingReasoningSummary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || (assistant?.reasoningSummary?.isEmpty == false) || activity?.kind == .reasoningSummary {
                 return AIChatTaskState(
                     title: "Reasoning",
                     detail: "Working through the request",
@@ -1269,14 +1372,83 @@ final class AIChatViewModel: ObservableObject {
             do {
                 let models = try await client.listModels(apiKey: apiKey)
                 try Task.checkCancellation()
-                self.taskRegistry.finish(taskID)
                 guard self.provider == selectedProvider, self.selectedConversationID == conversationID,
-                      selectedProvider != .openAICompatible || endpoint == providerPreferences.openAICompatibleBaseURL else { return }
+                      selectedProvider != .openAICompatible || endpoint == providerPreferences.openAICompatibleBaseURL else {
+                    self.taskRegistry.finish(taskID, state: .cancelled)
+                    return
+                }
                 self.availableModels = models
                 self.ensureModelIsAvailable()
+
                 if reportConnection {
-                    self.providerConnectionMessage = "Connected to " + selectedProvider.title + " · " + String(models.count) + " models reported."
+                    let testedModel = self.model
+                    var completed = false
+                    var safeFailure: String?
+                    var probeDiagnostic: AIChatDiagnostic?
+                    let probe = client.streamReply(
+                        apiKey: apiKey,
+                        model: testedModel,
+                        input: "Reply with exactly: Lima connection test passed.",
+                        history: [],
+                        previousResponseID: nil,
+                        reasoningEffort: self.reasoningEffort,
+                        attachments: [],
+                        mcpServers: [],
+                        localTools: [],
+                        systemInstructions: "Connection test. Return a short confirmation only."
+                    )
+                    do {
+                        for try await event in probe {
+                            try Task.checkCancellation()
+                            switch event {
+                            case .completed:
+                                completed = true
+                            case .diagnostic(let diagnostic):
+                                if diagnostic.stage == .api || diagnostic.stage == .transport {
+                                    probeDiagnostic = diagnostic
+                                }
+                            case .failed(let message):
+                                safeFailure = AIProviderFailure.presentation(
+                                    provider: selectedProvider.title,
+                                    model: testedModel,
+                                    status: probeDiagnostic?.httpStatus,
+                                    code: probeDiagnostic?.errorCode,
+                                    parameter: probeDiagnostic?.errorParameter,
+                                    fallback: message
+                                )
+                            default:
+                                break
+                            }
+                        }
+                    } catch {
+                        if Task.isCancelled || error is CancellationError { throw error }
+                        safeFailure = AIProviderFailure.presentation(
+                            provider: selectedProvider.title,
+                            model: testedModel,
+                            status: probeDiagnostic?.httpStatus,
+                            code: probeDiagnostic?.errorCode,
+                            parameter: probeDiagnostic?.errorParameter,
+                            fallback: AIProviderFailure.transport(error)
+                        )
+                    }
+                    try Task.checkCancellation()
+                    guard self.provider == selectedProvider, self.selectedConversationID == conversationID else {
+                        self.taskRegistry.finish(taskID, state: .cancelled)
+                        return
+                    }
+                    if let safeFailure {
+                        self.taskRegistry.finish(taskID, state: .failed)
+                        self.providerConnectionMessage = "Basic request failed · " + safeFailure
+                        return
+                    }
+                    guard completed else {
+                        self.taskRegistry.finish(taskID, state: .failed)
+                        self.providerConnectionMessage = "The model request ended before a response completed."
+                        return
+                    }
+                    self.providerConnectionMessage = "Verified " + testedModel + " with a basic response request · " + String(models.count) + " models available."
                 }
+                self.taskRegistry.finish(taskID)
                 self.streamError = nil
             } catch {
                 let cancelled = Task.isCancelled || error is CancellationError
@@ -1397,6 +1569,10 @@ final class AIChatViewModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming, pendingApproval == nil else { return }
+        if let message = readOnlyBrowserActionMessage(for: text) {
+            recordLocalRequestFailure(title: "Browser action unavailable", message: message, prompt: text)
+            return
+        }
         guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
             streamError = "This fixture scenario does not make provider requests."
             return
@@ -1429,6 +1605,7 @@ final class AIChatViewModel: ObservableObject {
             text: "",
             activities: [AIAgentActivity(kind: .started, title: "Started", completed: false)]
         ))
+        beginStreamingText(for: assistantID)
         activeAssistantID = assistantID
         activeConversationID = conversation.id
         store.update(conversation)
@@ -1455,11 +1632,12 @@ final class AIChatViewModel: ObservableObject {
         }
 
         let providerHistory = AIProviderMessage.transcript(conversation.messages)
+        let routedLocalTools = routedNativeTools(for: text)
+        let routedMCPServers = routedMCPServers(for: text)
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
             let client = self.providerClient(for: conversation.provider)
-            let mcpServers = self.mcpStore.servers.filter(\.enabled)
             let responseID = await self.runToolLoop(
                 initialStream: client.streamReply(
                     apiKey: apiKey,
@@ -1469,8 +1647,8 @@ final class AIChatViewModel: ObservableObject {
                     previousResponseID: conversation.lastResponseID,
                     reasoningEffort: conversation.reasoningEffort,
                     attachments: conversation.attachments,
-                    mcpServers: mcpServers,
-                    localTools: self.enabledNativeTools,
+                    mcpServers: routedMCPServers,
+                    localTools: routedLocalTools,
                     systemInstructions: self.systemInstructions
                 ),
                 client: client,
@@ -1479,12 +1657,31 @@ final class AIChatViewModel: ObservableObject {
                 assistantID: assistantID,
                 model: conversation.model,
                 reasoningEffort: conversation.reasoningEffort,
-                mcpServers: mcpServers,
+                mcpServers: routedMCPServers,
+                localTools: routedLocalTools,
                 history: providerHistory,
                 initialResponseID: nil
             )
             self.finishStream(conversationID: conversation.id, assistantID: assistantID, responseID: responseID)
         }
+    }
+
+    private func recordLocalRequestFailure(title: String, message: String, prompt: String) {
+        var conversation = selectedConversation ?? store.createConversation(provider: provider, model: model)
+        selectedConversationID = conversation.id
+        conversation.provider = provider
+        conversation.model = model
+        conversation.messages.append(AIChatMessage(role: .user, text: prompt))
+        conversation.messages.append(AIChatMessage(
+            role: .assistant,
+            text: "⚠︎ \(title)\n\n\(message)",
+            activities: [AIAgentActivity(kind: .error, title: title, detail: message, completed: true)]
+        ))
+        if conversation.title == "New Chat" { conversation.title = String(prompt.prefix(64)) }
+        conversation.updatedAt = Date()
+        store.update(conversation)
+        draft = ""
+        streamError = nil
     }
 
     func cancel() {
@@ -1500,6 +1697,7 @@ final class AIChatViewModel: ObservableObject {
             cancelledAssistantIDs.insert(assistantID)
         }
         if let conversationID = activeConversationID ?? selectedConversationID {
+            commitStreamingText(conversationID: conversationID, assistantID: activeAssistantID)
             appendTurnActivity(
                 AIAgentActivity(
                     kind: .completed,
@@ -1593,6 +1791,7 @@ final class AIChatViewModel: ObservableObject {
         model: String,
         reasoningEffort: AIReasoningEffort,
         mcpServers: [MCPServer],
+        localTools: [LimaAIToolDefinition],
         history: [AIProviderMessage],
         initialResponseID: String?
     ) async -> String? {
@@ -1632,7 +1831,7 @@ final class AIChatViewModel: ObservableObject {
             var outputs: [[String: Any]] = []
             for call in calls {
                 guard !Task.isCancelled, streamError == nil else { break }
-                if let output = await executeLocalTool(call, conversationID: conversationID) {
+                if let output = await executeLocalTool(call, allowedTools: localTools, conversationID: conversationID) {
                     outputs.append(output)
                 }
             }
@@ -1657,7 +1856,7 @@ final class AIChatViewModel: ObservableObject {
                 outputs: outputs,
                 reasoningEffort: reasoningEffort,
                 mcpServers: mcpServers,
-                localTools: enabledNativeTools,
+                localTools: localTools,
                 systemInstructions: self.systemInstructions
             )
         }
@@ -1717,12 +1916,16 @@ final class AIChatViewModel: ObservableObject {
         )
     }
 
-    private func executeLocalTool(_ call: AIOutputItem, conversationID: UUID) async -> [String: Any]? {
+    private func executeLocalTool(
+        _ call: AIOutputItem,
+        allowedTools: [LimaAIToolDefinition],
+        conversationID: UUID
+    ) async -> [String: Any]? {
         guard let definition = LimaAIToolRegistry.definition(for: call.name) else {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is not registered.")
         }
-        guard enabledNativeTools.contains(where: { $0.id == definition.id }) else {
-            return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is disabled for this chat.")
+        guard allowedTools.contains(where: { $0.id == definition.id }) else {
+            return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool was not routed for this request.")
         }
         guard let callID = call.callID else {
             appendTurnActivity(
@@ -1827,17 +2030,19 @@ final class AIChatViewModel: ObservableObject {
         activeConversationID = conversation.id
         streamError = nil
         isStreaming = true
+        let routingPrompt = conversation.messages.last(where: { $0.role == .user })?.text ?? ""
+        let routedLocalTools = routedNativeTools(for: routingPrompt)
+        let routedMCPServers = routedMCPServers(for: routingPrompt)
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
             let client = self.providerClient(for: conversation.provider)
-            let mcpServers = self.mcpStore.servers.filter(\.enabled)
             var toolHistory = AIProviderMessage.transcript(conversation.messages)
 
             if let localCall {
                 let output: [String: Any]?
                 if allowed {
-                    output = await self.executeLocalTool(localCall, conversationID: conversation.id)
+                    output = await self.executeLocalTool(localCall, allowedTools: routedLocalTools, conversationID: conversation.id)
                 } else if let callID = localCall.callID {
                     let denied = LimaAIToolExecution.json(["denied": true, "message": "Denied by the user in Lima."])
                     output = ["type": "function_call_output", "call_id": callID, "output": denied.output]
@@ -1865,9 +2070,9 @@ final class AIChatViewModel: ObservableObject {
                         history: toolHistory,
                         outputs: [output],
                         reasoningEffort: conversation.reasoningEffort,
-                        mcpServers: mcpServers,
-                        localTools: self.enabledNativeTools,
-                    systemInstructions: self.systemInstructions
+                        mcpServers: routedMCPServers,
+                        localTools: routedLocalTools,
+                        systemInstructions: self.systemInstructions
                     ),
                     client: client,
                     apiKey: apiKey,
@@ -1875,7 +2080,8 @@ final class AIChatViewModel: ObservableObject {
                     assistantID: assistantID,
                     model: conversation.model,
                     reasoningEffort: conversation.reasoningEffort,
-                    mcpServers: mcpServers,
+                    mcpServers: routedMCPServers,
+                    localTools: routedLocalTools,
                     history: toolHistory,
                     initialResponseID: previousResponseID
                 )
@@ -1897,8 +2103,8 @@ final class AIChatViewModel: ObservableObject {
                     approve: allowed,
                     reason: allowed ? nil : "Lima AI Chat is read-only",
                     reasoningEffort: conversation.reasoningEffort,
-                    mcpServers: mcpServers,
-                    localTools: self.enabledNativeTools,
+                    mcpServers: routedMCPServers,
+                    localTools: routedLocalTools,
                     systemInstructions: self.systemInstructions
                 ),
                 client: client,
@@ -1907,7 +2113,8 @@ final class AIChatViewModel: ObservableObject {
                 assistantID: assistantID,
                 model: conversation.model,
                 reasoningEffort: conversation.reasoningEffort,
-                mcpServers: mcpServers,
+                mcpServers: routedMCPServers,
+                localTools: routedLocalTools,
                 history: toolHistory,
                 initialResponseID: previousResponseID
             )
@@ -1930,11 +2137,9 @@ final class AIChatViewModel: ObservableObject {
                 PerformanceMonitor.shared.end(measurementID)
                 firstTokenPerformanceMeasurementID = nil
             }
-            updateAssistant(conversationID: conversationID, assistantID: assistantID) {
-                $0.text += delta
-            }
+            appendStreamingText(delta, assistantID: assistantID)
         case .reasoningSummaryDelta(let delta):
-            appendTurnReasoning(delta, conversationID: conversationID, assistantID: assistantID)
+            appendStreamingReasoning(delta, assistantID: assistantID)
         case .outputItem(let item):
             switch item.kind {
             case .mcpApprovalRequest:
@@ -2011,11 +2216,14 @@ final class AIChatViewModel: ObservableObject {
         case .completed(let id):
             responseID = id ?? responseID
         case .failed(let message):
-            let summary = userFacingFailureMessage(message)
-            streamError = "AI Chat couldn’t complete this request. \(summary)"
+            let summary = userFacingFailurePresentation(message)
+            streamError = summary
             updateAssistant(conversationID: conversationID, assistantID: assistantID) { assistant in
-                if assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    assistant.text = "⚠︎ Couldn't complete this response.\n\n\(summary)"
+                let pendingText = self.pendingStreamTextChunks.joined()
+                let hasVisibleText = !self.streamingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || !pendingText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                if assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !hasVisibleText {
+                    assistant.text = "⚠︎ Request failed\n\n\(summary)"
                 }
             }
             appendTurnActivity(AIAgentActivity(kind: .error, title: "Request failed", detail: summary, completed: true), conversationID: conversationID)
@@ -2030,15 +2238,18 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
-    private func userFacingFailureMessage(_ message: String) -> String {
-        let compact = message
-            .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let sensitiveMarkers = ["authorization", "bearer ", "api key", "sk-"]
-        guard !compact.isEmpty, !sensitiveMarkers.contains(where: { compact.localizedCaseInsensitiveContains($0) }) else {
-            return "The provider rejected the request. Open Developer Diagnostics for safe details."
+    private func userFacingFailurePresentation(_ message: String) -> String {
+        let diagnostic = streamDiagnostics.reversed().first { diagnostic in
+            diagnostic.stage == .api || diagnostic.stage == .transport
         }
-        return String(compact.prefix(420))
+        return AIProviderFailure.presentation(
+            provider: provider.title,
+            model: model,
+            status: diagnostic?.httpStatus,
+            code: diagnostic?.errorCode,
+            parameter: diagnostic?.errorParameter,
+            fallback: message
+        )
     }
 
     private func persistResponseID(_ responseID: String, conversationID: UUID) {
@@ -2057,10 +2268,64 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
-    private func appendTurnReasoning(_ delta: String, conversationID: UUID, assistantID: UUID) {
-        updateAssistant(conversationID: conversationID, assistantID: assistantID) {
-            $0.reasoningSummary = ($0.reasoningSummary ?? "") + delta
+    private func beginStreamingText(for assistantID: UUID) {
+        streamTextFlushTask?.cancel()
+        pendingStreamTextChunks.removeAll(keepingCapacity: true)
+        pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
+        streamingText = ""
+        streamingReasoningSummary = ""
+        streamingTextAssistantID = assistantID
+    }
+
+    private func appendStreamingText(_ delta: String, assistantID: UUID) {
+        guard streamingTextAssistantID == assistantID, !delta.isEmpty else { return }
+        pendingStreamTextChunks.append(delta)
+        scheduleStreamingFlush()
+    }
+
+    private func appendStreamingReasoning(_ delta: String, assistantID: UUID) {
+        guard streamingTextAssistantID == assistantID, !delta.isEmpty else { return }
+        pendingStreamReasoningChunks.append(delta)
+        scheduleStreamingFlush()
+    }
+
+    private func scheduleStreamingFlush() {
+        guard streamTextFlushTask == nil else { return }
+        streamTextFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(50))
+            guard !Task.isCancelled else { return }
+            self?.flushStreamingText()
         }
+    }
+
+    private func flushStreamingText() {
+        streamTextFlushTask?.cancel()
+        streamTextFlushTask = nil
+        let textBatch = pendingStreamTextChunks.joined()
+        let reasoningBatch = pendingStreamReasoningChunks.joined()
+        pendingStreamTextChunks.removeAll(keepingCapacity: true)
+        pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
+        guard !textBatch.isEmpty || !reasoningBatch.isEmpty else { return }
+        streamingText.append(contentsOf: textBatch)
+        streamingReasoningSummary.append(contentsOf: reasoningBatch)
+    }
+
+    private func commitStreamingText(conversationID: UUID, assistantID: UUID?) {
+        guard let assistantID, streamingTextAssistantID == assistantID else { return }
+        flushStreamingText()
+        guard var conversation = store.conversation(id: conversationID),
+              let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else { return }
+        conversation.messages[index].text = streamingText
+        if !streamingReasoningSummary.isEmpty {
+            conversation.messages[index].reasoningSummary = streamingReasoningSummary
+        }
+        conversation.updatedAt = Date()
+        store.update(conversation)
+        pendingStreamTextChunks.removeAll(keepingCapacity: true)
+        pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
+        streamingTextAssistantID = nil
+        streamingText = ""
+        streamingReasoningSummary = ""
     }
 
     private func finishStream(conversationID: UUID, assistantID: UUID, responseID: String?) {
@@ -2077,8 +2342,15 @@ final class AIChatViewModel: ObservableObject {
                 activeConversationID = nil
             }
         }
+        flushStreamingText()
         guard var conversation = store.conversation(id: conversationID) else { return }
         if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
+            if streamingTextAssistantID == assistantID {
+                if !streamingText.isEmpty { conversation.messages[index].text = streamingText }
+                if !streamingReasoningSummary.isEmpty {
+                    conversation.messages[index].reasoningSummary = streamingReasoningSummary
+                }
+            }
             conversation.messages[index].responseID = responseID
             if pendingApproval == nil && conversation.messages[index].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 conversation.messages[index].text = wasCancelled
@@ -2101,6 +2373,15 @@ final class AIChatViewModel: ObservableObject {
         if let responseID { conversation.lastResponseID = responseID }
         conversation.updatedAt = Date()
         store.update(conversation)
+        if pendingApproval == nil, streamingTextAssistantID == assistantID {
+            streamTextFlushTask?.cancel()
+            streamTextFlushTask = nil
+            pendingStreamTextChunks.removeAll(keepingCapacity: true)
+            pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
+            streamingTextAssistantID = nil
+            streamingText = ""
+            streamingReasoningSummary = ""
+        }
     }
 
     private func finishSharedTask(state: LimaTaskState, detail: String? = nil) {
@@ -2165,6 +2446,7 @@ struct AIChatWorkspaceView: View {
     @ObservedObject private var conversationStore: AIConversationStore
     @ObservedObject private var mcpStore: MCPServerStore
     @ObservedObject private var nativeToolStore: LimaAIToolStore
+    @ObservedObject private var browserBridge = BrowserBridgeService.shared
     let isEmbedded: Bool
     let onDictation: (() -> Void)?
     @State private var apiKey = ""
@@ -2181,10 +2463,8 @@ struct AIChatWorkspaceView: View {
     @State private var showingProviderSetup = false
     @State private var keyMessage: String?
 
-    @State private var conversationSearchQuery = ""
-
     private var filteredConversations: [AIConversation] {
-        let query = conversationSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = model.conversationSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return model.store.conversations }
         return model.store.conversations.filter { conversation in
             conversation.title.localizedCaseInsensitiveContains(query)
@@ -2302,7 +2582,7 @@ struct AIChatWorkspaceView: View {
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 10) {
-            TextField("Search chats", text: $conversationSearchQuery)
+            TextField("Search chats", text: $model.conversationSearchQuery)
                 .textFieldStyle(.plain)
                 .limaFont(.callout)
                 .padding(.horizontal, 10)
@@ -2315,9 +2595,9 @@ struct AIChatWorkspaceView: View {
                 VStack(alignment: .leading, spacing: 7) {
                     Image(systemName: "sparkles")
                         .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                    Text(conversationSearchQuery.isEmpty ? "No conversations yet" : "No matching chats")
+                    Text(model.conversationSearchQuery.isEmpty ? "No conversations yet" : "No matching chats")
                         .limaFont(.callout.weight(.semibold))
-                    Text(conversationSearchQuery.isEmpty ? "History stays on this Mac. Messages are sent to the selected provider." : "Try another title or phrase.")
+                    Text(model.conversationSearchQuery.isEmpty ? "History stays on this Mac. Messages are sent to the selected provider." : "Try another title or phrase.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -2408,7 +2688,9 @@ struct AIChatWorkspaceView: View {
                 messages
             }
 
-            taskStatusBar
+            if model.currentTaskState.isActive {
+                taskStatusBar
+            }
             composer
         }
     }
@@ -2560,6 +2842,8 @@ struct AIChatWorkspaceView: View {
         .padding(30)
     }
 
+    @State private var lastStreamingScrollAt = Date.distantPast
+
     private var messages: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -2574,8 +2858,14 @@ struct AIChatWorkspaceView: View {
                         .frame(maxWidth: .infinity, minHeight: 260, alignment: .center)
                     } else {
                         ForEach(model.selectedConversation?.messages ?? []) { message in
-                            AIChatMessageRow(message: message, showActivity: model.showActivity)
-                                .id(message.id)
+                            AIChatMessageRow(
+                                message: message,
+                                visibleText: model.visibleText(for: message),
+                                reasoningSummary: model.visibleReasoningSummary(for: message),
+                                isStreaming: model.isStreaming && model.streamingTextAssistantID == message.id,
+                                showActivity: model.showActivity
+                            )
+                            .id(message.id)
                         }
                     }
                 }
@@ -2585,6 +2875,15 @@ struct AIChatWorkspaceView: View {
                 if let id = model.selectedConversation?.messages.last?.id {
                     withAnimation(.easeOut(duration: 0.16)) { proxy.scrollTo(id, anchor: .bottom) }
                 }
+            }
+            .onChange(of: model.streamingText) { _ in
+                guard model.isStreaming,
+                      Date().timeIntervalSince(lastStreamingScrollAt) >= 0.1,
+                      let id = model.selectedConversation?.messages.last?.id else { return }
+                lastStreamingScrollAt = Date()
+                var transaction = Transaction()
+                transaction.disablesAnimations = true
+                withTransaction(transaction) { proxy.scrollTo(id, anchor: .bottom) }
             }
         }
     }
@@ -2601,11 +2900,17 @@ struct AIChatWorkspaceView: View {
                     aiOptionsMenu
                 }
                 Spacer(minLength: 4)
-                Label("\(enabledToolCount)", systemImage: "eye")
+                if model.isBrowserPrompt(model.draft) {
+                    Label(
+                        browserBridge.sessions.isEmpty ? "Browser access unavailable" : "Browser connected",
+                        systemImage: browserBridge.sessions.isEmpty ? "exclamationmark.triangle" : "network"
+                    )
                     .limaFont(.caption2.weight(.medium))
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .help("\(enabledToolCount) read-only tools enabled")
-                    .accessibilityLabel("\(enabledToolCount) read-only tools enabled")
+                    .foregroundStyle(browserBridge.sessions.isEmpty ? LimaTheme.warning : LimaTheme.textSecondary)
+                    .help(browserBridge.sessions.isEmpty
+                        ? "Enable the Browser Bridge and connect a granted Zen or Firefox tab before asking Lima to inspect it."
+                        : "Lima can inspect granted browser tabs through the connected Browser Bridge.")
+                }
             }
             .frame(minHeight: 28)
 
@@ -2697,7 +3002,7 @@ struct AIChatWorkspaceView: View {
             Button("Add Clipboard", action: model.addClipboard)
             Button("Add Current Selection", action: model.addSelection)
             Divider()
-            Text("Lima tools — read-only")
+            Text("Lima tools — read-only · \(enabledToolCount) available")
             ForEach(LimaAIToolRegistry.availableDefinitions) { tool in
                 Toggle(isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
@@ -2728,7 +3033,7 @@ struct AIChatWorkspaceView: View {
                 Text("No connected services yet")
             }
             Divider()
-            Text("AI Chat never writes, installs, runs, or approves tools.")
+            Text("Only tools relevant to this prompt are sent. AI Chat never writes, installs, runs, or approves tools.")
             Button("Manage Connected Services…") { model.openMCPManager() }
         } label: {
             Label("Add context", systemImage: "plus")
@@ -2827,26 +3132,48 @@ struct AIChatWorkspaceView: View {
         .accessibilityLabel("AI provider")
     }
 
+    private func modelNeedsVerification(_ option: AIModelOption) -> Bool {
+        // Identifier-only discovery is uncertain only for direct OpenAI models.
+        // Other providers own their catalog compatibility rules.
+        model.provider == .openAI && option.isLegacyOrUnknown
+    }
+
     private var modelPicker: some View {
         Menu {
             ForEach(model.availableModels) { option in
                 Button {
                     model.selectModel(option)
                 } label: {
-                    Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+                    HStack(spacing: 8) {
+                        Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+                        if modelNeedsVerification(option) {
+                            Text("Compatibility unknown")
+                                .limaFont(.caption2)
+                                .foregroundStyle(LimaTheme.textSecondary)
+                        }
+                    }
                 }
             }
             Divider()
             Button("Refresh Available Models", action: model.refreshModels)
         } label: {
-            Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
-                .lineLimit(1)
+            HStack(spacing: 5) {
+                Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
+                    .lineLimit(1)
+                if modelNeedsVerification(model.selectedModelOption) {
+                    Text("Unverified")
+                        .limaFont(.caption2)
+                        .foregroundStyle(LimaTheme.textTertiary)
+                }
+            }
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask || model.isLoadingModels)
-        .help("Choose a model for " + model.provider.title)
+        .help(modelNeedsVerification(model.selectedModelOption)
+            ? "Compatibility unknown · Test Connection sends a basic request to this model."
+            : "Choose a model for " + model.provider.title)
     }
 
     private var reasoningPicker: some View {
@@ -3001,6 +3328,7 @@ private struct AIChatFlowTrack: View {
 private struct ActivityDisclosureView: View {
     let activities: [AIAgentActivity]
     let reasoningSummary: String?
+    let isStreaming: Bool
     @State private var isExpanded = false
 
     private var elapsed: TimeInterval {
@@ -3014,7 +3342,12 @@ private struct ActivityDisclosureView: View {
                 if let reasoningSummary, !reasoningSummary.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Reasoning summary").limaFont(.caption.weight(.semibold))
-                        LimaMarkdownDocumentView(markdown: reasoningSummary)
+                        if isStreaming {
+                            Text(reasoningSummary)
+                                .textSelection(.enabled)
+                        } else {
+                            LimaMarkdownDocumentView(markdown: reasoningSummary)
+                        }
                     }
                     .padding(.bottom, 4)
                 }
@@ -3046,6 +3379,9 @@ private struct ActivityDisclosureView: View {
 
 private struct AIChatMessageRow: View {
     let message: AIChatMessage
+    let visibleText: String
+    let reasoningSummary: String?
+    let isStreaming: Bool
     let showActivity: Bool
 
     var body: some View {
@@ -3057,7 +3393,11 @@ private struct AIChatMessageRow: View {
                 VStack(alignment: .leading, spacing: 8) {
                     messageBody
                     if showActivity, let activities = message.activities, !activities.isEmpty {
-                        ActivityDisclosureView(activities: activities, reasoningSummary: message.reasoningSummary)
+                        ActivityDisclosureView(
+                            activities: activities,
+                            reasoningSummary: reasoningSummary,
+                            isStreaming: isStreaming
+                        )
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3074,10 +3414,10 @@ private struct AIChatMessageRow: View {
 
     private var messageBody: some View {
         Group {
-            if message.role == .assistant, !message.text.isEmpty {
-                LimaMarkdownDocumentView(markdown: message.text)
+            if message.role == .assistant, !isStreaming, !visibleText.isEmpty {
+                LimaMarkdownDocumentView(markdown: visibleText)
             } else {
-                Text(message.text.isEmpty && message.role == .assistant ? "Thinking…" : message.text)
+                Text(visibleText.isEmpty && message.role == .assistant ? "Thinking…" : visibleText)
                     .textSelection(.enabled)
             }
         }

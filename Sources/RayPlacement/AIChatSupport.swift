@@ -89,12 +89,17 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
 
     private static func isKnownModel(_ id: String) -> Bool {
         let value = id.lowercased()
-        return value.hasPrefix("gpt-") || value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4")
+        // Discovery only returns model IDs, not feature metadata. Treat unfamiliar
+        // families conservatively instead of equating a catalog entry with support.
+        let knownFamilies = ["gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"]
+        return knownFamilies.contains { value == $0 || value.hasPrefix($0 + "-") || value.hasPrefix($0 + ".") }
     }
 
     static func isReasoningModel(_ id: String) -> Bool {
         let value = id.lowercased()
-        return value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4") || value.contains("gpt-5")
+        return value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4")
+            || value == "gpt-5" || value.hasPrefix("gpt-5-")
+            || ["gpt-5.2", "gpt-5.4", "gpt-5.6"].contains(where: value.hasPrefix)
     }
 
     static func reasoningEfforts(for id: String) -> [AIReasoningEffort] {

@@ -152,6 +152,21 @@ private func providerSettingsFixture(
     #expect(model.model == "other")
 }
 
+@Test @MainActor func testConnectionVerifiesTheSelectedModelWithABasicResponse() async throws {
+    let conversation = AIConversation(provider: .openAI, model: "gpt-6-luna")
+    let model = providerSettingsFixture(conversations: [conversation])
+    model.testConnection()
+    for _ in 0..<100 where model.isLoadingModels {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(!model.isLoadingModels)
+    #expect(model.providerConnectionMessage?.contains(
+        "Verified gpt-6-luna with a basic response request"
+    ) == true)
+    #expect(model.store.conversation(id: conversation.id)?.messages.isEmpty == true)
+}
+
 @Test @MainActor func configurationCannotChangeDuringGeneration() {
     let conversation = AIConversation(provider: .openAI, model: "custom")
     var transport = FixtureAITransport.standard

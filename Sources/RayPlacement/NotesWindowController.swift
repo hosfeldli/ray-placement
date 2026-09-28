@@ -903,11 +903,19 @@ private struct WorkspaceView: View {
                 }
                 .padding(6)
             } else {
-                VStack(spacing: 0) {
-                    workspaceHeader
-                    GlassHairline()
-                    workspaceModule
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                HStack(spacing: 0) {
+                    workspaceModuleRail
+                    Rectangle()
+                        .fill(LimaDesign.separator)
+                        .frame(width: LimaDesign.hairlineWidth)
+                    VStack(spacing: 0) {
+                        if presentation.activeModule != .ai {
+                            workspaceHeader
+                            GlassHairline()
+                        }
+                        workspaceModule
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
                 .padding(.horizontal, presentation.mode == .fullScreen ? 0 : LimaDesign.windowPadding)
                 .padding(.bottom, presentation.mode == .fullScreen ? 0 : LimaDesign.windowPadding)
@@ -1019,26 +1027,13 @@ private struct WorkspaceView: View {
     private var workspaceHeader: some View {
         HStack(spacing: 8) {
             LimaToolbarTitle(
-                symbol: "square.grid.2x2",
-                title: "Workspace",
-                subtitle: workspaceModuleTitle(presentation.activeModule)
+                symbol: workspaceModuleSymbol(presentation.activeModule),
+                title: workspaceModuleTitle(presentation.activeModule),
+                subtitle: "Workspace"
             )
             .frame(maxWidth: 240, alignment: .leading)
 
             Spacer(minLength: 8)
-
-            Picker("Workspace module", selection: Binding(
-                get: { presentation.activeModule },
-                set: { selectModule($0) }
-            )) {
-                ForEach(LimaWorkspaceModule.allCases, id: \.self) { module in
-                    Label(workspaceModuleTitle(module), systemImage: workspaceModuleSymbol(module))
-                        .tag(module)
-                }
-            }
-            .pickerStyle(.menu)
-            .frame(width: 150)
-            .accessibilityLabel("Workspace module")
 
             if presentation.activeModule == .notes || presentation.activeModule == .dictation {
                 NotesChromeButton(
@@ -1075,6 +1070,29 @@ private struct WorkspaceView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 42)
+    }
+
+    private var workspaceModuleRail: some View {
+        VStack(spacing: 8) {
+            ForEach(LimaWorkspaceModule.allCases, id: \.self) { module in
+                let selected = presentation.activeModule == module
+                Button {
+                    selectModule(module)
+                } label: {
+                    Image(systemName: workspaceModuleSymbol(module))
+                        .font(.system(size: 15, weight: selected ? .semibold : .medium))
+                        .foregroundStyle(selected ? settings.accentTheme.readablePrimary : LimaTheme.textSecondary)
+                        .frame(width: 36, height: 36)
+                        .limaSelection(selected, radius: 11)
+                }
+                .buttonStyle(.plain)
+                .help(workspaceModuleTitle(module))
+                .accessibilityLabel(workspaceModuleTitle(module))
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 8)
+        .frame(minWidth: 48, maxWidth: 48, maxHeight: .infinity, alignment: .top)
     }
 
     private var workspaceModule: some View {

@@ -191,11 +191,13 @@ import Testing
 
     model.draft = "Start a paced response"
     model.send()
-    for _ in 0..<300 where store.conversations.first?.messages.last?.text != "Partial answer" {
+    for _ in 0..<300 where model.streamingText != "Partial answer" {
         try? await Task.sleep(for: .milliseconds(5))
     }
 
     #expect(model.canEndTask)
+    #expect(model.streamingText == "Partial answer")
+    #expect(store.conversations.first?.messages.last?.text == "")
     model.endTask()
     for _ in 0..<300 where model.isStreaming {
         try? await Task.sleep(for: .milliseconds(5))
@@ -206,6 +208,46 @@ import Testing
     #expect(assistant?.text == "Partial answer")
     #expect(assistant?.activities?.contains(where: { $0.title == "Stopped" }) == true)
     #expect(model.currentTaskState.title == "Stopped")
+}
+
+@Test @MainActor func providerFailurePreservesVisiblePartialAnswer() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [
+                .reasoningSummaryDelta("Reasoning summary"),
+                .textDelta("Partial answer"),
+                .failed("HTTP 400: unsupported request option")
+            ],
+            interEventDelay: .milliseconds(180)
+        )
+    )
+
+    model.draft = "Start a response that fails"
+    model.send()
+    for _ in 0..<300 where model.streamingReasoningSummary != "Reasoning summary" {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingReasoningSummary == "Reasoning summary")
+    #expect(store.conversations.first?.messages.last?.reasoningSummary == nil)
+    for _ in 0..<300 where model.streamingText != "Partial answer" {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingText == "Partial answer")
+
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(assistant?.text == "Partial answer")
+    #expect(assistant?.reasoningSummary == "Reasoning summary")
+    #expect(model.streamError != nil)
+    #expect(assistant?.activities?.contains(where: { $0.title == "Request failed" }) == true)
 }
 
 @Test @MainActor func endingPendingApprovalClearsPauseWithoutRunningTool() async {
@@ -328,6 +370,11 @@ import Testing
 }
 
 @Test func aiModelCapabilitiesLimitReasoningToSupportedValues() {
+    let unknown = AIModelOption(id: "gpt-6-luna")
+    #expect(unknown.isLegacyOrUnknown)
+    #expect(!unknown.supportsReasoning)
+    #expect(unknown.supportedReasoningEfforts.isEmpty)
+
     let chat = AIModelOption(id: "gpt-5")
     #expect(chat.supportsReasoning)
     #expect(chat.supportedReasoningEfforts.contains(.high))
@@ -335,6 +382,96 @@ import Testing
     let nonReasoning = AIModelOption(id: "gpt-4o")
     #expect(!nonReasoning.supportsReasoning)
     #expect(nonReasoning.supportedReasoningEfforts.isEmpty)
+}
+
+@Test func unknownModelUsesMinimalResponsesPayload() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-6-luna",
+        input: [["role": "user", "content": [["type": "input_text", "text": "Hello"]]]],
+        previousResponseID: nil,
+        reasoningEffort: .high,
+        tools: []
+    )
+    #expect(body["model"] as? String == "gpt-6-luna")
+    #expect(body["stream"] as? Bool == true)
+    #expect(body["reasoning"] == nil)
+    #expect(body["store"] == nil)
+    #expect(body["instructions"] == nil)
+}
+
+@Test @MainActor func promptToolRoutingSendsOnlyRelevantEnabledTools() {
+    let toolStore = LimaAIToolStore(fixtures: [
+        "search_files", "find_files", "list_directory", "file_metadata", "read_file",
+        "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
+        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"
+    ])
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: toolStore,
+        transport: FixtureAITransport.standard
+    )
+
+    #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
+    #expect(model.isBrowserPrompt("Open new tabs for these cases"))
+    #expect(!model.isBrowserPrompt("Format this tabular data"))
+    #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map(\.id)) == [
+        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"
+    ])
+    #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map(\.id)) == [
+        "search_files", "find_files", "list_directory", "file_metadata", "read_file"
+    ])
+}
+
+@Test @MainActor func browserTabChangingPromptStaysLocalAndExplainsReadOnlyLimit() {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: Set(BrowserBridgeAITools.definitions.map(\.id))),
+        transport: FixtureAITransport.standard
+    )
+
+    model.draft = "Open new tabs for the Salesforce cases"
+    model.send()
+
+    #expect(!model.isStreaming)
+    #expect(store.conversations.first?.messages.last?.text.contains("Browser action unavailable") == true)
+    #expect(store.conversations.first?.messages.last?.text.contains("read-only") == true)
+}
+
+@Test @MainActor func providerFailureRendersSafeActionableTranscript() async {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 400,
+                errorCode: "unsupported_parameter",
+                errorParameter: "reasoning.summary",
+                message: "The selected model does not support a requested option."
+            )),
+            .failed("ignored provider response body")
+        ])
+    )
+    _ = model.selectCustomModel("gpt-6-luna")
+    model.draft = "Explain this request"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let text = store.conversations.first?.messages.last(where: { $0.role == .assistant })?.text ?? ""
+    #expect(text.contains("OpenAI rejected this request"))
+    #expect(text.contains("HTTP 400 · gpt-6-luna"))
+    #expect(text.contains("Unsupported request option: reasoning.summary."))
+    #expect(!text.contains("ignored provider response body"))
 }
 
 @Test func gpt54ReasoningProfileRejectsLegacyMinimalAndMax() {

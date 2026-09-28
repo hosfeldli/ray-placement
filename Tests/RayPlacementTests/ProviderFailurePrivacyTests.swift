@@ -16,6 +16,42 @@ import Testing
     #expect(AIProviderFailure.message(error: ["code": "invalid_prompt", "message": secret]) == "The input is invalid.")
 }
 
+@Test func providerFailurePreservesOnlyWhitelistedActionableDetails() throws {
+    let secret = "private-document-text-and-api-key"
+    let body = try JSONSerialization.data(withJSONObject: [
+        "error": [
+            "code": "unsupported_parameter",
+            "param": "reasoning.summary",
+            "message": secret
+        ]
+    ])
+    let details = AIProviderFailure.details(data: body, status: 400)
+    #expect(details.code == "unsupported_parameter")
+    #expect(details.parameter == "reasoning.summary")
+    #expect(!details.message.contains(secret))
+
+    let presentation = AIProviderFailure.presentation(
+        provider: "OpenAI",
+        model: "gpt-6-luna",
+        status: 400,
+        code: details.code,
+        parameter: details.parameter,
+        fallback: details.message
+    )
+    #expect(presentation.contains("OpenAI rejected this request"))
+    #expect(presentation.contains("HTTP 400 · gpt-6-luna"))
+    #expect(presentation.contains("Unsupported request option: reasoning.summary."))
+    #expect(!presentation.contains(secret))
+    #expect(!AIProviderFailure.presentation(
+        provider: "OpenAI",
+        model: secret,
+        status: 400,
+        code: details.code,
+        parameter: details.parameter,
+        fallback: details.message
+    ).contains(secret))
+}
+
 @Test func responsesFailureSanitizesNestedAndTopLevelProviderErrors() throws {
     let secret = "private-document-text-and-api-key"
     for type in ["error", "response.failed"] {
