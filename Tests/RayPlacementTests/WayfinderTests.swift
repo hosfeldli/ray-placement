@@ -4,10 +4,12 @@ import Testing
 
 @Test func workspaceReturnTogglesWithoutReplacingPreviousOnReselection() {
     var navigation = LimaWorkspaceNavigation()
-    #expect(navigation.current == .notes)
+    #expect(navigation.current == .home)
+    #expect(navigation.previous == nil)
+    navigation.select(.home)
     #expect(navigation.previous == nil)
     navigation.select(.notes)
-    #expect(navigation.previous == nil)
+    #expect(navigation.previous == .home)
     navigation.select(.ai)
     #expect(navigation.previous == .notes)
     navigation.select(.ai)
@@ -23,7 +25,8 @@ import Testing
 @Test func workspaceDestinationsHaveStableDistinctShortcuts() {
     let modules = LimaWorkspaceModule.allCases
     #expect(Set(modules.map(\.shortcutNumber)).count == modules.count)
-    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "4", "5"])
+    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "4", "5", "6", "7", "8"])
+    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .dictation, .extensions, .clipboard])
     #expect(modules.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
 }
 

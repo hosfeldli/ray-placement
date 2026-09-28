@@ -51,6 +51,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             aiChatModel: aiChatModel,
             terminalModel: terminalModel,
             formatterModel: formatterModel,
+            launcherViewModel: viewModel,
+            extensionStoreModel: extensionStoreModel,
+            reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
+            onOpenCommandSearch: { [weak self] query in self?.showCommandSearch(query: query) },
             onOpenSettings: { [weak self] in self?.showSettings() }
         )
         controller.onLauncherQueryDictation = { [weak self] delta in
@@ -260,6 +264,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         DispatchQueue.main.async { [weak self] in
             PerformanceMonitor.shared.end(measurementID, succeeded: self?.panel.isVisible == true)
         }
+    }
+
+    func showCommandSearch(query: String) {
+        viewModel.resetContextualSelection()
+        viewModel.resetForPresentation()
+        viewModel.enter(.root, query: query)
+        presentPanel()
     }
 
     func hide() {

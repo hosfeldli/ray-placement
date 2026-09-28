@@ -70,6 +70,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let aiChatModel: AIChatViewModel
     let terminalModel: DeveloperTerminalModel
     let formatterModel: FormatterWorkspaceModel
+    let launcherViewModel: LauncherViewModel
+    let extensionStoreModel: ExtensionStoreModel
+    private let reloadExtensions: () -> Void
+    private let onOpenCommandSearch: (String) -> Void
     private let onOpenSettings: () -> Void
     var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
@@ -90,11 +94,19 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         aiChatModel: AIChatViewModel,
         terminalModel: DeveloperTerminalModel,
         formatterModel: FormatterWorkspaceModel,
+        launcherViewModel: LauncherViewModel,
+        extensionStoreModel: ExtensionStoreModel,
+        reloadExtensions: @escaping () -> Void,
+        onOpenCommandSearch: @escaping (String) -> Void = { _ in },
         onOpenSettings: @escaping () -> Void = {}
     ) {
         self.aiChatModel = aiChatModel
         self.terminalModel = terminalModel
         self.formatterModel = formatterModel
+        self.launcherViewModel = launcherViewModel
+        self.extensionStoreModel = extensionStoreModel
+        self.reloadExtensions = reloadExtensions
+        self.onOpenCommandSearch = onOpenCommandSearch
         self.onOpenSettings = onOpenSettings
         let store = NotesStore.shared
         let conversations = DictationConversationStore.shared
@@ -520,6 +532,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             aiChatModel: aiChatModel,
             terminalModel: terminalModel,
             formatterModel: formatterModel,
+            launcherViewModel: launcherViewModel,
+            extensionStoreModel: extensionStoreModel,
+            reloadExtensions: reloadExtensions,
+            openCommandSearch: onOpenCommandSearch,
             selectModule: { [weak self] in self?.selectModule($0) },
             presentation: presentation,
             dockLeft: { [weak self] in self?.dock(.left) },
@@ -645,6 +661,10 @@ private struct WorkspaceView: View {
     let aiChatModel: AIChatViewModel
     @ObservedObject var terminalModel: DeveloperTerminalModel
     @ObservedObject var formatterModel: FormatterWorkspaceModel
+    @ObservedObject var launcherViewModel: LauncherViewModel
+    @ObservedObject var extensionStoreModel: ExtensionStoreModel
+    let reloadExtensions: () -> Void
+    let openCommandSearch: (String) -> Void
     let selectModule: (LimaWorkspaceModule) -> Void
     @ObservedObject var presentation: WorkspacePresentationModel
     @ObservedObject private var settings = SettingsStore.shared
@@ -704,7 +724,6 @@ private struct WorkspaceView: View {
                     previous: presentation.navigation.previous,
                     sizeClass: sizeClass,
                     select: selectModule,
-                    openShelf: { showContextShelf = true },
                     openSettings: openSettings
                 )
                 Rectangle()
@@ -880,6 +899,13 @@ private struct WorkspaceView: View {
         GeometryReader { _ in
             Group {
                 switch presentation.activeModule {
+                case .home:
+                    HomeWorkspaceView(
+                        store: store,
+                        open: selectModule,
+                        openShelf: { showContextShelf = true },
+                        openCommandSearch: openCommandSearch
+                    )
                 case .notes:
                     if let sidebarWidth = sizeClass.contextSidebarWidth,
                        presentation.sidebarVisible,
@@ -902,6 +928,15 @@ private struct WorkspaceView: View {
                     )
                 case .dictation:
                     dictationSection
+                case .extensions:
+                    ExtensionsSettingsView(
+                        viewModel: launcherViewModel,
+                        storeModel: extensionStoreModel,
+                        reloadExtensions: reloadExtensions
+                    )
+                    .background(LimaTheme.surfacePrimary)
+                case .clipboard:
+                    ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
                 case .terminal:
                     DeveloperTerminalView(model: terminalModel)
                 case .formatter:
@@ -911,25 +946,9 @@ private struct WorkspaceView: View {
         }
     }
 
-    private func workspaceModuleTitle(_ module: LimaWorkspaceModule) -> String {
-        switch module {
-        case .notes: "Notes"
-        case .ai: "AI"
-        case .dictation: "Dictation"
-        case .terminal: "Terminal"
-        case .formatter: "Formatter"
-        }
-    }
+    private func workspaceModuleTitle(_ module: LimaWorkspaceModule) -> String { module.title }
 
-    private func workspaceModuleSymbol(_ module: LimaWorkspaceModule) -> String {
-        switch module {
-        case .notes: "note.text"
-        case .ai: "sparkles"
-        case .dictation: "waveform"
-        case .terminal: "terminal"
-        case .formatter: "wand.and.stars"
-        }
-    }
+    private func workspaceModuleSymbol(_ module: LimaWorkspaceModule) -> String { module.symbol }
 
     private var sidebar: some View {
         noteBrowser(compact: false)

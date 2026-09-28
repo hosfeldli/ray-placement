@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Navigation remembers destinations, never editor content or credentials.
 struct LimaWorkspaceNavigation: Equatable {
-    private(set) var current: LimaWorkspaceModule = .notes
+    private(set) var current: LimaWorkspaceModule = .home
     private(set) var previous: LimaWorkspaceModule?
 
     mutating func select(_ module: LimaWorkspaceModule) {
@@ -13,11 +13,16 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
+    static let primaryDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .dictation, .extensions, .clipboard]
+
     var title: String {
         switch self {
+        case .home: "Home"
         case .notes: "Notes"
         case .ai: "AI"
         case .dictation: "Dictation"
+        case .extensions: "Extensions"
+        case .clipboard: "Clipboard"
         case .terminal: "Terminal"
         case .formatter: "Formatter"
         }
@@ -25,9 +30,12 @@ extension LimaWorkspaceModule {
 
     var symbol: String {
         switch self {
+        case .home: "house"
         case .notes: "note.text"
         case .ai: "sparkles"
         case .dictation: "waveform"
+        case .extensions: "puzzlepiece.extension"
+        case .clipboard: "clipboard"
         case .terminal: "terminal"
         case .formatter: "wand.and.stars"
         }
@@ -36,27 +44,48 @@ extension LimaWorkspaceModule {
     /// Explicit assignments keep muscle memory stable if enum order changes.
     var shortcutNumber: String {
         switch self {
-        case .notes: "1"
-        case .ai: "2"
-        case .dictation: "3"
-        case .terminal: "4"
-        case .formatter: "5"
+        case .home: "1"
+        case .notes: "2"
+        case .ai: "3"
+        case .dictation: "4"
+        case .extensions: "5"
+        case .clipboard: "6"
+        case .terminal: "7"
+        case .formatter: "8"
         }
     }
 }
 
-/// A quiet, typographic identity. No bitmap, blur, animation, or new asset.
+/// A compact gradient waypoint mark drawn in SwiftUI, with no image asset dependency.
 struct LimaWayfinderMark: View {
     var body: some View {
-        Text("L")
-            .font(.system(size: 16, weight: .black, design: .rounded))
-            .foregroundStyle(LimaTheme.accentInk)
+        LimaWayfinderMarkShape()
+            .fill(LinearGradient(
+                colors: [Color(red: 0.28, green: 0.70, blue: 0.98), Color(red: 0.34, green: 0.48, blue: 0.99), Color(red: 0.56, green: 0.34, blue: 0.91)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            ))
             .frame(width: 28, height: 28)
-            .background(LimaTheme.accentSoft, in: PrismaticPanelShape(cut: 6))
-            .overlay(alignment: .topTrailing) {
-                Circle().fill(LimaTheme.accentInk).frame(width: 3, height: 3).padding(5)
-            }
             .accessibilityHidden(true)
+    }
+}
+
+private struct LimaWayfinderMarkShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + rect.width * x, y: rect.minY + rect.height * y)
+        }
+        return Path { path in
+            path.move(to: point(0.48, 0.04))
+            path.addQuadCurve(to: point(0.65, 0.13), control: point(0.57, 0.00))
+            path.addLine(to: point(0.95, 0.75))
+            path.addQuadCurve(to: point(0.78, 0.97), control: point(0.98, 0.94))
+            path.addLine(to: point(0.20, 0.97))
+            path.addQuadCurve(to: point(0.04, 0.76), control: point(0.02, 0.96))
+            path.addLine(to: point(0.32, 0.20))
+            path.addQuadCurve(to: point(0.48, 0.04), control: point(0.39, 0.06))
+            path.closeSubpath()
+        }
     }
 }
 
@@ -66,7 +95,6 @@ struct LimaWayfinderRail: View {
     let previous: LimaWorkspaceModule?
     let sizeClass: LimaWorkspaceSizeClass
     let select: (LimaWorkspaceModule) -> Void
-    let openShelf: () -> Void
     let openSettings: () -> Void
     @State private var hovered: String?
     @ObservedObject private var typography = AppTypography.shared
@@ -87,7 +115,7 @@ struct LimaWayfinderRail: View {
             .padding(.horizontal, labeled ? 9 : 0)
             .padding(.bottom, 8)
 
-            ForEach(LimaWorkspaceModule.allCases, id: \.self) { module in
+            ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
                 Button { select(module) } label: {
                     railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
                 }
@@ -119,19 +147,11 @@ struct LimaWayfinderRail: View {
             Spacer(minLength: 12)
 
             if labeled {
-                Text("⌥⌘ 1–5").font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text("⌥⌘ 1–6").font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(LimaTheme.textTertiary)
                     .help("Switch workspaces; ⌥⌘0 returns to the previous one")
                     .padding(.bottom, 6)
             }
-
-            Button(action: openShelf) {
-                railLabel("Shelf", symbol: "tray.full", selected: false, hovered: hovered == "shelf")
-            }
-            .buttonStyle(.plain)
-            .help("Context Shelf · carry content between tools")
-            .accessibilityLabel("Open Context Shelf")
-            .onHover { hovered = $0 ? "shelf" : nil }
 
             Button(action: openSettings) {
                 railLabel("Settings", symbol: "gearshape", selected: false, hovered: hovered == "settings")

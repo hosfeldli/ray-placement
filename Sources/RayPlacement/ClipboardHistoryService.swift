@@ -80,6 +80,18 @@ final class ClipboardHistoryService: ObservableObject {
         flush()
     }
 
+    func togglePinned(_ identifier: UUID) {
+        guard let index = entries.firstIndex(where: { $0.id == identifier }) else { return }
+        entries[index].pinned.toggle()
+        save()
+    }
+
+    func remove(_ identifier: UUID) {
+        let oldCount = entries.count
+        entries.removeAll { $0.id == identifier }
+        if entries.count != oldCount { save() }
+    }
+
     func flush() {
         persistenceQueue.sync {}
     }

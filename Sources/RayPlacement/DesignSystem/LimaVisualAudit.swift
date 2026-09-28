@@ -34,6 +34,18 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
+                let home = HomeWorkspaceView(store: NotesStore.shared, open: { _ in }, openShelf: {}, openCommandSearch: { _ in })
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(home, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                                  url: directory.appendingPathComponent("workspace-home-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
+                }
+                let clipboard = ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: {})
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(clipboard, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                                  url: directory.appendingPathComponent("workspace-clipboard-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
+                }
                 for width: CGFloat in [420, 600, 1040] {
                     let ai = WayfinderAuditAI()
                         .environment(\.colorScheme, dark ? .dark : .light)
@@ -93,7 +105,7 @@ private struct WayfinderAuditWorkspace: View {
             HStack(spacing: 0) {
                 LimaWayfinderRail(current: navigation.current, previous: navigation.previous,
                                   sizeClass: .classify(width: proxy.size.width),
-                                  select: { navigation.select($0) }, openShelf: {}, openSettings: {})
+                                  select: { navigation.select($0) }, openSettings: {})
                 Divider()
                 VStack(alignment: .leading, spacing: 16) {
                     LimaToolbarTitle(symbol: navigation.current.symbol, title: navigation.current.title, subtitle: "Workspace")
@@ -113,7 +125,7 @@ private struct WayfinderAuditWorkspace: View {
                     }
                     Spacer()
                     LimaStatusLine("Ready", symbol: "checkmark.circle", tint: LimaTheme.accentInk,
-                                   detail: "⌥⌘1–5 Switch · ⌥⌘0 Return")
+                                   detail: "⌥⌘1–6 Switch · ⌥⌘0 Return")
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -130,7 +142,7 @@ private struct WayfinderAuditAI: View {
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
             HStack(spacing: 0) {
                 LimaWayfinderRail(current: .ai, previous: .notes, sizeClass: sizeClass,
-                                  select: { _ in }, openShelf: {}, openSettings: {})
+                                  select: { _ in }, openSettings: {})
                 Divider()
                 AIChatVisualPreview(scenario: .conversation)
             }
