@@ -87,7 +87,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
           LIMA_RELEASE_SKIP_PREFLIGHT: "1"
-          LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi
+          LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.2.0-signed.xpi
         run: |
           set -euo pipefail
           ./scripts/release_build.sh --tag "$RELEASE_TAG"

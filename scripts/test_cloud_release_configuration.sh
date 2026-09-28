@@ -19,7 +19,7 @@ done
 # ignored while their expected digest and destination remain tracked in the
 # manifest above and are verified by prepare_build_assets.sh.
 git -C "$ROOT" check-ignore -q gha-creds-ci.json
-git -C "$ROOT" check-ignore -q Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi
+git -C "$ROOT" check-ignore -q Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.2.0-signed.xpi
 
 /usr/bin/python3 - "$MANIFEST" "$ROOT" <<'PY'
 import hashlib
@@ -52,7 +52,7 @@ grep -Fq 'id-token: write' "$WORKFLOW"
 grep -Fq 'google-github-actions/auth@v3' "$WORKFLOW"
 grep -Fq 'google-github-actions/setup-gcloud@v3' "$WORKFLOW"
 grep -Fq './scripts/prepare_build_assets.sh' "$WORKFLOW"
-grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.1.0-signed.xpi' "$WORKFLOW"
+grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.2.0-signed.xpi' "$WORKFLOW"
 grep -Fq './scripts/ci_prepare_signing.sh' "$WORKFLOW"
 grep -Fq './scripts/archive_release_to_gcs.sh' "$WORKFLOW"
 grep -Fq './scripts/release_publish.sh --tag "$RELEASE_TAG" --yes' "$WORKFLOW"
