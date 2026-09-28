@@ -39,18 +39,16 @@ Run these commands from the app repository:
 cd /Users/liamhosfeld/Documents/Codex/2026-08-21/make/work/ray-placement
 ```
 
-Required tools include:
+A routine **hosted** deployment needs only a clean, synchronized repository plus
+`gh`, authenticated to `hosfeldli/ray-placement` with permission to push the
+version commit/tag and dispatch the release workflow. It does not need a local
+signing keychain, P12, Sparkle key, `gcloud`, a full DMG, or local build caches.
 
-* Xcode Command Line Tools/Swift 6, `make`, and the macOS packaging tools;
-* `gh`, authenticated to `hosfeldli/ray-placement` with permission to create
-    draft releases, upload assets, and dispatch the DMG assembly workflow;
-* `jq`, `python3`, `openssl`, `shasum`, `hdiutil`, `codesign`, `security`,
-    `split`, and `rsync`;
-* enough free disk space for a full DMG and temporary build resources.
-
-Run `gh auth status` before starting. The preflight also checks authentication,
-branch synchronization, the signing policy, certificate fingerprint, disk space,
-release state, and required commands.
+Xcode Command Line Tools/Swift 6, `make`, `jq`, `python3`, `openssl`, `shasum`,
+`hdiutil`, `codesign`, `security`, `split`, `rsync`, free disk space, and local
+signing material are required only for local development, rehearsal, or recovery
+phases. Run `gh auth status` before dispatching. Hosted preflight checks the
+immutable tag, source identity, signing policy, release state, and cloud inputs.
 
 ## Signing configuration
 
@@ -84,19 +82,21 @@ without intentionally changing the updater trust anchor for existing installs.
 
 ### Hosted release signing
 
-GitHub Actions imports the same certificate and private key into a disposable
-keychain for each release run. Configure exactly these repository secrets:
+GitHub Actions obtains short-lived GCP credentials through GitHub OIDC, then the
+`lima-release` service account reads the signing inputs from Secret Manager. The
+routine release workflow does **not** use GitHub repository signing secrets or a
+service-account JSON key:
 
-| Secret | Contents |
+| Secret Manager secret | Contents |
 |---|---|
-| `LIMA_SIGNING_P12_B64` | Base64-encoded PKCS #12 bundle containing the `RayPlacement Local Code Signing` certificate and private key |
-| `LIMA_SIGNING_P12_PASSWORD` | Password protecting the PKCS #12 bundle |
+| `lima-signing-p12` | Raw PKCS #12 bundle containing the `RayPlacement Local Code Signing` certificate and private key |
+| `lima-signing-p12-password` | Password protecting the PKCS #12 bundle |
+| `lima-sparkle-private-key` | Sparkle private key used only by the packaging step |
 
-The workflow creates a temporary keychain, imports the P12, verifies that the
-pinned identity is present, and writes the P12 password to the temporary
-`keychain-password` file consumed by the release scripts. The P12 password is
-also used as the temporary keychain password. An always-run cleanup step deletes
-the temporary keychain and signing directory after the job.
+The workflow writes these only to the disposable GitHub macOS runner, creates a
+temporary keychain, verifies the pinned identity, and removes the keychain,
+signing directory, Sparkle key file, and temporary credentials in its always-run
+cleanup. Do not copy these materials to a development Mac for routine releases.
 
 Do not create secrets for the signing identity, certificate fingerprint, Team ID,
 serialized keychains, or a separate public certificate. The identity and
@@ -122,29 +122,71 @@ after this rotation as a migration release: validate a manual installation
 or an explicitly implemented dual-trust path before claiming seamless updates.
 The pre-rotation local materials are retained under the dated rollback backup.
 
-## Fast paths
+## Recommended hosted deployment
 
-Use the dispatcher for routine releases; it owns the normal command sequence and
-prints one concise outcome. It does not bypass source identity, signing, asset
-digest, or draft-verification checks.
+Use this path for every normal Lima release. The Mac prepares and tags source;
+the hosted workflow builds, signs, verifies, archives, stages, and—when selected—
+publishes. Do not run a local release build or copy signing material locally.
+
+1. Commit and push the completed release work to `main`. Confirm its default-branch
+   CI run is green and the source tree is clean.
+2. Prepare and push the next version. Note the printed version (for example,
+   `3.14.5`):
+
+   ```sh
+   ./scripts/release_prepare.sh --bump patch --commit --push
+   ```
+
+3. Wait for CI on that version commit to pass, then create the immutable annotated
+   tag:
+
+   ```sh
+   ./scripts/release_tag.sh --version 3.14.5 --push
+   ```
+
+4. In GitHub, open **Actions → Build and stage Lima release → Run workflow**.
+   Choose `main`, enter `v3.14.5` as **release_tag**, and enable **publish** only
+   when this run is intended to become public. Start the workflow, then approve
+   the pending `release` environment deployment.
+5. Wait for every workflow step to succeed. With **publish** enabled, the same
+   run makes the verified draft public. Confirm the release page contains the
+   DMG, updater and Sparkle ZIPs, their checksums, `Lima-release.json`,
+   `latest.json`, and `appcast.xml`.
+
+The equivalent command-line dispatch is:
 
 ```sh
-# Create, build, stage, and verify the next patch as a GitHub draft.
+gh workflow run release-update.yml --repo hosfeldli/ray-placement --ref main \
+  -f release_tag=v3.14.5 -f publish=true
+```
+
+Approve the `release` environment in GitHub when it pauses, then monitor the run
+from Actions or with `gh run watch RUN_ID --repo hosfeldli/ray-placement --exit-status`.
+A run with `publish=false` deliberately stops at a verified draft; use it only for
+a planned review or rehearsal, not as a shortcut around the release checks.
+
+Never change an existing release tag or replace published assets. If a hosted run
+fails, preserve its tag and logs, fix the source on `main`, obtain green CI, and
+issue a new version/tag. See [Build assets and recovery](#build-assets-and-recovery)
+for a staging-recovery case where verified bytes already exist in private GCS.
+
+## Local / legacy fast paths
+
+The dispatcher remains available for local rehearsal or recovery only. It does
+not bypass source identity, signing, asset digest, or draft-verification checks.
+
+```sh
+# Create, build, stage, and verify the next patch as a GitHub draft locally.
 LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.1.0.xpi" \
     ./scripts/release.sh ship --bump patch
-
-# Do the same and make the verified draft public.
-./scripts/release.sh ship --bump patch --publish --yes
 
 # Inspect the next version without changing the working tree or GitHub.
 ./scripts/release.sh ship --bump patch --dry-run
 ```
 
 `ship` commits and pushes version metadata, creates and pushes the immutable tag,
-then runs preflight, one local build, draft staging, and verification. Publication
-requires both `--publish` and `--yes` before it begins a workflow that can make
-an existing draft public. Use `deploy --tag vX.Y.Z` only to resume an already
-prepared/tagged release.
+then runs a local build, draft staging, and verification. It is not the routine
+production deployment path; use the hosted workflow above instead.
 
 ## Normal release lifecycle
 
