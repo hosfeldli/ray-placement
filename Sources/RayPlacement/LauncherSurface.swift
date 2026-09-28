@@ -39,6 +39,59 @@ enum LauncherSurfaceReopeningPolicy: String, Codable, CaseIterable, Sendable {
     case resumeIfPinned
 }
 
+/// Metadata for a transient surface’s one obvious next step. Execution remains
+/// with the owning controller so descriptors stay value-safe and restorable.
+struct LimaPrimaryAction: Equatable, Sendable {
+    let title: String
+    let symbol: String?
+    let isEnabled: Bool
+
+    init(title: String, symbol: String? = nil, isEnabled: Bool = true) {
+        self.title = title
+        self.symbol = symbol
+        self.isEnabled = isEnabled
+    }
+}
+
+/// Return advances a transient flow unless a multiline editor owns the key.
+/// Search fields and single-line form fields remain eligible for the primary
+/// action; AppKit represents those with a field editor NSTextView.
+enum LimaProgressiveEnter {
+    enum Action: Equatable, Sendable {
+        case performPrimaryAction
+        case passthrough
+    }
+
+    static func action(
+        isReturnKey: Bool,
+        hasNonPrimaryModifiers: Bool,
+        isEditingMultilineText: Bool
+    ) -> Action {
+        guard isReturnKey, !hasNonPrimaryModifiers, !isEditingMultilineText else {
+            return .passthrough
+        }
+        return .performPrimaryAction
+    }
+
+    static func action(for event: NSEvent, firstResponder: NSResponder?) -> Action {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let hasNonPrimaryModifiers = !modifiers
+            .intersection([.command, .control, .option, .shift])
+            .isEmpty
+        let isEditingMultilineText: Bool
+        if let textView = firstResponder as? NSTextView {
+            isEditingMultilineText = textView.isEditable && !textView.isFieldEditor
+        } else {
+            isEditingMultilineText = false
+        }
+        return action(
+            isReturnKey: event.keyCode == 36 || event.keyCode == 76,
+            hasNonPrimaryModifiers: hasNonPrimaryModifiers,
+            isEditingMultilineText: isEditingMultilineText
+        )
+    }
+}
+
 struct LauncherSurfaceDescriptor: Equatable, Sendable {
     let id: String
     let title: String
@@ -49,7 +102,7 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
     let preservesState: Bool
     let reopeningPolicy: LauncherSurfaceReopeningPolicy
     let handler: LauncherSurfaceHandlerKey
-    let primaryActionTitle: String?
+    let primaryAction: LimaPrimaryAction?
     let supportsCopy: Bool
     let supportsSearch: Bool
 
@@ -63,6 +116,7 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
         preservesState: Bool = true,
         reopeningPolicy: LauncherSurfaceReopeningPolicy = .root,
         handler: LauncherSurfaceHandlerKey = .generic,
+        primaryAction: LimaPrimaryAction? = nil,
         primaryActionTitle: String? = nil,
         supportsCopy: Bool = false,
         supportsSearch: Bool = true
@@ -76,7 +130,7 @@ struct LauncherSurfaceDescriptor: Equatable, Sendable {
         self.preservesState = preservesState
         self.reopeningPolicy = reopeningPolicy
         self.handler = handler
-        self.primaryActionTitle = primaryActionTitle
+        self.primaryAction = primaryAction ?? primaryActionTitle.map { LimaPrimaryAction(title: $0) }
         self.supportsCopy = supportsCopy
         self.supportsSearch = supportsSearch
     }
@@ -89,9 +143,13 @@ protocol LauncherSurface {
     var timeoutPolicy: LauncherSurfaceTimeoutPolicy { get }
     var canPopOut: Bool { get }
     var preservesState: Bool { get }
-    var primaryActionTitle: String? { get }
+    var primaryAction: LimaPrimaryAction? { get }
     var supportsCopy: Bool { get }
     var supportsSearch: Bool { get }
+}
+
+extension LauncherSurface {
+    var primaryActionTitle: String? { primaryAction?.title }
 }
 
 extension LauncherSurfaceDescriptor: LauncherSurface {}

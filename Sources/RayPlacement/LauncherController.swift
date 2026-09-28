@@ -726,24 +726,40 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         return NSScreen.screens.first { NSMouseInRect(location, $0.frame, false) }
     }
 
+    /// The one forward action for the active Launcher flow. The visible primary
+    /// control and an eligible Return key both route here.
     private func performCurrentSurfacePrimaryAction() {
+        if viewModel.mode != .root { surfaceSessionController.interactionOccurred() }
+
         switch viewModel.mode {
+        case .writingReview(let review):
+            viewModel.pasteWritingResult(review)
+
+        case .picker(.timezone):
+            guard viewModel.timezoneConversion != nil else { return }
+            viewModel.copyTimezoneResult()
+            hide()
+            toast.show("Converted time copied", style: .success)
+
+        case .extensionSurface(let session):
+            if session.kind == .form {
+                inlineExtensionSurfaceModel.run()
+            } else if session.kind == .generator, passwordGeneratorModel.canCopy {
+                passwordGeneratorModel.copy()
+                hide()
+                toast.show("Password copied", style: .success)
+            }
+
         case .surface(let session):
             switch session.surface.handler {
             case .formatter: formatterModel.format()
             case .workflows: workflowModel.executeSelected()
             default: break
             }
-        case .extensionSurface(let session):
-            if session.kind == .form {
-                inlineExtensionSurfaceModel.run()
-            } else if session.kind == .generator {
-                passwordGeneratorModel.generate()
-            }
+
         default:
-            break
+            viewModel.executeSelected()
         }
-        surfaceSessionController.interactionOccurred()
     }
 
     private func installKeyboardMonitor() {
@@ -856,25 +872,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.viewModel.openActionPanel()
                 return nil
             }
-            if event.keyCode == 36 || event.keyCode == 76 {
-                if case .writingReview(let review) = self.viewModel.mode {
-                    self.viewModel.pasteWritingResult(review)
-                    return nil
-                }
-                if case .extensionSurface(let session) = self.viewModel.mode {
-                    if session.kind == .generator {
-                        passwordGeneratorModel.copy()
-                        if !flags.contains(.command) { self.viewModel.enter(.root) }
-                    } else if session.kind == .form {
-                        inlineExtensionSurfaceModel.run()
-                    }
-                    return nil
-                }
-                if case .surface = self.viewModel.mode {
-                    self.performCurrentSurfacePrimaryAction()
-                    return nil
-                }
-                self.viewModel.executeSelected()
+            if LimaProgressiveEnter.action(for: event, firstResponder: self.panel.firstResponder) == .performPrimaryAction {
+                self.performCurrentSurfacePrimaryAction()
                 return nil
             }
             if flags.contains(.command), characters == "r" {

@@ -59,6 +59,17 @@ struct ExtensionSurfaceSession: Equatable {
         self.isPinned = isPinned
         self.lastInteractionAt = lastInteractionAt ?? Date()
     }
+
+    var primaryAction: LimaPrimaryAction? {
+        switch kind {
+        case .form:
+            return LimaPrimaryAction(title: "Run", symbol: "play.fill")
+        case .generator:
+            return LimaPrimaryAction(title: "Copy", symbol: "doc.on.doc")
+        case .picker, .textTool, .liveOutput:
+            return nil
+        }
+    }
 }
 
 @MainActor

@@ -255,6 +255,7 @@ struct FormatterWorkspaceView: View {
     @State private var inspectorMode = 0
     @State private var compactPane = 0
     @State private var inspectorExpanded = false
+    @FocusState private var sourceEditorFocused: Bool
 
     var body: some View {
         VStack(spacing: LimaDesign.panelGap) {
@@ -310,7 +311,9 @@ struct FormatterWorkspaceView: View {
                 }
                 Button { model.format() } label: { Label("Format", systemImage: "wand.and.stars") }
                     .limaButton(prominent: true)
-                    .keyboardShortcut(.return, modifiers: [.command])
+                    .keyboardShortcut(.return, modifiers: [])
+                    .disabled(sourceEditorFocused)
+                    .help("Format document (Return)")
                 Spacer()
                 Button("Open File…", action: model.openFile)
                 Button("Save…", action: model.saveOutput).disabled(model.output.isEmpty)
@@ -360,8 +363,9 @@ struct FormatterWorkspaceView: View {
                         .frame(width: 30, height: 28)
                 }
                 .limaButton(prominent: true)
-                .keyboardShortcut(.return, modifiers: [.command])
-                .help("Format document")
+                .keyboardShortcut(.return, modifiers: [])
+                .disabled(sourceEditorFocused)
+                .help("Format document (Return)")
             }
 
             if model.kind == .edi {
@@ -442,6 +446,7 @@ struct FormatterWorkspaceView: View {
             if editable {
                 TextEditor(text: text)
                     .limaFont(.system(size: 12.5, design: .monospaced))
+                    .focused($sourceEditorFocused)
                     .padding(6)
                     .accessibilityLabel("Source document")
             } else {

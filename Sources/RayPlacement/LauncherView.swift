@@ -283,9 +283,7 @@ struct LauncherView: View {
         case .surface(let session):
             return session.surface.primaryActionTitle
         case .extensionSurface(let session):
-            if session.kind == .form { return "Run" }
-            if session.kind == .generator { return "Regenerate" }
-            return nil
+            return session.primaryAction?.title
         default:
             return nil
         }
@@ -309,7 +307,7 @@ struct LauncherView: View {
         case .surface(let session) where session.surface.handler == .formatter:
             formatterModel.copyOutput()
         case .extensionSurface(let session) where session.kind == .generator:
-            passwordGeneratorModel.copy()
+            performSurfacePrimaryAction()
         case .extensionSurface(let session) where session.kind == .form:
             inlineExtensionSurfaceModel.copyOutput()
         case .output(_, let text, _):
@@ -332,7 +330,10 @@ struct LauncherView: View {
             inlineSurface(session)
         case .extensionSurface(let session):
             if session.handler == .generator {
-                PasswordGeneratorSurface(model: passwordGeneratorModel)
+                PasswordGeneratorSurface(model: passwordGeneratorModel) {
+                    onSurfaceInteraction()
+                    performSurfacePrimaryAction()
+                }
             } else if session.kind == .form, let form = inlineExtensionSurfaceModel.form {
                 ExtensionFormView(model: form, showsHeader: false)
             } else {
@@ -722,13 +723,15 @@ struct LauncherView: View {
             HStack {
                 Spacer()
                 Button {
-                    viewModel.copyTimezoneResult()
+                    onSurfaceInteraction()
+                    performSurfacePrimaryAction()
                 } label: {
                     Label(viewModel.timezoneDidCopy ? "Copied" : "Copy result", systemImage: viewModel.timezoneDidCopy ? "checkmark" : "doc.on.doc")
                 }
                 .limaButton(prominent: true)
                 .tint(LimaLauncherPalette.readableIndigo)
                 .disabled(viewModel.timezoneConversion == nil)
+                .accessibilityHint("Press Return to copy the converted time and close Lima")
             }
         }
         .padding(18)
@@ -935,6 +938,15 @@ struct LauncherView: View {
             .padding(.horizontal, 13)
             .frame(height: 27)
             .padding(.bottom, 5)
+        } else if viewModel.isTimezonePicker {
+            HStack(spacing: 8) {
+                Spacer()
+                KeyHint(keys: "esc", label: "Back")
+                KeyHint(keys: "↩", label: "Copy")
+            }
+            .padding(.horizontal, 13)
+            .frame(height: 27)
+            .padding(.bottom, 5)
         } else {
             HStack {
                 Spacer()
@@ -943,17 +955,17 @@ struct LauncherView: View {
                     if case .writingReview = viewModel.mode {
                         KeyHint(keys: "⌘C", label: "Copy")
                         KeyHint(keys: "↩", label: "Replace")
-                    } else if case .extensionSurface(let session) = viewModel.mode {
+                    } else if case .extensionSurface(let session) = viewModel.mode,
+                              let primaryAction = session.primaryAction {
                         KeyHint(keys: "⌘R", label: session.kind == .form ? "Run again" : "Regenerate")
                         KeyHint(keys: "⌘C", label: "Copy")
-                        KeyHint(keys: "↩", label: session.kind == .form ? "Run" : "Copy")
-                    } else if case .surface(let session) = viewModel.mode {
-                        if session.surface.primaryActionTitle != nil {
-                            KeyHint(keys: "⌘R", label: session.surface.primaryActionTitle ?? "Run")
-                        }
+                        KeyHint(keys: "↩", label: primaryAction.title)
+                    } else if case .surface(let session) = viewModel.mode,
+                              let primaryAction = session.surface.primaryAction {
+                        KeyHint(keys: "⌘R", label: primaryAction.title)
                         if session.surface.supportsCopy { KeyHint(keys: "⌘C", label: "Copy") }
                         if session.surface.canPopOut { KeyHint(keys: "⌘O", label: "Open in Window") }
-                        KeyHint(keys: "↩", label: session.surface.primaryActionTitle ?? "Open")
+                        KeyHint(keys: "↩", label: primaryAction.title)
                     }
                     if viewModel.selectedItemIsActionable, !isOutputMode {
                         KeyHint(keys: "↩", label: primaryActionLabel)

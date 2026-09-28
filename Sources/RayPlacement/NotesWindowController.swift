@@ -1473,10 +1473,22 @@ private struct WorkspaceView: View {
                 .frame(width: 27, height: 26)
         }
         .buttonStyle(.borderless)
+        .keyboardShortcut(.return, modifiers: [])
+        .disabled(dictationEditorFocused || !dictationPrimaryActionEnabled)
         .background(dictationPrimaryColor.opacity(0.16), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(dictationPrimaryColor.opacity(0.48), lineWidth: LimaDesign.borderWidth))
-        .help(dictationPrimaryLabel)
+        .help("\(dictationPrimaryLabel) (Return)")
         .accessibilityLabel(dictationPrimaryLabel)
+        .accessibilityHint("Press Return when the transcript editor is not focused")
+    }
+
+    private var dictationPrimaryActionEnabled: Bool {
+        switch dictation.phase {
+        case .idle, .recording, .paused, .completed, .failed:
+            return true
+        case .requestingPermission, .stopping, .transcribing:
+            return false
+        }
     }
 
     private var dictationIsBusy: Bool {

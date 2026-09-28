@@ -42,6 +42,10 @@ final class PasswordGeneratorModel: ObservableObject {
         return Int((Double(length) * log2(Double(characterSet.count))).rounded())
     }
 
+    var canCopy: Bool {
+        password.utf16.count == length
+    }
+
     var strength: String {
         switch entropyBits {
         case 0..<50: return "Weak"
@@ -93,7 +97,7 @@ final class PasswordGeneratorModel: ObservableObject {
     func copy() {
         // Error/status text is held in the same display property as the
         // generated value; only copy a value that has the configured length.
-        guard password.utf16.count == length else { return }
+        guard canCopy else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(password, forType: .string)
         copied = true
@@ -162,6 +166,7 @@ final class PasswordGeneratorModel: ObservableObject {
 /// inline extension sessions can adopt the same surface contract.
 struct PasswordGeneratorSurface: View {
     @ObservedObject var model: PasswordGeneratorModel
+    let onCopy: () -> Void
 
     var body: some View {
         VStack(spacing: LimaDesign.sectionGap) {
@@ -175,10 +180,16 @@ struct PasswordGeneratorSurface: View {
                     Image(systemName: "arrow.clockwise")
                 }
                 .help("Generate another password")
-                Button(action: model.copy) {
-                    Label(model.copied ? "Copied" : "Copy", systemImage: model.copied ? "checkmark" : "doc.on.doc")
+                Button(action: onCopy) {
+                    HStack(spacing: LimaSpacing.xs) {
+                        Label(model.copied ? "Copied" : "Copy", systemImage: model.copied ? "checkmark" : "doc.on.doc")
+                        Text("↵")
+                            .limaFont(.caption.weight(.semibold))
+                    }
                 }
                 .limaButton(prominent: true)
+                .disabled(!model.canCopy)
+                .accessibilityHint("Copies the password and closes Lima")
             }
             .padding(LimaDesign.sectionGap)
             .liquidGlass(cornerRadius: LimaDesign.panelCorner, depth: .raised, accentOpacity: 0.024)
