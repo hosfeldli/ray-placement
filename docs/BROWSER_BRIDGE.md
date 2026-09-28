@@ -10,7 +10,7 @@
    companion; obtain an official release, not the unsigned development package.
 3. In the intended browser/profile, open **about:addons**, choose the gear menu
    → **Install Add-on From File…**, and select the saved XPI. Review the browser's
-   permission/data-consent prompts. Verify **Lima Browser Bridge 1.1.0** is enabled.
+   permission/data-consent prompts. Verify **Lima Browser Bridge 1.2.0** is enabled.
    Repeat separately for other browsers/profiles. Never disable signature checks.
 4. In Lima, enable **Enable browser bridge**, choose **Install Native Helper…**,
    and confirm. Open the companion popup and choose **Reconnect to Lima**.
@@ -79,7 +79,7 @@ the existing AI Tools controls. Browser text is untrusted data, not instructions
 AI context is sent to the selected conversation provider; revoking a site does
 not erase text already included in a conversation.
 
-## Persistent site access (companion 1.1.0)
+## Persistent site access (companion 1.2.0)
 
 The popup separates two choices:
 - **Always allow reading on this site**: Firefox remembers the exact HTTPS-origin
@@ -107,9 +107,9 @@ The popup confirmation defaults keyboard focus to Cancel. Lima Settings displays
 both modes after **Test Connection & Refresh Sites**; it cannot silently grant
 interaction access. Existing 1.0.0 installations keep Ask every time.
 
-Version 1.1.0 requires a newly signed XPI. Do not modify, overwrite or re-submit
-the approved 1.0.0 package under the same version. Its earlier acceptance results
-do not certify the new persistent-interaction path.
+Version 1.2.0 requires a newly signed XPI. Do not modify, overwrite or re-submit
+the approved 1.1.0 package under the same version. Its earlier acceptance results
+do not certify the new batch-navigation path.
 
 ## Development setup
 

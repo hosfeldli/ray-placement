@@ -246,7 +246,7 @@ not bypass source identity, signing, asset digest, or draft-verification checks.
 
 ```sh
 # Create, build, stage, and verify the next patch as a GitHub draft locally.
-LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.1.0.xpi" \
+LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.2.0.xpi" \
     ./scripts/release.sh ship --bump patch
 
 # Inspect the next version without changing the working tree or GitHub.
