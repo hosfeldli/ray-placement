@@ -19,7 +19,7 @@ extension AppAppearance {
     }
 }
 
-private enum LimaContrast {
+enum LimaContrast {
     private static let white = NSColor(calibratedWhite: 1, alpha: 1)
     private static let black = NSColor(calibratedWhite: 0, alpha: 1)
 
@@ -113,10 +113,13 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
     }
 
     private func readable(_ color: NSColor) -> NSColor {
-        let surface = NSColor.windowBackgroundColor
-        return LimaContrast.contrast(color, against: surface) >= 4.5
-            ? color
-            : LimaContrast.foreground(over: [surface])
+        NSColor(name: nil) { appearance in
+            LimaWayfinderPalette.color(
+                .accentInk,
+                dark: appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua,
+                accent: color
+            )
+        }
     }
 
     var nsPrimary: NSColor {
@@ -329,17 +332,19 @@ enum LimaTheme {
         })
     }
 
-    static var windowBackground: Color { dynamic(light: NSColor(calibratedRed: 0.955, green: 0.962, blue: 0.977, alpha: 1), dark: NSColor(calibratedRed: 0.075, green: 0.079, blue: 0.098, alpha: 1)) }
-    static var floatingWindowBackground: Color { dynamic(light: NSColor(calibratedRed: 0.985, green: 0.988, blue: 0.996, alpha: 0.98), dark: NSColor(calibratedRed: 0.105, green: 0.110, blue: 0.135, alpha: 0.985)) }
-    static var surfacePrimary: Color { dynamic(light: NSColor(calibratedRed: 0.990, green: 0.991, blue: 0.996, alpha: 1), dark: NSColor(calibratedRed: 0.105, green: 0.110, blue: 0.135, alpha: 1)) }
-    static var surfaceSecondary: Color { dynamic(light: NSColor(calibratedRed: 0.945, green: 0.952, blue: 0.970, alpha: 1), dark: NSColor(calibratedRed: 0.135, green: 0.140, blue: 0.170, alpha: 1)) }
-    static var surfaceRaised: Color { dynamic(light: NSColor(calibratedRed: 1, green: 1, blue: 1, alpha: 1), dark: NSColor(calibratedRed: 0.165, green: 0.170, blue: 0.205, alpha: 1)) }
-    static var surfaceSelected: Color { dynamic(light: NSColor(calibratedRed: 0.835, green: 0.890, blue: 0.990, alpha: 1), dark: NSColor(calibratedRed: 0.145, green: 0.255, blue: 0.455, alpha: 1)) }
-    static var fieldBackground: Color { dynamic(light: NSColor(calibratedRed: 1, green: 1, blue: 1, alpha: 1), dark: NSColor(calibratedRed: 0.070, green: 0.074, blue: 0.092, alpha: 1)) }
+    static var windowBackground: Color { LimaWayfinderPalette.dynamic(.canvas) }
+    static var floatingWindowBackground: Color { LimaWayfinderPalette.dynamic(.content) }
+    static var surfacePrimary: Color { LimaWayfinderPalette.dynamic(.content) }
+    static var surfaceSecondary: Color { LimaWayfinderPalette.dynamic(.navigation) }
+    static var surfaceRaised: Color { LimaWayfinderPalette.dynamic(.raised) }
+    static var surfaceSelected: Color { LimaWayfinderPalette.dynamic(.selection) }
+    static var fieldBackground: Color { LimaWayfinderPalette.dynamic(.field) }
     static var fieldBorder: Color { dynamic(light: NSColor(calibratedRed: 0.670, green: 0.700, blue: 0.750, alpha: 1), dark: NSColor(calibratedRed: 0.335, green: 0.355, blue: 0.410, alpha: 1)) }
-    static var fieldFocusedBorder: Color { accent }
-    static var borderSubtle: Color { dynamic(light: NSColor(calibratedRed: 0.800, green: 0.820, blue: 0.860, alpha: 1), dark: NSColor(calibratedRed: 0.235, green: 0.250, blue: 0.300, alpha: 1)) }
-    static var borderStrong: Color { dynamic(light: NSColor(calibratedRed: 0.565, green: 0.600, blue: 0.665, alpha: 1), dark: NSColor(calibratedRed: 0.430, green: 0.455, blue: 0.530, alpha: 1)) }
+    static var fieldFocusedBorder: Color { accentInk }
+    static var navigationBackground: Color { LimaWayfinderPalette.dynamic(.navigation) }
+    static var accentInk: Color { LimaWayfinderPalette.dynamic(.accentInk) }
+    static var borderSubtle: Color { LimaWayfinderPalette.dynamic(.border) }
+    static var borderStrong: Color { LimaWayfinderPalette.dynamic(.strongBorder) }
     static var textPrimary: Color { Color(nsColor: .labelColor) }
     static var textSecondary: Color { dynamic(light: NSColor(calibratedRed: 0.255, green: 0.275, blue: 0.325, alpha: 1), dark: NSColor(calibratedRed: 0.745, green: 0.765, blue: 0.820, alpha: 1)) }
     static var textTertiary: Color { dynamic(light: NSColor(calibratedRed: 0.380, green: 0.405, blue: 0.470, alpha: 1), dark: NSColor(calibratedRed: 0.590, green: 0.620, blue: 0.700, alpha: 1)) }

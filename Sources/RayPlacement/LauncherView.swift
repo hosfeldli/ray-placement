@@ -129,6 +129,7 @@ struct LauncherView: View {
 
     private var searchHeader: some View {
         HStack(spacing: 10) {
+            if viewModel.mode == .root { LimaWayfinderMark() }
             if viewModel.mode != .root {
                 Button {
                     viewModel.enter(.root)
@@ -1220,7 +1221,13 @@ private struct ResultRow: View {
                     .strokeBorder(LimaTheme.fieldFocusedBorder, lineWidth: LimaDesign.focusWidth)
             }
         }
-        .limaSelection(false, hovered: false, radius: LimaRadius.control)
+        .overlay(alignment: .leading) {
+            if selected {
+                Capsule().fill(LimaTheme.accentInk).frame(width: 3).padding(.vertical, 10)
+                    .allowsHitTesting(false)
+            }
+        }
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .animation(nil, value: selected)
     }
 }

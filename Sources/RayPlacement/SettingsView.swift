@@ -282,15 +282,7 @@ struct SettingsView: View {
     private var settingsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 9) {
-                ZStack {
-                    PrismaticPanelShape(cut: 7)
-                        .fill(SettingsColors.heroGradient)
-                    Image(systemName: "sparkle.magnifyingglass")
-                        .limaFont(.system(size: 14, weight: .bold))
-                        .foregroundStyle(settings.accentTheme.onGradient)
-                }
-                .frame(width: 30, height: 30)
-                .overlay(PrismaticPanelShape(cut: 7).stroke(LimaTheme.borderStrong, lineWidth: LimaDesign.borderWidth))
+                LimaWayfinderMark()
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
                     Text("Settings").limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)

@@ -7,6 +7,11 @@ enum RayPlacementMain {
     static func main() {
         let application = NSApplication.shared
         #if DEBUG
+        if let index = CommandLine.arguments.firstIndex(of: "--visual-audit"),
+           CommandLine.arguments.indices.contains(index + 1) {
+            LimaVisualAudit.run(application: application, directory: URL(fileURLWithPath: CommandLine.arguments[index + 1]))
+            return
+        }
         if let previewMode = uiPreviewMode() {
             runUIPreview(application, mode: previewMode)
             return

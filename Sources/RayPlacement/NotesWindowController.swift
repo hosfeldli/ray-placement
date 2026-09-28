@@ -26,7 +26,11 @@ private typealias NotesSection = LimaWorkspaceModule
 private final class WorkspacePresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
-    @Published var activeModule: LimaWorkspaceModule = .notes
+    @Published private(set) var navigation = LimaWorkspaceNavigation()
+    var activeModule: LimaWorkspaceModule {
+        get { navigation.current }
+        set { navigation.select(newValue) }
+    }
     @Published var focusDictationEditor = false
     @Published var notesFocusMode = false
     @Published var pinnedReferenceIDs: [UUID] = []
@@ -695,7 +699,14 @@ private struct WorkspaceView: View {
         GeometryReader { proxy in
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
             HStack(spacing: 0) {
-                workspaceModuleRail(sizeClass: sizeClass)
+                LimaWayfinderRail(
+                    current: presentation.activeModule,
+                    previous: presentation.navigation.previous,
+                    sizeClass: sizeClass,
+                    select: selectModule,
+                    openShelf: { showContextShelf = true },
+                    openSettings: openSettings
+                )
                 Rectangle()
                     .fill(LimaDesign.separator)
                     .frame(width: LimaDesign.hairlineWidth)
@@ -709,9 +720,13 @@ private struct WorkspaceView: View {
                 }
             }
             .environment(\.limaWorkspaceSizeClass, sizeClass)
-            .padding(.horizontal, sizeClass.contentPadding)
-            .padding(.bottom, sizeClass.contentPadding)
-            .padding(.top, LimaSpacing.sm)
+            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous)
+                    .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
+                    .allowsHitTesting(false)
+            }
+            .padding(sizeClass == .compact ? 4 : 8)
         }
         .background(LimaTheme.windowBackground)
         .frame(
@@ -821,7 +836,8 @@ private struct WorkspaceView: View {
         HStack(spacing: 8) {
             LimaToolbarTitle(
                 symbol: workspaceModuleSymbol(presentation.activeModule),
-                title: workspaceModuleTitle(presentation.activeModule)
+                title: workspaceModuleTitle(presentation.activeModule),
+                subtitle: "Workspace"
             )
             .frame(maxWidth: 240, alignment: .leading)
 
@@ -856,57 +872,8 @@ private struct WorkspaceView: View {
             .accessibilityLabel("Workspace options")
         }
         .padding(.horizontal, 8)
-        .frame(height: 42)
-    }
-
-    private func workspaceModuleRail(sizeClass: LimaWorkspaceSizeClass) -> some View {
-        VStack(spacing: 8) {
-            ForEach(LimaWorkspaceModule.allCases, id: \.self) { module in
-                let selected = presentation.activeModule == module
-                Button {
-                    selectModule(module)
-                } label: {
-                    Image(systemName: workspaceModuleSymbol(module))
-                        .font(.system(size: 15, weight: selected ? .semibold : .medium))
-                        .foregroundStyle(selected ? settings.accentTheme.readablePrimary : LimaTheme.textSecondary)
-                        .frame(width: 36, height: 36)
-                        .limaSelection(selected, radius: 11)
-                }
-                .buttonStyle(.plain)
-                .help(workspaceModuleTitle(module))
-                .accessibilityLabel(workspaceModuleTitle(module))
-            }
-            Spacer(minLength: 0)
-
-            Rectangle()
-                .fill(LimaDesign.separator)
-                .frame(width: 24, height: LimaDesign.hairlineWidth)
-                .padding(.bottom, 2)
-
-            Button { showContextShelf = true } label: {
-                Image(systemName: "tray.full")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .frame(width: 36, height: 36)
-                    .limaSelection(false, radius: LimaRadius.control)
-            }
-            .buttonStyle(.plain)
-            .help("Context Shelf")
-            .accessibilityLabel("Open Context Shelf")
-
-            Button(action: openSettings) {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .frame(width: 36, height: 36)
-                    .limaSelection(false, radius: LimaRadius.control)
-            }
-            .buttonStyle(.plain)
-            .help("Settings")
-            .accessibilityLabel("Open Settings")
-        }
-        .padding(.vertical, LimaSpacing.sm)
-        .frame(minWidth: sizeClass.moduleRailWidth, maxWidth: sizeClass.moduleRailWidth, maxHeight: .infinity, alignment: .top)
+        .frame(height: 48)
+        .background(LimaTheme.surfacePrimary)
     }
 
     private func workspaceModule(sizeClass: LimaWorkspaceSizeClass) -> some View {

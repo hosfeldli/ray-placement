@@ -46,7 +46,7 @@ struct LiquidGlassBackdrop: View {
 
     var body: some View {
         ZStack {
-            LimaTheme.floatingWindowBackground
+            LimaTheme.windowBackground
             if !reduceTransparency {
                 VisualEffectView(material: material, blendingMode: blendingMode)
                     .opacity(0.18)
@@ -127,7 +127,7 @@ extension View {
         .overlay(alignment: .leading) {
             if selected {
                 Capsule()
-                    .fill(LimaColors.accent)
+                    .fill(LimaTheme.accentInk)
                     .frame(width: 2)
                     .padding(.vertical, 7)
             }

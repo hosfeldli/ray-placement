@@ -10,7 +10,7 @@ struct LimaNativeButtonStyle: ButtonStyle {
         let tint = destructive ? LimaColors.danger : LimaColors.accent
         configuration.label
             .limaFont(compact ? .system(size: 11, weight: .semibold) : .system(size: 12, weight: .semibold))
-            .foregroundStyle(prominent ? LimaColors.onAccent : (destructive ? LimaColors.onDanger : LimaColors.primaryText))
+            .foregroundStyle(destructive ? LimaColors.onDanger : (prominent ? LimaColors.onAccent : LimaColors.primaryText))
             .padding(.horizontal, compact ? 9 : 12)
             .frame(minHeight: compact ? LimaSpacing.compactControl : LimaSpacing.control)
             .background {
@@ -23,7 +23,7 @@ struct LimaNativeButtonStyle: ButtonStyle {
             }
             .opacity(isEnabled ? 1 : 0.45)
             .brightness(configuration.isPressed ? -0.04 : 0)
-            .animation(LimaMotion.quick, value: configuration.isPressed)
+            .limaAnimation(LimaMotion.quick, value: configuration.isPressed)
     }
 }
 
@@ -126,11 +126,11 @@ struct LimaButtonStyle: ButtonStyle {
         let accent = destructive ? LimaDesign.danger : LimaColors.accent
         configuration.label
             .limaFont(.system(size: compact ? 10.5 : 11.5, weight: .semibold))
-            .foregroundStyle(prominent ? LimaColors.onAccent : (destructive ? LimaColors.onDanger : LimaDesign.primaryText))
+            .foregroundStyle(destructive ? LimaColors.onDanger : (prominent ? LimaColors.onAccent : LimaDesign.primaryText))
             .padding(.horizontal, compact ? 8 : 10)
             .frame(minHeight: compact ? LimaDesign.compactControlHeight : LimaDesign.controlHeight)
             .background {
-                shape.fill(prominent ? LimaColors.accent : (destructive ? accent : LimaDesign.controlFill))
+                shape.fill(destructive ? accent : (prominent ? LimaColors.accent : LimaDesign.controlFill))
             }
             .overlay {
                 shape.strokeBorder(prominent || destructive ? accent.opacity(0.72) : LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
@@ -152,7 +152,7 @@ private struct LimaInputSurfaceModifier: ViewModifier {
             .limaFont(monospaced ? .system(size: 12, design: .monospaced) : .subheadline)
             .padding(.horizontal, 9)
             .frame(minHeight: height)
-            .background(LimaDesign.controlFill, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+            .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
             .overlay { RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth) }
     }
 }

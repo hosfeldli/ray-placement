@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct LimaListRow<Leading: View, Content: View, Trailing: View>: View {
+    @State private var hovered = false
     let selected: Bool
     let leading: Leading
     let content: Content
@@ -27,7 +28,9 @@ struct LimaListRow<Leading: View, Content: View, Trailing: View>: View {
         }
         .padding(.horizontal, LimaSpacing.md)
         .frame(minHeight: LimaSpacing.listRow)
-        .limaSelection(selected)
+        .limaSelection(selected, hovered: hovered)
+        .onHover { hovered = $0 }
+        .accessibilityAddTraits(selected ? [.isSelected] : [])
         .contentShape(Rectangle())
     }
 }

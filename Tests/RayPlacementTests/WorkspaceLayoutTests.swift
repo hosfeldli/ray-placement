@@ -10,7 +10,7 @@ import Testing
 
     #expect(LimaWorkspaceSizeClass.compact.moduleRailWidth == 44)
     #expect(LimaWorkspaceSizeClass.regular.moduleRailWidth == 46)
-    #expect(LimaWorkspaceSizeClass.expanded.moduleRailWidth == 48)
+    #expect(LimaWorkspaceSizeClass.expanded.moduleRailWidth == 128)
     #expect(LimaWorkspaceSizeClass.compact.contextSidebarWidth == nil)
     #expect(LimaWorkspaceSizeClass.regular.contextSidebarWidth == 188)
     #expect(LimaWorkspaceSizeClass.expanded.contextSidebarWidth == 232)
