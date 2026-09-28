@@ -21,10 +21,24 @@ public enum SalesforceCaseResolution: Equatable, Sendable {
     case ambiguous(matchCount: Int)
 }
 
+/// One unambiguous Case number and record URL captured from the granted page.
+/// Labels are used only to identify the Case number; the URL must independently
+/// pass the same secure same-origin Case-record checks as an explicit lookup.
+public struct SalesforceCaseLink: Equatable, Sendable {
+    public let caseNumber: String
+    public let url: URL
+
+    public init(caseNumber: String, url: URL) {
+        self.caseNumber = caseNumber
+        self.url = url
+    }
+}
+
 /// Resolves a case number only against actual Case-record links present in the
 /// current page snapshot. It does not navigate, fetch pages, or broaden site access.
 public enum SalesforceCaseResolver {
     private static let maximumLinks = 500
+    private static let maximumLabelLength = 4_096
 
     public static func resolve(
         caseNumber: String,
@@ -64,6 +78,67 @@ public enum SalesforceCaseResolver {
             return .found(matches[0])
         default:
             return .ambiguous(matchCount: matches.count)
+        }
+    }
+
+    /// Extract directly visible Case links for queue workflows. A link is
+    /// returned only when its semantic label identifies exactly one Case number
+    /// and that number maps to exactly one same-origin Case record URL.
+    public static func visibleCaseLinks(
+        pageURL: URL,
+        links: [SalesforcePageLink],
+        limit: Int = 50
+    ) -> [SalesforceCaseLink] {
+        guard (1...maximumLinks).contains(limit), hasSecureOrigin(pageURL) else { return [] }
+        var destinationsByNumber: [String: [String: URL]] = [:]
+
+        for link in links.prefix(maximumLinks) {
+            guard let destination = resolvedDestination(link.href, relativeTo: pageURL),
+                  isSameSecureOrigin(destination, as: pageURL),
+                  isCaseRecordURL(destination) else {
+                continue
+            }
+            let numbers = directCaseNumbers(in: link)
+            guard numbers.count == 1, let number = numbers.first else { continue }
+            destinationsByNumber[number, default: [:]][destination.absoluteString] = destination
+        }
+
+        return destinationsByNumber.compactMap { number, destinations in
+            guard destinations.count == 1, let url = destinations.values.first else { return nil }
+            return SalesforceCaseLink(caseNumber: number, url: url)
+        }
+        .sorted { $0.caseNumber.localizedStandardCompare($1.caseNumber) == .orderedAscending }
+        .prefix(limit)
+        .map { $0 }
+    }
+
+    private static func directCaseNumbers(in link: SalesforcePageLink) -> Set<String> {
+        Set([link.text, link.accessibleName, link.title].compactMap { $0 }.flatMap(directCaseNumbers(in:)))
+    }
+
+    private static func directCaseNumbers(in value: String) -> [String] {
+        guard value.utf16.count <= maximumLabelLength else { return [] }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        // A case number may be the whole link label, or appear in an explicit
+        // Case label. Do not infer a number from arbitrary subject text.
+        let exact = captures(
+            in: trimmed,
+            pattern: "(?i)^\\s*(?:case\\s*(?:#|number)?\\s*)?([0-9]{1,32})\\s*$"
+        )
+        if !exact.isEmpty { return exact }
+        return captures(
+            in: trimmed,
+            pattern: "(?i)\\bcase\\s*(?:#|number)?\\s*([0-9]{1,32})(?![A-Za-z0-9])"
+        )
+    }
+
+    private static func captures(in value: String, pattern: String) -> [String] {
+        guard let expression = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(value.startIndex..<value.endIndex, in: value)
+        return expression.matches(in: value, range: range).compactMap { match in
+            Range(match.range(at: 1), in: value).map { String(value[$0]) }
         }
     }
 

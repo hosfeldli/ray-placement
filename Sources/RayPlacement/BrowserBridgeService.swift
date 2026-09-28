@@ -207,7 +207,7 @@ final class BrowserBridgeService: ObservableObject {
                 try Task.checkCancellation()
                 return try await withCheckedThrowingContinuation { continuation in
                     let timeout = Task { [weak self] in
-                        let seconds: UInt64 = ["browser.open", "browser.focus", "browser.close", "browser.navigate"].contains(command) ? 75 : 15
+                        let seconds: UInt64 = ["browser.open", "browser.open_tabs", "browser.focus", "browser.close", "browser.navigate"].contains(command) ? 75 : 15
                         try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                         guard !Task.isCancelled else { return }
                         self?.cancel(message, session: session, error: BrowserBridgeError.timeout)
@@ -234,9 +234,39 @@ final class BrowserBridgeService: ObservableObject {
         complete(message.id, result: .failure(error))
     }
 
+    /// Open a bounded batch through one companion request so site policy is
+    /// preflighted before the extension creates any tabs.
+    func openTabs(urls: [String], background: Bool) async throws -> JSONValue {
+        guard (1...50).contains(urls.count) else { throw BrowserBridgeError.invalidResponse }
+        return try await request(
+            "browser.open_tabs",
+            arguments: [
+                "urls": .array(urls.map(JSONValue.string)),
+                "background": .bool(background)
+            ]
+        )
+    }
+
     func resolveCase(number: String, tabID: Int) async throws -> JSONValue {
         let page = try await salesforcePage(tabID: tabID)
         return try resolveCase(number, in: page)
+    }
+
+    /// Extract only unambiguous, same-origin Case links from one granted
+    /// Salesforce snapshot. Link labels are untrusted page data, never commands.
+    func readCaseLinks(tabID: Int) async throws -> JSONValue {
+        let page = try await salesforcePage(tabID: tabID)
+        guard let pageURL = URL(string: page.url) else { throw BrowserBridgeError.invalidResponse }
+        let links = page.links.map {
+            SalesforcePageLink(href: $0.href, text: $0.text, accessibleName: $0.accessibleName, title: $0.title)
+        }
+        let cases = SalesforceCaseResolver.visibleCaseLinks(pageURL: pageURL, links: links)
+        return .object([
+            "cases": .array(cases.map {
+                .object(["case_number": .string($0.caseNumber), "url": .string($0.url.absoluteString)])
+            }),
+            "limit": .number(50)
+        ])
     }
 
     /// Resolve a bounded batch from one granted snapshot, avoiding repeated page

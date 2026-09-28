@@ -1077,6 +1077,7 @@ final class AIChatViewModel: ObservableObject {
                 "browser_tabs",
                 "browser_current",
                 "browser_read",
+                "salesforce_read_case_links",
                 "salesforce_resolve_case",
                 "salesforce_resolve_cases",
                 "browser_open_tabs",
@@ -2971,7 +2972,7 @@ struct AIChatWorkspaceView: View {
                     .foregroundStyle(browserBridge.sessions.isEmpty ? LimaTheme.warning : LimaTheme.textSecondary)
                     .help(browserBridge.sessions.isEmpty
                         ? "Enable the Browser Bridge and connect a granted Zen or Firefox tab before asking Lima to inspect it."
-                        : "Lima can inspect granted browser tabs through the connected Browser Bridge.")
+                        : "Lima can inspect granted tabs and perform explicitly granted tab navigation through the connected Browser Bridge. It cannot fill or submit forms.")
                 }
             }
             .frame(minHeight: 28)

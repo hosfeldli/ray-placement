@@ -408,7 +408,7 @@ import Testing
     let toolStore = LimaAIToolStore(fixtures: [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file",
         "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
-        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_tabs", "browser_current", "browser_read", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
         "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
     let model = AIChatViewModel(
@@ -423,7 +423,7 @@ import Testing
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
     #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_tabs", "browser_current", "browser_read", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
         "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
     #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
@@ -442,6 +442,7 @@ import Testing
 
     let routed = Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id })
     #expect(routed.contains("browser_open_tabs"))
+    #expect(routed.contains("salesforce_read_case_links"))
     #expect(routed.contains("salesforce_resolve_cases"))
 
     model.draft = "Open new tabs for the Salesforce cases"
@@ -468,6 +469,13 @@ import Testing
     let batchOpen = try #require(definitions.first { $0.id == "browser_open_tabs" })
     #expect(batchOpen.risk == .navigation)
     #expect(batchOpen.responsePayload?["strict"] as? Bool == true)
+    let batchParameters = try #require(batchOpen.responsePayload?["parameters"] as? [String: Any])
+    let batchProperties = try #require(batchParameters["properties"] as? [String: Any])
+    let urls = try #require(batchProperties["urls"] as? [String: Any])
+    #expect(urls["maxItems"] as? Int == 50)
+
+    let queueLinks = try #require(definitions.first { $0.id == "salesforce_read_case_links" })
+    #expect(queueLinks.risk == .read)
 }
 
 @Test @MainActor func providerFailureRendersSafeActionableTranscript() async {

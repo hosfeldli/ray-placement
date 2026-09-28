@@ -23,7 +23,7 @@ async function loadInteractionPolicy() {
 }
 function cancelMutations() {
   for (const [id, state] of active) {
-    if (["browser.open", "browser.navigate", "browser.focus", "browser.close"].includes(state.command)) cancel(id);
+    if (["browser.open", "browser.open_tabs", "browser.navigate", "browser.focus", "browser.close"].includes(state.command)) cancel(id);
   }
 }
 function failInteractionStorage() {
@@ -162,6 +162,21 @@ async function performMutation(m, state) {
     if (!await granted(a.url)) error("site_not_granted");
     check(state);
     return info(await browser.tabs.create({url: a.url, active: a.active}));
+  }
+  if (m.command === "browser.open_tabs") {
+    // Validate every destination before opening anything, so a missing grant
+    // cannot leave a partial batch behind.
+    for (const url of a.urls) {
+      if (!await granted(url)) error("site_not_granted");
+      check(state);
+    }
+    let opened = 0;
+    for (let index = 0; index < a.urls.length; index++) {
+      check(state);
+      await browser.tabs.create({url: a.urls[index], active: !a.background && index === a.urls.length - 1});
+      opened += 1;
+    }
+    return {opened, failed: 0, background: a.background};
   }
   // Resolve destination grants first, then re-read the source immediately before
   // mutation. No asynchronous approval survives cancellation or grant removal.

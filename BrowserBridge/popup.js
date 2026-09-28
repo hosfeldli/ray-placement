@@ -61,7 +61,9 @@ async function refresh() {
     const div = document.createElement("div"); div.className = "action";
     const title = document.createElement("strong"); title.textContent = request.command;
     const detail = document.createElement("p"); detail.className = "detail";
-    detail.textContent = request.arguments.url || request.arguments.expectedURL || "Selected tab";
+    detail.textContent = Array.isArray(request.arguments.urls)
+      ? `${request.arguments.urls.length} tab${request.arguments.urls.length === 1 ? "" : "s"}`
+      : request.arguments.url || request.arguments.expectedURL || "Selected tab";
     div.append(title, detail);
     for (const allow of [false, true]) {
       const button = document.createElement("button"); button.textContent = allow ? "Allow once" : "Deny";

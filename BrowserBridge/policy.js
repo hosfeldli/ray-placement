@@ -2,7 +2,7 @@
 (function (root) {
   "use strict";
   const commands = new Set(["bridge.status", "browser.tabs", "browser.current", "browser.read",
-    "browser.open", "browser.focus", "browser.close", "browser.navigate"]);
+    "browser.open", "browser.open_tabs", "browser.focus", "browser.close", "browser.navigate"]);
   const uuid = value => typeof value === "string" &&
     /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
   function site(value) {
@@ -24,6 +24,7 @@
       case "bridge.status": case "browser.tabs": case "browser.current": keys = []; break;
       case "browser.read": keys = ["tabID"]; break;
       case "browser.open": keys = ["url", "active"]; break;
+      case "browser.open_tabs": keys = ["urls", "background"]; break;
       case "browser.focus": case "browser.close": keys = ["tabID", "expectedURL"]; break;
       case "browser.navigate": keys = ["tabID", "expectedURL", "url"]; break;
     }
@@ -31,7 +32,9 @@
       (!keys.includes("tabID") || tabID(a.tabID)) &&
       (!keys.includes("expectedURL") || !!site(a.expectedURL)) &&
       (!keys.includes("url") || !!site(a.url)) &&
-      (!keys.includes("active") || typeof a.active === "boolean");
+      (!keys.includes("urls") || Array.isArray(a.urls) && a.urls.length >= 1 && a.urls.length <= 50 && a.urls.every(url => !!site(url))) &&
+      (!keys.includes("active") || typeof a.active === "boolean") &&
+      (!keys.includes("background") || typeof a.background === "boolean");
   }
   const validCancel = m => m && m.version === 1 && m.kind === "cancel" && uuid(m.id) && commands.has(m.command);
   function mutationSites(m) {
@@ -39,6 +42,7 @@
     let urls;
     switch (m.command) {
       case "browser.open": urls = [a.url]; break;
+      case "browser.open_tabs": urls = a.urls; break;
       case "browser.navigate": urls = [a.expectedURL, a.url]; break;
       case "browser.focus": case "browser.close": urls = [a.expectedURL]; break;
       default: return [];

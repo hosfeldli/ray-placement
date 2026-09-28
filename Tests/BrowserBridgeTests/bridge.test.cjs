@@ -57,9 +57,15 @@ test("only exact HTTPS sites and typed command schemas are accepted", () => {
   for (const url of ["http://example.com", "https://u:p@example.com", "file:///tmp/x",
     "https://example.com:8443", "https://*.example.com", "https://example.com/\n", null, {}]) assert.equal(P.site(url), null);
   assert(P.validRequest(request("browser.open", {url: "https://example.com/a", active: false})));
+  assert(P.validRequest(request("browser.open_tabs", {
+    urls: ["https://example.com/a", "https://example.com/b"], background: true
+  })));
   for (const m of [request("eval", {}), request("browser.tabs", {extra: true}),
     request("browser.read", {tabID: -1}), request("browser.read", {tabID: 1.1}),
     request("browser.open", {url: "https://example.com", active: "false"}),
+    request("browser.open_tabs", {urls: [], background: true}),
+    request("browser.open_tabs", {urls: Array(51).fill("https://example.com"), background: true}),
+    request("browser.open_tabs", {urls: ["https://example.com"], background: "true"}),
     request("browser.close", {tabID: 1}), request("browser.tabs", {}, "a".repeat(36))]) assert(!P.validRequest(m));
 });
 test("tab listing and page reads are limited to explicitly granted non-private tabs", async () => {
@@ -85,6 +91,27 @@ test("mutations require exact popup consent and do not focus background tabs", a
   await pending;
   assert.equal(h.changes.length, 1);
   assert.equal(h.changes[0][1].active, false);
+});
+test("batch opening preflights every destination and keeps requested tabs in the background", async () => {
+  const h = harness(), urls = ["https://example.com/one", "https://example.com/two", "https://example.com/three"];
+  const batch = request("browser.open_tabs", {urls, background: true});
+  const pending = h.send(batch);
+  await flush(); assert.equal(h.changes.length, 0);
+  await h.popup({action: "decision", id: batch.id, allow: true}); await pending;
+  assert.deepEqual(
+    h.changes.map(([operation, args]) => [operation, args.url, args.active]),
+    urls.map(url => ["create", url, false])
+  );
+  const result = h.ports[0].replies.at(-1).result;
+  assert.equal(result.opened, 3); assert.equal(result.failed, 0); assert.equal(result.background, true);
+
+  const blocked = request("browser.open_tabs", {
+    urls: ["https://example.com/four", "https://private.example/blocked"], background: true
+  });
+  const rejected = h.send(blocked);
+  await flush(); await h.popup({action: "decision", id: blocked.id, allow: true}); await rejected;
+  assert.equal(h.changes.length, 3);
+  assert.equal(h.ports[0].replies.at(-1).error, "site_not_granted");
 });
 test("denial, expiry, and explicit cancellation never mutate tabs", async () => {
   for (const outcome of ["deny", "expire", "cancel"]) {
@@ -207,7 +234,7 @@ test("interaction opt-in persists across restart without promoting other sites",
   assert.equal(restarted.changes.length, 1);
   await restarted.popup({action: "decision", id: other.id, allow: false}); await pending;
 });
-test("all four typed tab actions honor opt-in but private tabs and stale URLs stay blocked", async () => {
+test("individual typed tab actions honor opt-in but private tabs and stale URLs stay blocked", async () => {
   for (const command of ["browser.focus", "browser.close", "browser.navigate"]) {
     const h = harness(); await trust(h);
     const args = {tabID: 1, expectedURL: h.tabs.get(1).url};

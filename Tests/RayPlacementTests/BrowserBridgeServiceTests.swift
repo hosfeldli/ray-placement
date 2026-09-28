@@ -68,6 +68,28 @@ private final class BridgeServiceFixture {
     #expect(!task.compactDetail.contains("private"))
 }
 
+@Test @MainActor func browserBridgeBatchOpenUsesOneBoundedRequest() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    try await fixture.connect()
+
+    let urls = ["https://example.com/case/one", "https://example.com/case/two"]
+    let request = Task { try await fixture.service.openTabs(urls: urls, background: true) }
+    try await fixture.wait { fixture.messages.count == 1 }
+    let message = try #require(fixture.messages.first)
+    #expect(message.command == "browser.open_tabs")
+    #expect(message.arguments["urls"] == .array(urls.map(JSONValue.string)))
+    #expect(message.arguments["background"] == .bool(true))
+
+    let response: JSONValue = .object([
+        "opened": .number(2),
+        "failed": .number(0),
+        "background": .bool(true)
+    ])
+    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command, result: response))
+    #expect(try await request.value == response)
+}
+
 @Test @MainActor func browserBridgeActivityStopCancelsThePendingRequestAndSendsCancelFrame() async throws {
     let fixture = BridgeServiceFixture()
     defer { fixture.close() }

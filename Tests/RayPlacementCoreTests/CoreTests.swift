@@ -105,6 +105,45 @@ private func packageRoot() -> URL {
     ) == .notFound)
 }
 
+@Test func salesforceCaseResolverReadsOnlyUnambiguousDirectQueueLinks() {
+    let pageURL = URL(string: "https://acme.lightning.force.com/lightning/page/home")!
+    let first = URL(string: "https://acme.lightning.force.com/lightning/r/Case/500000000000001AAA/view")!
+    let second = URL(string: "https://acme.lightning.force.com/lightning/r/Case/500000000000002AAA/view")!
+
+    let cases = SalesforceCaseResolver.visibleCaseLinks(
+        pageURL: pageURL,
+        links: [
+            SalesforcePageLink(href: first.absoluteString, text: "01423892"),
+            SalesforcePageLink(
+                href: second.absoluteString,
+                text: "Customer shipment issue",
+                accessibleName: "Case #01423901"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000003AAA/view",
+                text: "Case 01424118"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000004AAA/view",
+                title: "Case 01424118"
+            ),
+            SalesforcePageLink(
+                href: "/lightning/r/Case/500000000000005AAA/view",
+                text: "Shipment 01424500"
+            ),
+            SalesforcePageLink(
+                href: "https://other.lightning.force.com/lightning/r/Case/500000000000006AAA/view",
+                text: "01424600"
+            )
+        ]
+    )
+
+    #expect(cases == [
+        SalesforceCaseLink(caseNumber: "01423892", url: first),
+        SalesforceCaseLink(caseNumber: "01423901", url: second)
+    ])
+}
+
 @Test func fuzzyMatching() {
     #expect(FuzzyMatcher.score("Visual Studio Code", query: "vsc") != nil)
     #expect(FuzzyMatcher.score("Calendar", query: "xyz") == nil)
