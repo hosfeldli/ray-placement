@@ -188,297 +188,32 @@ LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.1.0.xpi" \
 then runs a local build, draft staging, and verification. It is not the routine
 production deployment path; use the hosted workflow above instead.
 
-## Normal release lifecycle
+## Local diagnosis and recovery
 
-The individual commands remain available for diagnosis, CI, and recovery.
+Normal production releases use the hosted workflow above. The individual scripts
+remain available to inspect a tagged release or recover an interrupted draft; they
+are not an alternate production deployment path.
 
-### 1. Prepare the version
-
-Preparation refuses a dirty source tree by default and updates the authoritative
-`Packaging/Info.plist` version/build pair. It also updates the README heading and
-distribution note when those expected references are present. README text is
-informational; `scripts/check_release_consistency.sh` gates only the plist.
-
-For a normal patch release:
+Use the exact immutable tag—never an untagged commit or a published release—and
+run only the phase required by the incident:
 
 ```sh
-./scripts/release_prepare.sh --bump patch --commit --push
+./scripts/release_preflight.sh --tag vX.Y.Z
+./scripts/release_verify.sh --tag vX.Y.Z --remote-only
 ```
 
-Or set the version explicitly:
-
-```sh
-./scripts/release_prepare.sh --version 3.13.0 --commit --push
-```
-
-### 2. Create and push the immutable tag
-
-Preparation pushes the release commit but deliberately does not create a tag.
-After reviewing the commit and confirming CI is green, create the annotated tag
-and push it as a separate, auditable phase:
-
-```sh
-./scripts/release_tag.sh --version 3.13.0 --push
-# or: ./scripts/release.sh tag --tag v3.13.0 --push
-```
-
-The tag command requires a clean branch whose upstream exactly matches `HEAD`,
-checks the plist version/build, and refuses to create or overwrite a conflicting
-local or remote tag.
-
-To inspect the calculated version without changing anything:
-
-```sh
-./scripts/release_prepare.sh --bump patch --dry-run
-```
-
-The default is `--no-commit --no-push`. Use `--allow-dirty` only when the
-unrelated changes are intentional and will not be included in the release.
-
-### 3. Run the read-only preflight
-
-```sh
-./scripts/release_preflight.sh --tag v3.12.6
-```
-
-Preflight requires a clean worktree and a branch whose upstream has the exact
-same commit. It refuses an existing published release, resumes an existing draft,
-and accepts a newly pushed tag with no release yet; the stage command creates that
-first draft.
-
-### 4. Build locally
-
-```sh
-./scripts/release_build.sh --tag v3.12.6
-```
-
-`release_build.sh` runs preflight when invoked directly. The dispatcher skips only
-that duplicate check after it has completed preflight in the same invocation.
-
-This phase runs:
-
-* `make test`;
-* `scripts/test_lima_installer.sh`;
-* `scripts/test_update_verifier.sh`;
-* `scripts/test_approved_lima_update.sh`;
-* a model-free, signed app build for `Lima-Update.zip`;
-* a full signed app/DMG build for `Lima.dmg`;
-* local app, DMG, archive, and checksum verification.
-
-It writes these ignored artifacts:
-
-```text
-dist/Lima-Update.zip
-dist/Lima-Update.sha256
-dist/Lima.dmg
-dist/Lima.dmg.sha256
-dist/Lima-release.json
-dist/latest.json
-dist/appcast.xml
-```
-
-A complete, checksum-matching build can be reused after an interrupted later
-phase:
-
-```sh
-./scripts/release_build.sh --tag v3.12.6 --reuse
-```
-
-`--reuse` still runs local artifact verification but does not silently accept a
-missing, differently tagged, or checksum-mismatched build.
-
-### 5. Stage a draft
-
-```sh
-./scripts/release_stage.sh --tag v3.12.6
-```
-
-The stage phase creates a draft if one does not exist, or resumes the existing
-draft. It uploads the update archive and checksum assets idempotently. It never
-uploads a full DMG directly.
-
-The DMG is split using the shared part size and suffix policy, normally into
-parts such as:
-
-```text
-Lima.dmg.part-aa
-Lima.dmg.part-ab
-...
-```
-
-Each part is uploaded only when it is missing or its GitHub API digest does not
-match the local part. The script then dispatches
-`.github/workflows/assemble-signed-dmg.yml` with the exact local DMG SHA-256 and
-part count. The workflow:
-
-1. confirms the release is still a draft;
-2. downloads and orders all parts;
-3. reassembles and checks the exact SHA-256;
-4. uploads `Lima.dmg`;
-5. checks the GitHub asset digest;
-6. deletes only the temporary part assets;
-7. leaves the release as a draft.
-
-A dry-run shows the intended upload strategy without contacting GitHub:
-
-```sh
-./scripts/release_stage.sh --tag v3.12.6 --dry-run
-```
-
-### 6. Verify before publishing
-
-```sh
-./scripts/release_verify.sh --tag v3.12.6
-```
-
-Verification checks local checksums and signing, then checks the draft's exact
-update and DMG assets. Remote SHA-256 values are obtained from each asset's
-lower-level GitHub API `digest` field, not from the unreliable digest value
-returned by some `gh release view` responses. Verification also refuses to pass
-while any `Lima.dmg.part-*` temporary asset remains.
-
-A remote-only check is useful after a workflow finishes or from another machine:
-
-```sh
-./scripts/release_verify.sh --tag v3.12.6 --remote-only
-```
-
-Published releases may be verified read-only, but no release script will mutate
-them.
-
-### 7. Publish only after review
-
-The final action is intentionally explicit:
-
-```sh
-./scripts/release_publish.sh --tag v3.12.6 --yes
-```
-
-The script requires a clean tree, a draft release, matching source/tag metadata,
-and a successful verification. It only changes the GitHub draft to public and
-prints the final release URL. It does not rebuild or upload anything.
-
-For an already tagged release, the dispatcher resumes the complete staged flow:
-
-```sh
-# Build, stage, and verify a draft.
-./scripts/release.sh deploy --tag v3.12.6
-
-# Re-run every gate, then publish the verified draft.
-./scripts/release.sh deploy --tag v3.12.6 --publish --yes
-```
-
-`deploy_lima.sh` remains a compatibility alias for `release.sh deploy`. The
-`ship` fast path is preferred for a new release because it also prepares and tags
-the source commit. Both commands create a missing draft from the existing
-immutable tag and never overwrite a published release.
-
-## Resume and recovery
-
-Interrupted release work should be resumed, not restarted blindly.
-
-```sh
-./scripts/release_resume.sh --tag v3.12.6
-```
-
-This resumes multipart staging and then verifies the draft without rebuilding or
-publishing. The individual phases are safe to rerun as well:
-
-* interrupted local builds: rerun `release_build.sh`, or use `--reuse` when all
-    checksummed artifacts are complete;
-* interrupted update upload: rerun `release_stage.sh`; verified assets are
-    skipped;
-* interrupted DMG split/upload: rerun `release_stage.sh`; local parts are reused
-    when present, and remote parts are checked by digest;
-* interrupted assembly workflow: rerun `release_stage.sh`; if `Lima.dmg` is not
-    present, the workflow can be dispatched again;
-* failed verification: inspect the reported asset/digest and rerun stage only
-    after correcting the local artifact or draft asset.
-
-### Cleaning stale draft assets
-
-Do not delete assets from a published release. For a draft, inspect first:
-
-```sh
-gh release view v3.12.6 --json isDraft,assets
-```
-
-Temporary part assets may be removed from a draft when a failed workflow has left
-them behind:
-
-```sh
-gh release delete-asset v3.12.6 Lima.dmg.part-aa --yes
-gh release delete-asset v3.12.6 Lima.dmg.part-ab --yes
-```
-
-Then rerun `release_stage.sh`. The normal assembly workflow removes its own parts
-only after the reconstructed DMG has passed its digest check.
-
-If the draft contains an artifact from the wrong source commit or version, stop
-and create a new version/tag rather than trying to mutate a release that may have
-been reviewed. Published releases are never repaired in place.
-
-## Rehearsal with a patch increment
-
-The safe rehearsal requested for this refactor is a path/patch increment from
-`3.12.5` to `3.12.6`. It must not publish `v3.12.6`.
-
-Run the static checks first:
-
-```sh
-for f in scripts/release_*.sh scripts/check_release_consistency.sh scripts/deploy_lima.sh; do
-    /bin/zsh -n "$f"
-done
-./scripts/check_release_consistency.sh
-./scripts/test_release_metadata.sh
-./scripts/test_sparkle_migration.sh
-./scripts/release.sh --help
-```
-
-Then prepare without a commit or push:
-
-```sh
-./scripts/release_prepare.sh --version 3.12.6 --no-commit --rehearsal
-```
-
-Confirm the plist reports version `3.12.6` and build `3126`, then run the tests
-and local phases. Preflight requires a pushed commit, so an uncommitted rehearsal
-can use the test commands directly; a full preflight/build rehearsal requires
-committing and pushing the version intentionally, or using a disposable branch.
-
-For a source tree containing the release refactor itself, `--rehearsal` permits
-the intentional refactor changes while still refusing to overwrite the version
-without an explicit preparation command. A fully clean disposable branch should
-continue to use the stricter command without `--rehearsal`.
-
-At minimum:
-
-```sh
-./scripts/check_release_consistency.sh
-make test
-./scripts/test_lima_installer.sh
-./scripts/test_update_verifier.sh
-/bin/zsh scripts/test_approved_lima_update.sh
-```
-
-A full local artifact build is:
-
-```sh
-./scripts/release_build.sh --tag v3.12.6
-```
-
-For a dirty refactor worktree that has not yet been committed/pushed, the same
-local build can be rehearsed explicitly with:
-
-```sh
-LIMA_RELEASE_SKIP_PREFLIGHT=1 ./scripts/release_build.sh --tag v3.12.6
-```
-
-Do **not** run `release_publish.sh --yes` for this rehearsal. If the change is
-not intended to become the next source version, restore `Packaging/Info.plist`
-and the README references to `3.12.5`, then run the consistency check and review
-`git diff --check`. If it is intended to become the next release, commit and push
-it, but still leave the GitHub release as a draft or do not stage it at all.
+If a hosted build completed and its private archive exists but GitHub draft staging
+did not, follow [Build assets and recovery](#build-assets-and-recovery) to restore
+verified bytes and resume staging. If a hosted build fails before archival, retain
+its logs and immutable tag,
+fix source on main, wait for green CI, and release a new version/tag. Do not rebuild,
+restage, or publish a failed tag from a development Mac as a routine workaround.
+
+Local signing and local release_build.sh, release_stage.sh, and release_publish.sh
+commands are reserved for an explicitly planned recovery or rehearsal. They require
+the documented local tooling and must preserve the same tag, digest, draft-only, and
+explicit-publication checks. Never use them to overwrite a published release or
+replace a cloud-built artifact.
 
 ## Script reference
 
@@ -489,13 +224,13 @@ it, but still leave the GitHub release as a draft or do not stage it at all.
 | `release_prepare.sh` | Explicit version preparation | Source only; commit/push only when requested | Push only when requested |
 | `release_tag.sh` | Immutable annotated tag creation | Git tag only; push only when requested | Push only when requested |
 | `release_preflight.sh` | Read-only release gate | No | Read only |
-| `release_build.sh` | Tests, signed artifacts, local metadata | No | Read only through preflight |
-| `release_stage.sh` | Draft creation, idempotent upload, multipart assembly | No | Draft/assets/workflow only |
-| `release_verify.sh` | Local and remote digest/signing verification | No | Read only |
-| `release_publish.sh` | Promote verified draft to public | No | Publish only with `--yes` |
-| `release_resume.sh` | Stage and verify an existing draft | No | Draft/assets/workflow only |
-| `release.sh` | Command dispatcher/orchestrator | No | Delegates to phase |
-| `deploy_lima.sh` | Backward-compatible staged wrapper | No | Delegates to phase |
+| `release_build.sh` | Signed artifact build; hosted workflow or explicit local recovery | No | Read only through preflight |
+| `release_stage.sh` | Draft creation, idempotent upload, and multipart assembly | No | Draft/assets/workflow only |
+| `release_verify.sh` | Local or remote digest/signing verification | No | Read only |
+| `release_publish.sh` | Promote a verified draft to public | No | Publish only with `--yes` |
+| `release_resume.sh` | Resume staging and verify an existing draft | No | Draft/assets/workflow only |
+| `release.sh` | Local compatibility dispatcher; not the routine production path | No | Delegates to phase |
+| `deploy_lima.sh` | Backward-compatible local wrapper; not the routine production path | No | Delegates to phase |
 
 ## Website deployment boundary
 
@@ -509,9 +244,8 @@ the website repository's own CI process and verify its live endpoints separately
 
 Immutable version tags are the source of truth for release artifacts. Every
 release build, CI workflow, DMG assembly job, and verification phase must resolve
-and build the exact commit referenced by its `vX.Y.Z` tag. The mutable
-`release/v3.12.0` branch is transitional debt and must not be used as the source
-identity for a release artifact.
+and build the exact commit referenced by its `vX.Y.Z` tag. Branches, including
+release-named branches, are never release artifact identities.
 
 The staged release assets include:
 
@@ -543,7 +277,7 @@ check is:
 ./scripts/test_sparkle_migration.sh
 ```
 
-Feed and appcast assets are generated during the local build, uploaded during
+Feed and appcast assets are generated during the hosted build, uploaded during
 draft staging, included in remote digest verification, and required before
 publication. They are not optional release documentation.
 
@@ -615,11 +349,11 @@ secrets and grants no project-wide Owner, Editor, or service-account-key access.
 ### Build assets and recovery
 
 `Packaging/build-assets.json` pins the GCS object name, installation location,
-SHA-256, and mode for the Whisper model and Harper binary.
-`prepare_build_assets.sh` uses a valid local file first, then GCS, and preserves
-the existing verified installed/upstream fallback for Whisper. The first cloud
-migration retains Harper Git LFS so local and CI development do not depend on GCS;
-remove that LFS dependency only after a hosted rehearsal succeeds.
+SHA-256, and mode for the Whisper model, Harper binary, and Mozilla-signed Browser
+Bridge XPI. `prepare_build_assets.sh` verifies every materialized input before
+packaging; Whisper retains its verified installed/upstream fallback for local
+development. Harper remains in Git LFS pending a separate, history-aware cleanup;
+that does not change the hosted asset-verification contract.
 
 After a verified build, artifacts are archived before draft staging under both
 `builds/<commit>/` and `releases/<version>/`. Existing remote bytes must match
@@ -639,11 +373,9 @@ identity, stable feed, and signed appcast before placing bytes in `dist/`.
 
 Local `make test` and developer builds remain supported. Normal CI stays unsigned
 and has neither GCP authentication nor release-secret access. The release workflow
-uses GCP Secret Manager instead of the GitHub P12/password/Sparkle secret values;
-the old GitHub secrets are retained only as rollback material until a disposable
-hosted draft rehearsal and a subsequent real N→N+1 updater test pass. Do not remove
-them or local emergency material before those acceptance checks. Do not use
-`gsutil` in the workflow; use `gcloud storage` so OIDC credentials are honored.
+uses GitHub OIDC, GCP Secret Manager, and `gcloud storage`; it has no GitHub signing
+secret or service-account-key path. Do not substitute `gsutil` in the workflow,
+because its authentication behavior differs from the exported OIDC credentials.
 
 Run the offline integration check with:
 

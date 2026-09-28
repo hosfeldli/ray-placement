@@ -12,10 +12,6 @@ The `3.14.4` package is signed with Lima’s pinned local self-signed certificat
 
 Lima targets Apple-silicon Macs on macOS 13 or later. The release DMG includes a ready-to-install app; building from source requires Swift 6 from Xcode 16 Command Line Tools or newer.
 
-The 3.12.0 release repairs compact self-updates: release packaging now refuses to include the 465 MB dictation model in the update archive, while the installed app preserves or restores its checksum-verified local copy. The updater reports real download size, elapsed time, verification and replacement stages, administrator/signing approval context, and provides Cancel, Retry, Show Log, and DMG recovery actions. A pinned public certificate can be added to the login keychain as a code-signing-only trust root after a one-time macOS approval; no private signing key is distributed.
-
-The 3.12.1 fix release removes completed transport feedback from the music shelf and lets accessory mouse buttons invoke Lima/macOS actions or recorded keyboard shortcuts.
-
 1. Download `Lima.dmg` from the Lima product site or the GitHub release.
 2. Drag `Lima.app` onto the Applications folder shown in the disk image. The app already contains local dictation and bundled extensions.
 3. Grant Accessibility in **System Settings → Privacy & Security → Accessibility** for selected-text replacement, automatic paste, and window controls.
@@ -132,7 +128,7 @@ make test
 ./scripts/verify_liamflow_app.sh build/Lima.app
 ```
 
-The canonical staged release procedure is documented in [`docs/RELEASING.md`](docs/RELEASING.md). It covers version preparation, the shared signing policy, read-only preflight, resumable local builds, multipart DMG staging, remote digest verification, draft recovery, and explicit publication. The legacy `scripts/deploy_lima.sh` entry point now delegates to those phases and does not silently commit, push, or publish.
+The canonical release procedure is documented in [`docs/RELEASING.md`](docs/RELEASING.md). Routine releases prepare an immutable tag locally, then use the GCP-backed GitHub Actions workflow to build, sign, archive, stage, verify, and optionally publish on an ephemeral macOS runner. Local release scripts are for explicit rehearsal or recovery only.
 
 `scripts/assemble_whisper_model.sh` restores the verified model from an existing Lima app or downloads the exact pinned asset. `scripts/fetch_vendor_assets.sh` prepares only the dictation asset; there is no text-model asset fetch.
 
