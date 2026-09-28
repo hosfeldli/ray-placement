@@ -647,7 +647,7 @@ struct AIChatResponsesClient: AIChatTransport {
                 input: [userInput],
                 previousResponseID: previousResponseID,
                 reasoningEffort: reasoningEffort,
-                tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+                tools: mcpToolPayload(for: mcpServers) + localTools.compactMap(\.responsePayload),
                 systemInstructions: systemInstructions
             )
             return stream(body: body, apiKey: apiKey)
@@ -682,7 +682,7 @@ struct AIChatResponsesClient: AIChatTransport {
             input: [approval],
             previousResponseID: previousResponseID,
             reasoningEffort: reasoningEffort,
-            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+            tools: mcpToolPayload(for: mcpServers) + localTools.compactMap(\.responsePayload),
             systemInstructions: systemInstructions
         )
         return stream(body: body, apiKey: apiKey)
@@ -704,7 +704,7 @@ struct AIChatResponsesClient: AIChatTransport {
             input: outputs,
             previousResponseID: previousResponseID,
             reasoningEffort: reasoningEffort,
-            tools: mcpToolPayload(for: mcpServers) + localTools.map(\.responsePayload),
+            tools: mcpToolPayload(for: mcpServers) + localTools.compactMap(\.responsePayload),
             systemInstructions: systemInstructions
         )
         return stream(body: body, apiKey: apiKey)
@@ -875,6 +875,7 @@ final class AIChatViewModel: ObservableObject {
     let mcpStore: MCPServerStore
     let nativeToolStore: LimaAIToolStore
     let providerPreferences: AIProviderPreferences
+    let modelCatalog: AIModelCatalogStore
     let transport: any AIChatTransport
     private let hasInjectedTransport: Bool
     private let taskRegistry: TaskRegistry
@@ -891,6 +892,21 @@ final class AIChatViewModel: ObservableObject {
     private var pendingStreamReasoningChunks: [String] = []
     private var streamTextFlushTask: Task<Void, Never>?
 
+    /// A fixed strict schema used only to prove that the selected model accepts
+    /// Lima's function-tool request shape. The provider never needs to execute it.
+    private static let connectionProbeTool = LimaAIToolDefinition(
+        id: "lima_connection_test",
+        name: "lima_connection_test",
+        description: "Connection compatibility probe. Do not call this function.",
+        parameters: [
+            "type": "object",
+            "properties": [:] as [String: Any],
+            "required": [] as [String],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+
     init(
         store: AIConversationStore? = nil,
         credentials: AIChatCredentialStore? = nil,
@@ -898,7 +914,8 @@ final class AIChatViewModel: ObservableObject {
         nativeToolStore: LimaAIToolStore? = nil,
         transport: (any AIChatTransport)? = nil,
         taskRegistry: TaskRegistry? = nil,
-        providerPreferences: AIProviderPreferences? = nil
+        providerPreferences: AIProviderPreferences? = nil,
+        modelCatalog: AIModelCatalogStore? = nil
     ) {
         let store = store ?? .shared
         let credentials = credentials ?? .shared
@@ -910,15 +927,29 @@ final class AIChatViewModel: ObservableObject {
         self.hasInjectedTransport = transport != nil
         self.taskRegistry = taskRegistry ?? .shared
         self.providerPreferences = providerPreferences ?? .shared
+        self.modelCatalog = modelCatalog ?? .shared
         selectedConversationID = store.conversations.first?.id
         if let selected = store.conversations.first {
             provider = selected.provider
-            availableModels = selected.provider.chatModels
+            availableModels = self.modelCatalog.models(for: selected.provider, compatibleModelID: self.providerPreferences.openAICompatibleModelID)
             model = selected.model
             reasoningEffort = selected.reasoningEffort
             attachments = selected.attachments
         }
         ensureModelIsAvailable()
+    }
+
+    private func catalogModels(for provider: AIProvider) -> [AIModelOption] {
+        modelCatalog.models(for: provider, compatibleModelID: providerPreferences.openAICompatibleModelID)
+    }
+
+    private func useCatalog(for provider: AIProvider) {
+        availableModels = catalogModels(for: provider)
+    }
+
+    private func retainInCatalog(_ option: AIModelOption, for provider: AIProvider) {
+        modelCatalog.retain(option, for: provider)
+        useCatalog(for: provider)
     }
 
     deinit { streamTask?.cancel(); modelDiscoveryTask?.cancel() }
@@ -941,7 +972,7 @@ final class AIChatViewModel: ObservableObject {
         selectedConversationID = id
         if let conversation = store.conversation(id: id) {
             provider = conversation.provider
-            availableModels = conversation.provider.chatModels
+            useCatalog(for: conversation.provider)
             model = conversation.model
             reasoningEffort = conversation.reasoningEffort
             attachments = conversation.attachments
@@ -979,13 +1010,13 @@ final class AIChatViewModel: ObservableObject {
         guard AIProvider.chatProviders.contains(provider), self.provider != provider, !canEndTask else { return }
         self.provider = provider
         providerConnectionMessage = nil
+        useCatalog(for: provider)
         if provider == .openAICompatible {
-            let compatibleModel = providerPreferences.openAICompatibleModelID
-            availableModels = [AIModelOption(id: compatibleModel, displayName: compatibleModel, supportsReasoning: false)]
-            model = compatibleModel
+            model = providerPreferences.openAICompatibleModelID
         } else {
-            availableModels = provider.chatModels
-            model = provider.defaultChatModel
+            model = availableModels.first(where: { $0.id == provider.defaultChatModel })?.id
+                ?? availableModels.first?.id
+                ?? provider.defaultChatModel
         }
         reasoningEffort = .medium
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
@@ -996,6 +1027,11 @@ final class AIChatViewModel: ObservableObject {
             store.update(conversation)
         }
         ensureModelIsAvailable()
+        // A compatible endpoint is not meaningful until its base URL/model have
+        // been saved. Avoid starting discovery against the stale configuration.
+        if provider != .openAICompatible {
+            refreshModelsIfPossible()
+        }
     }
 
     var selectedAgentID: String? { selectedConversation?.agentID }
@@ -1037,7 +1073,16 @@ final class AIChatViewModel: ObservableObject {
         }
 
         if isBrowserPrompt(prompt) {
-            requested.formUnion(["browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"])
+            requested.formUnion([
+                "browser_tabs",
+                "browser_current",
+                "browser_read",
+                "salesforce_resolve_case",
+                "salesforce_resolve_cases",
+                "browser_open_tabs",
+                "browser_focus_tab",
+                "browser_navigate_tab"
+            ])
         }
         if containsAny(["file", "folder", "directory", "path", "repository", "repo", "source code", "swift"]) {
             requested.formUnion(["search_files", "find_files", "list_directory", "file_metadata", "read_file"])
@@ -1082,19 +1127,12 @@ final class AIChatViewModel: ObservableObject {
         return namedBrowserContext || standaloneTab
     }
 
-    private func readOnlyBrowserActionMessage(for prompt: String) -> String? {
-        let value = prompt.lowercased()
-        guard isBrowserPrompt(prompt),
-              ["open", "new", "navigate", "close", "focus"].contains(where: { value.localizedStandardContains($0) }) else { return nil }
-        return "Lima can inspect granted browser tabs and resolve Salesforce Case links, but AI Chat is read-only and cannot open, close, focus, or navigate tabs. Ask it to identify or resolve the Case links instead."
-    }
-
     var systemInstructions: String {
         var sections = [AIReadOnlyPolicy.assistantInstructions]
         if let agent = selectedAgentConfiguration, !agent.instructions.isEmpty {
             sections.append("Agent configuration — \(agent.name):\n\(agent.instructions)")
             if !agent.contextDefaults.isEmpty {
-                sections.append("Context defaults: \(agent.contextDefaults.joined(separator: ", ")). Use only context explicitly supplied or available through enabled read-only tools.")
+                sections.append("Context defaults: \(agent.contextDefaults.joined(separator: ", ")). Use only context explicitly supplied or available through enabled tools.")
             }
         }
         for skill in selectedSkillConfigurations where !skill.instructions.isEmpty {
@@ -1116,29 +1154,25 @@ final class AIChatViewModel: ObservableObject {
                AIProvider.chatProviders.contains(provider) {
                 conversation.provider = provider
                 self.provider = provider
-                if provider == .openAICompatible {
-                    availableModels = [AIModelOption(
-                        id: providerPreferences.openAICompatibleModelID,
-                        supportsReasoning: false
-                    )]
-                } else {
-                    availableModels = provider.chatModels
-                }
+                useCatalog(for: provider)
                 if let modelID = agent.modelID, !modelID.isEmpty {
-                    if !availableModels.contains(where: { $0.id == modelID }) {
-                        availableModels.append(AIModelOption(id: modelID))
-                    }
+                    let option = provider == .openAICompatible
+                        ? AIModelOption(id: modelID, displayName: modelID, supportsReasoning: false)
+                        : AIModelOption(id: modelID)
+                    retainInCatalog(option, for: provider)
                     conversation.model = modelID
                 } else {
                     conversation.model = provider == .openAICompatible
                         ? providerPreferences.openAICompatibleModelID
-                        : provider.defaultChatModel
+                        : (availableModels.first(where: { $0.id == provider.defaultChatModel })?.id
+                            ?? availableModels.first?.id
+                            ?? provider.defaultChatModel)
                 }
             } else if let modelID = agent.modelID, !modelID.isEmpty {
                 conversation.model = modelID
-                if !availableModels.contains(where: { $0.id == modelID }) {
-                    availableModels.append(AIModelOption(id: modelID))
-                }
+                retainInCatalog(provider == .openAICompatible
+                    ? AIModelOption(id: modelID, displayName: modelID, supportsReasoning: false)
+                    : AIModelOption(id: modelID), for: provider)
             }
             let configuredOption = availableModels.first(where: { $0.id == conversation.model })
                 ?? AIModelOption(id: conversation.model)
@@ -1158,6 +1192,7 @@ final class AIChatViewModel: ObservableObject {
         model = conversation.model
         reasoningEffort = conversation.reasoningEffort
         store.update(conversation)
+        refreshModelsIfPossible()
     }
 
     func setSelectedSkills(_ identifiers: [String]) {
@@ -1182,17 +1217,19 @@ final class AIChatViewModel: ObservableObject {
            AIProvider.chatProviders.contains(provider) {
             conversation.provider = provider
             self.provider = provider
-            availableModels = provider == .openAICompatible
-                ? [AIModelOption(id: providerPreferences.openAICompatibleModelID, supportsReasoning: false)]
-                : provider.chatModels
+            useCatalog(for: provider)
             conversation.model = modelID ?? (provider == .openAICompatible
                 ? providerPreferences.openAICompatibleModelID
-                : provider.defaultChatModel)
+                : (availableModels.first(where: { $0.id == provider.defaultChatModel })?.id
+                    ?? availableModels.first?.id
+                    ?? provider.defaultChatModel))
         } else if let modelID {
             conversation.model = modelID
         }
-        if let modelID = modelID, !availableModels.contains(where: { $0.id == modelID }) {
-            availableModels.append(AIModelOption(id: modelID))
+        if let modelID {
+            retainInCatalog(provider == .openAICompatible
+                ? AIModelOption(id: modelID, displayName: modelID, supportsReasoning: false)
+                : AIModelOption(id: modelID), for: provider)
         }
         if conversation.provider != previousProvider || conversation.model != previousModel {
             conversation.lastResponseID = nil
@@ -1344,6 +1381,20 @@ final class AIChatViewModel: ObservableObject {
     func testConnection() { loadProviderModels(reportConnection: true) }
     func cancelModelDiscovery() { modelDiscoveryTask?.cancel() }
 
+    /// Discovery is automatic after a usable credential or provider change, but
+    /// only refreshes stale provider catalogs. The visible catalog remains usable
+    /// while the request runs and conversation switching never discards it.
+    func refreshModelsIfPossible(force: Bool = false) {
+        guard !isLoadingModels, !canEndTask, requestAPIKey(for: provider) != nil else { return }
+        let age = modelCatalog.refreshedAt(for: provider).map { Date().timeIntervalSince($0) }
+        guard force || age == nil || age! > 3_600 else { return }
+        loadProviderModels(reportConnection: false)
+    }
+
+    func credentialsDidChange() {
+        refreshModelsIfPossible(force: true)
+    }
+
     private func loadProviderModels(reportConnection: Bool) {
         guard !isLoadingModels, !canEndTask else { return }
         guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
@@ -1372,12 +1423,13 @@ final class AIChatViewModel: ObservableObject {
             do {
                 let models = try await client.listModels(apiKey: apiKey)
                 try Task.checkCancellation()
+                self.modelCatalog.replace(models, for: selectedProvider)
                 guard self.provider == selectedProvider, self.selectedConversationID == conversationID,
                       selectedProvider != .openAICompatible || endpoint == providerPreferences.openAICompatibleBaseURL else {
                     self.taskRegistry.finish(taskID, state: .cancelled)
                     return
                 }
-                self.availableModels = models
+                self.useCatalog(for: selectedProvider)
                 self.ensureModelIsAvailable()
 
                 if reportConnection {
@@ -1394,8 +1446,8 @@ final class AIChatViewModel: ObservableObject {
                         reasoningEffort: self.reasoningEffort,
                         attachments: [],
                         mcpServers: [],
-                        localTools: [],
-                        systemInstructions: "Connection test. Return a short confirmation only."
+                        localTools: [Self.connectionProbeTool],
+                        systemInstructions: "Connection test. Return a short confirmation only. Do not call functions."
                     )
                     do {
                         for try await event in probe {
@@ -1446,7 +1498,7 @@ final class AIChatViewModel: ObservableObject {
                         self.providerConnectionMessage = "The model request ended before a response completed."
                         return
                     }
-                    self.providerConnectionMessage = "Verified " + testedModel + " with a basic response request · " + String(models.count) + " models available."
+                    self.providerConnectionMessage = "Verified " + testedModel + " with a basic response request and a valid function-tool configuration · " + String(models.count) + " models available."
                 }
                 self.taskRegistry.finish(taskID)
                 self.streamError = nil
@@ -1469,8 +1521,9 @@ final class AIChatViewModel: ObservableObject {
         providerConnectionMessage = nil
         if provider == .openAICompatible {
             let option = AIModelOption(id: id, displayName: id, supportsReasoning: false)
-            availableModels = [option]
+            retainInCatalog(option, for: .openAICompatible)
             selectModel(option)
+            refreshModelsIfPossible(force: true)
         }
         return true
     }
@@ -1487,7 +1540,7 @@ final class AIChatViewModel: ObservableObject {
     func selectModel(_ option: AIModelOption) {
         guard !canEndTask else { return }
         model = option.id
-        if !availableModels.contains(where: { $0.id == option.id }) { availableModels.append(option) }
+        retainInCatalog(option, for: provider)
         if provider == .openAICompatible {
             providerPreferences.openAICompatibleModelID = model
         }
@@ -1519,9 +1572,9 @@ final class AIChatViewModel: ObservableObject {
         // A saved or user-entered model may be newer than the bundled catalog.
         // Never silently replace a conversation's model when restoring it.
         if !availableModels.contains(where: { $0.id == model }) {
-            availableModels.append(provider == .openAICompatible
+            retainInCatalog(provider == .openAICompatible
                 ? AIModelOption(id: model, displayName: model, supportsReasoning: false)
-                : AIModelOption(id: model))
+                : AIModelOption(id: model), for: provider)
         }
         if provider == .openAICompatible {
             providerPreferences.openAICompatibleModelID = model
@@ -1569,10 +1622,6 @@ final class AIChatViewModel: ObservableObject {
     func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isStreaming, pendingApproval == nil else { return }
-        if let message = readOnlyBrowserActionMessage(for: text) {
-            recordLocalRequestFailure(title: "Browser action unavailable", message: message, prompt: text)
-            return
-        }
         guard credentials.configuration.usesKeychain || transport is FixtureAITransport else {
             streamError = "This fixture scenario does not make provider requests."
             return
@@ -2507,16 +2556,23 @@ struct AIChatWorkspaceView: View {
     @ViewBuilder
     private var workspacePanes: some View {
         if isEmbedded {
-            HStack(spacing: 0) {
-                sidebar
-                    .frame(width: 220)
+            GeometryReader { proxy in
+                if proxy.size.width < 520 {
+                    conversation
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    HStack(spacing: 0) {
+                        sidebar
+                            .frame(width: min(220, max(180, proxy.size.width * 0.32)))
 
-                Rectangle()
-                    .fill(LimaDesign.separator)
-                    .frame(width: LimaDesign.hairlineWidth)
+                        Rectangle()
+                            .fill(LimaDesign.separator)
+                            .frame(width: LimaDesign.hairlineWidth)
 
-                conversation
-                    .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+                        conversation
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
             }
         } else {
             HStack(spacing: 10) {
@@ -2805,7 +2861,7 @@ struct AIChatWorkspaceView: View {
                 .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             Text("Connect " + model.provider.title)
                 .limaFont(.title2.weight(.semibold))
-            Text("Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Tools and attachments are opt-in. Every AI tool is read-only: Lima never lets AI write, delete, run, install, or approve anything.")
+            Text("Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Tools and attachments are opt-in. Lima can read safely and, for an explicit request on a granted browser site, navigate tabs. It never submits, saves, deletes, runs, installs, or approves anything.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             providerPicker
@@ -2816,7 +2872,7 @@ struct AIChatWorkspaceView: View {
                 Button("Save Key") {
                     do {
                         try model.credentials.saveAPIKey(apiKey, for: model.provider)
-                        model.credentials.refresh()
+                        model.credentialsDidChange()
                         apiKey = ""
                         keyMessage = model.provider.title + " API key saved in Keychain."
                     } catch {
@@ -3002,7 +3058,7 @@ struct AIChatWorkspaceView: View {
             Button("Add Clipboard", action: model.addClipboard)
             Button("Add Current Selection", action: model.addSelection)
             Divider()
-            Text("Lima tools — read-only · \(enabledToolCount) available")
+            Text("Lima tools · \(enabledToolCount) available")
             ForEach(LimaAIToolRegistry.availableDefinitions) { tool in
                 Toggle(isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
@@ -3033,7 +3089,7 @@ struct AIChatWorkspaceView: View {
                 Text("No connected services yet")
             }
             Divider()
-            Text("Only tools relevant to this prompt are sent. AI Chat never writes, installs, runs, or approves tools.")
+            Text("Only tools relevant to this prompt are sent. Browser navigation requires an explicit request and site grant; AI Chat never submits, saves, deletes, installs, runs, or approves tools.")
             Button("Manage Connected Services…") { model.openMCPManager() }
         } label: {
             Label("Add context", systemImage: "plus")
@@ -3046,8 +3102,8 @@ struct AIChatWorkspaceView: View {
         .fixedSize(horizontal: true, vertical: false)
         .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
         .disabled(model.canEndTask)
-        .help("Add context or choose read-only tools")
-        .accessibilityLabel("Add context and choose read-only tools")
+        .help("Add context or choose Lima tools")
+        .accessibilityLabel("Add context and choose Lima tools")
     }
 
     private var agentPicker: some View {

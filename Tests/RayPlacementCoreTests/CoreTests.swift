@@ -169,8 +169,8 @@ private func packageRoot() -> URL {
 
 @Test func notesDockLayoutBoundsWidthAndWorkspaceFrame() {
     let screen = CGRect(x: 0, y: 0, width: 1_200, height: 800)
-    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 100).width == 390)
-    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 900).width == 560)
+    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 100).width == 400)
+    #expect(NotesWindowLayout.dockedFrame(edge: .right, visibleFrame: screen, preferredWidth: 900).width == 600)
 
     let clamped = NotesWindowLayout.clampedWorkspaceFrame(
         CGRect(x: -200, y: 600, width: 500, height: 900),
@@ -182,10 +182,12 @@ private func packageRoot() -> URL {
 @Test func notesDockLayoutSupportsResponsiveWidthClasses() {
     let widthClasses: [(screenWidth: CGFloat, expectedDockWidth: CGFloat)] = [
         (320, 320),
-        (420, 420),
-        (600, 560),
-        (900, 560)
+        (420, 400),
+        (600, 400),
+        (900, 450)
     ]
+
+    #expect(NotesWindowLayout.defaultDockWidth == 620)
 
     for widthClass in widthClasses {
         let visibleFrame = CGRect(x: 0, y: 0, width: widthClass.screenWidth, height: 800)

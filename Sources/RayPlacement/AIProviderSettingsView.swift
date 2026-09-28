@@ -71,6 +71,7 @@ struct AIProviderSettingsView: View {
                             try credentials.saveAPIKey(apiKey, for: model.provider)
                             apiKey = ""
                             message = nil
+                            model.credentialsDidChange()
                         } catch { message = error.localizedDescription }
                     }
                     .disabled(busy || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -94,7 +95,7 @@ struct AIProviderSettingsView: View {
                         Button("Stop") { model.cancelModelDiscovery() }
                     }
                 }
-                Text("Checks model discovery, not generation or tool support. A custom model can be used even when the server does not list it.")
+                Text("Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let status = message ?? model.providerConnectionMessage {
                     Text(status).font(.caption).foregroundStyle(LimaTheme.textSecondary).textSelection(.enabled)

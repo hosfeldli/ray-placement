@@ -235,13 +235,37 @@ final class BrowserBridgeService: ObservableObject {
     }
 
     func resolveCase(number: String, tabID: Int) async throws -> JSONValue {
+        let page = try await salesforcePage(tabID: tabID)
+        return try resolveCase(number, in: page)
+    }
+
+    /// Resolve a bounded batch from one granted snapshot, avoiding repeated page
+    /// reads and JSON conversion for the common Salesforce queue workflow.
+    func resolveCases(numbers: [String], tabID: Int) async throws -> JSONValue {
+        guard (1...30).contains(numbers.count) else { throw BrowserBridgeError.invalidResponse }
+        let page = try await salesforcePage(tabID: tabID)
+        return .array(try numbers.map { try resolveCase($0, in: page) })
+    }
+
+    private func salesforcePage(tabID: Int) async throws -> (url: String, links: [LimaBrowserBridgeLink]) {
         let snapshot = try await request("browser.read", arguments: ["tabID": .number(Double(tabID))])
         let data = try JSONEncoder().encode(snapshot)
         struct Snapshot: Decodable { var url: String; var links: [LimaBrowserBridgeLink] }
         let page = try JSONDecoder().decode(Snapshot.self, from: data)
+        return (page.url, page.links)
+    }
+
+    private func resolveCase(
+        _ number: String,
+        in page: (url: String, links: [LimaBrowserBridgeLink])
+    ) throws -> JSONValue {
         let response = LimaBrowserBridgeDispatcher.handle(.init(
-            requestID: UUID().uuidString, command: "salesforce.resolve_case",
-            caseNumber: number, pageURL: page.url, links: page.links))
+            requestID: UUID().uuidString,
+            command: "salesforce.resolve_case",
+            caseNumber: number,
+            pageURL: page.url,
+            links: page.links
+        ))
         return try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(response))
     }
 }

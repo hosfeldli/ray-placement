@@ -45,7 +45,7 @@ enum AIReasoningEffort: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
-struct AIModelOption: Hashable, Identifiable, Sendable {
+struct AIModelOption: Codable, Hashable, Identifiable, Sendable {
     let id: String
     let displayName: String
     let supportsReasoning: Bool
@@ -91,7 +91,7 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
         let value = id.lowercased()
         // Discovery only returns model IDs, not feature metadata. Treat unfamiliar
         // families conservatively instead of equating a catalog entry with support.
-        let knownFamilies = ["gpt-4o", "gpt-4.1", "gpt-5", "o1", "o3", "o4"]
+        let knownFamilies = ["gpt-4o", "gpt-4.1", "gpt-5", "gpt-6", "o1", "o3", "o4"]
         return knownFamilies.contains { value == $0 || value.hasPrefix($0 + "-") || value.hasPrefix($0 + ".") }
     }
 
@@ -99,12 +99,13 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
         let value = id.lowercased()
         return value.hasPrefix("o1") || value.hasPrefix("o3") || value.hasPrefix("o4")
             || value == "gpt-5" || value.hasPrefix("gpt-5-")
+            || value == "gpt-6" || value.hasPrefix("gpt-6-")
             || ["gpt-5.2", "gpt-5.4", "gpt-5.6"].contains(where: value.hasPrefix)
     }
 
     static func reasoningEfforts(for id: String) -> [AIReasoningEffort] {
         let value = id.lowercased()
-        if value.hasPrefix("gpt-5.6") {
+        if value.hasPrefix("gpt-6") || value.hasPrefix("gpt-5.6") {
             return [.none, .low, .medium, .high, .xhigh, .max]
         }
         // Verified against the Responses API on 2026-09-20. GPT-5.4 rejects
@@ -138,8 +139,74 @@ struct AIModelOption: Hashable, Identifiable, Sendable {
         AIModelOption(id: "gpt-5.4", displayName: "GPT-5.4"),
         AIModelOption(id: "gpt-5", displayName: "GPT-5"),
         AIModelOption(id: "gpt-5-mini", displayName: "GPT-5 mini"),
-        AIModelOption(id: "o4-mini", displayName: "o4-mini")
+        AIModelOption(id: "o4-mini", displayName: "o4-mini"),
+        AIModelOption(id: "gpt-6-luna", displayName: "GPT-6 Luna"),
+        AIModelOption(id: "gpt-6-sol", displayName: "GPT-6 Sol"),
+        AIModelOption(id: "gpt-6-astra", displayName: "GPT-6 Astra")
     ]
+}
+
+/// Shared provider-level model discovery state. Conversations only retain their
+/// selected model; switching between them never replaces a freshly discovered
+/// catalog with static fallback data.
+@MainActor
+final class AIModelCatalogStore: ObservableObject {
+    struct Catalog: Codable, Sendable {
+        var models: [AIModelOption]
+        var refreshedAt: Date?
+    }
+
+    static let shared = AIModelCatalogStore()
+
+    @Published private(set) var catalogs: [String: Catalog]
+    private let defaults: UserDefaults
+    private let storageKey: String
+
+    init(defaults: UserDefaults = .standard, storageKey: String = "aiModelCatalogs") {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        catalogs = (defaults.data(forKey: storageKey)).flatMap { try? JSONDecoder().decode([String: Catalog].self, from: $0) } ?? [:]
+    }
+
+    func models(for provider: AIProvider, compatibleModelID: String) -> [AIModelOption] {
+        var fallback = provider == .openAICompatible
+            ? [AIModelOption(id: compatibleModelID, displayName: compatibleModelID, supportsReasoning: false)]
+            : provider.chatModels
+        if let discovered = catalogs[provider.rawValue]?.models, !discovered.isEmpty {
+            fallback = merge(discovered, fallback)
+        }
+        return fallback
+    }
+
+    func replace(_ models: [AIModelOption], for provider: AIProvider) {
+        let unique = uniqueModels(models)
+        guard !unique.isEmpty else { return }
+        catalogs[provider.rawValue] = Catalog(models: unique, refreshedAt: Date())
+        persist()
+    }
+
+    func retain(_ model: AIModelOption, for provider: AIProvider) {
+        let existing = catalogs[provider.rawValue]?.models ?? []
+        let merged = uniqueModels(existing + [model])
+        catalogs[provider.rawValue] = Catalog(models: merged, refreshedAt: catalogs[provider.rawValue]?.refreshedAt)
+        persist()
+    }
+
+    func refreshedAt(for provider: AIProvider) -> Date? { catalogs[provider.rawValue]?.refreshedAt }
+
+    private func merge(_ primary: [AIModelOption], _ fallback: [AIModelOption]) -> [AIModelOption] {
+        uniqueModels(primary + fallback)
+    }
+
+    private func uniqueModels(_ models: [AIModelOption]) -> [AIModelOption] {
+        var seen = Set<String>()
+        return models.filter { seen.insert($0.id).inserted }
+    }
+
+    private func persist() {
+        guard let data = try? JSONEncoder().encode(catalogs) else { return }
+        defaults.set(data, forKey: storageKey)
+    }
 }
 
 enum AIAttachmentKind: String, Codable, CaseIterable, Sendable {
@@ -937,14 +1004,25 @@ struct MCPHTTPClient {
 
 enum AILocalToolRisk: String, Codable, Sendable {
     case read
+    /// Changes browser presentation only (open, focus, or navigate a granted tab).
+    /// A user’s explicit chat request is the authorization; it never submits or
+    /// modifies remote content.
+    case navigation
     case localAction
     case write
     case destructive
 
-    var requiresApproval: Bool { self != .read }
+    var requiresApproval: Bool {
+        switch self {
+        case .read, .navigation: return false
+        case .localAction, .write, .destructive: return true
+        }
+    }
+
     var title: String {
         switch self {
         case .read: return "Read"
+        case .navigation: return "Browser navigation"
         case .localAction: return "Local action"
         case .write: return "Write"
         case .destructive: return "Destructive"
@@ -1244,14 +1322,102 @@ struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     let risk: AILocalToolRisk
     var extensionBinding: ExtensionAIToolBinding? = nil
 
-    var responsePayload: [String: Any] {
-        [
+    /// Only validated strict schemas are serialized into an AI provider request.
+    /// This prevents one malformed built-in or extension schema from causing a
+    /// request-wide HTTP 400.
+    var responsePayload: [String: Any]? {
+        guard case .success(let strictParameters) = AIToolSchemaValidator.strictParameters(from: parameters) else {
+            return nil
+        }
+        return [
             "type": "function",
             "name": name,
             "description": description,
-            "parameters": parameters,
+            "parameters": strictParameters,
             "strict": true
         ]
+    }
+
+    var schemaValidationMessage: String? {
+        guard case .failure(let error) = AIToolSchemaValidator.strictParameters(from: parameters) else { return nil }
+        return error.message
+    }
+}
+
+struct AIToolSchemaValidationError: Error {
+    let message: String
+}
+
+/// Validates the strict JSON-schema subset accepted by the Responses API. Strict
+/// functions require object schemas, `additionalProperties: false`, and every
+/// property in `required`; fields that were optional are made nullable.
+enum AIToolSchemaValidator {
+    static func strictParameters(from schema: [String: Any]) -> Result<[String: Any], AIToolSchemaValidationError> {
+        normalizeObject(schema, path: "parameters")
+    }
+
+    private static func normalizeObject(_ schema: [String: Any], path: String) -> Result<[String: Any], AIToolSchemaValidationError> {
+        guard schema["type"] as? String == "object" else {
+            return .failure(.init(message: "\(path) must declare type object."))
+        }
+        guard schema["additionalProperties"] as? Bool == false else {
+            return .failure(.init(message: "\(path) must set additionalProperties to false."))
+        }
+        guard let rawProperties = schema["properties"] as? [String: Any] else {
+            return .failure(.init(message: "\(path) must declare properties."))
+        }
+        let required = Set((schema["required"] as? [String]) ?? [])
+        guard required.isSubset(of: Set(rawProperties.keys)) else {
+            return .failure(.init(message: "\(path) required contains an undeclared property."))
+        }
+
+        var normalizedProperties: [String: Any] = [:]
+        for name in rawProperties.keys.sorted() {
+            guard let property = rawProperties[name] as? [String: Any] else {
+                return .failure(.init(message: "\(path).properties.\(name) is not an object schema."))
+            }
+            switch normalize(property, path: "\(path).properties.\(name)", nullable: !required.contains(name)) {
+            case .success(let normalized): normalizedProperties[name] = normalized
+            case .failure(let message): return .failure(message)
+            }
+        }
+        var normalized = schema
+        normalized["properties"] = normalizedProperties
+        normalized["required"] = rawProperties.keys.sorted()
+        normalized["additionalProperties"] = false
+        return .success(normalized)
+    }
+
+    private static func normalize(_ schema: [String: Any], path: String, nullable: Bool) -> Result<[String: Any], AIToolSchemaValidationError> {
+        var normalized = schema
+        if schema["type"] as? String == "object" {
+            switch normalizeObject(schema, path: path) {
+            case .success(let object): normalized = object
+            case .failure(let message): return .failure(message)
+            }
+        } else if let items = schema["items"] as? [String: Any], items["type"] as? String == "object" {
+            switch normalizeObject(items, path: "\(path).items") {
+            case .success(let object): normalized["items"] = object
+            case .failure(let message): return .failure(message)
+            }
+        }
+
+        guard let rawType = normalized["type"] else {
+            return .failure(.init(message: "\(path) must declare a JSON type."))
+        }
+        if nullable {
+            if let type = rawType as? String {
+                normalized["type"] = type == "null" ? ["null"] : [type, "null"]
+            } else if var types = rawType as? [String] {
+                if !types.contains("null") { types.append("null") }
+                normalized["type"] = types
+            } else {
+return .failure(.init(message: "\(path) has an invalid type declaration."))
+            }
+        } else if !(rawType is String) && !(rawType is [String]) {
+            return .failure(.init(message: "\(path) has an invalid type declaration."))
+        }
+        return .success(normalized)
     }
 }
 
@@ -1271,7 +1437,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Every available tool is a registered, read-only operation used only for its declared purpose. Never write, delete, rename, install, launch, submit, or otherwise change local or remote content. Never run shell commands or extension-provided code. Do not attempt to use tools outside the supplied read-only list. You may inspect files, public web search results, screen context, and extension metadata. You may draft extension code or manifests in chat for the user to review, but never save, install, or run them.
+    You are Lima’s private assistant. Use supplied tools only for their declared purpose. Read tools never change content. Browser navigation tools may open, focus, or navigate only explicitly granted browser sites when the user explicitly asks; they never submit forms, save records, upload, delete, or change account settings. Never write, delete, rename, install, launch, run shell commands, or execute extension-provided code. Do not attempt to use tools outside the supplied list. You may draft extension code or manifests in chat for the user to review, but never save, install, or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
@@ -1361,9 +1527,9 @@ enum LimaAIToolRegistry {
                 "type": "object",
                 "properties": [
                     "query": ["type": "string", "description": "A concise file-name query."],
-                    "directory": ["type": "string", "description": "Optional absolute directory to limit results."]
+                    "directory": ["type": ["string", "null"], "description": "Optional absolute directory to limit results."]
                 ],
-                "required": ["query"],
+                "required": ["query", "directory"],
                 "additionalProperties": false
             ],
             risk: .read
@@ -1400,10 +1566,10 @@ enum LimaAIToolRegistry {
                 "type": "object",
                 "properties": [
                     "path": ["type": "string", "description": "An absolute path returned by a file search or supplied by the user."],
-                    "start_line": ["type": "integer", "minimum": 1, "description": "One-based first line to read; defaults to 1."],
-                    "length": ["type": "integer", "minimum": 1, "maximum": 400, "description": "Maximum number of lines to return; defaults to 200."]
+                    "start_line": ["type": ["integer", "null"], "minimum": 1, "description": "One-based first line to read; defaults to 1."],
+                    "length": ["type": ["integer", "null"], "minimum": 1, "maximum": 400, "description": "Maximum number of lines to return; defaults to 200."]
                 ],
-                "required": ["path"],
+                "required": ["path", "start_line", "length"],
                 "additionalProperties": false
             ],
             risk: .read
@@ -1449,7 +1615,13 @@ enum LimaAIToolRegistry {
     ]
 
     static var availableDefinitions: [LimaAIToolDefinition] {
-        definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+        (definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition))
+            .filter { $0.responsePayload != nil }
+    }
+
+    static func schemaValidationMessage(for id: String) -> String? {
+        let candidates = definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+        return candidates.first(where: { $0.id == id })?.schemaValidationMessage
     }
 
     static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)) }
@@ -1460,7 +1632,7 @@ enum LimaAIToolRegistry {
     }
 
     static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        availableDefinitions.filter { ids.contains($0.id) && $0.risk == .read }
+        availableDefinitions.filter { ids.contains($0.id) && ($0.risk == .read || $0.risk == .navigation) }
     }
 
     private static func extensionDefinition(_ binding: ExtensionAIToolBinding) -> LimaAIToolDefinition {
@@ -1478,8 +1650,9 @@ enum LimaAIToolRegistry {
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
-        guard let definition = definition(for: call.name), definition.risk == .read else {
-            return .json(["error": "Lima AI Chat only permits registered read-only tools."], isError: true)
+        guard let definition = definition(for: call.name),
+              definition.risk == .read || definition.risk == .navigation else {
+            return .json(["error": "Lima AI Chat only permits registered read or browser-navigation tools."], isError: true)
         }
         if let binding = definition.extensionBinding {
             guard let arguments = call.arguments,

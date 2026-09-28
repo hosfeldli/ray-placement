@@ -7,7 +7,6 @@ private enum NotesWindowMode: String {
     case workspace
     case dockedLeft
     case dockedRight
-    case fullScreen
 
     var isDocked: Bool { self == .dockedLeft || self == .dockedRight }
 
@@ -15,7 +14,7 @@ private enum NotesWindowMode: String {
         switch self {
         case .dockedLeft: return .left
         case .dockedRight: return .right
-        case .workspace, .fullScreen: return nil
+        case .workspace: return nil
         }
     }
 
@@ -23,22 +22,12 @@ private enum NotesWindowMode: String {
 
 private typealias NotesSection = LimaWorkspaceModule
 
-enum QuickNoteInteractionMode: String, CaseIterable, Identifiable {
-    case reference
-    case edit
-
-    var id: String { rawValue }
-    var title: String { self == .reference ? "Reference" : "Edit" }
-    var symbol: String { self == .reference ? "eye" : "pencil" }
-}
-
 @MainActor
 private final class WorkspacePresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
     @Published var activeModule: LimaWorkspaceModule = .notes
     @Published var focusDictationEditor = false
-    @Published var quickNoteInteractionMode: QuickNoteInteractionMode = .edit
     @Published var notesFocusMode = false
     @Published var pinnedReferenceIDs: [UUID] = []
 
@@ -79,14 +68,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let formatterModel: FormatterWorkspaceModel
     var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
-    private var quickNotePanel: NSPanel?
     private var dictationHUD: DictationHUDController!
     private var workspaceFrame: NSRect?
-    private var modeBeforeFullScreen: NotesWindowMode = .workspace
-    private var sidebarBeforeFullScreen = true
     private var isApplyingFrame = false
     private var applicationDeactivateObserver: NSObjectProtocol?
-    private var spaceChangeObserver: NSObjectProtocol?
     private var pendingExternalDictationInsertions: [ExternalDictationInsertion] = []
     private var externalDictationInsertionInFlight = false
 
@@ -142,16 +127,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
         self.dictation.onTargetEvent = { [weak self] target, event in
             self?.routeDictationEvent(event, to: target)
-        }
-        self.spaceChangeObserver = NotificationCenter.default.addObserver(
-            forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main
-        ) { [weak self] notification in
-            Task { @MainActor [weak self] in
-                guard let self,
-                      let panel = notification.object as? NSPanel,
-                      panel === self.quickNotePanel else { return }
-                self.rememberQuickNoteFrame(panel)
-            }
         }
         self.dictationHUD = DictationHUDController(
             dictation: dictation,
@@ -269,9 +244,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         let measurementID = presentation.activeModule == module
             ? nil
             : PerformanceMonitor.shared.begin("Workspace module switch")
-        if presentation.mode.isDocked && module != .notes && module != .dictation {
-            restoreWorkspace()
-        }
         presentation.activeModule = module
         WorkspaceStateRegistry.shared.update {
             $0.activeWorkspace = LimaSurfaceID.workspace.rawValue
@@ -318,42 +290,25 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Quick Note is an action into the retained Workspace, not another window.
+    /// This keeps AI, Notes, and every other module backed by one SwiftUI tree.
     func showQuickNote() {
         selectQuickNoteTarget()
-        let preferredMode: NotesWindowMode = presentation.mode == .dockedLeft ? .dockedLeft : .dockedRight
-        let panel = ensureQuickNotePanel()
-        applyPresentationMode(preferredMode, to: panel, animated: true)
-        configureQuickNotePanel(panel)
-        markQuickNoteTarget()
-        if presentation.quickNoteInteractionMode == .edit {
-            panel.makeKeyAndOrderFront(nil)
-        } else {
-            panel.orderFrontRegardless()
-        }
+        selectModule(.notes)
+        dock(presentation.mode.dockEdge ?? .right)
+        window?.makeKeyAndOrderFront(nil)
     }
 
     func hideQuickNote() {
         store.flush()
-        LimaSurfaceCoordinator.shared.dismiss(.quickNote)
+        LimaSurfaceCoordinator.shared.dismiss(.workspace)
     }
 
     func toggleQuickNote() {
-        if quickNotePanel?.isVisible == true {
+        if window?.isVisible == true {
             hideQuickNote()
         } else {
             showQuickNote()
-        }
-    }
-
-    func toggleQuickNoteInteractionMode() {
-        presentation.quickNoteInteractionMode = presentation.quickNoteInteractionMode == .edit ? .reference : .edit
-        if let panel = quickNotePanel {
-            configureQuickNotePanel(panel)
-            if presentation.quickNoteInteractionMode == .edit {
-                panel.makeKeyAndOrderFront(nil)
-            } else {
-                panel.orderFrontRegardless()
-            }
         }
     }
 
@@ -432,26 +387,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     func selectPinnedReference(_ id: UUID) {
         selectNote(id)
-        presentation.quickNoteInteractionMode = .reference
-        if let panel = quickNotePanel {
-            configureQuickNotePanel(panel)
-            panel.orderFrontRegardless()
-        }
+        present(module: .notes)
     }
 
     func toggleNotesFocusMode() {
         presentation.notesFocusMode.toggle()
         presentation.sidebarVisible = !presentation.notesFocusMode
-    }
-
-    private func quickNoteFrameKey(for panel: NSPanel) -> String {
-        let screenName = panel.screen?.localizedName ?? "default"
-        return "quickNoteFrame.\(screenName)"
-    }
-
-    private func rememberQuickNoteFrame(_ panel: NSPanel) {
-        guard SettingsStore.shared.quickNotePerSpaceMemory else { return }
-        UserDefaults.standard.set(NSStringFromRect(panel.frame), forKey: quickNoteFrameKey(for: panel))
     }
 
     func selectNote(_ id: UUID) {
@@ -500,18 +441,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         dictation.cancel()
         store.flush()
         conversations.flush()
-        quickNotePanel?.orderOut(nil)
-        if let spaceChangeObserver { NotificationCenter.default.removeObserver(spaceChangeObserver) }
-    }
-
-    func windowDidResignKey(_ notification: Notification) {
-        guard let panel = notification.object as? NSPanel, panel === quickNotePanel else { return }
-        guard presentation.quickNoteInteractionMode == .edit,
-              SettingsStore.shared.quickNoteAutoHide else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self, weak panel] in
-            guard let self, let panel, !panel.isKeyWindow else { return }
-            self.hideQuickNote()
-        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -538,92 +467,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     func windowDidChangeScreen(_ notification: Notification) {
         guard let window, let edge = presentation.mode.dockEdge else { return }
         applyDockFrame(edge: edge, to: window, animated: false)
-    }
-
-    func windowWillEnterFullScreen(_ notification: Notification) {
-        modeBeforeFullScreen = presentation.mode
-        sidebarBeforeFullScreen = presentation.sidebarVisible
-        presentation.setMode(.fullScreen)
-        presentation.sidebarVisible = false
-        window?.level = .normal
-        window?.collectionBehavior = [.managed]
-    }
-
-    func windowDidExitFullScreen(_ notification: Notification) {
-        presentation.sidebarVisible = sidebarBeforeFullScreen
-        guard let window else { return }
-        let returnMode = modeBeforeFullScreen == .fullScreen ? .workspace : modeBeforeFullScreen
-        applyPresentationMode(returnMode, to: window, animated: true)
-    }
-
-    private func ensureQuickNotePanel() -> NSPanel {
-        if let quickNotePanel { return quickNotePanel }
-        let panel = makeQuickNotePanel()
-        quickNotePanel = panel
-        LimaSurfaceCoordinator.shared.register(panel, for: .quickNote, remembersFrame: false)
-        return panel
-    }
-
-    private func makeQuickNotePanel() -> NSPanel {
-        let screen = NSScreen.main ?? NSScreen.screens.first
-        let visible = screen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        let defaultFrame = NSRect(x: visible.maxX - 430, y: visible.minY + 28, width: 420, height: visible.height - 56)
-        let savedFrame = UserDefaults.standard.string(forKey: "quickNoteFrame.\(screen?.localizedName ?? "default")").map(NSRectFromString) ?? defaultFrame
-        let panel = NSPanel(
-            contentRect: savedFrame,
-            styleMask: [.nonactivatingPanel, .titled, .closable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        LimaWindowChrome.configure(
-            panel,
-            title: "Quick Note",
-            accessibilityLabel: "Quick Note",
-            movableByBackground: false
-        )
-        panel.isReleasedWhenClosed = false
-        panel.isFloatingPanel = true
-        panel.hidesOnDeactivate = false
-        panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
-        panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
-        if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
-        else { panel.styleMask.insert(.resizable) }
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        if #available(macOS 13.0, *) { panel.collectionBehavior.insert(.canJoinAllApplications) }
-        panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: WorkspaceView(
-            store: store,
-            conversations: conversations,
-            dictation: dictation,
-            aiChatModel: aiChatModel,
-            terminalModel: terminalModel,
-            formatterModel: formatterModel,
-            selectModule: { [weak self] in self?.selectModule($0) },
-            presentation: presentation,
-            dockLeft: { [weak self] in self?.dock(.left) },
-            dockRight: { [weak self] in self?.dock(.right) },
-            restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
-            toggleFullScreen: { [weak self] in self?.toggleFullScreen() },
-            setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
-            setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
-            quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote },
-            toggleQuickNoteMode: { [weak self] in self?.toggleQuickNoteInteractionMode() },
-            togglePinnedReference: { [weak self] id in self?.togglePinnedReference(id) },
-            selectPinnedReference: { [weak self] id in self?.selectPinnedReference(id) },
-            toggleNotesFocusMode: { [weak self] in self?.toggleNotesFocusMode() }
-        )))
-        return panel
-    }
-
-    private func configureQuickNotePanel(_ panel: NSPanel) {
-        panel.becomesKeyOnlyIfNeeded = presentation.quickNoteInteractionMode == .reference
-        panel.level = .screenSaver
-        panel.hidesOnDeactivate = false
-        panel.isMovable = !SettingsStore.shared.quickNoteDisplayLocked
-        if SettingsStore.shared.quickNoteDisplayLocked { panel.styleMask.remove(.resizable) }
-        panel.alphaValue = CGFloat(min(max(SettingsStore.shared.quickNoteOpacity, 0.35), 1))
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-        if #available(macOS 13.0, *) { panel.collectionBehavior.insert(.canJoinAllApplications) }
     }
 
     private func ensureWindow() -> NSWindow {
@@ -675,11 +518,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             dockLeft: { [weak self] in self?.dock(.left) },
             dockRight: { [weak self] in self?.dock(.right) },
             restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
-            toggleFullScreen: { [weak self] in self?.toggleFullScreen() },
             setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
             setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
             quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote },
-            toggleQuickNoteMode: { [weak self] in self?.toggleQuickNoteInteractionMode() },
             togglePinnedReference: { [weak self] id in self?.togglePinnedReference(id) },
             selectPinnedReference: { [weak self] id in self?.selectPinnedReference(id) },
             toggleNotesFocusMode: { [weak self] in self?.toggleNotesFocusMode() }
@@ -714,44 +555,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         applyPresentationMode(.workspace, to: window, animated: true)
     }
 
-    private func toggleFullScreen() {
-        let window = ensureWindow()
-        if window.styleMask.contains(.fullScreen) {
-            window.toggleFullScreen(nil)
-            return
-        }
-
-        if presentation.mode == .fullScreen {
-            setWindowControls(hidden: false, on: window)
-            presentation.sidebarVisible = sidebarBeforeFullScreen
-            let returnMode = modeBeforeFullScreen == .fullScreen ? .workspace : modeBeforeFullScreen
-            applyPresentationMode(returnMode, to: window, animated: true)
-            return
-        }
-
-        modeBeforeFullScreen = presentation.mode
-        sidebarBeforeFullScreen = presentation.sidebarVisible
-        if presentation.mode == .workspace {
-            rememberWorkspaceFrame(window.frame)
-        }
-        presentation.setMode(.fullScreen)
-        presentation.sidebarVisible = false
-        window.level = .normal
-        window.collectionBehavior = [.managed]
-        window.minSize = NSSize(width: 800, height: 500)
-        window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
-        window.isMovable = false
-        setWindowControls(hidden: true, on: window)
-        let target = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
-            ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
-        setFrame(target, on: window, animated: true)
-    }
-
     private func applyPresentationMode(_ mode: NotesWindowMode, to window: NSWindow, animated: Bool) {
         presentation.setMode(mode)
-        if mode != .fullScreen {
-            UserDefaults.standard.set(mode.rawValue, forKey: Self.windowModeKey)
-        }
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.windowModeKey)
 
         switch mode {
         case .workspace:
@@ -770,10 +576,10 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             window.hidesOnDeactivate = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.minSize = NSSize(width: NotesWindowLayout.minimumDockWidth, height: 480)
-            window.maxSize = NSSize(width: NotesWindowLayout.maximumDockWidth, height: CGFloat.greatestFiniteMagnitude)
+            let visibleFrame = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
+                ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
+            window.maxSize = NSSize(width: NotesWindowLayout.maximumDockWidth(for: visibleFrame), height: CGFloat.greatestFiniteMagnitude)
             if let edge = mode.dockEdge { applyDockFrame(edge: edge, to: window, animated: animated) }
-        case .fullScreen:
-            break
         }
     }
 
@@ -787,7 +593,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         let visibleFrame = (window.screen ?? NSScreen.main ?? NSScreen.screens.first)?.visibleFrame
             ?? NSRect(x: 0, y: 0, width: 1_440, height: 900)
         let savedWidth = UserDefaults.standard.double(forKey: Self.dockWidthKey)
-        let preferredWidth = savedWidth > 0 ? savedWidth : 420
+        let preferredWidth = savedWidth > 0 ? savedWidth : NotesWindowLayout.defaultDockWidth
         let frame = appKitRect(NotesWindowLayout.dockedFrame(
             edge: edge,
             visibleFrame: visibleFrame,
@@ -827,7 +633,8 @@ private struct WorkspaceView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var conversations: DictationConversationStore
     @ObservedObject var dictation: NoteDictationService
-    @ObservedObject var aiChatModel: AIChatViewModel
+    /// Streaming updates are observed only by AIChatWorkspaceView, not this shell.
+    let aiChatModel: AIChatViewModel
     @ObservedObject var terminalModel: DeveloperTerminalModel
     @ObservedObject var formatterModel: FormatterWorkspaceModel
     let selectModule: (LimaWorkspaceModule) -> Void
@@ -837,11 +644,9 @@ private struct WorkspaceView: View {
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
-    let toggleFullScreen: () -> Void
     let setQuickNoteTarget: (UUID) -> Void
     let setQuickNoteTargetMode: (QuickNoteTargetMode) -> Void
     let quickNoteTargetMode: () -> QuickNoteTargetMode
-    let toggleQuickNoteMode: () -> Void
     let togglePinnedReference: (UUID) -> Void
     let selectPinnedReference: (UUID) -> Void
     let toggleNotesFocusMode: () -> Void
@@ -884,43 +689,23 @@ private struct WorkspaceView: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            if presentation.mode.isDocked {
-                VStack(spacing: LimaDesign.panelGap) {
-                    windowChrome
-                        .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
-                    VStack(spacing: 0) {
-                        if isDockBrowserExpanded {
-                            noteBrowser(compact: true)
-                                .frame(minHeight: 132, maxHeight: 224)
-                        } else {
-                            dockedNoteHeader
-                                .frame(height: 46)
-                        }
+            HStack(spacing: 0) {
+                workspaceModuleRail
+                Rectangle()
+                    .fill(LimaDesign.separator)
+                    .frame(width: LimaDesign.hairlineWidth)
+                VStack(spacing: 0) {
+                    if presentation.activeModule != .ai {
+                        workspaceHeader
                         GlassHairline()
-                        editor
                     }
-                    .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+                    workspaceModule
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .padding(6)
-            } else {
-                HStack(spacing: 0) {
-                    workspaceModuleRail
-                    Rectangle()
-                        .fill(LimaDesign.separator)
-                        .frame(width: LimaDesign.hairlineWidth)
-                    VStack(spacing: 0) {
-                        if presentation.activeModule != .ai {
-                            workspaceHeader
-                            GlassHairline()
-                        }
-                        workspaceModule
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
-                .padding(.horizontal, presentation.mode == .fullScreen ? 0 : LimaDesign.windowPadding)
-                .padding(.bottom, presentation.mode == .fullScreen ? 0 : LimaDesign.windowPadding)
-                .padding(.top, presentation.mode == .fullScreen ? 8 : 7)
             }
+            .padding(.horizontal, LimaDesign.windowPadding)
+            .padding(.bottom, LimaDesign.windowPadding)
+            .padding(.top, 7)
         }
         .frame(
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
@@ -1016,9 +801,6 @@ private struct WorkspaceView: View {
         .onChange(of: conversations.selectedConversationID) { id in
             WorkspaceStateRegistry.shared.update { $0.selectedDictationID = id }
         }
-        .onChange(of: aiChatModel.selectedConversationID) { id in
-            WorkspaceStateRegistry.shared.update { $0.selectedAIConversationID = id }
-        }
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.sidebarVisible)
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.mode)
         .limaAnimation(.easeInOut(duration: 0.24), value: settings.notesVisualTheme)
@@ -1046,19 +828,14 @@ private struct WorkspaceView: View {
 
             Menu {
                 Section("Window") {
-                    Button("Dock Notes Left") {
-                        selectModule(.notes)
-                        dockLeft()
+                    Button("Dock Workspace Left", action: dockLeft)
+                    Button("Dock Workspace Right", action: dockRight)
+                    if presentation.activeModule == .notes {
+                        Button(
+                            presentation.notesFocusMode ? "Exit Focus Mode" : "Focus Mode",
+                            action: toggleNotesFocusMode
+                        )
                     }
-                    Button("Dock Notes Right") {
-                        selectModule(.notes)
-                        dockRight()
-                    }
-                    Button(presentation.notesFocusMode ? "Exit Focus Mode" : "Focus Mode", action: toggleNotesFocusMode)
-                    Button(
-                        presentation.mode == .fullScreen ? "Exit Full Screen" : "Enter Full Screen",
-                        action: toggleFullScreen
-                    )
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -1096,15 +873,16 @@ private struct WorkspaceView: View {
     }
 
     private var workspaceModule: some View {
-        Group {
+        GeometryReader { proxy in
+            let isCompact = proxy.size.width < 520
             switch presentation.activeModule {
             case .notes:
-                if presentation.sidebarVisible && !presentation.notesFocusMode {
+                if presentation.sidebarVisible && !presentation.notesFocusMode && !isCompact {
                     HStack(spacing: 0) {
-                        sidebar.frame(width: 246)
+                        sidebar.frame(width: min(220, max(180, proxy.size.width * 0.34)))
                         Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
                         editor
-                            .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
                     editor
@@ -1144,223 +922,6 @@ private struct WorkspaceView: View {
         case .terminal: "terminal"
         case .formatter: "wand.and.stars"
         }
-    }
-
-    private var windowChrome: some View {
-        HStack(spacing: presentation.mode.isDocked ? 6 : 10) {
-            LimaToolbarTitle(
-                symbol: presentation.mode.isDocked ? "note.text" : "note.text.badge.plus",
-                title: presentation.mode.isDocked ? "Quick Note" : "Notes",
-                subtitle: presentation.activeModule == .dictation ? "Separate conversations" : "Local Markdown workspace"
-            )
-            .frame(maxWidth: presentation.mode.isDocked ? 150 : 270, alignment: .leading)
-            .layoutPriority(1)
-
-            Spacer(minLength: presentation.mode.isDocked ? 4 : 8)
-
-            if presentation.mode.isDocked {
-                Picker("Quick Note mode", selection: Binding(
-                    get: { presentation.quickNoteInteractionMode },
-                    set: { presentation.quickNoteInteractionMode = $0; toggleQuickNoteMode() }
-                )) {
-                    ForEach(QuickNoteInteractionMode.allCases) { mode in
-                        Label(mode.title, systemImage: mode.symbol).tag(mode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 132)
-                .controlSize(.small)
-                Menu {
-                    Button {
-                        presentation.activeModule = .notes
-                    } label: {
-                        Label("Notes", systemImage: "note.text")
-                    }
-                    Button {
-                        presentation.activeModule = .dictation
-                    } label: {
-                        Label("Dictation", systemImage: "waveform")
-                    }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: presentation.activeModule == .notes ? "note.text" : "waveform")
-                        Text(presentation.activeModule == .notes ? "Notes" : "Dictation")
-                            .lineLimit(1)
-                        Image(systemName: "chevron.down")
-                            .limaFont(.caption2)
-                    }
-                    .frame(minWidth: 92, maxWidth: 120, minHeight: 28)
-                }
-                .menuStyle(.borderlessButton)
-                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
-                .help("Choose Quick Note section")
-
-                Button {
-                    showContextShelf = true
-                } label: {
-                    Label("Shelf \(contextShelf.count)", systemImage: contextShelf.count > 0 ? "tray.full.fill" : "tray")
-                        .lineLimit(1)
-                }
-                .buttonStyle(.borderless)
-                .padding(.horizontal, 7)
-                .frame(minHeight: 28)
-                .limaNativeSurface(
-                    fill: contextShelf.count > 0 ? LimaColors.accentSoft : LimaTheme.surfaceSecondary,
-                    radius: LimaRadius.control,
-                    border: LimaTheme.borderSubtle
-                )
-                .help("Open Context Shelf")
-                .accessibilityLabel("Context Shelf, \(contextShelf.count) items")
-                .popover(isPresented: $showContextShelf, arrowEdge: .bottom) {
-                    ContextShelfView(store: contextShelf)
-                        .frame(minWidth: 430, idealWidth: 480, minHeight: 360, idealHeight: 520)
-                }
-
-                Menu {
-                    Button("Customize Notes") { showAppearance = true }
-                    Button(presentation.quickNoteInteractionMode == .reference ? "Switch to Edit Mode" : "Switch to Reference Mode", action: toggleQuickNoteMode)
-                    Button(presentation.notesFocusMode ? "Exit Notes Focus Mode" : "Enter Notes Focus Mode", action: toggleNotesFocusMode)
-                    Divider()
-                    Button("Return to Workspace", action: restoreWorkspace)
-                    Button(
-                        presentation.mode == .dockedLeft ? "Move Quick Note Right" : "Move Quick Note Left",
-                        action: presentation.mode == .dockedLeft ? dockRight : dockLeft
-                    )
-                    Divider()
-                    Button("Enter Full Screen", action: toggleFullScreen)
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .frame(width: 30, height: 28)
-                }
-                .menuStyle(.borderlessButton)
-                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
-                .help("Quick Note actions")
-                .accessibilityLabel("Quick Note actions")
-            } else {
-                Picker("Notes section", selection: $presentation.activeModule) {
-                    Label("Notes", systemImage: "note.text").tag(NotesSection.notes)
-                    Label("Dictation", systemImage: "waveform").tag(NotesSection.dictation)
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 170)
-                .controlSize(.small)
-
-                NotesChromeButton(symbol: "slider.horizontal.3", label: "Customize Notes") {
-                    showAppearance.toggle()
-                }
-
-                if presentation.mode == .workspace {
-                    NotesChromeButton(
-                        symbol: presentation.sidebarVisible ? "sidebar.left" : "rectangle.righthalf.inset.filled",
-                        label: presentation.sidebarVisible ? "Hide Notes Sidebar" : "Show Notes Sidebar",
-                        action: { presentation.sidebarVisible.toggle() }
-                    )
-                }
-
-                if presentation.mode != .fullScreen {
-                    NotesChromeButton(symbol: "rectangle.lefthalf.inset.filled", label: "Dock Quick Note Left", action: dockLeft)
-                        .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-                    NotesChromeButton(symbol: "rectangle.righthalf.inset.filled", label: "Dock Quick Note Right", action: dockRight)
-                        .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
-                }
-            }
-
-            if !presentation.mode.isDocked {
-                NotesChromeButton(
-                    symbol: presentation.mode == .fullScreen
-                        ? "arrow.down.right.and.arrow.up.left"
-                        : "arrow.up.left.and.arrow.down.right",
-                    label: presentation.mode == .fullScreen ? "Exit Full Screen" : "Enter Full Screen",
-                    action: toggleFullScreen
-                )
-                .keyboardShortcut("f", modifiers: [.command, .control])
-            }
-        }
-        .padding(.leading, presentation.mode == .fullScreen ? 18 : (presentation.mode.isDocked ? 10 : 78))
-        .padding(.trailing, 10)
-        .frame(height: LimaDesign.toolbarHeight)
-        .popover(isPresented: $showAppearance, arrowEdge: .bottom) {
-            NotesAppearancePanel(settings: settings)
-        }
-    }
-
-    private var dockedNoteHeader: some View {
-        HStack(spacing: 7) {
-            Button {
-                isDockBrowserExpanded = true
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "note.text")
-                        .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                    Text(store.selectedNote?.displayTitle ?? "Choose a note")
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    Image(systemName: "chevron.down")
-                        .limaFont(.caption2)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(.plain)
-            .help("Choose a note")
-            .accessibilityLabel("Choose a note")
-
-            NotesChromeButton(symbol: "magnifyingglass", label: "Find a note") {
-                isDockBrowserExpanded = true
-                isSearchPresented = true
-            }
-            Menu {
-                Section("Quick Note target") {
-                    ForEach(QuickNoteTargetMode.allCases) { mode in
-                        Button {
-                            setQuickNoteTargetMode(mode)
-                        } label: {
-                            Label(mode.title, systemImage: quickNoteTargetMode() == mode ? "checkmark" : "circle")
-                        }
-                    }
-                }
-                Divider()
-                Button {
-                    store.createNote()
-                } label: {
-                    Label("New Note", systemImage: "plus")
-                }
-                Button {
-                    presentation.activeModule = .notes
-                } label: {
-                    Label("Notes", systemImage: "note.text")
-                }
-                Button {
-                    presentation.activeModule = .dictation
-                } label: {
-                    Label("Dictation", systemImage: "waveform")
-                }
-                Divider()
-                if let note = store.selectedNote {
-                    Button(note.isPinned ? "Unpin Note" : "Pin Note", action: store.togglePin)
-                    Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
-                    Button("Set as Quick Note") { setQuickNoteTarget(note.id) }
-                    Button("Edit Tags…") { showTags = true }
-                    Button("Revision History…") { showRevisions = true }
-                }
-                Divider()
-                Button("Customize Notes") { showAppearance = true }
-                Button("Return to Workspace", action: restoreWorkspace)
-                Button(
-                    presentation.mode == .dockedLeft ? "Move Quick Note Right" : "Move Quick Note Left",
-                    action: presentation.mode == .dockedLeft ? dockRight : dockLeft
-                )
-                Button("Enter Full Screen", action: toggleFullScreen)
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 30, height: 28)
-            }
-            .menuStyle(.borderlessButton)
-            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
-            .help("Quick Note actions")
-            .accessibilityLabel("Quick Note actions")
-        }
-        .padding(.horizontal, 8)
     }
 
     private var sidebar: some View {
@@ -1565,8 +1126,6 @@ private struct WorkspaceView: View {
                 editorHeader(note)
                 GlassHairline()
                 editorCanvas(note)
-                GlassHairline()
-                noteToolbar(note)
             }
         } else {
             VStack(spacing: 14) {
@@ -2078,18 +1637,6 @@ private struct WorkspaceView: View {
 
             Spacer(minLength: 6)
 
-            NotesChromeButton(
-                symbol: note.isPinned ? "pin.fill" : "pin",
-                label: note.isPinned ? "Unpin Note" : "Pin Note",
-                action: store.togglePin
-            )
-
-            NotesChromeButton(
-                symbol: note.isFavorite ? "star.fill" : "star",
-                label: note.isFavorite ? "Remove from Favorites" : "Add to Favorites",
-                action: store.toggleFavorite
-            )
-
             Menu {
                 Button(note.isPinned ? "Unpin Note" : "Pin Note", action: store.togglePin)
                 Button(note.isFavorite ? "Remove from Favorites" : "Add to Favorites", action: store.toggleFavorite)
@@ -2103,6 +1650,31 @@ private struct WorkspaceView: View {
                 Button("Task Dashboard…") { showTasks = true }
                 Button("Append Clipboard") { appendClipboard() }
                 Button("Append Current Selection") { appendSelection() }
+                Divider()
+                Section("File") {
+                    Button("Import Markdown…", action: importMarkdown)
+                    Button("Export All Markdown…", action: exportMarkdown)
+                }
+                Section("Insert") {
+                    Button("Heading 1") { MarkdownEditorActions.heading(1) }
+                    Button("Heading 2") { MarkdownEditorActions.heading(2) }
+                    Button("Heading 3") { MarkdownEditorActions.heading(3) }
+                    Button("Bulleted List", action: MarkdownEditorActions.bullets)
+                    Button("Checklist", action: MarkdownEditorActions.checklist)
+                    Button("Quote") { MarkdownEditorActions.insert("> Quote") }
+                    Button("Table", action: MarkdownEditorActions.table)
+                    Button("Image…", action: MarkdownEditorActions.image)
+                    Button("Chart", action: MarkdownEditorActions.chart)
+                    Button("Code Block") { MarkdownEditorActions.insert("```\ncode\n```") }
+                    Button("Link", action: MarkdownEditorActions.link)
+                }
+                if let conversation = conversations.selectedConversation {
+                    Section("Dictation") {
+                        Button("Dictate into this Note") { dictation.performPrimaryAction(target: .note(note.id)) }
+                        Button("Append Dictation Transcript") { store.appendDictation(conversation, to: note.id) }
+                        Button("Create Note from Dictation") { createNoteFromDictation(conversation) }
+                    }
+                }
                 Divider()
                 Button("Switch Note…") { showNoteSwitcher = true }
                     .keyboardShortcut("p", modifiers: .command)
@@ -2142,12 +1714,12 @@ private struct WorkspaceView: View {
             lineSpacing: settings.notesLineSpacing,
             theme: settings.notesVisualTheme,
             inlineGrammarCheckingEnabled: settings.inlineGrammarCheckingEnabled,
-            editable: !presentation.mode.isDocked || presentation.quickNoteInteractionMode == .edit,
+            editable: true,
             wikiLinkCandidates: store.notes.filter { $0.id != note.id }
         )
         .accessibilityLabel("Inline formatted Markdown editor")
 
-        if presentation.mode == .fullScreen || settings.notesContentWidth != .fluid {
+        if settings.notesContentWidth != .fluid {
             HStack(spacing: 0) {
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
                 markdownEditor

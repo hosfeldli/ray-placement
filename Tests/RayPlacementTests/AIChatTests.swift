@@ -370,7 +370,12 @@ import Testing
 }
 
 @Test func aiModelCapabilitiesLimitReasoningToSupportedValues() {
-    let unknown = AIModelOption(id: "gpt-6-luna")
+    let gpt6 = AIModelOption(id: "gpt-6-luna")
+    #expect(!gpt6.isLegacyOrUnknown)
+    #expect(gpt6.supportsReasoning)
+    #expect(gpt6.supportedReasoningEfforts == [.none, .low, .medium, .high, .xhigh, .max])
+
+    let unknown = AIModelOption(id: "future-private-model")
     #expect(unknown.isLegacyOrUnknown)
     #expect(!unknown.supportsReasoning)
     #expect(unknown.supportedReasoningEfforts.isEmpty)
@@ -386,13 +391,13 @@ import Testing
 
 @Test func unknownModelUsesMinimalResponsesPayload() {
     let body = AIChatResponsesClient.replyBody(
-        model: "gpt-6-luna",
+        model: "future-private-model",
         input: [["role": "user", "content": [["type": "input_text", "text": "Hello"]]]],
         previousResponseID: nil,
         reasoningEffort: .high,
         tools: []
     )
-    #expect(body["model"] as? String == "gpt-6-luna")
+    #expect(body["model"] as? String == "future-private-model")
     #expect(body["stream"] as? Bool == true)
     #expect(body["reasoning"] == nil)
     #expect(body["store"] == nil)
@@ -403,7 +408,8 @@ import Testing
     let toolStore = LimaAIToolStore(fixtures: [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file",
         "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
-        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"
+        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
@@ -416,30 +422,52 @@ import Testing
     #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
-    #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map(\.id)) == [
-        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case"
+    #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map { $0.id }) == [
+        "browser_tabs", "browser_current", "browser_read", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
-    #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map(\.id)) == [
+    #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file"
     ])
 }
 
-@Test @MainActor func browserTabChangingPromptStaysLocalAndExplainsReadOnlyLimit() {
-    let store = AIConversationStore(fixtures: [])
+@Test @MainActor func browserNavigationPromptRoutesGrantedNavigationTools() async throws {
     let model = AIChatViewModel(
-        store: store,
+        store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
         mcpStore: MCPServerStore(fixtures: []),
-        nativeToolStore: LimaAIToolStore(fixtures: Set(BrowserBridgeAITools.definitions.map(\.id))),
+        nativeToolStore: LimaAIToolStore(fixtures: Set(BrowserBridgeAITools.definitions.map { $0.id })),
         transport: FixtureAITransport.standard
     )
 
+    let routed = Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id })
+    #expect(routed.contains("browser_open_tabs"))
+    #expect(routed.contains("salesforce_resolve_cases"))
+
     model.draft = "Open new tabs for the Salesforce cases"
     model.send()
+    for _ in 0..<100 where model.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
 
     #expect(!model.isStreaming)
-    #expect(store.conversations.first?.messages.last?.text.contains("Browser action unavailable") == true)
-    #expect(store.conversations.first?.messages.last?.text.contains("read-only") == true)
+    #expect(model.streamError == nil)
+}
+
+@Test @MainActor func strictToolSchemasAreProviderReadyAndNormalizeOptionalArguments() throws {
+    let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions
+    #expect(definitions.allSatisfy { $0.responsePayload != nil })
+
+    let findFiles = try #require(definitions.first { $0.id == "find_files" })
+    let payload = try #require(findFiles.responsePayload)
+    let parameters = try #require(payload["parameters"] as? [String: Any])
+    #expect(Set(try #require(parameters["required"] as? [String])) == ["directory", "query"])
+
+    let properties = try #require(parameters["properties"] as? [String: Any])
+    let directory = try #require(properties["directory"] as? [String: Any])
+    #expect(directory["type"] as? [String] == ["string", "null"])
+
+    let batchOpen = try #require(definitions.first { $0.id == "browser_open_tabs" })
+    #expect(batchOpen.risk == .navigation)
+    #expect(batchOpen.responsePayload?["strict"] as? Bool == true)
 }
 
 @Test @MainActor func providerFailureRendersSafeActionableTranscript() async {

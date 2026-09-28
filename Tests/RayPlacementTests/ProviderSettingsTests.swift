@@ -41,7 +41,8 @@ private func providerSettingsFixture(
     conversations: [AIConversation] = [],
     transport: FixtureAITransport = .standard,
     preferences: AIProviderPreferences? = nil,
-    registry: TaskRegistry? = nil
+    registry: TaskRegistry? = nil,
+    modelCatalog: AIModelCatalogStore? = nil
 ) -> AIChatViewModel {
     AIChatViewModel(
         store: AIConversationStore(fixtures: conversations),
@@ -50,7 +51,8 @@ private func providerSettingsFixture(
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: transport,
         taskRegistry: registry ?? TaskRegistry(),
-        providerPreferences: preferences
+        providerPreferences: preferences,
+        modelCatalog: modelCatalog
     )
 }
 
@@ -68,6 +70,26 @@ private func providerSettingsFixture(
     #expect(model.store.conversation(id: conversation.id)?.model == "another-private-model")
     #expect(model.store.conversation(id: conversation.id)?.lastResponseID == nil)
     #expect(!model.selectCustomModel(" \n "))
+}
+
+@Test @MainActor func providerModelCatalogPersistsAcrossConversationSwitches() {
+    let suite = "dev.liam.lima.tests.model-catalog.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let catalog = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    let live = AIModelOption(id: "gpt-6-luna", displayName: "GPT-6 Luna")
+    catalog.replace([live], for: .openAI)
+
+    let first = AIConversation(provider: .openAI, model: "gpt-5.4")
+    let second = AIConversation(provider: .openAI, model: "gpt-6-luna")
+    let model = providerSettingsFixture(conversations: [first, second], modelCatalog: catalog)
+    #expect(model.availableModels.contains(live))
+
+    model.select(second.id)
+    #expect(model.availableModels.contains(live))
+
+    let restored = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    #expect(restored.models(for: .openAI, compatibleModelID: "").contains(live))
 }
 
 @Test @MainActor func compatibleConfigurationIsValidatedAndDoesNotRequireAKey() {
