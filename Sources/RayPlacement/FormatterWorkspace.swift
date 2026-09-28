@@ -251,22 +251,42 @@ private extension SurfaceStateValue {
 
 struct FormatterWorkspaceView: View {
     @ObservedObject var model: FormatterWorkspaceModel
+    @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     @State private var inspectorMode = 0
+    @State private var compactPane = 0
+    @State private var inspectorExpanded = false
 
     var body: some View {
         VStack(spacing: LimaDesign.panelGap) {
             header
-            HSplitView {
-                editorPane(title: "SOURCE", text: $model.source, editable: true)
-                editorPane(title: "FORMATTED", text: $model.output, editable: false)
+            if workspaceSizeClass == .expanded {
+                HSplitView {
+                    editorPane(title: "SOURCE", text: $model.source, editable: true)
+                    editorPane(title: "FORMATTED", text: $model.output, editable: false)
+                }
+            } else {
+                compactEditor
             }
-            inspector
+            if workspaceSizeClass == .expanded {
+                inspector
+            } else {
+                compactInspector
+            }
         }
-        .padding(LimaDesign.windowPadding)
+        .padding(workspaceSizeClass.contentPadding)
         .background(Color.clear)
     }
 
+    @ViewBuilder
     private var header: some View {
+        if workspaceSizeClass == .expanded {
+            expandedHeader
+        } else {
+            compactHeader
+        }
+    }
+
+    private var expandedHeader: some View {
         VStack(spacing: 7) {
             HStack(spacing: LimaDesign.controlGap) {
                 LimaToolbarTitle(
@@ -306,6 +326,92 @@ struct FormatterWorkspaceView: View {
         .padding(.horizontal, LimaDesign.toolbarPadding)
         .padding(.vertical, 7)
         .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+    }
+
+    private var compactHeader: some View {
+        VStack(alignment: .leading, spacing: LimaSpacing.sm) {
+            HStack(spacing: LimaSpacing.sm) {
+                LimaToolbarTitle(symbol: "wand.and.stars", title: "Formatter")
+                Spacer(minLength: LimaSpacing.sm)
+                Menu {
+                    Button("Open File…", action: model.openFile)
+                    Button("Save Output…", action: model.saveOutput).disabled(model.output.isEmpty)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: 28, height: 28)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
+                .help("Formatter actions")
+            }
+
+            HStack(spacing: LimaSpacing.sm) {
+                Picker("Format", selection: $model.kind) {
+                    ForEach(FormatterDocumentKind.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .frame(maxWidth: .infinity)
+                Picker("Style", selection: $model.style) {
+                    ForEach(FormatterOutputStyle.allCases, id: \.self) { Text($0.title).tag($0) }
+                }
+                .frame(maxWidth: .infinity)
+                Button(action: model.format) {
+                    Image(systemName: "wand.and.stars")
+                        .frame(width: 30, height: 28)
+                }
+                .limaButton(prominent: true)
+                .keyboardShortcut(.return, modifiers: [.command])
+                .help("Format document")
+            }
+
+            if model.kind == .edi {
+                Picker("Segment ending", selection: $model.segmentEnding) {
+                    ForEach(FormatterWorkspaceModel.SegmentEnding.allCases) { Text($0.title).tag($0) }
+                }
+                .frame(maxWidth: .infinity)
+            }
+
+            Label(model.statusText, systemImage: statusSymbol)
+                .limaFont(.caption.weight(.medium))
+                .foregroundStyle(model.errorMessage == nil ? LimaTheme.textSecondary : LimaColors.warning)
+                .lineLimit(1)
+        }
+        .padding(LimaDesign.toolbarPadding)
+        .background(LimaTheme.surfaceSecondary)
+    }
+
+    private var compactEditor: some View {
+        VStack(spacing: 0) {
+            Picker("Visible document", selection: $compactPane) {
+                Text("Input").tag(0)
+                Text("Output").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding(LimaSpacing.sm)
+            GlassHairline()
+            if compactPane == 0 {
+                editorPane(title: "SOURCE", text: $model.source, editable: true)
+            } else {
+                editorPane(title: "FORMATTED", text: $model.output, editable: false)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(LimaTheme.surfaceSecondary)
+    }
+
+    private var compactInspector: some View {
+        DisclosureGroup(isExpanded: $inspectorExpanded) {
+            inspector
+                .frame(height: 190)
+                .padding(.top, LimaSpacing.sm)
+        } label: {
+            Label(model.statusText, systemImage: statusSymbol)
+                .limaFont(.caption.weight(.medium))
+                .foregroundStyle(model.errorMessage == nil ? LimaTheme.textSecondary : LimaColors.warning)
+                .lineLimit(1)
+        }
+        .padding(LimaSpacing.md)
+        .background(LimaTheme.surfaceSecondary)
     }
 
     private func editorPane(title: String, text: Binding<String>, editable: Bool) -> some View {
@@ -350,10 +456,8 @@ struct FormatterWorkspaceView: View {
                 .accessibilityLabel("Formatted document")
             }
         }
-        .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-        .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+        .frame(minWidth: workspaceSizeClass == .expanded ? 260 : 0, maxWidth: .infinity, maxHeight: .infinity)
+        .background(LimaTheme.fieldBackground)
     }
 
     private var inspector: some View {

@@ -2496,6 +2496,7 @@ struct AIChatWorkspaceView: View {
     @ObservedObject private var mcpStore: MCPServerStore
     @ObservedObject private var nativeToolStore: LimaAIToolStore
     @ObservedObject private var browserBridge = BrowserBridgeService.shared
+    @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     let isEmbedded: Bool
     let onDictation: (() -> Void)?
     @State private var apiKey = ""
@@ -2510,6 +2511,7 @@ struct AIChatWorkspaceView: View {
     }
     @State private var showKey = false
     @State private var showingProviderSetup = false
+    @State private var showingConversationSidebar = false
     @State private var keyMessage: String?
 
     private var filteredConversations: [AIConversation] {
@@ -2533,8 +2535,6 @@ struct AIChatWorkspaceView: View {
         Group {
             if isEmbedded {
                 workspacePanes
-                    .padding(.horizontal, 8)
-                    .padding(.bottom, 5)
             } else {
                 ZStack {
                     LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
@@ -2551,28 +2551,30 @@ struct AIChatWorkspaceView: View {
             }
         }
         .tint(SettingsStore.shared.accentTheme.readablePrimary)
+        .sheet(isPresented: $showingConversationSidebar) {
+            sidebar
+                .frame(minWidth: 280, idealWidth: 340, minHeight: 420, idealHeight: 620)
+        }
     }
 
     @ViewBuilder
     private var workspacePanes: some View {
         if isEmbedded {
-            GeometryReader { proxy in
-                if proxy.size.width < 520 {
+            if let sidebarWidth = workspaceSizeClass.contextSidebarWidth {
+                HStack(spacing: 0) {
+                    sidebar
+                        .frame(width: sidebarWidth)
+
+                    Rectangle()
+                        .fill(LimaDesign.separator)
+                        .frame(width: LimaDesign.hairlineWidth)
+
                     conversation
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    HStack(spacing: 0) {
-                        sidebar
-                            .frame(width: min(220, max(180, proxy.size.width * 0.32)))
-
-                        Rectangle()
-                            .fill(LimaDesign.separator)
-                            .frame(width: LimaDesign.hairlineWidth)
-
-                        conversation
-                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                 }
+            } else {
+                conversation
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         } else {
             HStack(spacing: 10) {
@@ -2783,6 +2785,10 @@ struct AIChatWorkspaceView: View {
             .accessibilityLabel("New chat")
 
             Menu {
+                if isEmbedded, workspaceSizeClass == .compact {
+                    Button("Show Conversations…") { showingConversationSidebar = true }
+                    Divider()
+                }
                 Button("Provider Settings…") { showingProviderSetup = true }
                 Button(model.showActivity ? "Hide turn details" : "Show turn details") {
                     model.showActivity.toggle()

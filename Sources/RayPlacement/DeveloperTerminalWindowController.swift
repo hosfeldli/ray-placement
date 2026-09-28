@@ -176,10 +176,11 @@ private struct TerminalSurface: NSViewRepresentable {
 
 struct DeveloperTerminalView: View {
     @ObservedObject var model: DeveloperTerminalModel
+    @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
 
     var body: some View {
-        VStack(spacing: 6) {
-            HStack(spacing: 7) {
+        VStack(spacing: 0) {
+            HStack(spacing: LimaSpacing.sm) {
                 Label("Terminal", systemImage: "terminal")
                     .limaFont(.caption.weight(.semibold))
                 Button {
@@ -199,24 +200,24 @@ struct DeveloperTerminalView: View {
                     Button("Clear Screen") { model.clearScreen() }
                     Button("Restart Shell") { model.restartShell() }
                 } label: {
-                    Image(systemName: "ellipsis.circle")
+                    Image(systemName: "ellipsis")
+                        .frame(width: 28, height: 28)
                 }
                 .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
                 .help("Terminal options")
             }
-            .padding(.horizontal, 10)
-            .frame(height: 28)
+            .padding(.horizontal, workspaceSizeClass == .compact ? LimaSpacing.sm : LimaSpacing.md)
+            .frame(height: LimaDesign.toolbarHeight)
+            .background(LimaTheme.surfaceSecondary)
+            GlassHairline()
             TerminalSurface(model: model)
-            .padding(8)
-            .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaColors.border, lineWidth: LimaDesign.borderWidth))
-            .onTapGesture { model.focus() }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(9)
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel("Terminal")
-            .onAppear { model.startIfNeeded() }
+                .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
+                .onTapGesture { model.focus() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Terminal")
+                .onAppear { model.startIfNeeded() }
         }
     }
 }

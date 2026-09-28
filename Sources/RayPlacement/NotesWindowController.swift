@@ -66,6 +66,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     let aiChatModel: AIChatViewModel
     let terminalModel: DeveloperTerminalModel
     let formatterModel: FormatterWorkspaceModel
+    private let onOpenSettings: () -> Void
     var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
     private var dictationHUD: DictationHUDController!
@@ -84,11 +85,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     init(
         aiChatModel: AIChatViewModel,
         terminalModel: DeveloperTerminalModel,
-        formatterModel: FormatterWorkspaceModel
+        formatterModel: FormatterWorkspaceModel,
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self.aiChatModel = aiChatModel
         self.terminalModel = terminalModel
         self.formatterModel = formatterModel
+        self.onOpenSettings = onOpenSettings
         let store = NotesStore.shared
         let conversations = DictationConversationStore.shared
         self.store = store
@@ -518,6 +521,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             dockLeft: { [weak self] in self?.dock(.left) },
             dockRight: { [weak self] in self?.dock(.right) },
             restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
+            openSettings: onOpenSettings,
             setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
             setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
             quickNoteTargetMode: { [weak self] in self?.quickNoteTargetMode ?? .lastQuickNote },
@@ -644,6 +648,7 @@ private struct WorkspaceView: View {
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
+    let openSettings: () -> Void
     let setQuickNoteTarget: (UUID) -> Void
     let setQuickNoteTargetMode: (QuickNoteTargetMode) -> Void
     let quickNoteTargetMode: () -> QuickNoteTargetMode
@@ -687,10 +692,10 @@ private struct WorkspaceView: View {
     private var regularNotes: [MarkdownNote] { filteredNotes.filter { !$0.isPinned && !$0.isFavorite } }
 
     var body: some View {
-        ZStack {
-            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+        GeometryReader { proxy in
+            let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
             HStack(spacing: 0) {
-                workspaceModuleRail
+                workspaceModuleRail(sizeClass: sizeClass)
                 Rectangle()
                     .fill(LimaDesign.separator)
                     .frame(width: LimaDesign.hairlineWidth)
@@ -699,14 +704,16 @@ private struct WorkspaceView: View {
                         workspaceHeader
                         GlassHairline()
                     }
-                    workspaceModule
+                    workspaceModule(sizeClass: sizeClass)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
-            .padding(.horizontal, LimaDesign.windowPadding)
-            .padding(.bottom, LimaDesign.windowPadding)
-            .padding(.top, 7)
+            .environment(\.limaWorkspaceSizeClass, sizeClass)
+            .padding(.horizontal, sizeClass.contentPadding)
+            .padding(.bottom, sizeClass.contentPadding)
+            .padding(.top, LimaSpacing.sm)
         }
+        .background(LimaTheme.windowBackground)
         .frame(
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
@@ -786,6 +793,10 @@ private struct WorkspaceView: View {
                 editingTemplate = nil
             }
         }
+        .sheet(isPresented: $showContextShelf) {
+            ContextShelfView(store: contextShelf)
+                .frame(minWidth: 420, idealWidth: 540, minHeight: 420, idealHeight: 620)
+        }
         .sheet(item: $compareRevision) { revision in
             RevisionDiffSheet(current: store.selectedNote?.content ?? "", revision: revision)
         }
@@ -810,8 +821,7 @@ private struct WorkspaceView: View {
         HStack(spacing: 8) {
             LimaToolbarTitle(
                 symbol: workspaceModuleSymbol(presentation.activeModule),
-                title: workspaceModuleTitle(presentation.activeModule),
-                subtitle: "Workspace"
+                title: workspaceModuleTitle(presentation.activeModule)
             )
             .frame(maxWidth: 240, alignment: .leading)
 
@@ -849,7 +859,7 @@ private struct WorkspaceView: View {
         .frame(height: 42)
     }
 
-    private var workspaceModuleRail: some View {
+    private func workspaceModuleRail(sizeClass: LimaWorkspaceSizeClass) -> some View {
         VStack(spacing: 8) {
             ForEach(LimaWorkspaceModule.allCases, id: \.self) { module in
                 let selected = presentation.activeModule == module
@@ -867,39 +877,69 @@ private struct WorkspaceView: View {
                 .accessibilityLabel(workspaceModuleTitle(module))
             }
             Spacer(minLength: 0)
+
+            Rectangle()
+                .fill(LimaDesign.separator)
+                .frame(width: 24, height: LimaDesign.hairlineWidth)
+                .padding(.bottom, 2)
+
+            Button { showContextShelf = true } label: {
+                Image(systemName: "tray.full")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .frame(width: 36, height: 36)
+                    .limaSelection(false, radius: LimaRadius.control)
+            }
+            .buttonStyle(.plain)
+            .help("Context Shelf")
+            .accessibilityLabel("Open Context Shelf")
+
+            Button(action: openSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .frame(width: 36, height: 36)
+                    .limaSelection(false, radius: LimaRadius.control)
+            }
+            .buttonStyle(.plain)
+            .help("Settings")
+            .accessibilityLabel("Open Settings")
         }
-        .padding(.top, 8)
-        .frame(minWidth: 48, maxWidth: 48, maxHeight: .infinity, alignment: .top)
+        .padding(.vertical, LimaSpacing.sm)
+        .frame(minWidth: sizeClass.moduleRailWidth, maxWidth: sizeClass.moduleRailWidth, maxHeight: .infinity, alignment: .top)
     }
 
-    private var workspaceModule: some View {
-        GeometryReader { proxy in
-            let isCompact = proxy.size.width < 520
-            switch presentation.activeModule {
-            case .notes:
-                if presentation.sidebarVisible && !presentation.notesFocusMode && !isCompact {
-                    HStack(spacing: 0) {
-                        sidebar.frame(width: min(220, max(180, proxy.size.width * 0.34)))
-                        Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
+    private func workspaceModule(sizeClass: LimaWorkspaceSizeClass) -> some View {
+        GeometryReader { _ in
+            Group {
+                switch presentation.activeModule {
+                case .notes:
+                    if let sidebarWidth = sizeClass.contextSidebarWidth,
+                       presentation.sidebarVisible,
+                       !presentation.notesFocusMode {
+                        HStack(spacing: 0) {
+                            sidebar.frame(width: sidebarWidth)
+                            Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
+                            editor
+                                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    } else {
                         editor
-                            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                } else {
-                    editor
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                case .ai:
+                    AIChatWorkspaceView(
+                        model: aiChatModel,
+                        isEmbedded: true,
+                        onDictation: { dictation.performPrimaryAction(target: .aiPrompt) }
+                    )
+                case .dictation:
+                    dictationSection
+                case .terminal:
+                    DeveloperTerminalView(model: terminalModel)
+                case .formatter:
+                    FormatterWorkspaceView(model: formatterModel)
                 }
-            case .ai:
-                AIChatWorkspaceView(
-                    model: aiChatModel,
-                    isEmbedded: true,
-                    onDictation: { dictation.performPrimaryAction(target: .aiPrompt) }
-                )
-            case .dictation:
-                dictationSection
-            case .terminal:
-                DeveloperTerminalView(model: terminalModel)
-            case .formatter:
-                FormatterWorkspaceView(model: formatterModel)
             }
         }
     }
@@ -926,7 +966,7 @@ private struct WorkspaceView: View {
 
     private var sidebar: some View {
         noteBrowser(compact: false)
-            .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
+            .background(LimaTheme.surfaceSecondary)
     }
 
     private var pinnedReferenceBar: some View {

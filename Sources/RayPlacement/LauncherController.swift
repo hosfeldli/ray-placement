@@ -50,7 +50,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let controller = NotesWindowController(
             aiChatModel: aiChatModel,
             terminalModel: terminalModel,
-            formatterModel: formatterModel
+            formatterModel: formatterModel,
+            onOpenSettings: { [weak self] in self?.showSettings() }
         )
         controller.onLauncherQueryDictation = { [weak self] delta in
             guard let self, !delta.isEmpty else { return }
