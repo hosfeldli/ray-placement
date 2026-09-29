@@ -25,6 +25,7 @@ struct HomeWorkspaceView: View {
     let openCommandSearch: (String) -> Void
 
     @State private var query = ""
+    @State private var showsAllTools = false
 
     private var searchTerm: String {
         query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -51,6 +52,11 @@ struct HomeWorkspaceView: View {
             $0.title.localizedCaseInsensitiveContains(searchTerm)
                 || $0.detail.localizedCaseInsensitiveContains(searchTerm)
         }
+    }
+
+    private var displayedActions: [HomeQuickAction] {
+        guard searchTerm.isEmpty else { return matchingActions }
+        return showsAllTools ? quickActions : Array(quickActions.prefix(6))
     }
 
     private var matchingNotes: [MarkdownNote] {
@@ -124,16 +130,37 @@ struct HomeWorkspaceView: View {
                 .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
                 .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
 
+                if searchTerm.isEmpty, let note = matchingNotes.first {
+                    continueWorkCard(note)
+                }
+
                 VStack(alignment: .leading, spacing: 10) {
-                    LimaSectionLabel(searchTerm.isEmpty ? "QUICK ACCESS" : "MATCHING TOOLS", detail: "\(matchingActions.count) destinations")
-                    if matchingActions.isEmpty {
+                    HStack {
+                        LimaSectionLabel(
+                            searchTerm.isEmpty ? "SUGGESTED FOR YOU" : "MATCHING TOOLS",
+                            detail: searchTerm.isEmpty
+                                ? (showsAllTools ? "\(quickActions.count) local tools" : "6 workspace essentials")
+                                : "\(matchingActions.count) destinations"
+                        )
+                        Spacer()
+                        if searchTerm.isEmpty {
+                            Button(showsAllTools ? "Show fewer" : "Show all tools") {
+                                showsAllTools.toggle()
+                            }
+                            .buttonStyle(.borderless)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(LimaTheme.accentInk)
+                            .accessibilityHint(showsAllTools ? "Show only essential tools" : "Show every local tool")
+                        }
+                    }
+                    if displayedActions.isEmpty {
                         Text("No matching tools. Press Return to search every Lima command and app.")
                             .limaFont(.caption)
                             .foregroundStyle(LimaTheme.textSecondary)
                             .padding(.vertical, 8)
                     } else {
                         LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 10)], alignment: .leading, spacing: 10) {
-                            ForEach(matchingActions) { item in
+                            ForEach(displayedActions) { item in
                                 actionCard(item.title, detail: item.detail, symbol: item.symbol) {
                                     perform(item)
                                 }
@@ -239,6 +266,53 @@ struct HomeWorkspaceView: View {
         case .commandSearch(let term):
             openCommandSearch(term)
         }
+    }
+
+    private func continueWorkCard(_ note: MarkdownNote) -> some View {
+        Button {
+            store.selectNote(note.id)
+            open(.notes)
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: note.isPinned ? "pin.fill" : "note.text")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(LimaTheme.accentInk)
+                    .frame(width: 38, height: 38)
+                    .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("CONTINUE WORKING")
+                        .font(.system(size: 9, weight: .bold))
+                        .tracking(0.8)
+                        .foregroundStyle(LimaTheme.textTertiary)
+                    Text(note.displayTitle)
+                        .limaFont(.callout.weight(.semibold))
+                        .foregroundStyle(LimaTheme.textPrimary)
+                        .lineLimit(1)
+                    Text(note.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                VStack(alignment: .trailing, spacing: 4) {
+                    Text(note.modifiedAt, style: .relative)
+                        .limaFont(.caption2)
+                        .foregroundStyle(LimaTheme.textTertiary)
+                    Label("Open", systemImage: "arrow.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(LimaTheme.accentInk)
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
+                .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+            .contentShape(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Continue working in \(note.displayTitle)")
+        .accessibilityHint("Open this local note in Notes")
     }
 
     private func actionCard(

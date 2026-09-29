@@ -13,7 +13,9 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
-    static let primaryDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter]
+    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .grammar, .dictation]
+    static let toolDestinations: [LimaWorkspaceModule] = [.extensions, .clipboard, .terminal, .formatter]
+    static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
 
     var title: String {
         switch self {
@@ -125,18 +127,8 @@ struct LimaWayfinderRail: View {
 
             ScrollView(.vertical) {
                 VStack(spacing: 6) {
-                    ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
-                        Button { select(module) } label: {
-                            railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
-                        }
-                        .buttonStyle(.plain)
-                        .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber)), modifiers: [.command, .option])
-                        .help("\(module.title) · ⌥⌘\(module.shortcutNumber)")
-                        .accessibilityLabel(module.title)
-                        .accessibilityValue(module == current ? "Current workspace" : "")
-                        .accessibilityAddTraits(module == current ? [.isSelected] : [])
-                        .onHover { hovered = $0 ? module.rawValue : nil }
-                    }
+                    railGroup("WORKSPACE", destinations: LimaWorkspaceModule.workspaceDestinations)
+                    railGroup("TOOLS", destinations: LimaWorkspaceModule.toolDestinations)
                 }
                 .padding(.vertical, 2)
             }
@@ -183,6 +175,33 @@ struct LimaWayfinderRail: View {
         .background(LimaTheme.navigationBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace navigation")
+    }
+
+    @ViewBuilder
+    private func railGroup(_ title: String, destinations: [LimaWorkspaceModule]) -> some View {
+        if labeled {
+            Text(title)
+                .font(.system(size: 8.5, weight: .bold))
+                .tracking(0.9)
+                .foregroundStyle(LimaTheme.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 11)
+                .padding(.top, title == "TOOLS" ? 8 : 2)
+                .padding(.bottom, 1)
+        }
+
+        ForEach(destinations, id: \.self) { module in
+            Button { select(module) } label: {
+                railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber)), modifiers: [.command, .option])
+            .help("\(module.title) · ⌥⌘\(module.shortcutNumber)")
+            .accessibilityLabel(module.title)
+            .accessibilityValue(module == current ? "Current workspace" : "")
+            .accessibilityAddTraits(module == current ? [.isSelected] : [])
+            .onHover { hovered = $0 ? module.rawValue : nil }
+        }
     }
 
     private func railLabel(_ title: String, symbol: String, selected: Bool, hovered: Bool) -> some View {

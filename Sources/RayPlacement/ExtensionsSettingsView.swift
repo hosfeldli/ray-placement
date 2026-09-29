@@ -6,6 +6,21 @@ struct ExtensionsSettingsView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var storeModel: ExtensionStoreModel
     let reloadExtensions: () -> Void
+    /// Workspace mode exposes only installed and local-development packages.
+    /// The Settings window can still opt into the catalog explicitly.
+    let localOnly: Bool
+
+    init(
+        viewModel: LauncherViewModel,
+        storeModel: ExtensionStoreModel,
+        reloadExtensions: @escaping () -> Void,
+        localOnly: Bool = false
+    ) {
+        _viewModel = ObservedObject(wrappedValue: viewModel)
+        _storeModel = ObservedObject(wrappedValue: storeModel)
+        self.reloadExtensions = reloadExtensions
+        self.localOnly = localOnly
+    }
 
     @State private var tab: ExtensionTab = .installed
     @State private var query = ""
@@ -23,6 +38,10 @@ struct ExtensionsSettingsView: View {
         case updates = "Updates"
         case developer = "Developer"
         var id: String { rawValue }
+    }
+
+    private var visibleTabs: [ExtensionTab] {
+        localOnly ? [.installed, .developer] : ExtensionTab.allCases
     }
 
     private struct InstalledPackage: Identifiable {
@@ -139,13 +158,17 @@ struct ExtensionsSettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if localOnly {
+                localWorkspaceHeader
+            }
+
             HStack {
                 Picker("Extension area", selection: $tab) {
-                    ForEach(ExtensionTab.allCases) { Text($0.rawValue).tag($0) }
+                    ForEach(visibleTabs) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 Spacer()
-                if !updates.isEmpty {
+                if !localOnly, !updates.isEmpty {
                     Text("\(updates.count) update\(updates.count == 1 ? "" : "s")")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.orange)
@@ -162,11 +185,14 @@ struct ExtensionsSettingsView: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(LimaTheme.textTertiary)
                 }
-                Button { reloadExtensions(); storeModel.load() } label: {
+                Button {
+                    reloadExtensions()
+                    if !localOnly { storeModel.load() }
+                } label: {
                     Image(systemName: "arrow.clockwise")
                 }
                 .buttonStyle(.borderless)
-                .help("Reload installed extensions and refresh the catalog")
+                .help(localOnly ? "Reload installed extensions" : "Reload installed extensions and refresh the catalog")
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
@@ -184,7 +210,7 @@ struct ExtensionsSettingsView: View {
             }
         }
         .onAppear {
-            storeModel.load()
+            if !localOnly { storeModel.load() }
             reloadExtensions()
         }
         .alert("Uninstall Extension?", isPresented: Binding(get: { confirmUninstallID != nil }, set: { if !$0 { confirmUninstallID = nil } })) {
@@ -198,11 +224,54 @@ struct ExtensionsSettingsView: View {
         }
     }
 
+    private var localWorkspaceHeader: some View {
+        HStack(spacing: 11) {
+            Image(systemName: "puzzlepiece.extension.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(LimaTheme.accentInk)
+                .frame(width: 34, height: 34)
+                .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Installed extensions")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(LimaTheme.textPrimary)
+                Text("Manage the tools already available on this Mac.")
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+            Spacer(minLength: 8)
+            Text("\(installed.count.formatted()) local")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(LimaTheme.textSecondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(LimaTheme.surfaceSecondary, in: Capsule())
+            Button("Open Folder") {
+                NSWorkspace.shared.open(ApplicationPaths.extensions)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Open Lima’s local Extensions folder")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(LimaTheme.surfacePrimary)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
+        }
+    }
+
     private var installedView: some View {
         ScrollView {
             LazyVStack(spacing: 8) {
                 if installed.isEmpty {
-                    emptyState("No extensions installed", detail: "Install a package from Available or add a local extension folder.", symbol: "puzzlepiece.extension")
+                    emptyState(
+                        "No extensions installed",
+                        detail: localOnly
+                            ? "Add a package to Lima’s Extensions folder, then reload this workspace."
+                            : "Install a package from Available or add a local extension folder.",
+                        symbol: "puzzlepiece.extension"
+                    )
                 } else {
                     ForEach(installed) { package in
                         installedCard(package)
@@ -227,7 +296,7 @@ struct ExtensionsSettingsView: View {
                     Text("\(package.source) · \(package.lifecycleState.rawValue) · v\(package.version) · \(package.commandCount) commands · \(package.tools.count) tools · \(package.skills.count) skills · \(package.agents.count) agents")
                         .font(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
-                    if let available = storeModel.entries.first(where: { $0.id == package.id }) {
+                    if !localOnly, let available = storeModel.entries.first(where: { $0.id == package.id }) {
                         Text("Available v\(available.version)")
                             .font(.caption2)
                             .foregroundStyle(LimaTheme.textTertiary)
@@ -237,7 +306,7 @@ struct ExtensionsSettingsView: View {
                 Text(package.enabled ? "Enabled" : "Disabled")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(package.enabled ? .green : .secondary)
-                if let update = updates.first(where: { $0.installed.id == package.id }) {
+                if !localOnly, let update = updates.first(where: { $0.installed.id == package.id }) {
                     Button("Update") { storeModel.install(update.entry) }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
@@ -252,7 +321,7 @@ struct ExtensionsSettingsView: View {
                         if ExtensionPackageManager.shared.isLogicallyRemoved(package.id) { Button("Restore Extension") { restoreBundled(package) } }
                         else { Button("Unload Extension", role: .destructive) { removeBundled(package) } }
                     } else {
-                        if let catalogEntry = storeModel.entries.first(where: { $0.id == package.id }) {
+                        if !localOnly, let catalogEntry = storeModel.entries.first(where: { $0.id == package.id }) {
                             Button("Reinstall") { storeModel.install(catalogEntry) }
                                 .disabled(storeModel.installingID != nil)
                         }

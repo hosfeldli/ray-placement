@@ -935,7 +935,8 @@ private struct WorkspaceView: View {
                     ExtensionsSettingsView(
                         viewModel: launcherViewModel,
                         storeModel: extensionStoreModel,
-                        reloadExtensions: reloadExtensions
+                        reloadExtensions: reloadExtensions,
+                        localOnly: true
                     )
                     .background(LimaTheme.surfacePrimary)
                 case .clipboard:
