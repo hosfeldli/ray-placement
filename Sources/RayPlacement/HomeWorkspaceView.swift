@@ -34,6 +34,7 @@ struct HomeWorkspaceView: View {
         [
             HomeQuickAction(title: "Notes", detail: "Create and organize local notes", symbol: "note.text", destination: .workspace(.notes)),
             HomeQuickAction(title: "AI Chat", detail: "Ask, draft, or analyze", symbol: "sparkles", destination: .workspace(.ai)),
+            HomeQuickAction(title: "Grammar", detail: "Check writing locally on this Mac", symbol: "textformat.abc", destination: .workspace(.grammar)),
             HomeQuickAction(title: "Dictation", detail: "Record or review transcripts", symbol: "waveform", destination: .workspace(.dictation)),
             HomeQuickAction(title: "Extensions", detail: "Manage installed tools", symbol: "puzzlepiece.extension", destination: .workspace(.extensions)),
             HomeQuickAction(title: "Clipboard", detail: "Search copied text on this Mac", symbol: "clipboard", destination: .workspace(.clipboard)),

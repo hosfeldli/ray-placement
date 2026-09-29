@@ -17,6 +17,7 @@ enum LimaWorkspaceModule: String, CaseIterable, Codable, Hashable {
     case home
     case notes
     case ai
+    case grammar
     case dictation
     case extensions
     case clipboard

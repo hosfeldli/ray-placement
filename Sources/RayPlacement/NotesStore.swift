@@ -29,12 +29,14 @@ final class NotesStore: ObservableObject {
 
     private let persistenceQueue = DispatchQueue(label: "dev.rayplacement.notes-persistence", qos: .utility)
     private let persistenceGeneration = PersistenceGeneration()
+    private let persistenceEnabled: Bool
     private var pendingSave: DispatchWorkItem?
     private var pendingRevisionSnapshots: [UUID: NoteRevision] = [:]
     private var revisionWorkItems: [UUID: DispatchWorkItem] = [:]
     private var revisionGenerations: [UUID: UUID] = [:]
 
     init() {
+        persistenceEnabled = true
         let loaded = Self.loadNotes()
         notes = loaded.notes
         userTemplates = Self.loadUserTemplates()
@@ -63,6 +65,17 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    /// An isolated in-memory store for offscreen visual previews and fixtures.
+    init(visualFixtures: [MarkdownNote]) {
+        persistenceEnabled = false
+        notes = visualFixtures
+        selectedNoteID = visualFixtures.first?.id
+        lastError = nil
+        userTemplates = []
+        recoveryURL = nil
+        sortNotes()
+    }
+
     func replace(with replacement: [MarkdownNote]) throws {
         guard replacement.count <= Self.maximumNotes,
               replacement.allSatisfy({ $0.title.count <= 200 && $0.content.count <= Self.maximumCharactersPerNote }) else {
@@ -74,7 +87,7 @@ final class NotesStore: ObservableObject {
         noteBackStack.removeAll()
         noteForwardStack.removeAll()
         noteScrollOffsets.removeAll()
-        try Self.persist(notes)
+        if persistenceEnabled { try Self.persist(notes) }
         lastError = nil
     }
 
@@ -415,6 +428,7 @@ final class NotesStore: ObservableObject {
     }
 
     func flush() {
+        guard persistenceEnabled else { return }
         pendingSave?.cancel()
         pendingSave = nil
         for (identifier, snapshot) in pendingRevisionSnapshots {
@@ -443,6 +457,7 @@ final class NotesStore: ObservableObject {
     }
 
     private func persistSelectedNote() {
+        guard persistenceEnabled else { return }
         WorkspaceStateRegistry.shared.update {
             $0.selectedNoteID = selectedNoteID
             $0.notesSection = "notes"
@@ -499,6 +514,7 @@ final class NotesStore: ObservableObject {
     }
 
     private func scheduleSave() {
+        guard persistenceEnabled else { return }
         pendingSave?.cancel()
         let snapshot = notes
         let generation = persistenceGeneration.next()
@@ -525,6 +541,7 @@ final class NotesStore: ObservableObject {
     }
 
     private func persistUserTemplates() {
+        guard persistenceEnabled else { return }
         if let data = try? JSONEncoder().encode(userTemplates) {
             UserDefaults.standard.set(data, forKey: Self.userTemplatesKey)
         }

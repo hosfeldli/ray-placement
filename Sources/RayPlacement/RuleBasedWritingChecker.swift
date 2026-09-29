@@ -55,7 +55,7 @@ final class RuleBasedWritingChecker {
         progress: @escaping (String) -> Void = { _ in },
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
-        start(source: source, progress: progress, completion: completion)
+        start(source: source, forceLocal: true, progress: progress, completion: completion)
     }
 
     /// Compatibility façade for the existing writing-check callers. The
@@ -97,6 +97,7 @@ final class RuleBasedWritingChecker {
 
     private func start(
         source: String,
+        forceLocal: Bool = false,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
@@ -108,7 +109,7 @@ final class RuleBasedWritingChecker {
         beginUsage(for: source, operation: "Writing check")
         let id = UUID()
         operationID = id
-        correct(source: source, operationID: id, progress: progress) { [weak self] result in
+        correct(source: source, operationID: id, forceLocal: forceLocal, progress: progress) { [weak self] result in
             guard let self, self.operationID == id else { return }
             switch result {
             case .success(let corrected):
@@ -116,7 +117,7 @@ final class RuleBasedWritingChecker {
                     let review = try self.reviewer.review(
                         sourceText: source,
                         rewrittenText: corrected,
-                        engineTitle: self.engineTitle
+                        engineTitle: forceLocal ? "Harper" : self.engineTitle
                     )
                     self.finish(success: true, output: corrected.count)
                     completion(.success(review))
@@ -156,11 +157,12 @@ final class RuleBasedWritingChecker {
     private func correct(
         source: String,
         operationID: UUID,
+        forceLocal: Bool = false,
         progress: @escaping (String) -> Void,
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         guard operationID == self.operationID else { return }
-        guard usesAPI else {
+        guard !usesAPI || forceLocal else {
             progress("Checking locally…")
             correctIteratively(
                 source: source,

@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import RayPlacementCore
 import SwiftUI
 
 /// Offscreen renders only. No AppDelegate, screenshots of other apps, live AI,
@@ -34,7 +35,12 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
-                let home = HomeWorkspaceView(store: NotesStore.shared, open: { _ in }, openShelf: {}, openCommandSearch: { _ in })
+                let previewNotes = [
+                    MarkdownNote(title: "Release checklist", content: "# Release checklist\n\n- [x] Run the test suite\n- [ ] Review the final build"),
+                    MarkdownNote(title: "Workspace notes", content: "Keep project decisions close to the work."),
+                    MarkdownNote(title: "Ideas for later", content: "A small, searchable place for the next thought.")
+                ]
+                let home = HomeWorkspaceView(store: NotesStore(visualFixtures: previewNotes), open: { _ in }, openShelf: {}, openCommandSearch: { _ in })
                     .environment(\.colorScheme, dark ? .dark : .light)
                 if !(await render(home, size: NSSize(width: 1040, height: 700), appearance: appearance,
                                   url: directory.appendingPathComponent("workspace-home-\(dark ? "dark" : "light").png"))) {
@@ -45,6 +51,14 @@ enum LimaVisualAudit {
                 if !(await render(clipboard, size: NSSize(width: 1040, height: 700), appearance: appearance,
                                   url: directory.appendingPathComponent("workspace-clipboard-\(dark ? "dark" : "light").png"))) {
                     failures += 1
+                }
+                for width: CGFloat in [420, 600, 1040] {
+                    let grammar = GrammarWorkspaceView()
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(grammar, size: NSSize(width: width, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("workspace-grammar-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
                 }
                 for width: CGFloat in [420, 600, 1040] {
                     let ai = WayfinderAuditAI()
@@ -125,7 +139,7 @@ private struct WayfinderAuditWorkspace: View {
                     }
                     Spacer()
                     LimaStatusLine("Ready", symbol: "checkmark.circle", tint: LimaTheme.accentInk,
-                                   detail: "⌥⌘1–6 Switch · ⌥⌘0 Return")
+                                   detail: "⌥⌘1–9 Switch · ⌥⌘0 Return")
                 }
                 .padding(16)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)

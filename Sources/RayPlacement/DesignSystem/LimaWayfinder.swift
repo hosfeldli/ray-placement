@@ -13,13 +13,14 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
-    static let primaryDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .dictation, .extensions, .clipboard]
+    static let primaryDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter]
 
     var title: String {
         switch self {
         case .home: "Home"
         case .notes: "Notes"
         case .ai: "AI"
+        case .grammar: "Grammar"
         case .dictation: "Dictation"
         case .extensions: "Extensions"
         case .clipboard: "Clipboard"
@@ -33,6 +34,7 @@ extension LimaWorkspaceModule {
         case .home: "house"
         case .notes: "note.text"
         case .ai: "sparkles"
+        case .grammar: "textformat.abc"
         case .dictation: "waveform"
         case .extensions: "puzzlepiece.extension"
         case .clipboard: "clipboard"
@@ -47,11 +49,12 @@ extension LimaWorkspaceModule {
         case .home: "1"
         case .notes: "2"
         case .ai: "3"
-        case .dictation: "4"
-        case .extensions: "5"
-        case .clipboard: "6"
-        case .terminal: "7"
-        case .formatter: "8"
+        case .grammar: "4"
+        case .dictation: "5"
+        case .extensions: "6"
+        case .clipboard: "7"
+        case .terminal: "8"
+        case .formatter: "9"
         }
     }
 }
@@ -103,30 +106,42 @@ struct LimaWayfinderRail: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            HStack(spacing: 8) {
+            HStack(spacing: 9) {
                 LimaWayfinderMark()
                 if labeled {
-                    Text("LIMA").font(.system(size: 10, weight: .bold)).tracking(1.8)
-                        .foregroundStyle(LimaTheme.textSecondary)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Lima").font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(LimaTheme.textPrimary)
+                        Text("Search · Create · Do.").font(.system(size: 8.5, weight: .medium))
+                            .foregroundStyle(LimaTheme.textTertiary)
+                            .lineLimit(1)
+                    }
                 }
             }
-            .frame(height: 38)
+            .frame(height: 42)
             .frame(maxWidth: .infinity, alignment: labeled ? .leading : .center)
             .padding(.horizontal, labeled ? 9 : 0)
             .padding(.bottom, 8)
 
-            ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
-                Button { select(module) } label: {
-                    railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
+            ScrollView(.vertical) {
+                VStack(spacing: 6) {
+                    ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
+                        Button { select(module) } label: {
+                            railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
+                        }
+                        .buttonStyle(.plain)
+                        .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber)), modifiers: [.command, .option])
+                        .help("\(module.title) · ⌥⌘\(module.shortcutNumber)")
+                        .accessibilityLabel(module.title)
+                        .accessibilityValue(module == current ? "Current workspace" : "")
+                        .accessibilityAddTraits(module == current ? [.isSelected] : [])
+                        .onHover { hovered = $0 ? module.rawValue : nil }
+                    }
                 }
-                .buttonStyle(.plain)
-                .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber)), modifiers: [.command, .option])
-                .help("\(module.title) · ⌥⌘\(module.shortcutNumber)")
-                .accessibilityLabel(module.title)
-                .accessibilityValue(module == current ? "Current workspace" : "")
-                .accessibilityAddTraits(module == current ? [.isSelected] : [])
-                .onHover { hovered = $0 ? module.rawValue : nil }
+                .padding(.vertical, 2)
             }
+            .scrollIndicators(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
             Divider().padding(.horizontal, 8).padding(.vertical, 6)
 
@@ -147,7 +162,7 @@ struct LimaWayfinderRail: View {
             Spacer(minLength: 12)
 
             if labeled {
-                Text("⌥⌘ 1–6").font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text("⌥⌘ 1–9").font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(LimaTheme.textTertiary)
                     .help("Switch workspaces; ⌥⌘0 returns to the previous one")
                     .padding(.bottom, 6)

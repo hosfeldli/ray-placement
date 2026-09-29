@@ -926,6 +926,9 @@ private struct WorkspaceView: View {
                         isEmbedded: true,
                         onDictation: { dictation.performPrimaryAction(target: .aiPrompt) }
                     )
+                case .grammar:
+                    GrammarWorkspaceView()
+                        .background(LimaTheme.surfacePrimary)
                 case .dictation:
                     dictationSection
                 case .extensions:
