@@ -13,6 +13,7 @@ import Testing
     #expect(!AIProviderHTTP.failure(400, Data(secret.utf8)).contains(secret))
     #expect(AIProviderFailure.code(secret) == nil)
     #expect(AIProviderFailure.parameter(secret) == nil)
+    #expect(AIProviderFailure.parameter("tools[0].parameters.properties.sk_private_value.format") == "tools")
     #expect(AIProviderFailure.message(error: ["code": "invalid_prompt", "message": secret]) == "The input is invalid.")
 }
 
@@ -50,6 +51,57 @@ import Testing
         parameter: details.parameter,
         fallback: details.message
     ).contains(secret))
+}
+
+@Test func providerFailureMapsVerifiedToolSchemaPathToKnownLimaTool() throws {
+    let path = "tools[6].parameters.properties.urls.items.format"
+    let body = try JSONSerialization.data(withJSONObject: [
+        "error": [
+            "code": "invalid_request_error",
+            "param": path,
+            "message": "This provider text must not be shown."
+        ]
+    ])
+    let details = AIProviderFailure.details(data: body, status: 400)
+    #expect(details.parameter == path)
+
+    let parameters: [String: Any] = [
+        "type": "object",
+        "properties": [
+            "urls": [
+                "type": "array",
+                "items": ["type": "string", "format": "email"]
+            ]
+        ],
+        "required": ["urls"],
+        "additionalProperties": false
+    ]
+    var outgoingTools = Array(repeating: ["type": "mcp"] as [String: Any], count: 6)
+    outgoingTools.append([
+        "type": "function",
+        "name": "browser_open_tabs",
+        "parameters": parameters
+    ])
+
+    let toolName = AIProviderFailure.localToolName(
+        forSchemaParameter: details.parameter,
+        outgoingTools: outgoingTools
+    )
+    #expect(toolName == "browser_open_tabs")
+
+    let presentation = AIProviderFailure.presentation(
+        provider: "OpenAI",
+        model: "gpt-6-luna",
+        status: 400,
+        code: details.code,
+        parameter: details.parameter,
+        fallback: details.message,
+        toolName: toolName
+    )
+    #expect(presentation.contains("The model rejected a Lima tool schema."))
+    #expect(presentation.contains("Tool: browser_open_tabs"))
+    #expect(presentation.contains("Schema field: urls.items.format."))
+    #expect(!presentation.contains("This provider text must not be shown."))
 }
 
 @Test func responsesFailureSanitizesNestedAndTopLevelProviderErrors() throws {

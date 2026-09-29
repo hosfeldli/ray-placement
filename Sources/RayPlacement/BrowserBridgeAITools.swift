@@ -21,19 +21,19 @@ enum BrowserBridgeAITools {
         tool("browser_open_tabs", "Open up to 50 HTTPS URLs in one bounded batch. Every destination must have an explicit browser site grant before any tab opens; never submits forms or changes page content.",
              [
                 "urls": ["type": "array", "minItems": 1, "maxItems": 50,
-                         "items": ["type": "string", "format": "uri"]],
+                         "items": ["type": "string", "description": "An HTTPS URL previously resolved from granted browser content."]],
                 "background": ["type": "boolean"]
              ], risk: .navigation),
         tool("browser_focus_tab", "Focus one existing tab on an explicitly granted site. Never reads form values or changes page content.",
              [
                 "tab_id": ["type": "integer", "minimum": 0],
-                "expected_url": ["type": "string", "format": "uri"]
+                "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."]
              ], risk: .navigation),
         tool("browser_navigate_tab", "Navigate one existing tab between explicitly granted HTTPS sites. Never submits a form, saves a record, uploads, or changes page content.",
              [
                 "tab_id": ["type": "integer", "minimum": 0],
-                "expected_url": ["type": "string", "format": "uri"],
-                "url": ["type": "string", "format": "uri"]
+                "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."],
+                "url": ["type": "string", "description": "An HTTPS destination on an explicitly granted browser site."]
              ], risk: .navigation)
     ]
 

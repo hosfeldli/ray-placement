@@ -3,10 +3,21 @@ import Foundation
 /// Provider errors may echo prompts, document text, URLs, or keys. Only known
 /// categorical codes are retained; free-form response bodies never become logs.
 enum AIProviderFailure {
+    struct ToolSchemaPath: Equatable, Sendable {
+        let index: Int
+        let components: [String]
+
+        var field: String? {
+            let field = components.filter { $0 != "properties" }.joined(separator: ".")
+            return field.isEmpty ? nil : field
+        }
+    }
+
     struct Details: Equatable, Sendable {
         let message: String
         let code: String?
         let parameter: String?
+        let toolSchemaPath: ToolSchemaPath?
     }
 
     private static let messages: [String: String] = [
@@ -27,13 +38,34 @@ enum AIProviderFailure {
         "server_error": "The provider could not complete the request. Try again later."
     ]
 
+    private static let supportedSchemaPathKeywords: Set<String> = [
+        "type", "properties", "required", "additionalProperties", "description",
+        "enum", "items", "anyOf", "pattern", "minimum", "maximum",
+        "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
+        "maxItems", "format"
+    ]
+
+    private static let safeLimaToolNames: Set<String> = [
+        "read_screen_context", "search_files", "find_files", "list_directory",
+        "file_metadata", "read_file", "search_web", "read_web", "list_extensions",
+        "get_lima_status", "lima_connection_test", "browser_tabs", "browser_current",
+        "browser_read", "salesforce_read_case_links", "salesforce_resolve_case",
+        "salesforce_resolve_cases", "browser_open_tabs", "browser_focus_tab",
+        "browser_navigate_tab"
+    ]
+
+    private static let safeLimaSchemaPropertyNames: Set<String> = [
+        "query", "directory", "path", "start_line", "length", "url", "tab_id",
+        "case_number", "case_numbers", "urls", "background", "expected_url"
+    ]
+
     static func code(_ raw: Any?) -> String? {
         guard let value = raw as? String, messages[value] != nil else { return nil }
         return value
     }
 
     static func parameter(_ raw: Any?) -> String? {
-        guard let value = raw as? String, value.utf8.count <= 64 else { return nil }
+        guard let value = raw as? String, value.utf8.count <= 256 else { return nil }
         let exact = [
             "input", "model", "tools", "messages", "temperature", "max_tokens",
             "reasoning", "reasoning.effort", "reasoning.summary", "stream", "store",
@@ -41,14 +73,158 @@ enum AIProviderFailure {
             "contents", "generationConfig"
         ]
         if exact.contains(value) { return value }
-        // Provider array indexes and schema fragments can vary, but the only
-        // presentation-safe fact is that tool configuration was rejected.
+        if let path = sanitizedToolSchemaParameter(value) { return path }
         return value.hasPrefix("tools.") || value.hasPrefix("tools[") ? "tools" : nil
+    }
+
+    /// Only known built-in function names can be retained in persisted diagnostics.
+    static func localToolName(_ raw: String?) -> String? {
+        guard let raw, safeLimaToolNames.contains(raw) else { return nil }
+        return raw
+    }
+
+    /// Resolve a provider tool index against the exact outbound request. The
+    /// path is accepted only when it points at a schema field that Lima sent.
+    static func localToolName(
+        forSchemaParameter parameter: String?,
+        outgoingTools: [[String: Any]]
+    ) -> String? {
+        guard let path = toolSchemaPath(parameter),
+              outgoingTools.indices.contains(path.index) else {
+            return nil
+        }
+        let tool = outgoingTools[path.index]
+        guard tool["type"] as? String == "function",
+              let parameters = tool["parameters"] as? [String: Any],
+              schemaPathExists(path.components, in: parameters) else {
+            return nil
+        }
+        return localToolName(tool["name"] as? String)
+    }
+
+    static func toolSchemaField(_ parameter: String?) -> String? {
+        toolSchemaPath(parameter)?.field
+    }
+
+    private static func sanitizedToolSchemaParameter(_ value: String) -> String? {
+        guard let path = toolSchemaPath(value) else { return nil }
+        return "tools[\(path.index)].parameters.\(path.components.joined(separator: "."))"
+    }
+
+    private static func toolSchemaPath(_ raw: String?) -> ToolSchemaPath? {
+        guard let raw, raw.utf8.count <= 256 else { return nil }
+
+        let index: Int
+        let suffix: String
+        if raw.hasPrefix("tools[") {
+            guard let closing = raw.firstIndex(of: "]") else { return nil }
+            let digits = String(raw[raw.index(raw.startIndex, offsetBy: 6)..<closing])
+            guard let value = Int(digits), (0...255).contains(value) else { return nil }
+            index = value
+            suffix = String(raw[raw.index(after: closing)...])
+        } else if raw.hasPrefix("tools.") {
+            let remainder = String(raw.dropFirst("tools.".count))
+            guard let separator = remainder.firstIndex(of: "."),
+                  let value = Int(remainder[..<separator]),
+                  (0...255).contains(value) else {
+                return nil
+            }
+            index = value
+            suffix = String(remainder[separator...])
+        } else {
+            return nil
+        }
+
+        let parameterPrefix = ".parameters"
+        guard suffix.hasPrefix(parameterPrefix + ".") else { return nil }
+        var tail = String(suffix.dropFirst(parameterPrefix.count))
+        var components: [String] = []
+        while !tail.isEmpty {
+            guard tail.first == "." else { return nil }
+            tail.removeFirst()
+            let component = takeSchemaPathComponent(from: &tail)
+            guard !component.isEmpty else { return nil }
+
+            if component == "properties" {
+                guard tail.first == "." else { return nil }
+                tail.removeFirst()
+                let property = takeSchemaPathComponent(from: &tail)
+                guard isSafeSchemaPropertyName(property) else { return nil }
+                components.append("properties")
+                components.append(property)
+            } else if component == "items" {
+                components.append(component)
+            } else if let anyOfIndex = schemaAnyOfIndex(component) {
+                components.append("anyOf[\(anyOfIndex)]")
+            } else {
+                guard supportedSchemaPathKeywords.contains(component), tail.isEmpty else { return nil }
+                components.append(component)
+            }
+        }
+
+        guard let final = components.last, supportedSchemaPathKeywords.contains(final) else {
+            return nil
+        }
+        return ToolSchemaPath(index: index, components: components)
+    }
+
+    private static func takeSchemaPathComponent(from tail: inout String) -> String {
+        let end = tail.firstIndex(of: ".") ?? tail.endIndex
+        let component = String(tail[..<end])
+        tail = String(tail[end...])
+        return component
+    }
+
+    private static func isSafeSchemaPropertyName(_ value: String) -> Bool {
+        safeLimaSchemaPropertyNames.contains(value)
+    }
+
+    private static func schemaAnyOfIndex(_ value: String) -> Int? {
+        guard value.hasPrefix("anyOf["), value.hasSuffix("]") else { return nil }
+        let start = value.index(value.startIndex, offsetBy: "anyOf[".count)
+        let end = value.index(before: value.endIndex)
+        guard let index = Int(value[start..<end]), (0...63).contains(index) else { return nil }
+        return index
+    }
+
+    private static func schemaPathExists(_ components: [String], in root: [String: Any]) -> Bool {
+        var schema = root
+        var cursor = 0
+        while cursor < components.count {
+            switch components[cursor] {
+            case "properties":
+                guard cursor + 1 < components.count,
+                      let properties = schema["properties"] as? [String: Any],
+                      let property = properties[components[cursor + 1]] as? [String: Any] else {
+                    return false
+                }
+                schema = property
+                cursor += 2
+            case "items":
+                guard let items = schema["items"] as? [String: Any] else { return false }
+                schema = items
+                cursor += 1
+            default:
+                if let anyOfIndex = schemaAnyOfIndex(components[cursor]) {
+                    guard let branches = schema["anyOf"] as? [Any],
+                          branches.indices.contains(anyOfIndex),
+                          let branch = branches[anyOfIndex] as? [String: Any] else {
+                        return false
+                    }
+                    schema = branch
+                    cursor += 1
+                } else {
+                    return cursor == components.count - 1 && schema[components[cursor]] != nil
+                }
+            }
+        }
+        return false
     }
 
     static func details(error: [String: Any]? = nil, status: Int? = nil) -> Details {
         let knownCode = code(error?["code"]) ?? code(error?["type"])
-        let parameter = parameter(error?["param"]) ?? parameter(error?["parameter"])
+        let rawParameter = (error?["param"] as? String) ?? (error?["parameter"] as? String)
+        let parameter = parameter(rawParameter)
         let message: String
         if let knownCode, let knownMessage = messages[knownCode] {
             message = knownMessage
@@ -64,7 +240,12 @@ enum AIProviderFailure {
                     ?? "The provider reported a failed response. Check the model and request options."
             }
         }
-        return Details(message: message, code: knownCode, parameter: parameter)
+        return Details(
+            message: message,
+            code: knownCode,
+            parameter: parameter,
+            toolSchemaPath: toolSchemaPath(parameter)
+        )
     }
 
     static func details(data: Data, status: Int? = nil) -> Details {
@@ -87,7 +268,8 @@ enum AIProviderFailure {
         status: Int?,
         code: String?,
         parameter: String?,
-        fallback: String
+        fallback: String,
+        toolName: String? = nil
     ) -> String {
         let safeModel = safeModelIdentifier(model)
         var lines = ["\(provider) rejected this request"]
@@ -95,7 +277,13 @@ enum AIProviderFailure {
         if let status, (100...599).contains(status) { facts.append("HTTP \(status)") }
         if let safeModel { facts.append(safeModel) }
         if !facts.isEmpty { lines.append(facts.joined(separator: " · ")) }
-        if code == "unsupported_parameter", let parameter {
+        if let field = toolSchemaField(parameter) {
+            lines.append("The model rejected a Lima tool schema.")
+            if let toolName = localToolName(toolName) {
+                lines.append("Tool: \(toolName)")
+            }
+            lines.append("Schema field: \(field).")
+        } else if code == "unsupported_parameter", let parameter {
             lines.append("Unsupported request option: \(parameter).")
         } else if parameter == "tools" {
             lines.append("The model rejected Lima’s tool configuration.")

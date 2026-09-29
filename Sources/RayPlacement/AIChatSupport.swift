@@ -530,7 +530,7 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         self.outputItemType = outputItemType.map {
             ["message", "reasoning", "function_call", "mcp_call", "mcp_approval_request"].contains($0) ? $0 : "unknown"
         }
-        self.toolName = nil
+        self.toolName = AIProviderFailure.localToolName(toolName)
         self.errorCode = AIProviderFailure.code(errorCode)
         self.errorParameter = AIProviderFailure.parameter(errorParameter)
         self.message = AIProviderFailure.diagnosticMessage(message, status: self.httpStatus)
@@ -551,6 +551,7 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
             httpStatus: try c.decodeIfPresent(Int.self, forKey: .httpStatus),
             eventType: try c.decodeIfPresent(String.self, forKey: .eventType),
             outputItemType: try c.decodeIfPresent(String.self, forKey: .outputItemType),
+            toolName: try c.decodeIfPresent(String.self, forKey: .toolName),
             errorCode: try c.decodeIfPresent(String.self, forKey: .errorCode),
             errorParameter: try c.decodeIfPresent(String.self, forKey: .errorParameter),
             message: try c.decode(String.self, forKey: .message),
@@ -1348,27 +1349,164 @@ struct AIToolSchemaValidationError: Error {
     let message: String
 }
 
-/// Validates the strict JSON-schema subset accepted by the Responses API. Strict
-/// functions require object schemas, `additionalProperties: false`, and every
-/// property in `required`; fields that were optional are made nullable.
+/// Validates the supported strict JSON-schema subset before a function is
+/// serialized into a Responses request. Strict functions require an object root,
+/// `additionalProperties: false`, and every object property in `required`;
+/// fields that were optional are made nullable.
 enum AIToolSchemaValidator {
+    static let supportedKeywords: Set<String> = [
+        "type", "properties", "required", "additionalProperties", "description",
+        "enum", "items", "anyOf", "pattern", "minimum", "maximum",
+        "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
+        "maxItems", "format"
+    ]
+
+    static let supportedFormats: Set<String> = [
+        "date-time", "time", "date", "duration", "email", "hostname",
+        "ipv4", "ipv6", "uuid"
+    ]
+
+    private static let jsonTypes: Set<String> = [
+        "string", "number", "integer", "boolean", "object", "array", "null"
+    ]
+
+    private static let objectKeywords: Set<String> = [
+        "properties", "required", "additionalProperties"
+    ]
+
+    private static let arrayKeywords: Set<String> = [
+        "items", "minItems", "maxItems"
+    ]
+
+    private static let numericKeywords: Set<String> = [
+        "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf"
+    ]
+
     static func strictParameters(from schema: [String: Any]) -> Result<[String: Any], AIToolSchemaValidationError> {
-        normalizeObject(schema, path: "parameters")
+        switch normalize(schema, path: "parameters", nullable: false) {
+        case .success(let normalized):
+            switch declaredTypes(normalized["type"], path: "parameters") {
+            case .success(let types) where types == ["object"]:
+                return .success(normalized)
+            case .success:
+                return .failure(.init(message: "parameters must declare type object."))
+            case .failure(let error):
+                return .failure(error)
+            }
+        case .failure(let error):
+            return .failure(error)
+        }
     }
 
-    private static func normalizeObject(_ schema: [String: Any], path: String) -> Result<[String: Any], AIToolSchemaValidationError> {
-        guard schema["type"] as? String == "object" else {
+    private static func normalize(
+        _ schema: [String: Any],
+        path: String,
+        nullable: Bool
+    ) -> Result<[String: Any], AIToolSchemaValidationError> {
+        switch validateSchemaKeywords(schema, path: path) {
+        case .success: break
+        case .failure(let error): return .failure(error)
+        }
+
+        let types: [String]?
+        if schema["type"] != nil {
+            switch declaredTypes(schema["type"], path: path) {
+            case .success(let value): types = value
+            case .failure(let error): return .failure(error)
+            }
+        } else {
+            types = nil
+        }
+
+        let hasAnyOf = schema["anyOf"] != nil
+        guard types != nil || hasAnyOf else {
+            return .failure(.init(message: "\(path) must declare a JSON type or anyOf."))
+        }
+        if types == nil {
+            let compositionOnly = Set(["description", "anyOf"])
+            guard Set(schema.keys).isSubset(of: compositionOnly) else {
+                return .failure(.init(message: "\(path) must declare a JSON type when using additional schema keywords."))
+            }
+        }
+
+        if let types {
+            switch validateKeywordContext(schema, types: types, path: path) {
+            case .success: break
+            case .failure(let error): return .failure(error)
+            }
+        }
+
+        var normalized = schema
+        if let types, types.contains("object") {
+            switch normalizeObject(schema, path: path) {
+            case .success(let object): normalized = object
+            case .failure(let error): return .failure(error)
+            }
+        }
+
+        if let types, types.contains("array") {
+            guard let rawItems = schema["items"] as? [String: Any] else {
+                return .failure(.init(message: "\(path).items must be an object schema."))
+            }
+            switch normalize(rawItems, path: "\(path).items", nullable: false) {
+            case .success(let items): normalized["items"] = items
+            case .failure(let error): return .failure(error)
+            }
+        }
+
+        if let rawAnyOf = schema["anyOf"] {
+            switch normalizeAnyOf(rawAnyOf, path: "\(path).anyOf") {
+            case .success(let branches): normalized["anyOf"] = branches
+            case .failure(let error): return .failure(error)
+            }
+        }
+
+        if nullable {
+            switch addingNull(to: normalized, path: path) {
+            case .success(let nullableSchema): normalized = nullableSchema
+            case .failure(let error): return .failure(error)
+            }
+        }
+        return .success(normalized)
+    }
+
+    private static func normalizeObject(
+        _ schema: [String: Any],
+        path: String
+    ) -> Result<[String: Any], AIToolSchemaValidationError> {
+        switch validateSchemaKeywords(schema, path: path) {
+        case .success: break
+        case .failure(let error): return .failure(error)
+        }
+        let types: [String]
+        switch declaredTypes(schema["type"], path: path) {
+        case .success(let value): types = value
+        case .failure(let error): return .failure(error)
+        }
+        guard types.contains("object") else {
             return .failure(.init(message: "\(path) must declare type object."))
         }
-        guard schema["additionalProperties"] as? Bool == false else {
-            return .failure(.init(message: "\(path) must set additionalProperties to false."))
+        switch validateKeywordContext(schema, types: types, path: path) {
+        case .success: break
+        case .failure(let error): return .failure(error)
         }
+
         guard let rawProperties = schema["properties"] as? [String: Any] else {
             return .failure(.init(message: "\(path) must declare properties."))
         }
-        let required = Set((schema["required"] as? [String]) ?? [])
+        let requiredValues: [String]
+        if let rawRequired = schema["required"] {
+            guard let values = stringArray(rawRequired),
+                  Set(values).count == values.count else {
+                return .failure(.init(message: "\(path).required must be an array of unique property names."))
+            }
+            requiredValues = values
+        } else {
+            requiredValues = []
+        }
+        let required = Set(requiredValues)
         guard required.isSubset(of: Set(rawProperties.keys)) else {
-            return .failure(.init(message: "\(path) required contains an undeclared property."))
+            return .failure(.init(message: "\(path).required contains an undeclared property."))
         }
 
         var normalizedProperties: [String: Any] = [:]
@@ -1378,7 +1516,7 @@ enum AIToolSchemaValidator {
             }
             switch normalize(property, path: "\(path).properties.\(name)", nullable: !required.contains(name)) {
             case .success(let normalized): normalizedProperties[name] = normalized
-            case .failure(let message): return .failure(message)
+            case .failure(let error): return .failure(error)
             }
         }
         var normalized = schema
@@ -1388,36 +1526,250 @@ enum AIToolSchemaValidator {
         return .success(normalized)
     }
 
-    private static func normalize(_ schema: [String: Any], path: String, nullable: Bool) -> Result<[String: Any], AIToolSchemaValidationError> {
-        var normalized = schema
-        if schema["type"] as? String == "object" {
-            switch normalizeObject(schema, path: path) {
-            case .success(let object): normalized = object
-            case .failure(let message): return .failure(message)
+    private static func normalizeAnyOf(
+        _ rawBranches: Any,
+        path: String
+    ) -> Result<[[String: Any]], AIToolSchemaValidationError> {
+        guard let values = rawBranches as? [Any], !values.isEmpty else {
+            return .failure(.init(message: "\(path) must contain at least one schema branch."))
+        }
+        var branches: [[String: Any]] = []
+        for (index, rawBranch) in values.enumerated() {
+            guard let branch = rawBranch as? [String: Any] else {
+                return .failure(.init(message: "\(path)[\(index)] is not an object schema."))
             }
-        } else if let items = schema["items"] as? [String: Any], items["type"] as? String == "object" {
-            switch normalizeObject(items, path: "\(path).items") {
-            case .success(let object): normalized["items"] = object
-            case .failure(let message): return .failure(message)
+            switch normalize(branch, path: "\(path)[\(index)]", nullable: false) {
+            case .success(let normalized): branches.append(normalized)
+            case .failure(let error): return .failure(error)
+            }
+        }
+        return .success(branches)
+    }
+
+    private static func validateSchemaKeywords(
+        _ schema: [String: Any],
+        path: String
+    ) -> Result<Void, AIToolSchemaValidationError> {
+        let unsupported = Set(schema.keys).subtracting(supportedKeywords).sorted()
+        guard unsupported.isEmpty else {
+            return .failure(.init(message: "Unsupported strict schema keyword: \(unsupported[0]) at \(path)."))
+        }
+        if let description = schema["description"], !(description is String) {
+            return .failure(.init(message: "\(path).description must be a string."))
+        }
+        return .success(())
+    }
+
+    private static func validateKeywordContext(
+        _ schema: [String: Any],
+        types: [String],
+        path: String
+    ) -> Result<Void, AIToolSchemaValidationError> {
+        if let format = schema["format"] {
+            guard types.contains("string"), let format = format as? String,
+                  supportedFormats.contains(format) else {
+                let rendered = format as? String ?? "invalid"
+                return .failure(.init(message: "Unsupported strict schema format: \(rendered) at \(path)."))
             }
         }
 
-        guard let rawType = normalized["type"] else {
-            return .failure(.init(message: "\(path) must declare a JSON type."))
-        }
-        if nullable {
-            if let type = rawType as? String {
-                normalized["type"] = type == "null" ? ["null"] : [type, "null"]
-            } else if var types = rawType as? [String] {
-                if !types.contains("null") { types.append("null") }
-                normalized["type"] = types
-            } else {
-return .failure(.init(message: "\(path) has an invalid type declaration."))
+        if schema["pattern"] != nil {
+            guard types.contains("string"), schema["pattern"] is String else {
+                return .failure(.init(message: "\(path).pattern is supported only for string schemas."))
             }
-        } else if !(rawType is String) && !(rawType is [String]) {
+        }
+
+        if schema["enum"] != nil {
+            guard let values = schema["enum"] as? [Any], !values.isEmpty,
+                  values.allSatisfy({ enumValue($0, matches: types) }) else {
+                return .failure(.init(message: "\(path).enum must contain values compatible with its declared type."))
+            }
+        }
+
+        if types.contains("object") {
+            guard schema["properties"] is [String: Any] else {
+                return .failure(.init(message: "\(path) must declare properties."))
+            }
+            guard schema["additionalProperties"] as? Bool == false else {
+                return .failure(.init(message: "\(path) must set additionalProperties to false."))
+            }
+            if let required = schema["required"], stringArray(required) == nil {
+                return .failure(.init(message: "\(path).required must be an array of property names."))
+            }
+        } else if objectKeywords.contains(where: { schema[$0] != nil }) {
+            return .failure(.init(message: "\(path) uses object keywords without type object."))
+        }
+
+        if types.contains("array") {
+            guard schema["items"] is [String: Any] else {
+                return .failure(.init(message: "\(path).items must be an object schema."))
+            }
+            switch validateArrayBounds(schema, path: path) {
+            case .success: break
+            case .failure(let error): return .failure(error)
+            }
+        } else if arrayKeywords.contains(where: { schema[$0] != nil }) {
+            return .failure(.init(message: "\(path) uses array keywords without type array."))
+        }
+
+        if numericKeywords.contains(where: { schema[$0] != nil }) {
+            guard types.contains("number") || types.contains("integer") else {
+                return .failure(.init(message: "\(path) uses numeric keywords without type number or integer."))
+            }
+            switch validateNumericBounds(schema, path: path) {
+            case .success: break
+            case .failure(let error): return .failure(error)
+            }
+        }
+        return .success(())
+    }
+
+    private static func validateArrayBounds(
+        _ schema: [String: Any],
+        path: String
+    ) -> Result<Void, AIToolSchemaValidationError> {
+        let minimum = schema["minItems"].flatMap(nonnegativeInteger)
+        let maximum = schema["maxItems"].flatMap(nonnegativeInteger)
+        if schema["minItems"] != nil && minimum == nil {
+            return .failure(.init(message: "\(path).minItems must be a non-negative integer."))
+        }
+        if schema["maxItems"] != nil && maximum == nil {
+            return .failure(.init(message: "\(path).maxItems must be a non-negative integer."))
+        }
+        if let minimum, let maximum, minimum > maximum {
+            return .failure(.init(message: "\(path).minItems cannot exceed maxItems."))
+        }
+        return .success(())
+    }
+
+    private static func validateNumericBounds(
+        _ schema: [String: Any],
+        path: String
+    ) -> Result<Void, AIToolSchemaValidationError> {
+        for keyword in numericKeywords {
+            guard schema[keyword] == nil || finiteNumber(schema[keyword]) != nil else {
+                return .failure(.init(message: "\(path).\(keyword) must be a finite number."))
+            }
+        }
+        if let minimum = finiteNumber(schema["minimum"]),
+           let maximum = finiteNumber(schema["maximum"]),
+           minimum > maximum {
+            return .failure(.init(message: "\(path).minimum cannot exceed maximum."))
+        }
+        if let minimum = finiteNumber(schema["exclusiveMinimum"]),
+           let maximum = finiteNumber(schema["exclusiveMaximum"]),
+           minimum >= maximum {
+            return .failure(.init(message: "\(path).exclusiveMinimum must be less than exclusiveMaximum."))
+        }
+        if let multiple = finiteNumber(schema["multipleOf"]), multiple <= 0 {
+            return .failure(.init(message: "\(path).multipleOf must be greater than zero."))
+        }
+        return .success(())
+    }
+
+    private static func addingNull(
+        to schema: [String: Any],
+        path: String
+    ) -> Result<[String: Any], AIToolSchemaValidationError> {
+        var normalized = schema
+        if let rawType = normalized["type"] {
+            let types: [String]
+            switch declaredTypes(rawType, path: path) {
+            case .success(let value): types = value
+            case .failure(let error): return .failure(error)
+            }
+            if !types.contains("null") {
+                normalized["type"] = types + ["null"]
+            }
+            if var values = normalized["enum"] as? [Any],
+               !values.contains(where: { $0 is NSNull }) {
+                values.append(NSNull())
+                normalized["enum"] = values
+            }
+            return .success(normalized)
+        }
+
+        guard let rawBranches = normalized["anyOf"] as? [Any] else {
+            return .failure(.init(message: "\(path) must declare a JSON type or anyOf."))
+        }
+        var branches = rawBranches.compactMap { $0 as? [String: Any] }
+        guard branches.count == rawBranches.count else {
+            return .failure(.init(message: "\(path).anyOf contains an invalid schema branch."))
+        }
+        if !branches.contains(where: schemaAllowsNull) {
+            branches.append(["type": "null"])
+        }
+        normalized["anyOf"] = branches
+        return .success(normalized)
+    }
+
+    private static func schemaAllowsNull(_ schema: [String: Any]) -> Bool {
+        if case .success(let types) = declaredTypes(schema["type"], path: "schema"),
+           types.contains("null") {
+            return true
+        }
+        guard let branches = schema["anyOf"] as? [Any] else { return false }
+        return branches.compactMap { $0 as? [String: Any] }.contains(where: schemaAllowsNull)
+    }
+
+    private static func declaredTypes(
+        _ raw: Any?,
+        path: String
+    ) -> Result<[String], AIToolSchemaValidationError> {
+        let types: [String]
+        if let type = raw as? String {
+            types = [type]
+        } else if let values = stringArray(raw) {
+            types = values
+        } else {
             return .failure(.init(message: "\(path) has an invalid type declaration."))
         }
-        return .success(normalized)
+        guard !types.isEmpty,
+              Set(types).count == types.count,
+              types.allSatisfy(jsonTypes.contains) else {
+            return .failure(.init(message: "\(path) has an unsupported JSON type declaration."))
+        }
+        return .success(types)
+    }
+
+    private static func stringArray(_ raw: Any?) -> [String]? {
+        guard let values = raw as? [Any] else { return nil }
+        let strings = values.compactMap { $0 as? String }
+        return strings.count == values.count ? strings : nil
+    }
+
+    private static func enumValue(_ value: Any, matches types: [String]) -> Bool {
+        if value is NSNull { return types.contains("null") }
+        if value is Bool { return types.contains("boolean") }
+        if value is String { return types.contains("string") }
+        guard let number = finiteNumber(value) else { return false }
+        if types.contains("number") { return true }
+        return types.contains("integer") && number.rounded() == number
+    }
+
+    private static func nonnegativeInteger(_ raw: Any?) -> Int? {
+        guard let value = finiteNumber(raw),
+              value >= 0,
+              value.rounded() == value,
+              value <= Double(Int.max) else {
+            return nil
+        }
+        return Int(value)
+    }
+
+    private static func finiteNumber(_ raw: Any?) -> Double? {
+        guard let raw, !(raw is Bool) else { return nil }
+        let value: Double?
+        switch raw {
+        case let number as Int: value = Double(number)
+        case let number as Int64: value = Double(number)
+        case let number as Double: value = number
+        case let number as Float: value = Double(number)
+        case let number as NSNumber: value = number.doubleValue
+        default: value = nil
+        }
+        guard let value, value.isFinite else { return nil }
+        return value
     }
 }
 

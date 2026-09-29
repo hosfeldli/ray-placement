@@ -462,6 +462,12 @@ import Testing
     let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions
     #expect(definitions.allSatisfy { $0.responsePayload != nil })
 
+    for definition in definitions {
+        let payload = try #require(definition.responsePayload)
+        let parameters = try #require(payload["parameters"] as? [String: Any])
+        #expect(openAIStrictSchemaIssue(in: parameters) == nil)
+    }
+
     let findFiles = try #require(definitions.first { $0.id == "find_files" })
     let payload = try #require(findFiles.responsePayload)
     let parameters = try #require(payload["parameters"] as? [String: Any])
@@ -481,6 +487,108 @@ import Testing
 
     let queueLinks = try #require(definitions.first { $0.id == "salesforce_read_case_links" })
     #expect(queueLinks.risk == .read)
+}
+
+@Test @MainActor func browserURLToolsDoNotUseUnsupportedURIFormat() throws {
+    let fields = [
+        "browser_open_tabs": "urls",
+        "browser_focus_tab": "expected_url",
+        "browser_navigate_tab": "url"
+    ]
+    for definition in BrowserBridgeAITools.definitions where fields[definition.id] != nil {
+        let parameters = try #require(definition.responsePayload?["parameters"] as? [String: Any])
+        let properties = try #require(parameters["properties"] as? [String: Any])
+        let property = try #require(properties[fields[definition.id]!] as? [String: Any])
+        let value: [String: Any]
+        if definition.id == "browser_open_tabs" {
+            value = try #require(property["items"] as? [String: Any])
+        } else {
+            value = property
+        }
+        #expect(value["format"] == nil)
+        #expect((value["description"] as? String)?.contains("HTTPS") == true)
+    }
+}
+
+@Test func strictSchemaValidatorRejectsUnsupportedURIFormat() {
+    let definition = LimaAIToolDefinition(
+        id: "invalid_uri_format",
+        name: "invalid_uri_format",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "url": ["type": "string", "format": "uri"]
+            ],
+            "required": ["url"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+
+    #expect(definition.responsePayload == nil)
+    #expect(definition.schemaValidationMessage?.contains("Unsupported strict schema format: uri") == true)
+}
+
+@Test func strictSchemaValidatorRecursesThroughObjectsArraysAndAnyOf() throws {
+    let valid = LimaAIToolDefinition(
+        id: "nested_schema",
+        name: "nested_schema",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "filter": [
+                    "type": "object",
+                    "properties": ["date": ["type": "string", "format": "date"]],
+                    "required": ["date"],
+                    "additionalProperties": false
+                ],
+                "records": [
+                    "type": "array",
+                    "items": [
+                        "type": "object",
+                        "properties": ["id": ["type": "integer", "minimum": 0]],
+                        "required": ["id"],
+                        "additionalProperties": false
+                    ]
+                ],
+                "selector": [
+                    "anyOf": [
+                        ["type": "string", "format": "email"],
+                        ["type": "integer", "minimum": 0]
+                    ]
+                ]
+            ],
+            "required": ["filter", "records", "selector"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+    let validParameters = try #require(valid.responsePayload?["parameters"] as? [String: Any])
+    #expect(openAIStrictSchemaIssue(in: validParameters) == nil)
+
+    let invalid = LimaAIToolDefinition(
+        id: "nested_uri",
+        name: "nested_uri",
+        description: "Regression fixture.",
+        parameters: [
+            "type": "object",
+            "properties": [
+                "selector": [
+                    "anyOf": [
+                        ["type": "string", "format": "uri"],
+                        ["type": "integer"]
+                    ]
+                ]
+            ],
+            "required": ["selector"],
+            "additionalProperties": false
+        ],
+        risk: .read
+    )
+    #expect(invalid.responsePayload == nil)
+    #expect(invalid.schemaValidationMessage?.contains("Unsupported strict schema format: uri") == true)
 }
 
 @Test @MainActor func providerFailureRendersSafeActionableTranscript() async {
@@ -1219,4 +1327,96 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     }
     #expect(!model.canEndTask)
     #expect(registry.task(id: taskID)?.state == .cancelled)
+}
+
+private let openAIStrictSchemaKeywords: Set<String> = [
+    "type", "properties", "required", "additionalProperties", "description",
+    "enum", "items", "anyOf", "pattern", "minimum", "maximum",
+    "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "minItems",
+    "maxItems", "format"
+]
+
+private let openAIStrictSchemaFormats: Set<String> = [
+    "date-time", "time", "date", "duration", "email", "hostname",
+    "ipv4", "ipv6", "uuid"
+]
+
+private let openAIStrictJSONTypes: Set<String> = [
+    "string", "number", "integer", "boolean", "object", "array", "null"
+]
+
+private func openAIStrictSchemaIssue(
+    in schema: [String: Any],
+    path: String = "parameters"
+) -> String? {
+    if let unsupported = Set(schema.keys).subtracting(openAIStrictSchemaKeywords).sorted().first {
+        return "\(path) uses unsupported keyword \(unsupported)"
+    }
+
+    let types: [String]
+    if let type = schema["type"] as? String {
+        types = [type]
+    } else if let values = schema["type"] as? [String] {
+        types = values
+    } else if schema["anyOf"] != nil {
+        types = []
+    } else {
+        return "\(path) omits type"
+    }
+    if !types.isEmpty && (Set(types).count != types.count || !types.allSatisfy(openAIStrictJSONTypes.contains)) {
+        return "\(path) has an invalid type declaration"
+    }
+
+    if let format = schema["format"] {
+        guard types.contains("string"),
+              let format = format as? String,
+              openAIStrictSchemaFormats.contains(format) else {
+            return "\(path) has unsupported format"
+        }
+    }
+
+    if types.contains("object") {
+        guard let properties = schema["properties"] as? [String: Any],
+              schema["additionalProperties"] as? Bool == false,
+              let required = schema["required"] as? [String],
+              Set(required) == Set(properties.keys) else {
+            return "\(path) is not a strict object schema"
+        }
+        for (name, value) in properties {
+            guard let child = value as? [String: Any] else {
+                return "\(path).properties.\(name) is not a schema"
+            }
+            if let issue = openAIStrictSchemaIssue(in: child, path: "\(path).properties.\(name)") {
+                return issue
+            }
+        }
+    } else if schema["properties"] != nil || schema["required"] != nil || schema["additionalProperties"] != nil {
+        return "\(path) uses object keywords without object type"
+    }
+
+    if types.contains("array") {
+        guard let items = schema["items"] as? [String: Any] else {
+            return "\(path) omits array items"
+        }
+        if let issue = openAIStrictSchemaIssue(in: items, path: "\(path).items") {
+            return issue
+        }
+    } else if schema["items"] != nil || schema["minItems"] != nil || schema["maxItems"] != nil {
+        return "\(path) uses array keywords without array type"
+    }
+
+    if let rawBranches = schema["anyOf"] {
+        guard let branches = rawBranches as? [Any], !branches.isEmpty else {
+            return "\(path).anyOf is invalid"
+        }
+        for (index, value) in branches.enumerated() {
+            guard let branch = value as? [String: Any] else {
+                return "\(path).anyOf[\(index)] is not a schema"
+            }
+            if let issue = openAIStrictSchemaIssue(in: branch, path: "\(path).anyOf[\(index)]") {
+                return issue
+            }
+        }
+    }
+    return nil
 }

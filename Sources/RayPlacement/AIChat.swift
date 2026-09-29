@@ -813,12 +813,21 @@ struct AIChatResponsesClient: AIChatTransport {
                             if errorData.count >= 64_000 { break }
                         }
                         let failure = AIProviderFailure.details(data: errorData, status: http.statusCode)
+                        let toolName = AIProviderFailure.localToolName(
+                            forSchemaParameter: failure.parameter,
+                            outgoingTools: body["tools"] as? [[String: Any]] ?? []
+                        )
+                        let errorParameter = toolName == nil
+                            && AIProviderFailure.toolSchemaField(failure.parameter) != nil
+                            ? "tools"
+                            : failure.parameter
                         continuation.yield(.diagnostic(AIChatDiagnostic(
                             stage: .transport,
                             httpStatus: http.statusCode,
                             model: model,
+                            toolName: toolName,
                             errorCode: failure.code,
-                            errorParameter: failure.parameter,
+                            errorParameter: errorParameter,
                             message: failure.message
                         )))
                         continuation.yield(.failed(failure.message))
@@ -2415,7 +2424,8 @@ final class AIChatViewModel: ObservableObject {
             status: diagnostic?.httpStatus,
             code: diagnostic?.errorCode,
             parameter: diagnostic?.errorParameter,
-            fallback: message
+            fallback: message,
+            toolName: diagnostic?.toolName
         )
     }
 
