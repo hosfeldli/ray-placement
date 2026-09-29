@@ -54,6 +54,8 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
     var skillIDs: [String]
     var reasoningSummary: String?
     var activities: [AIAgentActivity]
+    /// Optional local project association. Existing conversations remain ungrouped.
+    var projectID: UUID?
     var attachments: [AIAttachment]
     var messages: [AIChatMessage]
 
@@ -70,6 +72,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         skillIDs: [String] = [],
         reasoningSummary: String? = nil,
         activities: [AIAgentActivity] = [],
+        projectID: UUID? = nil,
         attachments: [AIAttachment] = [],
         messages: [AIChatMessage] = []
     ) {
@@ -85,6 +88,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         self.skillIDs = skillIDs
         self.reasoningSummary = reasoningSummary
         self.activities = activities
+        self.projectID = projectID
         self.attachments = attachments
         self.messages = messages
     }
@@ -99,7 +103,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, title, createdAt, updatedAt, provider, model, lastResponseID
-        case reasoningEffort, agentID, skillIDs, reasoningSummary, activities, attachments, messages
+        case reasoningEffort, agentID, skillIDs, reasoningSummary, activities, projectID, attachments, messages
     }
 
     init(from decoder: Decoder) throws {
@@ -116,6 +120,7 @@ struct AIConversation: Codable, Identifiable, Hashable, Sendable {
         skillIDs = try values.decodeIfPresent([String].self, forKey: .skillIDs) ?? []
         reasoningSummary = try values.decodeIfPresent(String.self, forKey: .reasoningSummary)
         activities = try values.decodeIfPresent([AIAgentActivity].self, forKey: .activities) ?? []
+        projectID = try values.decodeIfPresent(UUID.self, forKey: .projectID)
         attachments = try values.decodeIfPresent([AIAttachment].self, forKey: .attachments) ?? []
         messages = try values.decodeIfPresent([AIChatMessage].self, forKey: .messages) ?? []
     }
@@ -345,8 +350,8 @@ final class AIConversationStore: ObservableObject {
     }
 
     @discardableResult
-    func createConversation(provider: AIProvider = .openAI, model: String) -> AIConversation {
-        let conversation = AIConversation(provider: provider, model: model)
+    func createConversation(provider: AIProvider = .openAI, model: String, projectID: UUID? = nil) -> AIConversation {
+        let conversation = AIConversation(provider: provider, model: model, projectID: projectID)
         conversations.insert(conversation, at: 0)
         scheduleSave()
         return conversation
@@ -640,11 +645,22 @@ struct AIChatResponsesClient: AIChatTransport {
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
-            let inputContent = try AIInputEncoder.content(text: input, attachments: attachments)
-            let userInput: [String: Any] = ["role": "user", "content": inputContent]
+            let responseInput: [[String: Any]]
+            if previousResponseID?.isEmpty == false {
+                let inputContent = try AIInputEncoder.content(text: input, attachments: attachments)
+                responseInput = [["role": "user", "content": inputContent]]
+            } else {
+                // A response ID belongs to one provider/model continuation. When it
+                // is unavailable after a model switch, rebuild the request from the
+                // durable local chat instead of sending only the newest question.
+                let transcript = try AIInputEncoder.transcript(history, attachments: attachments)
+                responseInput = transcript.isEmpty
+                    ? [["role": "user", "content": try AIInputEncoder.content(text: input, attachments: attachments)]]
+                    : transcript
+            }
             let body = Self.replyBody(
                 model: model,
-                input: [userInput],
+                input: responseInput,
                 previousResponseID: previousResponseID,
                 reasoningEffort: reasoningEffort,
                 tools: mcpToolPayload(for: mcpServers) + localTools.compactMap(\.responsePayload),
@@ -874,6 +890,7 @@ final class AIChatViewModel: ObservableObject {
     let credentials: AIChatCredentialStore
     let mcpStore: MCPServerStore
     let nativeToolStore: LimaAIToolStore
+    let workspaceStore: AIWorkspaceStore
     let providerPreferences: AIProviderPreferences
     let modelCatalog: AIModelCatalogStore
     let transport: any AIChatTransport
@@ -915,7 +932,8 @@ final class AIChatViewModel: ObservableObject {
         transport: (any AIChatTransport)? = nil,
         taskRegistry: TaskRegistry? = nil,
         providerPreferences: AIProviderPreferences? = nil,
-        modelCatalog: AIModelCatalogStore? = nil
+        modelCatalog: AIModelCatalogStore? = nil,
+        workspaceStore: AIWorkspaceStore? = nil
     ) {
         let store = store ?? .shared
         let credentials = credentials ?? .shared
@@ -923,6 +941,7 @@ final class AIChatViewModel: ObservableObject {
         self.credentials = credentials
         self.mcpStore = mcpStore ?? .shared
         self.nativeToolStore = nativeToolStore ?? .shared
+        self.workspaceStore = workspaceStore ?? .shared
         self.transport = transport ?? AIChatResponsesClient()
         self.hasInjectedTransport = transport != nil
         self.taskRegistry = taskRegistry ?? .shared
@@ -937,6 +956,11 @@ final class AIChatViewModel: ObservableObject {
             attachments = selected.attachments
         }
         ensureModelIsAvailable()
+        // Start with cached choices immediately, then refresh a saved provider
+        // catalog in the background so opening AI Chat never requires a manual refresh.
+        if !hasInjectedTransport {
+            Task { @MainActor [weak self] in self?.refreshModelsIfPossible() }
+        }
     }
 
     private func catalogModels(for provider: AIProvider) -> [AIModelOption] {
@@ -956,6 +980,18 @@ final class AIChatViewModel: ObservableObject {
 
     var selectedConversation: AIConversation? {
         selectedConversationID.flatMap(store.conversation(id:))
+    }
+
+    var selectedProject: AIProject? {
+        workspaceStore.project(id: selectedConversation?.projectID)
+    }
+
+    var selectedProjectMemories: [AIMemory] {
+        workspaceStore.memories(for: selectedConversation?.projectID)
+    }
+
+    var selectedProjectMemoryCount: Int {
+        workspaceStore.projectMemoryCount(for: selectedConversation?.projectID)
     }
 
     func visibleText(for message: AIChatMessage) -> String {
@@ -1073,17 +1109,7 @@ final class AIChatViewModel: ObservableObject {
         }
 
         if isBrowserPrompt(prompt) {
-            requested.formUnion([
-                "browser_tabs",
-                "browser_current",
-                "browser_read",
-                "salesforce_read_case_links",
-                "salesforce_resolve_case",
-                "salesforce_resolve_cases",
-                "browser_open_tabs",
-                "browser_focus_tab",
-                "browser_navigate_tab"
-            ])
+            requested.formUnion(browserToolIDs(for: prompt))
         }
         if containsAny(["file", "folder", "directory", "path", "repository", "repo", "source code", "swift"]) {
             requested.formUnion(["search_files", "find_files", "list_directory", "file_metadata", "read_file"])
@@ -1119,13 +1145,46 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
+    private func browserToolIDs(for prompt: String) -> Set<String> {
+        let value = prompt.lowercased()
+        func containsAny(_ terms: [String]) -> Bool {
+            terms.contains { value.localizedStandardContains($0) }
+        }
+
+        // Every browser request can inspect the active granted context. Add more
+        // schemas only for the explicit action requested so the model is not
+        // overwhelmed by unrelated Salesforce and navigation functions.
+        var identifiers: Set<String> = ["browser_tabs", "browser_current", "browser_read"]
+        let isSalesforce = containsAny(["salesforce", "force.com", "lightning"])
+        if isSalesforce {
+            identifiers.formUnion([
+                "salesforce_read_case_links",
+                "salesforce_resolve_case",
+                "salesforce_resolve_cases"
+            ])
+        }
+        if containsAny(["open", "new tab", "new tabs", "launch"]) {
+            identifiers.insert("browser_open_tabs")
+        }
+        if containsAny(["focus", "switch to"]) {
+            identifiers.insert("browser_focus_tab")
+        }
+        if containsAny(["navigate", "go to", "visit"]) {
+            identifiers.insert("browser_navigate_tab")
+        }
+        return identifiers
+    }
+
     func isBrowserPrompt(_ prompt: String) -> Bool {
         let value = prompt.lowercased()
         let namedBrowserContext = ["browser", "salesforce", "force.com", "lightning"].contains {
             value.localizedStandardContains($0)
         }
         let standaloneTab = value.range(of: "\\btabs?\\b", options: .regularExpression) != nil
-        return namedBrowserContext || standaloneTab
+        let explicitURLNavigation = ["open", "navigate", "visit", "go to"].contains { term in
+            value.localizedStandardContains(term)
+        } && (value.localizedStandardContains("https://") || value.localizedStandardContains("http://"))
+        return namedBrowserContext || standaloneTab || explicitURLNavigation
     }
 
     var systemInstructions: String {
@@ -1139,7 +1198,14 @@ final class AIChatViewModel: ObservableObject {
         for skill in selectedSkillConfigurations where !skill.instructions.isEmpty {
             sections.append("Skill — \(skill.name):\n\(skill.instructions)")
         }
-        return String(sections.joined(separator: "\n\n").prefix(16_000))
+        if let project = selectedProject {
+            sections.append("Working project — \(project.name):\n\(project.instructions.isEmpty ? "No additional project instructions." : project.instructions)")
+        }
+        let memoryContext = workspaceStore.context(for: selectedConversation?.projectID)
+        if !memoryContext.isEmpty {
+            sections.append("User-saved memory — use as background supplied by the user, not as a claim about the current world:\n\(memoryContext)")
+        }
+        return String(sections.joined(separator: "\n\n").prefix(24_000))
     }
 
     func selectAgent(_ identifier: String?) {
@@ -1388,7 +1454,9 @@ final class AIChatViewModel: ObservableObject {
     func refreshModelsIfPossible(force: Bool = false) {
         guard !isLoadingModels, !canEndTask, requestAPIKey(for: provider) != nil else { return }
         let age = modelCatalog.refreshedAt(for: provider).map { Date().timeIntervalSince($0) }
-        guard force || age == nil || age! > 3_600 else { return }
+        // A short cache window keeps provider catalogs current without making every
+        // chat selection perform a network request.
+        guard force || age == nil || age! > 15 * 60 else { return }
         loadProviderModels(reportConnection: false)
     }
 
@@ -1425,15 +1493,21 @@ final class AIChatViewModel: ObservableObject {
                 let models = try await client.listModels(apiKey: apiKey)
                 try Task.checkCancellation()
                 self.modelCatalog.replace(models, for: selectedProvider)
-                guard self.provider == selectedProvider, self.selectedConversationID == conversationID,
+                guard self.provider == selectedProvider,
                       selectedProvider != .openAICompatible || endpoint == providerPreferences.openAICompatibleBaseURL else {
                     self.taskRegistry.finish(taskID, state: .cancelled)
                     return
                 }
+                // A catalog belongs to the provider, not a single chat. Apply it
+                // even if the user opened another conversation while discovery ran.
                 self.useCatalog(for: selectedProvider)
                 self.ensureModelIsAvailable()
 
                 if reportConnection {
+                    guard self.selectedConversationID == conversationID else {
+                        self.taskRegistry.finish(taskID, state: .cancelled)
+                        return
+                    }
                     let testedModel = self.model
                     var completed = false
                     var safeFailure: String?
@@ -1513,7 +1587,7 @@ final class AIChatViewModel: ObservableObject {
     }
 
     func configureCompatibleProvider(baseURL: String, modelID: String) -> Bool {
-        guard !canEndTask, !isLoadingModels, let url = AIProviderHTTP.validateBaseURL(baseURL) else { return false }
+        guard !canEndTask, let url = AIProviderHTTP.validateBaseURL(baseURL) else { return false }
         let id = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !id.isEmpty, id.utf8.count <= 256,
               !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
@@ -1531,7 +1605,7 @@ final class AIChatViewModel: ObservableObject {
 
     func selectCustomModel(_ raw: String) -> Bool {
         let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !canEndTask, !isLoadingModels, !id.isEmpty, id.utf8.count <= 256,
+        guard !canEndTask, !id.isEmpty, id.utf8.count <= 256,
               !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
         selectModel(provider == .openAI ? AIModelOption(id: id)
             : AIModelOption(id: id, displayName: id, supportsReasoning: false))
@@ -1540,6 +1614,7 @@ final class AIChatViewModel: ObservableObject {
 
     func selectModel(_ option: AIModelOption) {
         guard !canEndTask else { return }
+        let changed = model != option.id
         model = option.id
         retainInCatalog(option, for: provider)
         if provider == .openAICompatible {
@@ -1551,9 +1626,14 @@ final class AIChatViewModel: ObservableObject {
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
             conversation.provider = provider
             conversation.model = model
-            conversation.lastResponseID = nil
+            // Responses continuations are model-specific. Start the next request
+            // from the durable local transcript when the model changes.
+            if changed { conversation.lastResponseID = nil }
             conversation.reasoningEffort = reasoningEffort
             store.update(conversation)
+        }
+        if changed {
+            providerConnectionMessage = "Switched to \(option.displayName). The next reply will use this chat’s local history."
         }
     }
 
@@ -1587,11 +1667,48 @@ final class AIChatViewModel: ObservableObject {
 
     func newConversation() {
         guard !canEndTask else { return }
-        let conversation = store.createConversation(provider: provider, model: model)
+        let conversation = store.createConversation(
+            provider: provider,
+            model: model,
+            projectID: selectedConversation?.projectID
+        )
         selectedConversationID = conversation.id
         streamError = nil
         attachments = []
         draft = ""
+    }
+
+    @discardableResult
+    func createProject(name: String, instructions: String = "") -> AIProject? {
+        guard !canEndTask, let project = workspaceStore.createProject(name: name, instructions: instructions) else { return nil }
+        assignProject(project.id)
+        return project
+    }
+
+    func assignProject(_ projectID: UUID?) {
+        guard !canEndTask, projectID == nil || workspaceStore.project(id: projectID) != nil else { return }
+        var conversation = configurationConversation()
+        guard conversation.projectID != projectID else { return }
+        conversation.projectID = projectID
+        conversation.lastResponseID = nil
+        store.update(conversation)
+    }
+
+    @discardableResult
+    func saveMemory(title: String, content: String) -> AIMemory? {
+        let memory = workspaceStore.createMemory(
+            title: title,
+            content: content,
+            projectID: selectedConversation?.projectID
+        )
+        if memory != nil { resetResponseContinuation() }
+        return memory
+    }
+
+    private func resetResponseContinuation() {
+        guard let id = selectedConversationID, var conversation = store.conversation(id: id) else { return }
+        conversation.lastResponseID = nil
+        store.update(conversation)
     }
 
     func deleteSelectedConversation() {
@@ -2496,6 +2613,7 @@ struct AIChatWorkspaceView: View {
     @ObservedObject private var conversationStore: AIConversationStore
     @ObservedObject private var mcpStore: MCPServerStore
     @ObservedObject private var nativeToolStore: LimaAIToolStore
+    @ObservedObject private var workspaceStore: AIWorkspaceStore
     @ObservedObject private var browserBridge = BrowserBridgeService.shared
     @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     let isEmbedded: Bool
@@ -2509,10 +2627,17 @@ struct AIChatWorkspaceView: View {
         _conversationStore = ObservedObject(wrappedValue: model.store)
         _mcpStore = ObservedObject(wrappedValue: model.mcpStore)
         _nativeToolStore = ObservedObject(wrappedValue: model.nativeToolStore)
+        _workspaceStore = ObservedObject(wrappedValue: model.workspaceStore)
     }
     @State private var showKey = false
     @State private var showingProviderSetup = false
     @State private var showingConversationSidebar = false
+    @State private var showingProjectEditor = false
+    @State private var showingMemoryEditor = false
+    @State private var projectName = ""
+    @State private var projectInstructions = ""
+    @State private var memoryTitle = ""
+    @State private var memoryContent = ""
     @State private var keyMessage: String?
 
     private var filteredConversations: [AIConversation] {
@@ -2556,6 +2681,123 @@ struct AIChatWorkspaceView: View {
             sidebar
                 .frame(minWidth: 280, idealWidth: 340, minHeight: 420, idealHeight: 620)
         }
+        .sheet(isPresented: $showingProjectEditor) {
+            projectEditor
+        }
+        .sheet(isPresented: $showingMemoryEditor) {
+            memoryEditor
+        }
+    }
+
+    private func presentProjectEditor() {
+        projectName = ""
+        projectInstructions = ""
+        showingProjectEditor = true
+    }
+
+    private func presentMemoryEditor() {
+        memoryTitle = ""
+        memoryContent = ""
+        showingMemoryEditor = true
+    }
+
+    private var projectEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "folder.badge.plus")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("New project")
+                        .limaFont(.headline)
+                    Text("Group chats and add local working instructions.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
+            }
+
+            TextField("Project name", text: $projectName)
+                .textFieldStyle(.roundedBorder)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("PROJECT INSTRUCTIONS · OPTIONAL")
+                    .limaFont(.caption2.weight(.bold))
+                    .foregroundStyle(LimaTheme.textTertiary)
+                TextEditor(text: $projectInstructions)
+                    .font(.system(size: 13))
+                    .frame(minHeight: 100)
+                    .padding(7)
+                    .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                        .stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.hairlineWidth))
+            }
+
+            if let error = workspaceStore.lastError {
+                Text(error)
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.warning)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingProjectEditor = false }
+                Button("Create Project") {
+                    guard model.createProject(name: projectName, instructions: projectInstructions) != nil else { return }
+                    showingProjectEditor = false
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(projectName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+    }
+
+    private var memoryEditor: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Save memory")
+                        .limaFont(.headline)
+                    Text(model.selectedProject.map { "Available to \($0.name) chats." } ?? "Available as local background for future chats.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
+            }
+
+            TextField("Memory title · optional", text: $memoryTitle)
+                .textFieldStyle(.roundedBorder)
+
+            TextEditor(text: $memoryContent)
+                .font(.system(size: 13))
+                .frame(minHeight: 140)
+                .padding(7)
+                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                    .stroke(LimaTheme.fieldBorder, lineWidth: LimaDesign.hairlineWidth))
+
+            if let error = workspaceStore.lastError {
+                Text(error)
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.warning)
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { showingMemoryEditor = false }
+                Button("Save Memory") {
+                    guard model.saveMemory(title: memoryTitle, content: memoryContent) != nil else { return }
+                    showingMemoryEditor = false
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(memoryContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 440)
     }
 
     @ViewBuilder
@@ -2650,6 +2892,8 @@ struct AIChatWorkspaceView: View {
                 .padding(.horizontal, 10)
                 .padding(.top, 10)
 
+            projectShelf
+
             if filteredConversations.isEmpty {
                 VStack(alignment: .leading, spacing: 7) {
                     Image(systemName: "sparkles")
@@ -2683,6 +2927,57 @@ struct AIChatWorkspaceView: View {
             .foregroundStyle(LimaTheme.textTertiary)
             .padding(12)
         }
+    }
+
+    private var projectShelf: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text("PROJECTS")
+                    .limaFont(.system(size: 9, weight: .bold))
+                    .tracking(1.1)
+                    .foregroundStyle(LimaTheme.textTertiary)
+                Spacer()
+                Button(action: presentProjectEditor) {
+                    Image(systemName: "plus")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .buttonStyle(.borderless)
+                .disabled(model.canEndTask)
+                .help("Create a local AI project")
+                .accessibilityLabel("Create AI project")
+            }
+
+            if workspaceStore.projects.isEmpty {
+                Text("Create a project to group chats and local instructions.")
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        Button("No project") { model.assignProject(nil) }
+                            .buttonStyle(.borderless)
+                            .limaFont(.caption2.weight(.medium))
+                            .foregroundStyle(model.selectedProject == nil ? SettingsStore.shared.accentTheme.readablePrimary : LimaTheme.textSecondary)
+                        ForEach(workspaceStore.projects) { project in
+                            Button {
+                                model.assignProject(project.id)
+                            } label: {
+                                Label(project.name, systemImage: model.selectedProject?.id == project.id ? "checkmark.circle.fill" : "folder")
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.borderless)
+                            .limaFont(.caption2.weight(.medium))
+                            .foregroundStyle(model.selectedProject?.id == project.id ? SettingsStore.shared.accentTheme.readablePrimary : LimaTheme.textSecondary)
+                            .help("Use \(project.name) for this chat")
+                        }
+                    }
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+        }
+        .padding(.horizontal, 10)
+        .disabled(model.canEndTask)
     }
 
     @ViewBuilder
@@ -2733,6 +3028,7 @@ struct AIChatWorkspaceView: View {
                     .padding(.top, 12)
             }
             conversationHeader
+            projectContextStrip
             GlassHairline()
 
             if model.showDiagnostics, !model.streamDiagnostics.isEmpty {
@@ -2860,6 +3156,77 @@ struct AIChatWorkspaceView: View {
         .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderStrong, lineWidth: LimaDesign.borderWidth))
     }
 
+    private var projectContextStrip: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                .frame(width: 26, height: 26)
+                .background(SettingsStore.shared.accentTheme.readablePrimary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("PROJECT CONTEXT")
+                    .limaFont(.caption2.weight(.bold))
+                    .tracking(0.7)
+                    .foregroundStyle(LimaTheme.textTertiary)
+                Text(model.selectedProject?.name ?? "No project selected")
+                    .limaFont(.caption.weight(.semibold))
+                    .foregroundStyle(LimaTheme.textPrimary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 6)
+
+            if workspaceSizeClass != .compact {
+                Label(
+                    "\(model.selectedProjectMemoryCount) \(model.selectedProjectMemoryCount == 1 ? "memory" : "memories")",
+                    systemImage: "brain.head.profile"
+                )
+                .limaFont(.caption2)
+                .foregroundStyle(LimaTheme.textSecondary)
+            }
+
+            Button(action: presentMemoryEditor) {
+                if workspaceSizeClass == .compact {
+                    Image(systemName: "brain.head.profile")
+                        .frame(width: 26, height: 26)
+                } else {
+                    Label("Save memory", systemImage: "brain.head.profile")
+                        .limaFont(.caption2.weight(.semibold))
+                }
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+            .disabled(model.canEndTask)
+            .help("Save a user-controlled local memory for this project")
+
+            Menu {
+                Button("No project") { model.assignProject(nil) }
+                if !workspaceStore.projects.isEmpty { Divider() }
+                ForEach(workspaceStore.projects) { project in
+                    Button {
+                        model.assignProject(project.id)
+                    } label: {
+                        Label(project.name, systemImage: model.selectedProject?.id == project.id ? "checkmark" : "folder")
+                    }
+                }
+                Divider()
+                Button("New Project…", action: presentProjectEditor)
+            } label: {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .frame(width: 26, height: 26)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(model.canEndTask)
+            .help("Choose or create a project")
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(LimaTheme.surfaceSecondary.opacity(0.58))
+    }
+
     private var setupPanel: some View {
         VStack(alignment: .leading, spacing: 14) {
             Spacer()
@@ -2951,6 +3318,37 @@ struct AIChatWorkspaceView: View {
         }
     }
 
+    @ViewBuilder
+    private var browserAccessHint: some View {
+        if model.isBrowserPrompt(model.draft) {
+            if let browserToolGroup, !nativeToolStore.isEnabled(browserToolGroup) {
+                Button("Enable Browser") {
+                    nativeToolStore.setEnabled(browserToolGroup, enabled: true)
+                }
+                .buttonStyle(.borderless)
+                .limaFont(.caption2.weight(.semibold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                .disabled(model.canEndTask)
+                .help("Enable one Browser capability bundle for granted-tab requests.")
+            } else if browserBridge.sessions.isEmpty {
+                Label(
+                    browserBridge.enabled ? "Connect Browser Bridge" : "Enable Browser Bridge",
+                    systemImage: "exclamationmark.triangle"
+                )
+                .limaFont(.caption2.weight(.medium))
+                .foregroundStyle(LimaTheme.warning)
+                .help(browserBridge.enabled
+                    ? "Connect a granted Zen or Firefox tab before asking Lima to inspect it."
+                    : "Enable the Browser Bridge in Settings, then connect a granted Zen or Firefox tab.")
+            } else {
+                Label("Browser ready", systemImage: "network")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .help("Lima can inspect granted tabs and perform explicitly requested navigation. It cannot fill or submit forms.")
+            }
+        }
+    }
+
     private var composer: some View {
         VStack(alignment: .leading, spacing: 9) {
             AIAttachmentStrip(attachments: model.attachments, remove: model.remove)
@@ -2963,17 +3361,7 @@ struct AIChatWorkspaceView: View {
                     aiOptionsMenu
                 }
                 Spacer(minLength: 4)
-                if model.isBrowserPrompt(model.draft) {
-                    Label(
-                        browserBridge.sessions.isEmpty ? "Browser access unavailable" : "Browser connected",
-                        systemImage: browserBridge.sessions.isEmpty ? "exclamationmark.triangle" : "network"
-                    )
-                    .limaFont(.caption2.weight(.medium))
-                    .foregroundStyle(browserBridge.sessions.isEmpty ? LimaTheme.warning : LimaTheme.textSecondary)
-                    .help(browserBridge.sessions.isEmpty
-                        ? "Enable the Browser Bridge and connect a granted Zen or Firefox tab before asking Lima to inspect it."
-                        : "Lima can inspect granted tabs and perform explicitly granted tab navigation through the connected Browser Bridge. It cannot fill or submit forms.")
-                }
+                browserAccessHint
             }
             .frame(minHeight: 28)
 
@@ -3042,6 +3430,14 @@ struct AIChatWorkspaceView: View {
             + mcpStore.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count }
     }
 
+    private var toolGroups: [LimaAIToolGroup] {
+        LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)
+    }
+
+    private var browserToolGroup: LimaAIToolGroup? {
+        toolGroups.first { $0.id == "browser" }
+    }
+
     private var aiOptionsMenu: some View {
         Menu {
             providerPicker
@@ -3065,17 +3461,13 @@ struct AIChatWorkspaceView: View {
             Button("Add Clipboard", action: model.addClipboard)
             Button("Add Current Selection", action: model.addSelection)
             Divider()
-            Text("Lima tools · \(enabledToolCount) available")
-            ForEach(LimaAIToolRegistry.availableDefinitions) { tool in
+            Text("Capabilities · \(enabledToolCount) available")
+            ForEach(toolGroups) { group in
                 Toggle(isOn: Binding(
-                    get: { nativeToolStore.isEnabled(tool) },
-                    set: { nativeToolStore.setEnabled(tool, enabled: $0) }
+                    get: { nativeToolStore.isEnabled(group) },
+                    set: { nativeToolStore.setEnabled(group, enabled: $0) }
                 )) {
-                    Label {
-                        Text("\(tool.displayName) — \(tool.userSummary)")
-                    } icon: {
-                        Image(systemName: tool.symbol)
-                    }
+                    Label("\(group.title) — \(group.summary)", systemImage: group.symbol)
                 }
             }
             Divider()
@@ -3099,18 +3491,18 @@ struct AIChatWorkspaceView: View {
             Text("Only tools relevant to this prompt are sent. Browser navigation requires an explicit request and site grant; AI Chat never submits, saves, deletes, installs, runs, or approves tools.")
             Button("Manage Connected Services…") { model.openMCPManager() }
         } label: {
-            Label("Add context", systemImage: "plus")
+            Label("Context & tools", systemImage: "plus")
                 .limaFont(.caption.weight(.semibold))
                 .foregroundStyle(LimaTheme.textPrimary)
-                .frame(minWidth: 98, minHeight: 28)
+                .frame(minWidth: 112, minHeight: 28)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize(horizontal: true, vertical: false)
         .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
         .disabled(model.canEndTask)
-        .help("Add context or choose Lima tools")
-        .accessibilityLabel("Add context and choose Lima tools")
+        .help("Add context or choose AI capabilities")
+        .accessibilityLabel("Add context and choose AI capabilities")
     }
 
     private var agentPicker: some View {
@@ -3218,7 +3610,12 @@ struct AIChatWorkspaceView: View {
                 }
             }
             Divider()
-            Button("Refresh Available Models", action: model.refreshModels)
+            if model.isLoadingModels {
+                Label("Updating available models…", systemImage: "arrow.triangle.2.circlepath")
+                    .foregroundStyle(LimaTheme.textSecondary)
+            } else {
+                Button("Update Available Models", action: model.refreshModels)
+            }
         } label: {
             HStack(spacing: 5) {
                 Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
@@ -3233,7 +3630,7 @@ struct AIChatWorkspaceView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize(horizontal: true, vertical: false)
-        .disabled(model.canEndTask || model.isLoadingModels)
+        .disabled(model.canEndTask)
         .help(modelNeedsVerification(model.selectedModelOption)
             ? "Compatibility unknown · Test Connection sends a basic request to this model."
             : "Choose a model for " + model.provider.title)

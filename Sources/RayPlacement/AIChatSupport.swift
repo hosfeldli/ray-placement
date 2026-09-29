@@ -2674,6 +2674,87 @@ enum LimaAIToolRegistry {
     }
 }
 
+/// A concise, user-facing capability. Each group preserves the underlying
+/// strict function schemas while preventing the chat composer from presenting a
+/// long list of implementation-level functions.
+struct LimaAIToolGroup: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let summary: String
+    let symbol: String
+    let toolIDs: Set<String>
+
+    static let coreGroups: [LimaAIToolGroup] = [
+        .init(
+            id: "screen-context",
+            title: "Screen context",
+            summary: "Read the previous app and selected text",
+            symbol: "rectangle.on.rectangle",
+            toolIDs: ["read_screen_context"]
+        ),
+        .init(
+            id: "files",
+            title: "Files",
+            summary: "Find and read local files",
+            symbol: "folder",
+            toolIDs: ["search_files", "find_files", "list_directory", "file_metadata", "read_file"]
+        ),
+        .init(
+            id: "web-research",
+            title: "Web research",
+            summary: "Search and read public pages",
+            symbol: "globe",
+            toolIDs: ["search_web", "read_web"]
+        ),
+        .init(
+            id: "browser",
+            title: "Browser",
+            summary: "Inspect granted tabs and navigate only when asked",
+            symbol: "safari",
+            toolIDs: [
+                "browser_tabs", "browser_current", "browser_read",
+                "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
+                "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
+            ]
+        ),
+        .init(
+            id: "lima-workspace",
+            title: "Lima workspace",
+            summary: "Read Lima status and installed extensions",
+            symbol: "sparkles",
+            toolIDs: ["list_extensions", "get_lima_status"]
+        )
+    ]
+
+    static func visibleGroups(for definitions: [LimaAIToolDefinition]) -> [LimaAIToolGroup] {
+        let availableIDs = Set(definitions.map(\.id))
+        var groups = coreGroups.compactMap { group -> LimaAIToolGroup? in
+            let present = group.toolIDs.intersection(availableIDs)
+            guard !present.isEmpty else { return nil }
+            return LimaAIToolGroup(
+                id: group.id,
+                title: group.title,
+                summary: group.summary,
+                symbol: group.symbol,
+                toolIDs: present
+            )
+        }
+        let extensionIDs = Set(definitions.compactMap { definition in
+            definition.extensionBinding == nil ? nil : definition.id
+        })
+        if !extensionIDs.isEmpty {
+            groups.append(.init(
+                id: "installed-extensions",
+                title: "Installed extensions",
+                summary: "Use approved read-only extension capabilities",
+                symbol: "puzzlepiece.extension",
+                toolIDs: extensionIDs
+            ))
+        }
+        return groups
+    }
+}
+
 extension LimaAIToolDefinition {
     var displayName: String {
         switch id {
@@ -2746,9 +2827,23 @@ final class LimaAIToolStore: ObservableObject {
         enabledToolIDs.contains(definition.id)
     }
 
+    func isEnabled(_ group: LimaAIToolGroup) -> Bool {
+        !group.toolIDs.isEmpty && group.toolIDs.isSubset(of: enabledToolIDs)
+    }
+
     func setEnabled(_ definition: LimaAIToolDefinition, enabled: Bool) {
         if enabled { enabledToolIDs.insert(definition.id) }
         else { enabledToolIDs.remove(definition.id) }
+        persist()
+    }
+
+    func setEnabled(_ group: LimaAIToolGroup, enabled: Bool) {
+        if enabled { enabledToolIDs.formUnion(group.toolIDs) }
+        else { enabledToolIDs.subtract(group.toolIDs) }
+        persist()
+    }
+
+    private func persist() {
         defaults?.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
     }
 }
@@ -2959,16 +3054,83 @@ enum AIContextCapture {
 }
 
 struct AIInputEncoder {
+    /// Keep explicit continuity payloads bounded when a provider/model cannot use
+    /// a prior response ID. The durable local transcript remains unchanged.
+    static let maximumContinuityCharacters = 120_000
+
     static func content(text: String, attachments: [AIAttachment]) throws -> [[String: Any]] {
-        var content: [[String: Any]] = [["type": "input_text", "text": text]]
+        let attachmentContent = try attachmentContent(attachments)
+        return [["type": "input_text", "text": text]] + attachmentContent
+    }
+
+    /// Reconstruct a Responses-compatible transcript when a model change resets a
+    /// provider continuation. The newest user message is already part of history;
+    /// attachments are added to that exact message instead of being duplicated.
+    static func transcript(
+        _ history: [AIProviderMessage],
+        attachments: [AIAttachment],
+        maximumCharacters: Int = maximumContinuityCharacters
+    ) throws -> [[String: Any]] {
+        let history = bounded(history, maximumCharacters: maximumCharacters)
+        var result: [[String: Any]] = []
+        var lastUserIndex: Int?
+
+        for message in history {
+            var parts: [[String: Any]] = []
+            for item in message.content {
+                switch item {
+                case .text(let text):
+                    guard !text.isEmpty else { continue }
+                    parts.append([
+                        "type": message.role == .assistant ? "output_text" : "input_text",
+                        "text": text
+                    ])
+                case .image(let mediaType, let base64):
+                    guard message.role == .user else { continue }
+                    parts.append(["type": "input_image", "image_url": "data:\(mediaType);base64,\(base64)"])
+                case .toolUse, .toolResult:
+                    // Local transcript persistence stores user/assistant text only.
+                    // Tool continuations use the provider's dedicated output path.
+                    continue
+                }
+            }
+            guard !parts.isEmpty else { continue }
+            result.append([
+                "role": message.role == .assistant ? "assistant" : "user",
+                "content": parts
+            ])
+            if message.role == .user { lastUserIndex = result.indices.last }
+        }
+
+        let attachmentContent = try attachmentContent(attachments)
+        guard !attachmentContent.isEmpty else { return result }
+        if let index = lastUserIndex, var content = result[index]["content"] as? [[String: Any]] {
+            content.append(contentsOf: attachmentContent)
+            result[index]["content"] = content
+        } else {
+            result.append(["role": "user", "content": attachmentContent])
+        }
+        return result
+    }
+
+    static func attachmentContent(_ attachments: [AIAttachment]) throws -> [[String: Any]] {
+        var content: [[String: Any]] = []
         for attachment in attachments {
             switch attachment.kind {
             case .clipboard, .selection:
-                if let value = attachment.text { content.append(["type": "input_text", "text": "\n\n[\(attachment.displayName)]\n\(value)"]) }
+                if let value = attachment.text {
+                    content.append(["type": "input_text", "text": "\n\n[\(attachment.displayName)]\n\(value)"])
+                }
             case .file, .image:
                 guard let path = attachment.path else { continue }
                 let data = try Data(contentsOf: URL(fileURLWithPath: path))
-                guard data.count <= 50 * 1024 * 1024 else { throw NSError(domain: "LimaAI", code: 4, userInfo: [NSLocalizedDescriptionKey: "\(attachment.displayName) is larger than Lima’s 50 MB attachment limit."]) }
+                guard data.count <= 50 * 1024 * 1024 else {
+                    throw NSError(
+                        domain: "LimaAI",
+                        code: 4,
+                        userInfo: [NSLocalizedDescriptionKey: "\(attachment.displayName) is larger than Lima’s 50 MB attachment limit."]
+                    )
+                }
                 let base64 = data.base64EncodedString()
                 if attachment.kind == .image {
                     content.append(["type": "input_image", "image_url": "data:\(attachment.mimeType ?? "image/png");base64,\(base64)"])
@@ -2978,6 +3140,33 @@ struct AIInputEncoder {
             }
         }
         return content
+    }
+
+    private static func bounded(_ history: [AIProviderMessage], maximumCharacters: Int) -> [AIProviderMessage] {
+        guard maximumCharacters > 0 else { return Array(history.suffix(1)) }
+        var first = 0
+        var characterCount = history.reduce(0) { partial, message in
+            partial + message.content.reduce(0) { count, item in
+                switch item {
+                case .text(let text): return count + text.count
+                case .image(_, let base64): return count + base64.count
+                case .toolUse(_, _, let arguments): return count + arguments.count
+                case .toolResult(_, let output): return count + output.count
+                }
+            }
+        }
+        while first < history.count - 1, characterCount > maximumCharacters {
+            characterCount -= history[first].content.reduce(0) { count, item in
+                switch item {
+                case .text(let text): return count + text.count
+                case .image(_, let base64): return count + base64.count
+                case .toolUse(_, _, let arguments): return count + arguments.count
+                case .toolResult(_, let output): return count + output.count
+                }
+            }
+            first += 1
+        }
+        return Array(history.dropFirst(first))
     }
 }
 

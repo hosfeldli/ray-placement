@@ -146,15 +146,36 @@ struct AIChatVisualLab: View {
 
 @MainActor
 private enum AIChatVisualFixtures {
+    private static let fixtureProjectID = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000002")!
+    private static let fixtureMemoryID = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000003")!
+
+    private static var fixtureProject: AIProject {
+        AIProject(
+            id: fixtureProjectID,
+            name: "Lima v3.14.10",
+            instructions: "Keep this release workspace local-first and preserve the active chat’s context when changing models."
+        )
+    }
+
     static func model(for scenario: AIChatVisualScenario) -> AIChatViewModel {
-        let conversations = fixtureConversations(for: scenario)
+        let project = fixtureProject
+        let conversations = fixtureConversations(for: scenario, projectID: project.id)
+        let workspaceStore = AIWorkspaceStore(fixtures: [project], memories: [
+            AIMemory(
+                id: fixtureMemoryID,
+                title: "Release preference",
+                content: "Keep local history and explicit project context available when changing models.",
+                projectID: project.id
+            )
+        ])
         let mcpServer = fixtureMCPServer()
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: conversations),
             credentials: AIChatCredentialStore(configuration: .fixture),
             mcpStore: MCPServerStore(fixtures: [mcpServer]),
             nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "get_lima_status"]),
-            transport: FixtureAITransport.standard
+            transport: FixtureAITransport.standard,
+            workspaceStore: workspaceStore
         )
 
         switch scenario {
@@ -190,22 +211,28 @@ private enum AIChatVisualFixtures {
         return model
     }
 
-    private static func fixtureConversations(for scenario: AIChatVisualScenario) -> [AIConversation] {
+    private static func fixtureConversations(for scenario: AIChatVisualScenario, projectID: UUID) -> [AIConversation] {
+        let conversations: [AIConversation]
         switch scenario {
         case .empty:
-            return []
+            conversations = []
         case .markdown:
-            return [markdownConversation]
+            conversations = [markdownConversation]
         case .streaming:
-            return [streamingConversation]
+            conversations = [streamingConversation]
         case .approval:
-            return [approvalConversation]
+            conversations = [approvalConversation]
         case .failure:
-            return [failureConversation]
+            conversations = [failureConversation]
         case .manyChats:
-            return manyConversations
+            conversations = manyConversations
         case .conversation:
-            return [normalConversation, earlierConversation]
+            conversations = [normalConversation, earlierConversation]
+        }
+        return conversations.map { conversation in
+            var conversation = conversation
+            conversation.projectID = projectID
+            return conversation
         }
     }
 

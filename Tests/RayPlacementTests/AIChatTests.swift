@@ -423,8 +423,13 @@ import Testing
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
     #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
-        "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
+        "browser_tabs", "browser_current", "browser_read",
+        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
+    ])
+    #expect(Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id }) == [
+        "browser_tabs", "browser_current", "browser_read",
+        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_open_tabs"
     ])
     #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file"
