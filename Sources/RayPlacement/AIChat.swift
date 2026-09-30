@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import Security
 import SwiftUI
+import RayPlacementCore
 
 extension Notification.Name {
     static let limaOpenAIMCPManager = Notification.Name("Lima.openAIMCPManager")
@@ -1922,6 +1923,27 @@ final class AIChatViewModel: ObservableObject {
         finishSharedTask(state: .cancelled, detail: "Task ended before approval")
     }
 
+    /// Prepare visible context only. Existing draft text is never discarded and
+    /// no provider request is made until the user explicitly sends it.
+    @discardableResult
+    func prepareNoteDraft(_ note: MarkdownNote, prompt: String) -> Bool {
+        guard !canEndTask else { return false }
+        attachments.removeAll { $0.id == note.id }
+        add(AIAttachment(id: note.id, kind: .file, displayName: note.displayTitle,
+                         text: note.content, mimeType: "text/markdown"))
+        appendDraftPrompt(prompt)
+        streamError = nil
+        return true
+    }
+
+    func appendDraftPrompt(_ prompt: String) {
+        guard !canEndTask else { return }
+        let instruction = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !instruction.isEmpty else { return }
+        draft = draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? instruction : draft + "\n\n" + instruction
+    }
+
     func add(_ attachment: AIAttachment) {
         guard !attachments.contains(where: { $0.id == attachment.id }) else { return }
         attachments.append(attachment)
@@ -2628,12 +2650,14 @@ struct AIChatWorkspaceView: View {
     @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     let isEmbedded: Bool
     let onDictation: (() -> Void)?
+    let contextNotes: NotesStore
     @State private var apiKey = ""
 
-    init(model: AIChatViewModel, isEmbedded: Bool = false, onDictation: (() -> Void)? = nil) {
+    init(model: AIChatViewModel, isEmbedded: Bool = false, onDictation: (() -> Void)? = nil, contextNotes: NotesStore? = nil) {
         self.model = model
         self.isEmbedded = isEmbedded
         self.onDictation = onDictation
+        self.contextNotes = contextNotes ?? .shared
         _conversationStore = ObservedObject(wrappedValue: model.store)
         _mcpStore = ObservedObject(wrappedValue: model.mcpStore)
         _nativeToolStore = ObservedObject(wrappedValue: model.nativeToolStore)
@@ -2642,6 +2666,7 @@ struct AIChatWorkspaceView: View {
     @State private var showKey = false
     @State private var showingProviderSetup = false
     @State private var showingConversationSidebar = false
+    @State private var showingContextInspector = false
     @State private var showingProjectEditor = false
     @State private var showingMemoryEditor = false
     @State private var projectName = ""
@@ -2690,6 +2715,17 @@ struct AIChatWorkspaceView: View {
         .sheet(isPresented: $showingConversationSidebar) {
             sidebar
                 .frame(minWidth: 280, idealWidth: 340, minHeight: 420, idealHeight: 620)
+        }
+        .sheet(isPresented: $showingContextInspector) {
+            VStack(spacing: 0) {
+                HStack {
+                    Text("Message context").limaFont(.headline)
+                    Spacer()
+                    Button("Done") { showingContextInspector = false }
+                }.padding(16)
+                contextInspector
+            }
+            .frame(width: 340, height: 600)
         }
         .sheet(isPresented: $showingProjectEditor) {
             projectEditor
@@ -2810,35 +2846,26 @@ struct AIChatWorkspaceView: View {
         .frame(width: 440)
     }
 
-    @ViewBuilder
+    private var contextInspector: some View {
+        AIWorkspaceInspector(model: model, notes: contextNotes, tools: nativeToolStore)
+    }
+
     private var workspacePanes: some View {
-        if isEmbedded {
-            if let sidebarWidth = workspaceSizeClass.contextSidebarWidth {
-                HStack(spacing: 0) {
-                    sidebar
-                        .frame(width: sidebarWidth)
-
-                    Rectangle()
-                        .fill(LimaDesign.separator)
-                        .frame(width: LimaDesign.hairlineWidth)
-
-                    conversation
-                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        GeometryReader { proxy in
+            let sidebarWidth: CGFloat = proxy.size.width >= 1040 ? 232 : 0
+            HStack(spacing: 0) {
+                if sidebarWidth > 0 {
+                    sidebar.frame(width: sidebarWidth)
+                    Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
                 }
-            } else {
                 conversation
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                if LimaWorkspaceMetrics.showsInspector(contentWidth: proxy.size.width, sidebarWidth: sidebarWidth) {
+                    Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
+                    contextInspector.frame(width: LimaWorkspaceMetrics.inspectorWidth)
+                }
             }
-        } else {
-            HStack(spacing: 10) {
-                sidebar
-                    .frame(width: 246)
-                    .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
-
-                conversation
-                    .frame(minWidth: 470, maxWidth: .infinity, maxHeight: .infinity)
-                    .limaNativeSurface(fill: LimaTheme.fieldBackground, radius: LimaRadius.panel, border: LimaTheme.borderSubtle)
-            }
+            .background(LimaTheme.surfacePrimary)
         }
     }
 
@@ -3062,11 +3089,7 @@ struct AIChatWorkspaceView: View {
 
     private var conversationHeader: some View {
         HStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .limaFont(.system(size: 14, weight: .bold))
-                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                .frame(width: 30, height: 30)
-                .background(SettingsStore.shared.accentTheme.readablePrimary.opacity(0.12), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            LimaFeatureIcon(symbol: "sparkles", tint: .violet, size: 36)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.selectedConversation?.title ?? "New Chat")
@@ -3080,6 +3103,13 @@ struct AIChatWorkspaceView: View {
 
             Spacer(minLength: 8)
 
+            Button { showingConversationSidebar = true } label: {
+                Image(systemName: "clock.arrow.circlepath").frame(width: 28, height: 28)
+            }
+            .buttonStyle(.borderless)
+            .help("Conversation history")
+            .accessibilityLabel("Conversation history")
+
             Button(action: model.newConversation) {
                 Image(systemName: "square.and.pencil")
                     .frame(width: 28, height: 28)
@@ -3092,10 +3122,9 @@ struct AIChatWorkspaceView: View {
             .accessibilityLabel("New chat")
 
             Menu {
-                if isEmbedded, workspaceSizeClass == .compact {
-                    Button("Show Conversations…") { showingConversationSidebar = true }
-                    Divider()
-                }
+                Button("Show Conversations…") { showingConversationSidebar = true }
+                Button("Manage Context…") { showingContextInspector = true }
+                Divider()
                 Button("Provider Settings…") { showingProviderSetup = true }
                 Button(model.showActivity ? "Hide turn details" : "Show turn details") {
                     model.showActivity.toggle()
@@ -3363,17 +3392,19 @@ struct AIChatWorkspaceView: View {
         VStack(alignment: .leading, spacing: 9) {
             AIAttachmentStrip(attachments: model.attachments, remove: model.remove)
 
-            HStack(spacing: 8) {
-                attachmentAndToolMenu
-                if model.hasProviderAPIKey && !showingProviderSetup {
-                    agentPicker
-                    modelPicker
-                    aiOptionsMenu
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    attachmentAndToolMenu
+                    if model.hasProviderAPIKey && !showingProviderSetup {
+                        agentPicker
+                        modelPicker
+                        aiOptionsMenu
+                    }
+                    browserAccessHint
                 }
-                Spacer(minLength: 4)
-                browserAccessHint
+                .frame(minHeight: 30)
             }
-            .frame(minHeight: 28)
+            .frame(height: 34)
 
             HStack(alignment: .bottom, spacing: 9) {
                 ZStack(alignment: .topLeading) {
@@ -3857,9 +3888,7 @@ private struct AIChatMessageRow: View {
     var body: some View {
         HStack(alignment: .top) {
             if message.role == .assistant {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                    .frame(width: 22)
+                LimaFeatureIcon(symbol: "sparkles", tint: .violet, size: 32)
                 VStack(alignment: .leading, spacing: 8) {
                     messageBody
                     if showActivity, let activities = message.activities, !activities.isEmpty {
@@ -3871,9 +3900,9 @@ private struct AIChatMessageRow: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 60)
+                Spacer(minLength: 12)
             } else {
-                Spacer(minLength: 60)
+                Spacer(minLength: 32)
                 messageBody
                 Image(systemName: "person.fill")
                     .foregroundStyle(LimaTheme.textSecondary)
@@ -3883,26 +3912,41 @@ private struct AIChatMessageRow: View {
     }
 
     private var messageBody: some View {
-        Group {
-            if message.role == .assistant, !isStreaming, !visibleText.isEmpty {
-                LimaMarkdownDocumentView(markdown: visibleText)
-            } else {
-                Text(visibleText.isEmpty && message.role == .assistant ? "Thinking…" : visibleText)
-                    .textSelection(.enabled)
-            }
-        }
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(11)
-            .background(
-                message.role == .user ? LimaTheme.surfaceSelected : Color.clear,
-                in: RoundedRectangle(cornerRadius: 11, style: .continuous)
-            )
-            .overlay {
-                if message.role == .user {
-                    RoundedRectangle(cornerRadius: 11, style: .continuous)
-                        .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth)
+        VStack(alignment: .leading, spacing: 12) {
+            Group {
+                if message.role == .assistant, !isStreaming, !visibleText.isEmpty {
+                    LimaMarkdownDocumentView(markdown: visibleText)
+                } else {
+                    Text(visibleText.isEmpty && message.role == .assistant ? "Thinking…" : visibleText)
+                        .textSelection(.enabled)
                 }
             }
+            .fixedSize(horizontal: false, vertical: true)
+            HStack {
+                Text(message.createdAt, style: .time)
+                    .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
+                Spacer()
+                if !isStreaming, !visibleText.isEmpty {
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(visibleText, forType: .string)
+                    } label: { Image(systemName: "doc.on.doc") }
+                    .buttonStyle(.borderless)
+                    .help("Copy message")
+                    .accessibilityLabel("Copy message")
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            message.role == .user ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
+                .allowsHitTesting(false)
+        }
     }
 }
 

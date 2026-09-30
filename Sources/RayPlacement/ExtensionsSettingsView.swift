@@ -24,6 +24,8 @@ struct ExtensionsSettingsView: View {
 
     @State private var tab: ExtensionTab = .installed
     @State private var query = ""
+    @State private var installedFilter: ExtensionWorkspaceFilter = .all
+    @ObservedObject private var commandManager = CommandManager.shared
     @State private var category = "All"
     @State private var selectedID: String?
     @State private var confirmUninstallID: String?
@@ -131,6 +133,14 @@ struct ExtensionsSettingsView: View {
         return packages.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
     }
 
+    private var filteredInstalled: [InstalledPackage] {
+        installed.filter { package in
+            ExtensionWorkspaceFilter.matches(query: query, name: package.name, id: package.id,
+                commandTitles: package.commands.map { $0.command.title })
+                && installedFilter.includes(enabled: package.enabled, bundled: package.bundled)
+        }
+    }
+
     private var available: [ExtensionStoreEntry] {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return storeModel.entries.filter { entry in
@@ -167,6 +177,7 @@ struct ExtensionsSettingsView: View {
                     ForEach(visibleTabs) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
                 Spacer()
                 if !localOnly, !updates.isEmpty {
                     Text("\(updates.count) update\(updates.count == 1 ? "" : "s")")
@@ -176,29 +187,18 @@ struct ExtensionsSettingsView: View {
             }
             .padding(12)
 
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(LimaTheme.textSecondary)
-                TextField("Search Extensions…", text: $query)
-                    .textFieldStyle(.plain)
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(LimaTheme.textTertiary)
-                }
+            HStack(spacing: 10) {
+                LimaWorkspaceSearchField(placeholder: "Search extensions and commands…", text: $query)
                 Button {
                     reloadExtensions()
                     if !localOnly { storeModel.load() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help(localOnly ? "Reload installed extensions" : "Reload installed extensions and refresh the catalog")
+                } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
+                .buttonStyle(.bordered)
+                .help(localOnly ? "Reload installed extensions" : "Refresh extensions and catalog")
+                .accessibilityLabel("Reload extensions")
             }
-            .padding(.horizontal, 10)
-            .frame(height: 30)
-            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            .padding(.horizontal, 12)
-            .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 12)
 
             Group {
                 switch tab {
@@ -212,7 +212,11 @@ struct ExtensionsSettingsView: View {
         .onAppear {
             if !localOnly { storeModel.load() }
             reloadExtensions()
+            if selectedID == nil { selectedID = filteredInstalled.first?.id }
         }
+        .onChange(of: query) { _ in reconcileSelection() }
+        .onChange(of: installedFilter) { _ in reconcileSelection() }
+        .onChange(of: filteredInstalled.map(\.id)) { _ in reconcileSelection() }
         .alert("Uninstall Extension?", isPresented: Binding(get: { confirmUninstallID != nil }, set: { if !$0 { confirmUninstallID = nil } })) {
             Button("Cancel", role: .cancel) { confirmUninstallID = nil }
             Button("Uninstall", role: .destructive) {
@@ -224,22 +228,39 @@ struct ExtensionsSettingsView: View {
         }
     }
 
+    private func reconcileSelection() {
+        if !filteredInstalled.contains(where: { $0.id == selectedID }) {
+            selectedID = filteredInstalled.first?.id
+        }
+    }
+
     private var localWorkspaceHeader: some View {
-        HStack(spacing: 11) {
-            Image(systemName: "puzzlepiece.extension.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(LimaTheme.accentInk)
-                .frame(width: 34, height: 34)
-                .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Installed extensions")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(LimaTheme.textPrimary)
-                Text("Manage the tools already available on this Mac.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(LimaTheme.textSecondary)
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 11) {
+                localWorkspaceTitle.fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 8)
+                localWorkspaceActions
             }
-            Spacer(minLength: 8)
+            VStack(alignment: .leading, spacing: 12) {
+                localWorkspaceTitle
+                localWorkspaceActions
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(LimaTheme.surfacePrimary)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
+        }
+    }
+
+    private var localWorkspaceTitle: some View {
+        LimaWorkspaceHeading(title: "Extensions", subtitle: "Manage the tools already available on this Mac.",
+                             symbol: "puzzlepiece.extension.fill", tint: .cyan)
+    }
+
+    private var localWorkspaceActions: some View {
+        HStack(spacing: 11) {
             Text("\(installed.count.formatted()) local")
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .foregroundStyle(LimaTheme.textSecondary)
@@ -253,47 +274,99 @@ struct ExtensionsSettingsView: View {
             .controlSize(.small)
             .help("Open Lima’s local Extensions folder")
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(LimaTheme.surfacePrimary)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
-        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var installedView: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                if installed.isEmpty {
-                    emptyState(
-                        "No extensions installed",
-                        detail: localOnly
-                            ? "Add a package to Lima’s Extensions folder, then reload this workspace."
-                            : "Install a package from Available or add a local extension folder.",
-                        symbol: "puzzlepiece.extension"
-                    )
-                } else {
-                    ForEach(installed) { package in
-                        installedCard(package)
+        GeometryReader { proxy in
+            let packages = filteredInstalled
+            let split = proxy.size.width >= 860
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(ExtensionWorkspaceFilter.allCases) { filter in
+                                    Button { installedFilter = filter } label: {
+                                        Text(filter.rawValue).limaFont(.caption.weight(.medium))
+                                            .padding(.horizontal, 12).padding(.vertical, 7)
+                                            .foregroundStyle(installedFilter == filter ? LimaTheme.accentInk : LimaTheme.textSecondary)
+                                            .background(installedFilter == filter ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised, in: Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityAddTraits(installedFilter == filter ? .isSelected : [])
+                                }
+                            }
+                        }
+                        Text("\(packages.count) matching extensions").limaFont(.callout.weight(.semibold))
+                            .padding(.vertical, 6)
+                        if packages.isEmpty {
+                            emptyState("No matching extensions",
+                                       detail: installed.isEmpty ? "Add a local package to the Extensions folder, then reload." : "Try a different search or filter.",
+                                       symbol: "puzzlepiece.extension")
+                        }
+                        ForEach(packages) { package in
+                            installedCard(package, inlineDetail: !split)
+                        }
+                        if let status { statusLine(status) }
                     }
+                    .padding(16)
                 }
-                if let status { statusLine(status) }
+                if split, let package = packages.first(where: { $0.id == selectedID }) {
+                    Divider()
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            LimaWorkspaceHeading(title: package.name, subtitle: package.source + " · v" + package.version,
+                                                 symbol: "puzzlepiece.extension.fill", tint: .cyan)
+                            extensionDetail(package)
+                        }.padding(16)
+                    }
+                    .frame(width: 344)
+                    .background(LimaTheme.surfaceSecondary)
+                }
             }
-            .padding(12)
         }
     }
 
-    private func installedCard(_ package: InstalledPackage) -> some View {
+    private func installedCard(_ package: InstalledPackage, inlineDetail: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Image(systemName: "puzzlepiece.extension.fill")
-                    .font(.system(size: 19))
-                    .foregroundStyle(SettingsStore.shared.accentTheme.readableSecondary)
-                    .frame(width: 34, height: 34)
-                    .background(SettingsStore.shared.accentTheme.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(package.name).font(.callout.weight(.semibold))
-                    Text("\(package.source) · \(package.lifecycleState.rawValue) · v\(package.version) · \(package.commandCount) commands · \(package.tools.count) tools · \(package.skills.count) skills · \(package.agents.count) agents")
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 10) {
+                    installedSummary(package).fixedSize(horizontal: true, vertical: false)
+                    Spacer(minLength: 8)
+                    installedActions(package)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    installedSummary(package)
+                    HStack {
+                        Spacer(minLength: 0)
+                        installedActions(package)
+                    }
+                }
+            }
+            .padding(14)
+
+            if inlineDetail, selectedID == package.id {
+                Divider()
+                extensionDetail(package)
+            }
+        }
+        .background(selectedID == package.id ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised,
+                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
+            .strokeBorder(selectedID == package.id ? LimaTheme.accentInk : LimaTheme.borderSubtle, lineWidth: 0.75))
+    }
+
+    private func installedSummary(_ package: InstalledPackage) -> some View {
+        HStack(spacing: 10) {
+                LimaFeatureIcon(symbol: "puzzlepiece.extension.fill", tint: package.bundled ? .blue : .cyan)
+                VStack(alignment: .leading, spacing: 5) {
+                    Button { selectedID = selectedID == package.id ? nil : package.id } label: {
+                        Text(package.name).limaFont(.system(size: 15, weight: .semibold))
+                    }.buttonStyle(.plain)
+                    Text("\(package.source) · v\(package.version) · \(package.commandCount) commands")
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text("\(package.lifecycleState.rawValue) · \(package.commands.isEmpty ? "Contributions package" : (package.enabled ? "Commands enabled" : "Commands disabled"))")
                         .font(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                     if !localOnly, let available = storeModel.entries.first(where: { $0.id == package.id }) {
@@ -302,10 +375,15 @@ struct ExtensionsSettingsView: View {
                             .foregroundStyle(LimaTheme.textTertiary)
                     }
                 }
-                Spacer()
-                Text(package.enabled ? "Enabled" : "Disabled")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(package.enabled ? .green : .secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func installedActions(_ package: InstalledPackage) -> some View {
+        HStack(spacing: 8) {
+                Button("Configure") { selectedID = package.id }
+                    .buttonStyle(.bordered)
+                    .help("Inspect commands, preferences, and permissions")
                 if !localOnly, let update = updates.first(where: { $0.installed.id == package.id }) {
                     Button("Update") { storeModel.install(update.entry) }
                         .buttonStyle(.borderedProminent)
@@ -313,9 +391,11 @@ struct ExtensionsSettingsView: View {
                         .disabled(storeModel.installingID != nil)
                 }
                 Menu {
-                    Button(package.enabled ? "Disable" : "Enable") { toggle(package) }
-                    Button("Configure Commands") { selectedID = package.id }
-                    Button("View Details") { selectedID = package.id }
+                    if !package.commands.isEmpty {
+                        Button(package.enabled ? "Disable Commands" : "Enable Commands") { toggle(package) }
+                    }
+                    Button("Configure Commands") { detailTab = .commands; selectedID = package.id }
+                    Button("View Permissions") { detailTab = .permissions; selectedID = package.id }
                     Divider()
                     if package.bundled {
                         if ExtensionPackageManager.shared.isLogicallyRemoved(package.id) { Button("Restore Extension") { restoreBundled(package) } }
@@ -332,34 +412,35 @@ struct ExtensionsSettingsView: View {
                         .frame(width: 24, height: 24)
                 }
                 .menuStyle(.borderlessButton)
-            }
-            .padding(11)
-
-            if selectedID == package.id {
-                Divider()
-                extensionDetail(package)
-            }
+                .menuIndicator(.hidden)
+                .fixedSize(horizontal: true, vertical: false)
+                .accessibilityLabel("Actions for " + package.name)
         }
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: 1))
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func extensionDetail(_ package: InstalledPackage) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Picker("Extension detail", selection: $detailTab) { ForEach(DetailTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                Picker("Detail", selection: $detailTab) { ForEach(DetailTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
                 Spacer()
                 Button("Close") { selectedID = nil }.buttonStyle(.borderless)
+            }
+            if detailTab == .commands, package.commands.isEmpty {
+                Text("No launcher commands. Check Tools, Skills & Agents for other contributions.")
+                    .limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
             }
             if detailTab == .commands { ForEach(package.commands, id: \.settingsIdentifier) { command in
                 HStack(spacing: 8) {
                     Toggle("", isOn: Binding(get: { CommandManager.shared.isEnabled(command.settingsIdentifier) }, set: { CommandManager.shared.setEnabled($0, for: command.settingsIdentifier) }))
                         .labelsHidden().toggleStyle(.checkbox)
+                        .accessibilityLabel("Enable " + command.command.title)
                     Button { CommandManager.shared.toggleFavorite(command.settingsIdentifier) } label: {
                         Image(systemName: CommandManager.shared.isFavorite(command.settingsIdentifier) ? "star.fill" : "star")
                             .foregroundStyle(CommandManager.shared.isFavorite(command.settingsIdentifier) ? .yellow : .secondary)
                     }.buttonStyle(.borderless)
-                    Text(command.command.title).lineLimit(1)
+                        .accessibilityLabel("Favorite " + command.command.title)
+                    Text(command.command.title).fixedSize(horizontal: false, vertical: true)
                     Spacer()
                     Text(command.effectiveShortcutLabel)
                         .font(.caption.monospacedDigit())
@@ -441,7 +522,9 @@ struct ExtensionsSettingsView: View {
             Text("Preferences").font(.headline)
             Text("Package preferences are stored by extension identifier and remain available after removal.").font(.caption).foregroundStyle(LimaTheme.textSecondary)
             Text("Settings key: extension.\(package.id)").font(.caption.monospaced()).foregroundStyle(LimaTheme.textSecondary)
-            Toggle("Enabled", isOn: Binding(get: { package.enabled }, set: { _ in toggle(package) }))
+            if !package.commands.isEmpty {
+                Toggle("Enable commands", isOn: Binding(get: { package.enabled }, set: { _ in toggle(package) }))
+            }
         }
     }
 
@@ -525,7 +608,7 @@ struct ExtensionsSettingsView: View {
                 Button("Reload Installed Extensions") { reloadExtensions() }
             }
             Section("Package provenance") {
-                ForEach(installed) { package in
+                ForEach(filteredInstalled) { package in
                     HStack {
                         Image(systemName: package.bundled ? "shippingbox.fill" : "person.crop.circle")
                         VStack(alignment: .leading) {

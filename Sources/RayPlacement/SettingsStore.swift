@@ -241,6 +241,11 @@ enum DictationComputeMode: String, CaseIterable, Identifiable {
 
 enum ApplicationPaths {
     static let applicationSupport: URL = {
+        // Offscreen workspaces must never read or migrate production notes,
+        // dictation history, extensions, or other local data.
+        if let testRoot = LimaTestEnvironment.dataRoot {
+            return testRoot.appendingPathComponent("Application Support", isDirectory: true)
+        }
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let current = root.appendingPathComponent("Lima", isDirectory: true)
         let legacy = root.appendingPathComponent("RayPlacement", isDirectory: true)
@@ -436,7 +441,7 @@ final class SettingsStore: ObservableObject {
         static let hudDockPosition = "hudDockPosition"
     }
 
-    private let defaults = UserDefaults.standard
+    private let defaults = LimaTestEnvironment.userDefaults
     private var isRestoringActivationShortcut = false
     private var isRestoringActionShortcut = false
 
@@ -818,7 +823,7 @@ final class SettingsStore: ObservableObject {
     }
 
     private static func loadCodable<T: Decodable>(_ type: T.Type, key: String) -> T? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        guard let data = LimaTestEnvironment.userDefaults.data(forKey: key) else { return nil }
         return try? JSONDecoder().decode(type, from: data)
     }
 

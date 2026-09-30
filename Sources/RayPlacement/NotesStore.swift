@@ -376,9 +376,9 @@ final class NotesStore: ObservableObject {
     /// Quick Note controller, so Shelf actions do not silently depend on the
     /// workspace's incidental selection.
     func appendShelfItemsToQuickNote(_ items: [ContextShelfItem]) -> UUID? {
-        let savedTargetID = UserDefaults.standard.string(forKey: "quickNoteTargetID")
+        let savedTargetID = LimaTestEnvironment.userDefaults.string(forKey: "quickNoteTargetID")
             .flatMap(UUID.init(uuidString:))
-        let mode = UserDefaults.standard.string(forKey: "quickNoteTargetMode")
+        let mode = LimaTestEnvironment.userDefaults.string(forKey: "quickNoteTargetMode")
             .flatMap(QuickNoteTargetMode.init(rawValue:)) ?? .lastQuickNote
         let targetID = QuickNoteTargetResolver.resolve(
             mode: mode,
@@ -388,7 +388,7 @@ final class NotesStore: ObservableObject {
         )
         guard let targetID else { return nil }
         appendShelfItems(items, to: targetID)
-        UserDefaults.standard.set(targetID.uuidString, forKey: "quickNoteTargetID")
+        LimaTestEnvironment.userDefaults.set(targetID.uuidString, forKey: "quickNoteTargetID")
         return targetID
     }
 
@@ -535,7 +535,7 @@ final class NotesStore: ObservableObject {
     private static let userTemplatesKey = "Lima.Notes.UserTemplates"
 
     private static func loadUserTemplates() -> [MarkdownUserTemplate] {
-        guard let data = UserDefaults.standard.data(forKey: userTemplatesKey),
+        guard let data = LimaTestEnvironment.userDefaults.data(forKey: userTemplatesKey),
               let templates = try? JSONDecoder().decode([MarkdownUserTemplate].self, from: data) else { return [] }
         return templates
     }
@@ -543,7 +543,7 @@ final class NotesStore: ObservableObject {
     private func persistUserTemplates() {
         guard persistenceEnabled else { return }
         if let data = try? JSONEncoder().encode(userTemplates) {
-            UserDefaults.standard.set(data, forKey: Self.userTemplatesKey)
+            LimaTestEnvironment.userDefaults.set(data, forKey: Self.userTemplatesKey)
         }
     }
 

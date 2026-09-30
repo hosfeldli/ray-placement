@@ -9,11 +9,11 @@ final class AppTypography: ObservableObject {
         didSet {
             let valid = InterfaceTextScale.normalized(scale)
             if scale != valid { scale = valid }
-            UserDefaults.standard.set(valid, forKey: "interfaceTextScale")
+            LimaTestEnvironment.userDefaults.set(valid, forKey: "interfaceTextScale")
         }
     }
     private init() {
-        scale = InterfaceTextScale.normalized(UserDefaults.standard.double(forKey: "interfaceTextScale"))
+        scale = InterfaceTextScale.normalized(LimaTestEnvironment.userDefaults.double(forKey: "interfaceTextScale"))
     }
     static func size(_ base: CGFloat) -> CGFloat { base * shared.scale }
 }

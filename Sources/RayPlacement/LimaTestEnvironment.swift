@@ -43,7 +43,10 @@ enum LimaTestEnvironment {
 
     static let userDefaults: UserDefaults = {
         guard isEnabled else { return .standard }
-        let suite = "dev.liam.lima.test.\(ProcessInfo.processInfo.processIdentifier)"
-        return UserDefaults(suiteName: suite) ?? .standard
+        let suite = "dev.liam.lima.test.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suite) else {
+            preconditionFailure("Could not create isolated test preferences.")
+        }
+        return defaults
     }()
 }

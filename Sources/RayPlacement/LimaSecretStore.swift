@@ -44,7 +44,7 @@ final class LimaSecretStore: ObservableObject {
     private let service = "dev.liam.lima.secrets"
 
     private init() {
-        references = (try? JSONDecoder().decode([LimaSecretReference].self, from: UserDefaults.standard.data(forKey: metadataKey) ?? Data())) ?? []
+        references = (try? JSONDecoder().decode([LimaSecretReference].self, from: LimaTestEnvironment.userDefaults.data(forKey: metadataKey) ?? Data())) ?? []
     }
 
     @discardableResult
@@ -113,7 +113,7 @@ final class LimaSecretStore: ObservableObject {
 
     private func persist() {
         guard let data = try? JSONEncoder().encode(references) else { return }
-        UserDefaults.standard.set(data, forKey: metadataKey)
+        LimaTestEnvironment.userDefaults.set(data, forKey: metadataKey)
     }
 
     private func keychainError() -> NSError {

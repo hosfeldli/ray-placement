@@ -18,7 +18,7 @@ enum LimaWorkspaceSizeClass: Equatable, Sendable {
         switch self {
         case .compact: 44
         case .regular: 46
-        case .expanded: 128
+        case .expanded: 184
         }
     }
 

@@ -145,7 +145,7 @@ struct AIChatVisualLab: View {
 }
 
 @MainActor
-private enum AIChatVisualFixtures {
+enum AIChatVisualFixtures {
     private static let fixtureProjectID = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000002")!
     private static let fixtureMemoryID = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000003")!
 

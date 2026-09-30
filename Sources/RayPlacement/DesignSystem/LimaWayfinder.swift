@@ -112,21 +112,21 @@ struct LimaWayfinderRail: View {
                 LimaWayfinderMark()
                 if labeled {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text("Lima").font(.system(size: 14, weight: .semibold))
+                        Text("Lima").limaFont(.system(size: 21, weight: .semibold))
                             .foregroundStyle(LimaTheme.textPrimary)
-                        Text("Search · Create · Do.").font(.system(size: 8.5, weight: .medium))
+                        Text("Search. Create. Do.").limaFont(.caption)
                             .foregroundStyle(LimaTheme.textTertiary)
                             .lineLimit(1)
                     }
                 }
             }
-            .frame(height: 42)
+            .frame(height: 70)
             .frame(maxWidth: .infinity, alignment: labeled ? .leading : .center)
             .padding(.horizontal, labeled ? 9 : 0)
-            .padding(.bottom, 8)
+            .padding(.bottom, 16)
 
             ScrollView(.vertical) {
-                VStack(spacing: 6) {
+                VStack(spacing: 8) {
                     railGroup("WORKSPACE", destinations: LimaWorkspaceModule.workspaceDestinations)
                     railGroup("TOOLS", destinations: LimaWorkspaceModule.toolDestinations)
                 }
@@ -168,9 +168,9 @@ struct LimaWayfinderRail: View {
             .accessibilityLabel("Open Settings")
             .onHover { hovered = $0 ? "settings" : nil }
         }
-        .padding(.horizontal, 5)
-        .padding(.vertical, 8)
-        .frame(width: labeled ? max(sizeClass.moduleRailWidth, 48 + 80 * typography.scale) : sizeClass.moduleRailWidth)
+        .padding(.horizontal, labeled ? 10 : 4)
+        .padding(.vertical, 14)
+        .frame(width: labeled ? max(sizeClass.moduleRailWidth, 48 + 114 * typography.scale) : sizeClass.moduleRailWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .background(LimaTheme.navigationBackground)
         .accessibilityElement(children: .contain)
@@ -207,7 +207,10 @@ struct LimaWayfinderRail: View {
     private func railLabel(_ title: String, symbol: String, selected: Bool, hovered: Bool) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol)
-                .font(.system(size: 14, weight: selected ? .semibold : .medium))
+                .resizable()
+                .scaledToFit()
+                .font(.system(size: 19, weight: selected ? .semibold : .regular))
+                .frame(width: 22, height: 22)
                 .frame(width: 24)
             if labeled {
                 VStack(alignment: .leading, spacing: 1) {
@@ -215,7 +218,7 @@ struct LimaWayfinderRail: View {
                         Text("RETURN TO").font(.system(size: 8, weight: .semibold)).tracking(0.6)
                             .foregroundStyle(LimaTheme.textTertiary)
                     }
-                    Text(title).limaFont(.system(size: 11.5, weight: selected ? .semibold : .medium))
+                    Text(title).limaFont(.system(size: 14, weight: selected ? .semibold : .medium))
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
@@ -224,7 +227,7 @@ struct LimaWayfinderRail: View {
         .foregroundStyle(selected ? LimaTheme.accentInk : LimaTheme.textSecondary)
         .padding(.horizontal, labeled ? 8 : 0)
         .frame(maxWidth: .infinity)
-        .frame(minHeight: max(36, 28 * typography.scale))
+        .frame(minHeight: max(labeled ? 43 : 36, 32 * typography.scale))
         .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
         .contentShape(RoundedRectangle(cornerRadius: LimaRadius.control))
     }

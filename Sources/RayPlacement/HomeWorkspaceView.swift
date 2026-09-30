@@ -1,7 +1,8 @@
+import AppKit
 import RayPlacementCore
 import SwiftUI
 
-private struct HomeQuickAction: Identifiable {
+struct HomeQuickAction: Identifiable {
     enum Destination {
         case workspace(LimaWorkspaceModule)
         case contextShelf
@@ -11,12 +12,32 @@ private struct HomeQuickAction: Identifiable {
     let title: String
     let detail: String
     let symbol: String
+    let tint: AppAccentTheme
     let destination: Destination
-
     var id: String { title }
+
+    static let all: [HomeQuickAction] = [
+        .init(title: "Open Notes", detail: "Create a note or find your next thought", symbol: "note.text", tint: .orange, destination: .workspace(.notes)),
+        .init(title: "Dictation", detail: "Record speech and review local transcripts", symbol: "mic.fill", tint: .rose, destination: .workspace(.dictation)),
+        .init(title: "Check Writing", detail: "Review spelling and grammar on this Mac", symbol: "textformat.abc", tint: .green, destination: .workspace(.grammar)),
+        .init(title: "Ask AI", detail: "Write, analyze, and work with your context", symbol: "sparkles", tint: .violet, destination: .workspace(.ai)),
+        .init(title: "Clipboard History", detail: "Find and reuse text you have copied", symbol: "clipboard", tint: .mint, destination: .workspace(.clipboard)),
+        .init(title: "Manage Extensions", detail: "Configure the tools already on this Mac", symbol: "puzzlepiece.extension.fill", tint: .cyan, destination: .workspace(.extensions)),
+        .init(title: "Generate Password", detail: "Create a strong, unique password", symbol: "lock.fill", tint: .rose, destination: .commandSearch("password")),
+        .init(title: "Formatter", detail: "Format and inspect structured documents", symbol: "curlybraces", tint: .blue, destination: .workspace(.formatter)),
+        .init(title: "Terminal", detail: "Open your persistent local shell", symbol: "terminal", tint: .graphite, destination: .workspace(.terminal)),
+        .init(title: "Context Shelf", detail: "Carry snippets between your tools", symbol: "tray.full", tint: .violet, destination: .contextShelf)
+    ]
+
+    static func matching(_ query: String) -> [HomeQuickAction] {
+        let terms = query.split(whereSeparator: { $0.isWhitespace })
+        return all.filter { item in
+            terms.allSatisfy { (item.title + " " + item.detail).localizedCaseInsensitiveContains(String($0)) }
+        }
+    }
 }
 
-/// A local-first landing page: every tile opens an existing Lima workspace or service.
+/// Every item is an existing destination; there are no promotional or sample actions.
 @MainActor
 struct HomeWorkspaceView: View {
     @ObservedObject var store: NotesStore
@@ -25,330 +46,236 @@ struct HomeWorkspaceView: View {
     let openCommandSearch: (String) -> Void
 
     @State private var query = ""
-    @State private var showsAllTools = false
+    @State private var selectedID = HomeQuickAction.all[0].id
+    @State private var statusMessage: String?
+    @FocusState private var searchFocused: Bool
 
-    private var searchTerm: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var actions: [HomeQuickAction] {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? Array(HomeQuickAction.all.prefix(6)) : HomeQuickAction.matching(query)
     }
-
-    private var quickActions: [HomeQuickAction] {
-        [
-            HomeQuickAction(title: "Notes", detail: "Create and organize local notes", symbol: "note.text", destination: .workspace(.notes)),
-            HomeQuickAction(title: "AI Chat", detail: "Ask, draft, or analyze", symbol: "sparkles", destination: .workspace(.ai)),
-            HomeQuickAction(title: "Grammar", detail: "Check writing locally on this Mac", symbol: "textformat.abc", destination: .workspace(.grammar)),
-            HomeQuickAction(title: "Dictation", detail: "Record or review transcripts", symbol: "waveform", destination: .workspace(.dictation)),
-            HomeQuickAction(title: "Extensions", detail: "Manage installed tools", symbol: "puzzlepiece.extension", destination: .workspace(.extensions)),
-            HomeQuickAction(title: "Clipboard", detail: "Search copied text on this Mac", symbol: "clipboard", destination: .workspace(.clipboard)),
-            HomeQuickAction(title: "Formatter", detail: "Format and inspect documents", symbol: "wand.and.stars", destination: .workspace(.formatter)),
-            HomeQuickAction(title: "Terminal", detail: "Open your persistent shell", symbol: "terminal", destination: .workspace(.terminal)),
-            HomeQuickAction(title: "Context Shelf", detail: "Carry snippets between tools", symbol: "tray.full", destination: .contextShelf),
-            HomeQuickAction(title: "Generate Password", detail: "Create a secure password", symbol: "lock.fill", destination: .commandSearch("password"))
-        ]
-    }
-
-    private var matchingActions: [HomeQuickAction] {
-        guard !searchTerm.isEmpty else { return quickActions }
-        return quickActions.filter {
-            $0.title.localizedCaseInsensitiveContains(searchTerm)
-                || $0.detail.localizedCaseInsensitiveContains(searchTerm)
-        }
-    }
-
-    private var displayedActions: [HomeQuickAction] {
-        guard searchTerm.isEmpty else { return matchingActions }
-        return showsAllTools ? quickActions : Array(quickActions.prefix(6))
-    }
-
+    private var selectedAction: HomeQuickAction? { actions.first { $0.id == selectedID } ?? actions.first }
     private var matchingNotes: [MarkdownNote] {
-        let term = searchTerm
-        return store.notes
-            .sorted { $0.modifiedAt > $1.modifiedAt }
-            .filter { note in
-                term.isEmpty
-                    || note.displayTitle.localizedCaseInsensitiveContains(term)
-                    || note.content.localizedCaseInsensitiveContains(term)
-                    || note.tags.contains { $0.localizedCaseInsensitiveContains(term) }
-            }
+        let term = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.notes.sorted { $0.modifiedAt > $1.modifiedAt }.filter {
+            term.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(term)
+                || $0.content.localizedCaseInsensitiveContains(term)
+                || $0.tags.contains { $0.localizedCaseInsensitiveContains(term) }
+        }
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                HStack(spacing: 12) {
-                    LimaWayfinderMark()
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Your workspace")
-                            .limaFont(.title2.weight(.semibold))
-                            .foregroundStyle(LimaTheme.textPrimary)
-                        Text("Find a note or jump straight into a Lima tool.")
-                            .limaFont(.callout)
-                            .foregroundStyle(LimaTheme.textSecondary)
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                LimaWorkspaceSearchField(placeholder: "Search notes, tools, or run a command…", text: $query, submit: openSelection)
+                    .focused($searchFocused)
+                    .onMoveCommand { direction in
+                        if direction == .up { moveSelection(-1) }
+                        if direction == .down { moveSelection(1) }
                     }
-                    Spacer(minLength: 8)
-                    Button {
-                        store.createNote()
-                        open(.notes)
-                    } label: {
-                        Label("New Note", systemImage: "plus")
+                    .padding(20)
+
+                if proxy.size.width >= 740 {
+                    HStack(alignment: .top, spacing: 18) {
+                        actionList(showsInspector: true)
+                        if let selectedAction {
+                            ScrollView { actionInspector(selectedAction) }
+                                .frame(width: min(310, proxy.size.width * 0.36))
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .tint(LimaTheme.accentInk)
-                    .help("Create a local note and open it")
+                    .padding(.horizontal, 20)
+                } else {
+                    actionList(showsInspector: false).padding(.horizontal, 12)
                 }
 
+                if let message = statusMessage ?? store.lastError {
+                    Text(message).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                        .padding(.horizontal, 16).padding(.vertical, 6)
+                }
                 HStack(spacing: 10) {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(LimaTheme.textSecondary)
-                    TextField("Search notes, tools, or commands…", text: $query)
-                        .textFieldStyle(.plain)
-                        .limaFont(.body)
-                        .onSubmit { openCommandSearch(searchTerm) }
-                        .accessibilityLabel("Search Lima")
-                        .accessibilityHint("Press Return to search Lima commands and applications")
-                    if !query.isEmpty {
-                        Button { query = "" } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .foregroundStyle(LimaTheme.textTertiary)
+                    if proxy.size.width >= 500 {
+                        Image(systemName: "arrow.up.arrow.down")
+                        Text("Navigate")
+                        Text("↩ Open")
+                    }
+                    Spacer()
+                    Menu("Quick actions") {
+                        Button("New note") { store.createNote(); open(.notes) }
+                        Button("Capture clipboard", action: captureClipboard)
+                        Button("Context Shelf", action: openShelf)
+                    }.menuStyle(.borderlessButton).fixedSize()
+                    Button("All commands") { openCommandSearch(query) }
+                        .buttonStyle(.borderless)
+                        .help("Open the full command and app catalog")
+                        .fixedSize()
+                }
+                .limaFont(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
+                .padding(.horizontal, 22)
+                .frame(height: 42)
+                .background(LimaTheme.surfaceSecondary)
+            }
+            .background(LimaTheme.surfacePrimary)
+        }
+        .background {
+            Button("") { searchFocused = true }
+                .keyboardShortcut("k", modifiers: .command)
+                .hidden()
+                .accessibilityHidden(true)
+        }
+        .onChange(of: query) { _ in selectedID = actions.first?.id ?? "" }
+        .accessibilityIdentifier("lima-home-workspace")
+    }
+
+    private func actionList(showsInspector: Bool) -> some View {
+        ScrollViewReader { scroll in
+         ScrollView {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(query.isEmpty ? "Suggested for you" : "Matching tools")
+                    .limaFont(.callout.weight(.medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .padding(.bottom, 5)
+
+                ForEach(actions) { item in
+                    HStack(spacing: 0) {
+                        Button {
+                            selectedID = item.id
+                            if !showsInspector { perform(item) }
+                        } label: {
+                            HStack(spacing: 13) {
+                                LimaFeatureIcon(symbol: item.symbol, tint: item.tint)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.title).limaFont(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(LimaTheme.textPrimary)
+                                    Text(item.detail).limaFont(.callout)
+                                        .foregroundStyle(LimaTheme.textSecondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                Spacer(minLength: 4)
+                            }
+                            .padding(12)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .help("Clear search")
+                        .accessibilityValue(selectedAction?.id == item.id ? "Selected" : "")
+                        Button { perform(item) } label: {
+                            Image(systemName: "arrow.turn.down.left").frame(width: 34, height: 34)
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Open \(item.title)")
+                        .accessibilityLabel("Open \(item.title)")
+                        .padding(.trailing, 12)
                     }
-                    Button {
-                        openCommandSearch(searchTerm)
-                    } label: {
-                        Image(systemName: "arrow.turn.down.left")
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .tint(LimaTheme.accentInk)
-                    .help("Search all Lima commands and apps")
-                    .accessibilityLabel("Search all Lima commands and apps")
-                }
-                .padding(.horizontal, 13)
-                .frame(height: 42)
-                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
-
-                if searchTerm.isEmpty, let note = matchingNotes.first {
-                    continueWorkCard(note)
+                    .background(selectedAction?.id == item.id ? LimaTheme.surfaceSelected : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .id(item.id)
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        LimaSectionLabel(
-                            searchTerm.isEmpty ? "SUGGESTED FOR YOU" : "MATCHING TOOLS",
-                            detail: searchTerm.isEmpty
-                                ? (showsAllTools ? "\(quickActions.count) local tools" : "6 workspace essentials")
-                                : "\(matchingActions.count) destinations"
-                        )
-                        Spacer()
-                        if searchTerm.isEmpty {
-                            Button(showsAllTools ? "Show fewer" : "Show all tools") {
-                                showsAllTools.toggle()
-                            }
-                            .buttonStyle(.borderless)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(LimaTheme.accentInk)
-                            .accessibilityHint(showsAllTools ? "Show only essential tools" : "Show every local tool")
-                        }
-                    }
-                    if displayedActions.isEmpty {
-                        Text("No matching tools. Press Return to search every Lima command and app.")
-                            .limaFont(.caption)
-                            .foregroundStyle(LimaTheme.textSecondary)
-                            .padding(.vertical, 8)
-                    } else {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 230), spacing: 10)], alignment: .leading, spacing: 10) {
-                            ForEach(displayedActions) { item in
-                                actionCard(item.title, detail: item.detail, symbol: item.symbol) {
-                                    perform(item)
-                                }
-                            }
-                        }
+                if actions.isEmpty {
+                    LimaWorkspaceActionRow(title: "Search all commands", detail: "No workspace tools match this search.", symbol: "magnifyingglass") {
+                        openCommandSearch(query)
                     }
                 }
 
-                if searchTerm.isEmpty || !matchingNotes.isEmpty {
-                    VStack(alignment: .leading, spacing: 9) {
-                        HStack {
-                            LimaSectionLabel(searchTerm.isEmpty ? "RECENT NOTES" : "MATCHING NOTES", detail: "\(matchingNotes.count) local")
-                            Spacer()
-                            Button("See all") { open(.notes) }
-                                .buttonStyle(.borderless)
-                                .disabled(store.notes.isEmpty)
-                        }
-                        if matchingNotes.isEmpty {
-                            VStack(spacing: 7) {
-                                Image(systemName: "note.text")
-                                    .font(.system(size: 19, weight: .medium))
-                                    .foregroundStyle(LimaTheme.textTertiary)
-                                Text("No notes yet")
-                                    .limaFont(.callout.weight(.semibold))
-                                    .foregroundStyle(LimaTheme.textPrimary)
-                                Text("Create a note to start your local workspace.")
-                                    .limaFont(.caption)
-                                    .foregroundStyle(LimaTheme.textSecondary)
-                            }
-                            .frame(maxWidth: .infinity, minHeight: 120)
-                            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-                        } else {
-                            ForEach(matchingNotes.prefix(6)) { note in
-                                Button {
-                                    store.selectNote(note.id)
-                                    open(.notes)
-                                } label: {
-                                    HStack(spacing: 11) {
-                                        Image(systemName: note.isPinned ? "pin.fill" : "note.text")
-                                            .foregroundStyle(LimaTheme.accentInk)
-                                            .frame(width: 26)
-                                        VStack(alignment: .leading, spacing: 3) {
-                                            Text(note.displayTitle)
-                                                .limaFont(.body.weight(.medium))
-                                                .foregroundStyle(LimaTheme.textPrimary)
-                                                .lineLimit(1)
-                                            Text(note.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(110))
-                                                .limaFont(.caption)
-                                                .foregroundStyle(LimaTheme.textSecondary)
-                                                .lineLimit(1)
-                                        }
-                                        Spacer()
-                                        Text(note.modifiedAt, style: .relative)
-                                            .limaFont(.caption2)
-                                            .foregroundStyle(LimaTheme.textTertiary)
-                                        Image(systemName: "chevron.right")
-                                            .font(.system(size: 10, weight: .semibold))
-                                            .foregroundStyle(LimaTheme.textTertiary)
-                                    }
-                                    .padding(.horizontal, 12)
-                                    .frame(minHeight: 50)
-                                    .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-                                    .contentShape(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityHint("Open this note in Notes")
-                            }
-                        }
+                Divider().padding(.vertical, 12)
+                HStack {
+                    Text(query.isEmpty ? "Recent notes" : "Matching notes").limaFont(.callout.weight(.medium))
+                    Spacer()
+                    Button("See all") { open(.notes) }.buttonStyle(.borderless)
+                }
+                .foregroundStyle(LimaTheme.textSecondary)
+                ForEach(matchingNotes.prefix(5)) { note in
+                    LimaWorkspaceActionRow(title: note.displayTitle, detail: note.preview, symbol: note.isPinned ? "pin" : "doc.text") {
+                        store.selectNote(note.id)
+                        open(.notes)
                     }
                 }
-
-                if !searchTerm.isEmpty && matchingActions.isEmpty && matchingNotes.isEmpty {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("No local matches")
-                            .limaFont(.callout.weight(.semibold))
-                            .foregroundStyle(LimaTheme.textPrimary)
-                        Text("Search Lima’s full command and app catalog instead.")
-                            .limaFont(.caption)
-                            .foregroundStyle(LimaTheme.textSecondary)
-                        Button("Search all commands") { openCommandSearch(searchTerm) }
-                            .buttonStyle(.borderedProminent)
-                            .tint(LimaTheme.accentInk)
-                    }
-                    .padding(14)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+                if matchingNotes.isEmpty {
+                    Text(query.isEmpty ? "Create your first local note to see it here." : "No matching notes.")
+                        .limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
+                        .padding(.vertical, 12)
                 }
             }
-            .padding(20)
-            .frame(maxWidth: 920, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(.bottom, 18)
+         }
+         .onChange(of: selectedID) { id in scroll.scrollTo(id) }
         }
-        .background(LimaTheme.surfacePrimary)
-        .accessibilityIdentifier("lima-home-workspace")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func actionInspector(_ item: HomeQuickAction) -> some View {
+        LimaWorkspaceCard {
+            VStack(alignment: .leading, spacing: 18) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 25)
+                        .fill(item.tint.primary.opacity(0.12))
+                        .frame(width: 120, height: 100)
+                        .rotationEffect(.degrees(-10))
+                    LimaFeatureIcon(symbol: item.symbol, tint: item.tint, size: 86)
+                        .rotationEffect(.degrees(5))
+                }
+                .frame(maxWidth: .infinity, minHeight: 142)
+                Text(item.title).limaFont(.title2.weight(.semibold))
+                Text(item.detail + ".")
+                    .limaFont(.body).foregroundStyle(LimaTheme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button { perform(item) } label: {
+                    HStack { Text(item.title); Spacer(); Image(systemName: "arrow.right") }
+                        .frame(minHeight: 28)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(LimaTheme.accentInk)
+                Divider()
+                Text("Quick actions").limaFont(.callout.weight(.semibold))
+                LimaWorkspaceActionRow(title: "Create new note", detail: "Saved locally as you type", symbol: "plus") {
+                    store.createNote()
+                    open(.notes)
+                }
+                LimaWorkspaceActionRow(title: "Capture clipboard", detail: "Create a note from copied text", symbol: "doc.on.clipboard", action: captureClipboard)
+                if let pinned = store.notes.first(where: \.isPinned) {
+                    LimaWorkspaceActionRow(title: "Open pinned note", detail: pinned.displayTitle, symbol: "pin") {
+                        store.selectNote(pinned.id)
+                        open(.notes)
+                    }
+                }
+                LimaWorkspaceActionRow(title: "Context Shelf", detail: "Review your saved snippets", symbol: "tray.full", action: openShelf)
+                if let message = statusMessage ?? store.lastError {
+                    Text(message).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     private func perform(_ item: HomeQuickAction) {
         switch item.destination {
-        case .workspace(let module):
-            open(module)
-        case .contextShelf:
-            openShelf()
-        case .commandSearch(let term):
-            openCommandSearch(term)
+        case .workspace(let module): open(module)
+        case .contextShelf: openShelf()
+        case .commandSearch(let term): openCommandSearch(term)
         }
     }
 
-    private func continueWorkCard(_ note: MarkdownNote) -> some View {
-        Button {
-            store.selectNote(note.id)
-            open(.notes)
-        } label: {
-            HStack(spacing: 12) {
-                Image(systemName: note.isPinned ? "pin.fill" : "note.text")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(LimaTheme.accentInk)
-                    .frame(width: 38, height: 38)
-                    .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("CONTINUE WORKING")
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(0.8)
-                        .foregroundStyle(LimaTheme.textTertiary)
-                    Text(note.displayTitle)
-                        .limaFont(.callout.weight(.semibold))
-                        .foregroundStyle(LimaTheme.textPrimary)
-                        .lineLimit(1)
-                    Text(note.content.trimmingCharacters(in: .whitespacesAndNewlines).prefix(100))
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(note.modifiedAt, style: .relative)
-                        .limaFont(.caption2)
-                        .foregroundStyle(LimaTheme.textTertiary)
-                    Label("Open", systemImage: "arrow.right")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(LimaTheme.accentInk)
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
-            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-                .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Continue working in \(note.displayTitle)")
-        .accessibilityHint("Open this local note in Notes")
+    private func openSelection() {
+        if let selectedAction { perform(selectedAction) }
+        else if let note = matchingNotes.first { store.selectNote(note.id); open(.notes) }
+        else { openCommandSearch(query) }
     }
 
-    private func actionCard(
-        _ title: String,
-        detail: String,
-        symbol: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Image(systemName: symbol)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundStyle(LimaTheme.accentInk)
-                    .frame(width: 34, height: 34)
-                    .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(title)
-                        .limaFont(.callout.weight(.semibold))
-                        .foregroundStyle(LimaTheme.textPrimary)
-                    Text(detail)
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 2)
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(LimaTheme.textTertiary)
-            }
-            .padding(10)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
-            .contentShape(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
+    private func moveSelection(_ delta: Int) {
+        guard !actions.isEmpty else { return }
+        let current = actions.firstIndex { $0.id == selectedAction?.id } ?? 0
+        selectedID = actions[min(max(current + delta, 0), actions.count - 1)].id
+    }
+
+    private func captureClipboard() {
+        guard let text = NSPasteboard.general.string(forType: .string),
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusMessage = "The clipboard does not contain text."
+            return
         }
-        .buttonStyle(.plain)
-        .accessibilityHint("Open \\(title)")
+        let previousID = store.selectedNoteID
+        store.createQuickNote(with: text)
+        if store.selectedNoteID != previousID { open(.notes) }
+        else { statusMessage = store.lastError }
     }
 }

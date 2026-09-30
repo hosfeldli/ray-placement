@@ -14,6 +14,17 @@ struct GrammarWorkspaceView: View {
     @State private var statusMessage: String?
     @State private var checker = RuleBasedWritingChecker()
 
+    init() {}
+
+    #if DEBUG
+    init(visualReview: WritingReview) {
+        precondition(LimaTestEnvironment.isEnabled)
+        _sourceText = State(initialValue: visualReview.sourceText)
+        _review = State(initialValue: visualReview)
+        _acceptedIssueIDs = State(initialValue: Set(visualReview.issues.map(\.id)))
+    }
+    #endif
+
     private var correctedText: String {
         guard let review else { return sourceText }
         return review.applying(acceptedIssueIDs).suggestedText
@@ -28,7 +39,7 @@ struct GrammarWorkspaceView: View {
     var body: some View {
         GeometryReader { proxy in
             VStack(spacing: 0) {
-                grammarHeader
+                grammarHeader(compact: proxy.size.width < 620)
                 GlassHairline()
 
                 ScrollView {
@@ -36,20 +47,20 @@ struct GrammarWorkspaceView: View {
                         if let review {
                             if proxy.size.width >= 760 {
                                 HStack(alignment: .top, spacing: 12) {
-                                    textPanel(title: "ORIGINAL TEXT", text: review.sourceText,
+                                    textPanel(title: "Original text", text: review.sourceText,
                                               symbol: "text.alignleft", tint: LimaTheme.textSecondary)
-                                    textPanel(title: "IMPROVED VERSION", text: correctedText,
+                                    textPanel(title: "Improved version", text: correctedText,
                                               symbol: "checkmark.circle", tint: LimaTheme.accentInk)
                                 }
                             } else {
                                 VStack(spacing: 12) {
-                                    textPanel(title: "ORIGINAL TEXT", text: review.sourceText,
+                                    textPanel(title: "Original text", text: review.sourceText,
                                               symbol: "text.alignleft", tint: LimaTheme.textSecondary)
-                                    textPanel(title: "IMPROVED VERSION", text: correctedText,
+                                    textPanel(title: "Improved version", text: correctedText,
                                               symbol: "checkmark.circle", tint: LimaTheme.accentInk)
                                 }
                             }
-                            reviewChanges(review)
+                            LimaWorkspaceCard { reviewChanges(review) }
                         } else {
                             if proxy.size.width >= 760 {
                                 HStack(alignment: .top, spacing: 12) {
@@ -87,75 +98,92 @@ struct GrammarWorkspaceView: View {
         .accessibilityIdentifier("lima-grammar-workspace")
     }
 
-    private var grammarHeader: some View {
-        VStack(spacing: 10) {
+    private func grammarHeader(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 11) {
-                Image(systemName: "textformat.abc")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(LimaTheme.accentInk)
-                    .frame(width: 34, height: 34)
-                    .background(LimaTheme.accentSoft, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Grammar review")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(LimaTheme.textPrimary)
-                    Text(isChecking ? (statusMessage ?? "Checking locally…") : "Improve writing without sending it to a service.")
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(LimaTheme.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Label("LOCAL ONLY", systemImage: "lock.fill")
-                    .font(.system(size: 9, weight: .bold))
-                    .tracking(0.6)
-                    .foregroundStyle(LimaTheme.accentInk)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-                    .background(LimaTheme.accentSoft, in: Capsule())
-                    .overlay(Capsule().stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+                LimaWorkspaceHeading(title: "Grammar checker",
+                    subtitle: isChecking ? (statusMessage ?? "Checking locally…") : "Review and improve your writing on this Mac.",
+                    symbol: "textformat.abc", tint: .green)
+                if !compact { localOnlyBadge }
             }
-
-            HStack(spacing: 8) {
-                Button(action: pasteFromClipboard) {
-                    Label("Paste from Clipboard", systemImage: "clipboard")
+            if compact {
+                HStack {
+                    localOnlyBadge
+                    Spacer()
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .help("Paste plain text from the clipboard")
-
-                if !sourceText.isEmpty {
-                    Button("Clear") { sourceText = "" }
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .help("Clear the text editor")
+                grammarEditActions
+                grammarCheckActions
+            } else {
+                HStack(spacing: 8) {
+                    grammarEditActions
+                    Spacer(minLength: 8)
+                    grammarCheckActions
                 }
-
-                Spacer(minLength: 8)
-
-                Text("\(sourceText.count.formatted()) / \(characterLimit.formatted())")
-                    .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(sourceText.count > characterLimit ? Color.red : LimaTheme.textTertiary)
-
-                Button {
-                    runCheck()
-                } label: {
-                    if isChecking {
-                        ProgressView().controlSize(.small)
-                            .frame(width: 112, height: 24)
-                    } else {
-                        Label("Check writing", systemImage: "wand.and.stars")
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(LimaTheme.accentInk)
-                .controlSize(.small)
-                .disabled(!canCheck)
-                .keyboardShortcut(.return, modifiers: [.command])
-                .help("Check locally with Harper · ⌘↩")
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.vertical, 18)
+    }
+
+    private var localOnlyBadge: some View {
+        Label("LOCAL ONLY", systemImage: "lock.fill")
+            .font(.system(size: 9, weight: .bold))
+            .tracking(0.6)
+            .foregroundStyle(LimaTheme.accentInk)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .background(LimaTheme.accentSoft, in: Capsule())
+            .overlay(Capsule().stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+            .fixedSize()
+    }
+
+    private var grammarEditActions: some View {
+        HStack(spacing: 8) {
+            Button(action: pasteFromClipboard) {
+                Label("Paste text", systemImage: "clipboard")
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .help("Paste plain text from the clipboard")
+            .accessibilityLabel("Paste from Clipboard")
+
+            if review != nil {
+                Button("Edit original") { review = nil; acceptedIssueIDs.removeAll() }
+                    .buttonStyle(.borderless)
+            }
+            if !sourceText.isEmpty {
+                Button("Clear") { sourceText = "" }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Clear the text editor")
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .disabled(isChecking)
+    }
+
+    private var grammarCheckActions: some View {
+        HStack(spacing: 8) {
+            Text("\(sourceText.count.formatted()) / \(characterLimit.formatted())")
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundStyle(sourceText.count > characterLimit ? Color.red : LimaTheme.textTertiary)
+            Spacer(minLength: 8)
+            Button(action: runCheck) {
+                if isChecking {
+                    ProgressView().controlSize(.small)
+                        .frame(width: 112, height: 24)
+                } else {
+                    Label("Check writing", systemImage: "wand.and.stars")
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(LimaTheme.accentInk)
+            .controlSize(.small)
+            .disabled(!canCheck)
+            .keyboardShortcut(.return, modifiers: [.command])
+            .help("Check locally with Harper · ⌘↩")
+            .fixedSize(horizontal: true, vertical: false)
+        }
     }
 
     private func pasteFromClipboard() {
@@ -190,8 +218,8 @@ struct GrammarWorkspaceView: View {
             Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
             ZStack(alignment: .topLeading) {
                 TextEditor(text: $sourceText)
-                    .font(.system(size: 13))
-                    .lineSpacing(3)
+                    .limaFont(.system(size: 15))
+                    .lineSpacing(5)
                     .scrollContentBackground(.hidden)
                     .padding(8)
                     .accessibilityLabel("Text to proofread")
@@ -241,9 +269,8 @@ struct GrammarWorkspaceView: View {
             HStack(spacing: 7) {
                 Image(systemName: symbol).foregroundStyle(tint)
                 Text(title)
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(0.7)
-                    .foregroundStyle(LimaTheme.textSecondary)
+                    .limaFont(.headline)
+                    .foregroundStyle(LimaTheme.textPrimary)
                 Spacer()
                 Text("\(text.count.formatted()) chars")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
@@ -254,14 +281,26 @@ struct GrammarWorkspaceView: View {
             Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
             ScrollView {
                 Text(text.isEmpty ? "No accepted changes yet." : text)
-                    .font(.system(size: 12.5))
-                    .lineSpacing(3)
+                    .limaFont(.system(size: 15))
+                    .lineSpacing(5)
                     .foregroundStyle(text.isEmpty ? LimaTheme.textTertiary : LimaTheme.textPrimary)
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     .padding(13)
             }
-            .frame(minHeight: 220)
+            .frame(minHeight: 260)
+            HStack {
+                Text("\(text.split(whereSeparator: { $0.isWhitespace }).count) words")
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Spacer()
+                Button {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    statusMessage = "Copied " + title.lowercased() + "."
+                } label: { Label("Copy", systemImage: "doc.on.doc") }
+                .buttonStyle(.bordered)
+                .disabled(text.isEmpty)
+            }.padding(13)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
         .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
@@ -368,7 +407,8 @@ struct GrammarWorkspaceView: View {
     private func issueRow(_ issue: WritingIssue) -> some View {
         let isAccepted = acceptedIssueIDs.contains(issue.id)
         let suggestion = issue.suggestions.first ?? "No safe suggestion"
-        return HStack(spacing: 9) {
+        return VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 9) {
             Circle()
                 .fill(issue.kind == .spelling ? Color.orange : LimaTheme.accentInk)
                 .frame(width: 7, height: 7)
@@ -396,9 +436,13 @@ struct GrammarWorkspaceView: View {
             .buttonStyle(.borderless)
             .disabled(issue.suggestions.isEmpty)
         }
-        .font(.system(size: 11))
-        .padding(.horizontal, 12)
-        .frame(minHeight: 38)
+          .limaFont(.callout)
+          Text(issue.message).limaFont(.caption)
+              .foregroundStyle(LimaTheme.textSecondary)
+              .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(minHeight: 54)
     }
 
     private func runCheck() {

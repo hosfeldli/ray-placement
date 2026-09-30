@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import RayPlacementCore
+import RayPlacementWriting
 import SwiftUI
 
 /// Offscreen renders only. No AppDelegate, screenshots of other apps, live AI,
@@ -32,6 +33,34 @@ enum LimaVisualAudit {
                         .environment(\.colorScheme, dark ? .dark : .light)
                     if !(await render(view, size: mode.size, appearance: appearance,
                                       url: directory.appendingPathComponent("\(mode.rawValue)-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
+                }
+                for module: LimaWorkspaceModule in [.home, .notes, .ai, .extensions] {
+                    for width: CGFloat in [420, 800, 1240] {
+                        let view = LimaMockupWorkspaceFixtures.workspace(module, compact: width < 720)
+                            .environment(\.colorScheme, dark ? .dark : .light)
+                        if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                                          url: directory.appendingPathComponent("production-\(module.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                            failures += 1
+                        }
+                    }
+                }
+                let preferences = LimaMockupWorkspaceFixtures.settings()
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(preferences, size: NSSize(width: 1060, height: 780), appearance: appearance,
+                                  url: directory.appendingPathComponent("production-settings-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
+                }
+                let original = "This are a local writing review. Keep every change reviewable."
+                let issue = WritingIssue(kind: .grammar, range: NSRange(location: 5, length: 3),
+                                         original: "are", message: "Use a singular verb with this subject.", suggestions: ["is"])
+                let review = WritingReview(sourceText: original, suggestedText: original, issues: [issue])
+                for width: CGFloat in [420, 1040] {
+                    let grammarReview = GrammarWorkspaceView(visualReview: review)
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(grammarReview, size: NSSize(width: width, height: 780), appearance: appearance,
+                                      url: directory.appendingPathComponent("grammar-review-\(Int(width))-\(dark ? "dark" : "light").png"))) {
                         failures += 1
                     }
                 }

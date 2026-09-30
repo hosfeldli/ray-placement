@@ -62,6 +62,28 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         }
     }
 
+    var subtitle: String {
+        switch self {
+        case .general: "App behavior and local preferences"
+        case .commands: "Commands, extensions, and shortcuts"
+        case .writing: "Notes, grammar, and speech to text"
+        case .ai: "Existing providers and chat behavior"
+        case .browser: "Browser access and site grants"
+        case .appearance: "Theme, colors, and readable layouts"
+        case .advanced: "Performance, privacy, and diagnostics"
+        }
+    }
+
+    var tint: AppAccentTheme {
+        switch self {
+        case .general, .commands: .blue
+        case .writing: .green
+        case .ai, .appearance: .violet
+        case .browser: .cyan
+        case .advanced: .graphite
+        }
+    }
+
     var searchTerms: [String] {
         switch self {
         case .general:
@@ -147,15 +169,12 @@ struct SettingsView: View {
                 settingsSidebar
                 VStack(spacing: 0) {
                     HStack {
-                        LimaToolbarTitle(
-                            symbol: selectedSection.symbol,
-                            title: selectedSection.title,
-                            subtitle: "Lima preferences"
-                        )
+                        LimaWorkspaceHeading(title: selectedSection.title, subtitle: selectedSection.subtitle,
+                                             symbol: selectedSection.symbol, tint: selectedSection.tint)
                         Spacer()
                     }
                     .padding(.horizontal, LimaDesign.toolbarPadding)
-                    .frame(height: LimaDesign.sectionHeaderHeight)
+                    .padding(.vertical, 20)
                     GlassHairline()
                     selectedContent
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
@@ -164,7 +183,7 @@ struct SettingsView: View {
             }
             .padding(LimaDesign.windowPadding)
         }
-        .frame(minWidth: 820, idealWidth: 820, minHeight: 590, idealHeight: 590)
+        .frame(minWidth: 900, idealWidth: 1060, minHeight: 620, idealHeight: 760)
         .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
         .onChange(of: settingsSearchQuery) { query in
@@ -284,13 +303,13 @@ struct SettingsView: View {
             HStack(spacing: 9) {
                 LimaWayfinderMark()
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Lima").limaFont(.system(size: 13.5, weight: .semibold))
-                    Text("Settings").limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
+                    Text("Settings").limaFont(.system(size: 23, weight: .bold))
+                    Text("Make Lima fit your workflow.").limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.top, 13)
-            .padding(.bottom, 10)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
 
             HStack(spacing: 7) {
                 Image(systemName: "magnifyingglass")
@@ -314,7 +333,9 @@ struct SettingsView: View {
             .padding(.horizontal, 9)
             .padding(.bottom, 10)
 
-            if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ScrollView {
+              VStack(alignment: .leading, spacing: 0) {
+               if settingsSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 sidebarGroup("SETTINGS", sections: SettingsSection.sidebarSections)
             } else if filteredSections.isEmpty {
                 Text("No matching settings")
@@ -330,14 +351,17 @@ struct SettingsView: View {
                     .padding(.horizontal, 14)
                     .padding(.bottom, 4)
                 ForEach(filteredSections) { settingsRow($0) }
+               }
+              }
             }
+            .frame(maxHeight: .infinity)
 
             Spacer(minLength: 10)
             settingsStatusSummary
                 .padding(.horizontal, 11)
                 .padding(.bottom, 11)
         }
-        .frame(width: 204)
+        .frame(width: 268)
         .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.window, border: LimaTheme.borderSubtle)
     }
 
@@ -360,19 +384,21 @@ struct SettingsView: View {
     private func settingsRow(_ section: SettingsSection) -> some View {
         Button { selectedSection = section } label: {
             HStack(spacing: 9) {
-                Image(systemName: section.symbol)
-                    .limaFont(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(selectedSection == section ? settings.accentTheme.readablePrimary : Color.secondary)
-                    .frame(width: 21)
-                Text(section.title)
-                    .limaFont(.system(size: 12.5, weight: selectedSection == section ? .semibold : .medium))
-                    .lineLimit(1)
+                LimaFeatureIcon(symbol: section.symbol, tint: section.tint, size: 36)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(section.title)
+                        .limaFont(.system(size: 14, weight: selectedSection == section ? .semibold : .medium))
+                    Text(section.subtitle).limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Spacer()
             }
             .foregroundStyle(selectedSection == section ? Color.primary : LimaTheme.textPrimary.opacity(0.92))
             .padding(.horizontal, 10)
-            .frame(height: 32)
-            .limaSelection(selectedSection == section, radius: LimaRadius.control)
+            .padding(.vertical, 10)
+            .frame(minHeight: 62)
+            .limaSelection(selectedSection == section, radius: 12)
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 8)
@@ -388,14 +414,14 @@ struct SettingsView: View {
                 .foregroundStyle(LimaTheme.textTertiary)
             SettingsCompactStatus(title: "Accessibility", value: compactPermission(.accessibility))
             SettingsCompactStatus(title: "Microphone", value: compactPermission(.microphone))
-            SettingsCompactStatus(title: "Whisper", value: settings.dictationEngine == .localWhisper ? "Ready" : "Apple Speech")
+            SettingsCompactStatus(title: "Dictation engine", value: settings.dictationEngine == .localWhisper ? "Local Whisper" : "Apple Speech")
             SettingsCompactStatus(
                 title: "Correction Engine",
                 value: settings.grammarEngineMode == .externalAPI
                     ? (settings.enhancedGrammarAPIKeyStored ? "External API · Connected" : "External API · Needs key")
                     : "Local"
             )
-            SettingsCompactStatus(title: "Extensions", value: "\(viewModel.extensionCommands.count) enabled")
+            SettingsCompactStatus(title: "Extension commands", value: "\(viewModel.extensionCommands.count) loaded")
         }
         .padding(9)
         .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
@@ -1459,6 +1485,49 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
+            Section {
+                Toggle(isOn: Binding(get: { settings.launchAtLogin }, set: settings.setLaunchAtLogin)) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Launch Lima at login")
+                        Text("Keep the workspace ready when you start this Mac.")
+                            .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    }
+                }.toggleStyle(.switch)
+                if let error = settings.lastError {
+                    Text(error).limaFont(.caption).foregroundStyle(LimaTheme.warning)
+                }
+                Button("Configure commands and keyboard shortcuts") { selectedSection = .commands }
+                    .buttonStyle(.borderless)
+            } header: {
+                Label("App preferences", systemImage: "gearshape").limaFont(.headline)
+            }
+
+            Section {
+                Picker("Theme", selection: $settings.appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.title).tag($0) }
+                }.pickerStyle(.segmented)
+                AccentThemePicker(selection: $settings.accentTheme)
+                Picker("Interface contrast", selection: $settings.contrastMode) {
+                    ForEach(AppContrastMode.allCases) { Text($0.title).tag($0) }
+                }
+                Button("All appearance settings") { selectedSection = .appearance }
+                    .buttonStyle(.borderless)
+            } header: {
+                Label("Appearance", systemImage: "paintpalette").limaFont(.headline)
+            }
+
+            Section {
+                Picker("Editor width", selection: $settings.notesContentWidth) {
+                    ForEach(NotesContentWidth.allCases) { Text($0.title).tag($0) }
+                }
+                Toggle("Show note metadata", isOn: $settings.notesShowMetadata)
+                Toggle("Check spelling and grammar inline", isOn: $settings.inlineGrammarCheckingEnabled)
+                Text("Notes are stored locally and saved as you type.")
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+            } header: {
+                Label("Notes", systemImage: "note.text").limaFont(.headline)
+            }
+
             Section("Software Updates") {
                 Text("Lima \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                     .limaFont(.caption.weight(.medium))
@@ -1508,7 +1577,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .controlSize(.small)
+        .controlSize(.regular)
+        .onAppear { if !LimaTestEnvironment.isEnabled { settings.refreshLaunchAtLogin() } }
     }
 
     private var aboutTab: some View {

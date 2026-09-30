@@ -17,7 +17,7 @@ final class CommandManager: ObservableObject {
     @Published private(set) var conflictMessages: [String] = []
     @Published private(set) var shortcutRegistry = ShortcutRegistry()
 
-    private let defaults = UserDefaults.standard
+    private let defaults = LimaTestEnvironment.userDefaults
     private let favoritesKey = "commandManager.favoriteIDs"
     private let profilesKey = "commandManager.profiles"
     private let activeProfileKey = "commandManager.activeProfileID"

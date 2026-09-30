@@ -41,11 +41,11 @@ final class LauncherViewModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var extensionIssues: [ExtensionIssue] = []
     @Published private(set) var focusGeneration = 0
-    @Published var timezoneSourceID: String = UserDefaults.standard.string(forKey: "timezoneSourceID") ?? TimeZone.current.identifier {
-        didSet { UserDefaults.standard.set(timezoneSourceID, forKey: "timezoneSourceID") }
+    @Published var timezoneSourceID: String = LimaTestEnvironment.userDefaults.string(forKey: "timezoneSourceID") ?? TimeZone.current.identifier {
+        didSet { LimaTestEnvironment.userDefaults.set(timezoneSourceID, forKey: "timezoneSourceID") }
     }
-    @Published var timezoneDestinationID: String = UserDefaults.standard.string(forKey: "timezoneDestinationID") ?? "UTC" {
-        didSet { UserDefaults.standard.set(timezoneDestinationID, forKey: "timezoneDestinationID") }
+    @Published var timezoneDestinationID: String = LimaTestEnvironment.userDefaults.string(forKey: "timezoneDestinationID") ?? "UTC" {
+        didSet { LimaTestEnvironment.userDefaults.set(timezoneDestinationID, forKey: "timezoneDestinationID") }
     }
     @Published private(set) var timezoneDidCopy = false
     @Published private(set) var contextualSelectionText: String?
@@ -73,7 +73,7 @@ final class LauncherViewModel: ObservableObject {
     private var clipboardObserver: AnyCancellable?
     private var catalogObservers: [AnyCancellable] = []
 
-    init(clipboard: ClipboardHistoryService) {
+    init(clipboard: ClipboardHistoryService, scanApplications: Bool = true) {
         self.clipboard = clipboard
         clipboardObserver = clipboard.$entries.sink { [weak self] _ in
             self?.refreshResults()
@@ -86,9 +86,11 @@ final class LauncherViewModel: ObservableObject {
             ExtensionOutputStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() }
         ]
         reloadExtensions(notify: false)
-        applicationIndex.scan { [weak self] records in
-            self?.applications = records
-            self?.refreshResults()
+        if scanApplications {
+            applicationIndex.scan { [weak self] records in
+                self?.applications = records
+                self?.refreshResults()
+            }
         }
         refreshResults()
     }
@@ -1435,11 +1437,11 @@ private final class UsageStore {
     private var order: [String]
 
     init() {
-        if let data = UserDefaults.standard.data(forKey: recordsKey),
+        if let data = LimaTestEnvironment.userDefaults.data(forKey: recordsKey),
            let decoded = try? JSONDecoder().decode([String: CommandUsageRecord].self, from: data) {
             records = decoded
         } else { records = [:] }
-        order = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+        order = LimaTestEnvironment.userDefaults.stringArray(forKey: historyKey) ?? []
     }
 
     func record(_ identifier: String, sourceApplication: String? = nil) {
@@ -1453,17 +1455,17 @@ private final class UsageStore {
         records[identifier] = record
         order.removeAll { $0 == identifier }; order.insert(identifier, at: 0)
         if order.count > 100 { order = Array(order.prefix(100)) }
-        if let data = try? JSONEncoder().encode(records) { UserDefaults.standard.set(data, forKey: recordsKey) }
-        UserDefaults.standard.set(order, forKey: historyKey)
+        if let data = try? JSONEncoder().encode(records) { LimaTestEnvironment.userDefaults.set(data, forKey: recordsKey) }
+        LimaTestEnvironment.userDefaults.set(order, forKey: historyKey)
     }
 
     func recentIdentifiers(limit: Int) -> [String] { Array(order.prefix(max(0, limit))) }
 
     func lastIdentifier() -> String? { order.first }
 
-    func forget(_ identifier: String) { records.removeValue(forKey: identifier); order.removeAll { $0 == identifier }; if let data = try? JSONEncoder().encode(records) { UserDefaults.standard.set(data, forKey: recordsKey) }; UserDefaults.standard.set(order, forKey: historyKey) }
+    func forget(_ identifier: String) { records.removeValue(forKey: identifier); order.removeAll { $0 == identifier }; if let data = try? JSONEncoder().encode(records) { LimaTestEnvironment.userDefaults.set(data, forKey: recordsKey) }; LimaTestEnvironment.userDefaults.set(order, forKey: historyKey) }
 
-    func reset() { records.removeAll(); order.removeAll(); UserDefaults.standard.removeObject(forKey: recordsKey); UserDefaults.standard.removeObject(forKey: historyKey) }
+    func reset() { records.removeAll(); order.removeAll(); LimaTestEnvironment.userDefaults.removeObject(forKey: recordsKey); LimaTestEnvironment.userDefaults.removeObject(forKey: historyKey) }
 
     func score(for identifier: String) -> Double {
         guard let record = records[identifier] else { return 0 }

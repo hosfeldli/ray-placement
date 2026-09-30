@@ -188,7 +188,7 @@ final class SurfaceStateCache: ObservableObject {
     static let shared = SurfaceStateCache()
     private static let defaultsKey = "launcher.surfaceStateCache"
 
-    private let defaults = UserDefaults.standard
+    private let defaults = LimaTestEnvironment.userDefaults
     private var values: [String: [String: SurfaceStateValue]] = [:]
 
     private init() {

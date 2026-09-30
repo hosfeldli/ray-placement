@@ -72,7 +72,7 @@ enum AppAccentTheme: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 
     nonisolated static var current: AppAccentTheme {
-        let rawValue = UserDefaults.standard.string(forKey: "accentTheme") ?? ""
+        let rawValue = LimaTestEnvironment.userDefaults.string(forKey: "accentTheme") ?? ""
         return AppAccentTheme(rawValue: rawValue) ?? .violet
     }
 
@@ -314,7 +314,7 @@ enum AppContrastMode: String, CaseIterable, Identifiable {
     }
 
     nonisolated static var current: AppContrastMode {
-        let rawValue = UserDefaults.standard.string(forKey: "contrastMode") ?? ""
+        let rawValue = LimaTestEnvironment.userDefaults.string(forKey: "contrastMode") ?? ""
         return AppContrastMode(rawValue: rawValue) ?? .standard
     }
 }

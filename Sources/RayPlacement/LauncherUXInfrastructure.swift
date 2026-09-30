@@ -222,7 +222,7 @@ final class LimaMacroStore: ObservableObject {
     private init() { reload() }
 
     func reload() {
-        guard let data = UserDefaults.standard.data(forKey: key), let values = try? JSONDecoder().decode([LimaActionChain].self, from: data) else { return }
+        guard let data = LimaTestEnvironment.userDefaults.data(forKey: key), let values = try? JSONDecoder().decode([LimaActionChain].self, from: data) else { return }
         chains = values
     }
     func save(_ chain: LimaActionChain) {
@@ -230,7 +230,7 @@ final class LimaMacroStore: ObservableObject {
         persist()
     }
     func remove(_ chain: LimaActionChain) { chains.removeAll { $0.id == chain.id }; persist() }
-    private func persist() { UserDefaults.standard.set(try? JSONEncoder().encode(chains), forKey: key) }
+    private func persist() { LimaTestEnvironment.userDefaults.set(try? JSONEncoder().encode(chains), forKey: key) }
 }
 
 // MARK: - Unified index and latency diagnostics
