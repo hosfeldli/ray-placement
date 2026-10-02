@@ -47,7 +47,7 @@ final class AIProviderPreferences: ObservableObject {
     private static let modelKey = "lima.ai.openai-compatible.model-id"
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = LimaTestEnvironment.userDefaults) {
         self.defaults = defaults
         openAICompatibleBaseURL = defaults.string(forKey: Self.baseURLKey) ?? AIProvider.openAICompatible.defaultBaseURL
         openAICompatibleModelID = defaults.string(forKey: Self.modelKey) ?? "local-model"
@@ -125,6 +125,30 @@ enum AIProviderHTTP {
         return components.url
     }
 
+    /// Limit context sent again by stateless providers. Start at a user turn so
+    /// the resulting transcript remains valid, and always retain the latest turn.
+    static func boundedConversation(_ history: [AIProviderMessage], maximumCharacters: Int = 120_000) -> [AIProviderMessage] {
+        guard history.count > 1 else { return history }
+        func size(_ message: AIProviderMessage) -> Int {
+            message.content.reduce(0) { total, item in
+                switch item {
+                case .text(let value): return total + value.count
+                case .image(_, let base64): return total + base64.count
+                case .toolUse(_, _, let arguments): return total + arguments.count
+                case .toolResult(_, let output): return total + output.count
+                }
+            }
+        }
+        var first = 0
+        var characters = history.reduce(0) { $0 + size($1) }
+        while characters > maximumCharacters, first < history.count - 1 {
+            characters -= size(history[first])
+            first += 1
+        }
+        while first < history.count - 1, history[first].role != .user { first += 1 }
+        return Array(history.dropFirst(first))
+    }
+
     static func messages(_ history: [AIProviderMessage], assistantRole: String = "assistant") -> [[String: Any]] {
         var result: [[String: Any]] = []
         for message in history {
@@ -163,23 +187,11 @@ enum AIProviderHTTP {
                     content.append(.text("[\(attachment.displayName)]\n\(String(text.prefix(96_000)))"))
                 }
             case .file:
-                guard let path = attachment.path else { continue }
-                let url = URL(fileURLWithPath: path)
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
-                guard values.isRegularFile == true, (values.fileSize ?? 0) <= 96 * 1_024,
-                      let text = String(data: try Data(contentsOf: url), encoding: .utf8) else {
-                    throw NSError(domain: "LimaAIProvider", code: 1, userInfo: [NSLocalizedDescriptionKey: "This provider accepts text attachments up to 96 KB."])
-                }
-                content.append(.text("[\(attachment.displayName)]\n\(text)"))
+                let text = try AIFileAttachmentPolicy.text(for: attachment)
+                content.append(.text("[File: \(attachment.displayName)]\n\(text)"))
             case .image:
-                guard let path = attachment.path else { continue }
-                let data = try Data(contentsOf: URL(fileURLWithPath: path))
-                let mediaType = (attachment.mimeType ?? "").lowercased()
-                guard data.count <= 8 * 1_024 * 1_024,
-                      ["image/jpeg", "image/png", "image/gif", "image/webp"].contains(mediaType) else {
-                    throw NSError(domain: "LimaAIProvider", code: 2, userInfo: [NSLocalizedDescriptionKey: "This provider accepts JPEG, PNG, GIF, or WebP images up to 8 MB."])
-                }
-                content.append(.image(mediaType: mediaType, base64: data.base64EncodedString()))
+                let image = try AIFileAttachmentPolicy.image(for: attachment)
+                content.append(.image(mediaType: image.mediaType, base64: image.base64))
             }
         }
         return content
@@ -266,7 +278,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AIRequestPolicy.shared.checkedSession().data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "LimaAIProvider", code: 10, userInfo: [NSLocalizedDescriptionKey: "Anthropic returned an invalid response."])
         }
@@ -301,7 +313,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
-            var messages = history
+            var messages = AIProviderHTTP.boundedConversation(history)
             let attachmentContent = try AIProviderHTTP.attachmentContent(attachments)
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
@@ -365,7 +377,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
                     let endpoint = URL(string: "https://api.anthropic.com/v1/messages")!
                     var request = try AIProviderHTTP.request(endpoint: endpoint, key: apiKey, keyHeader: "x-api-key", model: model, body: body)
                     request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await AIRequestPolicy.shared.checkedSession().bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()
@@ -422,7 +434,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         var request = URLRequest(url: url)
         if !apiKey.isEmpty { request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization") }
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AIRequestPolicy.shared.checkedSession().data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rows = object["data"] as? [[String: Any]] else {
@@ -447,7 +459,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
-            var messages = history
+            var messages = AIProviderHTTP.boundedConversation(history)
             let attachmentContent = try AIProviderHTTP.attachmentContent(attachments)
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
@@ -549,7 +561,7 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await AIRequestPolicy.shared.checkedSession().bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()
@@ -597,7 +609,7 @@ struct GeminiAIProviderClient: AIProviderClient {
         request.httpMethod = "GET"
         request.setValue(apiKey, forHTTPHeaderField: "x-goog-api-key")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await AIRequestPolicy.shared.checkedSession().data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw NSError(domain: "LimaAIProvider", code: 20, userInfo: [NSLocalizedDescriptionKey: "Gemini returned an invalid response."])
         }
@@ -635,7 +647,7 @@ struct GeminiAIProviderClient: AIProviderClient {
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         do {
-            var messages = history
+            var messages = AIProviderHTTP.boundedConversation(history)
             let attachmentContent = try AIProviderHTTP.attachmentContent(attachments)
             if !attachmentContent.isEmpty, let index = messages.indices.last {
                 messages[index].content.append(contentsOf: attachmentContent)
@@ -736,7 +748,7 @@ struct GeminiAIProviderClient: AIProviderClient {
             let responseID = "gemini-\(UUID().uuidString)"
             let task = Task {
                 do {
-                    let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                    let (bytes, response) = try await AIRequestPolicy.shared.checkedSession().bytes(for: request)
                     guard let http = response as? HTTPURLResponse else { throw URLError(.badServerResponse) }
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()

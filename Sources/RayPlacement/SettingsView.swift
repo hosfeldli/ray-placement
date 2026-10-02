@@ -152,6 +152,7 @@ struct SettingsView: View {
     @State private var shortcutLookupDraft = ""
     @State private var pendingShortcutAssignment: PendingShortcutAssignment?
     @State private var workspaceProfileName = ""
+    @State private var developerTraceMessage: String?
     @State private var grammarAPIKey = ""
     @State private var grammarConnectionMessage: String?
     @State private var isTestingGrammarConnection = false
@@ -938,6 +939,50 @@ struct SettingsView: View {
                             }
                         }
                     }
+                }
+            }
+
+            Section("Developer Activity") {
+                Text("Recent task timings and UI scheduling delays. Traces contain metadata only—never prompts, responses, tool arguments, paths, or secrets.")
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                if performanceMonitor.samples.isEmpty {
+                    Text("No activity recorded yet.").foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    ForEach(Array(performanceMonitor.samples.prefix(30))) { sample in
+                        HStack(spacing: 10) {
+                            Image(systemName: sample.succeeded ? "checkmark.circle" : "exclamationmark.circle")
+                                .foregroundStyle(sample.succeeded ? .green : .orange)
+                            Text(sample.startedAt, style: .time)
+                                .limaFont(.caption.monospacedDigit())
+                                .foregroundStyle(LimaTheme.textSecondary)
+                            Text(sample.operation).lineLimit(1)
+                            Spacer()
+                            Text("\(sample.milliseconds) ms")
+                                .limaFont(.caption.monospacedDigit())
+                                .foregroundStyle(LimaTheme.textSecondary)
+                        }
+                    }
+                }
+                HStack {
+                    Button("Copy Trace") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(performanceMonitor.redactedTrace(), forType: .string)
+                        developerTraceMessage = "Copied metadata-only trace."
+                    }
+                    Button("Export Trace…") {
+                        let panel = NSSavePanel()
+                        panel.nameFieldStringValue = "Lima-Activity-Trace.txt"
+                        guard panel.runModal() == .OK, let url = panel.url else { return }
+                        do {
+                            try performanceMonitor.redactedTrace().write(to: url, atomically: true, encoding: .utf8)
+                            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                            developerTraceMessage = "Exported metadata-only trace."
+                        } catch { developerTraceMessage = error.localizedDescription }
+                    }
+                }
+                if let developerTraceMessage {
+                    Text(developerTraceMessage).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
 

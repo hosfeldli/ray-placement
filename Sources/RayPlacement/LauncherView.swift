@@ -16,6 +16,10 @@ struct LauncherView: View {
     let onPinSurface: (Bool) -> Void
     let onOpenSurfaceWorkspace: () -> Void
     let onPerformSurfacePrimaryAction: () -> Void
+    let onOpenWorkspace: (LimaWorkspaceModule) -> Void
+    let onOpenSettings: () -> Void
+    let onCreateNote: () -> Void
+    let onDismissSearch: () -> Void
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
@@ -38,7 +42,11 @@ struct LauncherView: View {
         onSurfaceInteraction: @escaping () -> Void = {},
         onPinSurface: @escaping (Bool) -> Void = { _ in },
         onOpenSurfaceWorkspace: @escaping () -> Void = {},
-        onPerformSurfacePrimaryAction: @escaping () -> Void = {}
+        onPerformSurfacePrimaryAction: @escaping () -> Void = {},
+        onOpenWorkspace: @escaping (LimaWorkspaceModule) -> Void = { _ in },
+        onOpenSettings: @escaping () -> Void = {},
+        onCreateNote: @escaping () -> Void = {},
+        onDismissSearch: @escaping () -> Void = {}
     ) {
         self.viewModel = viewModel
         self.terminalModel = terminalModel
@@ -53,18 +61,29 @@ struct LauncherView: View {
         self.onPinSurface = onPinSurface
         self.onOpenSurfaceWorkspace = onOpenSurfaceWorkspace
         self.onPerformSurfacePrimaryAction = onPerformSurfacePrimaryAction
+        self.onOpenWorkspace = onOpenWorkspace
+        self.onOpenSettings = onOpenSettings
+        self.onCreateNote = onCreateNote
+        self.onDismissSearch = onDismissSearch
     }
 
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow, identityLayer: true)
             LimaTheme.floatingWindowBackground.opacity(0.86)
-            VStack(spacing: 5) {
-                searchHeader
-                content
-                    .id(viewModel.mode.visualIdentity)
-                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
-                footer
+            if viewModel.mode == .root {
+                LauncherSearchWorkspace(model: viewModel, openWorkspace: onOpenWorkspace,
+                                        openSettings: onOpenSettings, createNote: onCreateNote,
+                                        dismiss: onDismissSearch)
+                    .disabled(viewModel.actionPanelItem != nil)
+            } else {
+                VStack(spacing: 5) {
+                    searchHeader
+                    content
+                        .id(viewModel.mode.visualIdentity)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
+                    footer
+                }
             }
             if viewModel.actionPanelItem != nil {
                 actionPanel
@@ -72,13 +91,13 @@ struct LauncherView: View {
             }
         }
         .frame(
-            width: LauncherPanelLayout.size(
+            width: viewModel.mode == .root ? nil : LauncherPanelLayout.size(
                 for: viewModel.mode,
                 density: settings.interfaceDensity,
                 resultCount: viewModel.results.count,
                 query: viewModel.query
             ).width,
-            height: LauncherPanelLayout.size(
+            height: viewModel.mode == .root ? nil : LauncherPanelLayout.size(
                 for: viewModel.mode,
                 density: settings.interfaceDensity,
                 resultCount: viewModel.results.count,
@@ -486,36 +505,70 @@ struct LauncherView: View {
     }
 
     private var actionPanel: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(viewModel.actionPanelItem?.title ?? "Actions")
-                    .limaFont(.system(size: 15, weight: .bold))
-                Spacer()
-                Text("esc")
-                    .limaFont(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(LimaTheme.textSecondary)
-            }
-            Divider()
-            if let item = viewModel.actionPanelItem {
-                ForEach(viewModel.actionPanelActions(for: item)) { action in
-                    Button { viewModel.executeAction(action) } label: {
-                        HStack(spacing: 9) {
-                            Image(systemName: action.symbol).frame(width: 18)
-                            Text(action.title)
-                            Spacer()
-                            if let shortcut = action.shortcut { Text(shortcut).foregroundStyle(LimaTheme.textSecondary) }
-                        }
-                        .padding(.horizontal, 9).padding(.vertical, 7)
+        ZStack {
+            Color.black.opacity(0.18)
+                .contentShape(Rectangle())
+                .onTapGesture { viewModel.closeActionPanel() }
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text(viewModel.actionPanelItem?.title ?? "Actions")
+                        .limaFont(.headline).lineLimit(2)
+                    Spacer()
+                    Button { viewModel.closeActionPanel() } label: {
+                        Image(systemName: "xmark").frame(width: 24, height: 24)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(action.role == .destructive ? .red : .primary)
+                    .accessibilityLabel("Close actions")
+                    .help("Close actions · Escape")
                 }
+                Divider()
+                ScrollViewReader { scroll in
+                    ScrollView {
+                        if let item = viewModel.actionPanelItem {
+                            VStack(spacing: 4) {
+                                ForEach(Array(viewModel.actionPanelActions(for: item).enumerated()), id: \.element.id) { index, action in
+                                    Button { viewModel.executeAction(action) } label: {
+                                        HStack(spacing: 9) {
+                                            Image(systemName: action.symbol).frame(width: 18)
+                                            Text(action.title)
+                                            Spacer()
+                                            if index == viewModel.actionPanelSelectedIndex {
+                                                Text("↩").foregroundStyle(LimaTheme.textSecondary)
+                                            }
+                                        }
+                                        .padding(10)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .background(index == viewModel.actionPanelSelectedIndex ? LimaTheme.surfaceSelected : .clear,
+                                                    in: RoundedRectangle(cornerRadius: 9))
+                                        .contentShape(Rectangle())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundStyle(action.role == .destructive ? LimaColors.danger : LimaTheme.textPrimary)
+                                    .accessibilityAddTraits(index == viewModel.actionPanelSelectedIndex ? [.isSelected] : [])
+                                    .id(index)
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: min(260, CGFloat(viewModel.actionPanelItem.map {
+                        viewModel.actionPanelActions(for: $0).count
+                    } ?? 0) * 44))
+                    .onChange(of: viewModel.actionPanelSelectedIndex) { index in
+                        scroll.scrollTo(index)
+                    }
+                }
+                Text("↑ ↓ Navigate · Return to run · Escape to close")
+                    .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
             }
+            .padding(16)
+            .frame(maxWidth: 360, maxHeight: min(390, CGFloat(viewModel.actionPanelItem.map {
+                viewModel.actionPanelActions(for: $0).count
+            } ?? 0) * 44 + 108))
+            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(LimaTheme.borderStrong, lineWidth: 0.5))
+            .shadow(color: LimaTheme.shadowFloating, radius: 20, y: 8)
+            .padding(16)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .padding(12)
     }
 
     private var resultList: some View {
@@ -1287,7 +1340,7 @@ private struct EmojiGridTile: View {
     }
 }
 
-private final class LauncherIconCache {
+final class LauncherIconCache {
     static let shared = LauncherIconCache()
     private let cache = NSCache<NSURL, NSImage>()
 

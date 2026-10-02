@@ -168,7 +168,7 @@ struct LimaWorkspaceBadge: View {
 extension LimaWorkspaceModule {
     var featureTint: AppAccentTheme {
         switch self {
-        case .home, .ai: .violet
+        case .home, .ai, .context: .violet
         case .notes: .orange
         case .grammar: .green
         case .dictation: .rose

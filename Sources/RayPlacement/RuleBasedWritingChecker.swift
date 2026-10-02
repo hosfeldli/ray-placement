@@ -1,10 +1,10 @@
 @preconcurrency import Foundation
 import Darwin
+import Combine
 import RayPlacementWriting
 
-/// Local writing correction used by the public checkWriting action and live
-/// writing surfaces. Harper is deliberately the only production engine here:
-/// no Python runtime, network provider, prompt, ensemble, or judge is involved.
+/// Shared writing correction for explicit checks and inline review.
+/// API is the default; local mode and fallback are explicit user choices.
 @MainActor
 final class RuleBasedWritingChecker {
     enum CheckerError: LocalizedError {
@@ -32,13 +32,31 @@ final class RuleBasedWritingChecker {
 
     private let reviewer = WritingCheckService()
     private let api = StealthGrammarRemoteClient()
+    private var remoteTask: Task<Void, Never>?
     private var activeProcess: Process?
     private var operationID: UUID?
     private var usageID: UUID?
+    private var completedEngineTitle = "AI"
     private let maximumCorrections = 100
+    private var aiPolicyObserver: AnyCancellable?
+    private var disabledCompletion: (() -> Void)?
+
+    init() {
+        aiPolicyObserver = NotificationCenter.default.publisher(for: AIRequestPolicy.changed)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self, !AIRequestPolicy.shared.isEnabled else { return }
+                let completion = self.disabledCompletion
+                self.cancel()
+                completion?()
+            }
+    }
 
     func cancel() {
+        disabledCompletion = nil
         operationID = nil
+        remoteTask?.cancel()
+        remoteTask = nil
         if let process = activeProcess, process.isRunning {
             process.terminate()
             if process.isRunning { kill(process.processIdentifier, SIGKILL) }
@@ -58,9 +76,7 @@ final class RuleBasedWritingChecker {
         start(source: source, forceLocal: true, progress: progress, completion: completion)
     }
 
-    /// Compatibility façade for the existing writing-check callers. The
-    /// production implementation is always local Harper, regardless of stale
-    /// provider settings that may remain in older preference stores.
+    /// All production callers follow the same explicit engine preference.
     func check(
         _ source: String,
         progress: @escaping (String) -> Void,
@@ -75,10 +91,12 @@ final class RuleBasedWritingChecker {
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         cancel()
+        guard AIRequestPolicy.shared.isEnabled else { completion(.failure(AIRequestPolicy.Disabled())); return }
         guard validate(source) else {
             completion(.failure(WritingCheckService.CheckError.emptyText))
             return
         }
+        disabledCompletion = { completion(.failure(AIRequestPolicy.Disabled())) }
         beginUsage(for: source, operation: "Writing correction")
         let id = UUID()
         operationID = id
@@ -102,10 +120,12 @@ final class RuleBasedWritingChecker {
         completion: @escaping (Result<WritingReview, Error>) -> Void
     ) {
         cancel()
+        guard AIRequestPolicy.shared.isEnabled else { completion(.failure(AIRequestPolicy.Disabled())); return }
         guard validate(source) else {
             completion(.failure(WritingCheckService.CheckError.emptyText))
             return
         }
+        disabledCompletion = { completion(.failure(AIRequestPolicy.Disabled())) }
         beginUsage(for: source, operation: "Writing check")
         let id = UUID()
         operationID = id
@@ -117,7 +137,7 @@ final class RuleBasedWritingChecker {
                     let review = try self.reviewer.review(
                         sourceText: source,
                         rewrittenText: corrected,
-                        engineTitle: forceLocal ? "Harper" : self.engineTitle
+                        engineTitle: self.completedEngineTitle
                     )
                     self.finish(success: true, output: corrected.count)
                     completion(.success(review))
@@ -146,12 +166,8 @@ final class RuleBasedWritingChecker {
         )
     }
 
-    private var usesAPI: Bool {
-        SettingsStore.shared.grammarEngineMode == .externalAPI
-    }
-
-    private var engineTitle: String {
-        usesAPI ? "AI" : "Harper"
+    static func shouldUseAPI(mode: GrammarEngineMode, forceLocal: Bool = false) -> Bool {
+        mode == .externalAPI && !forceLocal
     }
 
     private func correct(
@@ -162,7 +178,10 @@ final class RuleBasedWritingChecker {
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         guard operationID == self.operationID else { return }
-        guard !usesAPI || forceLocal else {
+        guard AIRequestPolicy.shared.isEnabled else { completion(.failure(AIRequestPolicy.Disabled())); return }
+        completedEngineTitle = "AI"
+        if !Self.shouldUseAPI(mode: SettingsStore.shared.grammarEngineMode, forceLocal: forceLocal) {
+            completedEngineTitle = "Harper"
             progress("Checking locally…")
             correctIteratively(
                 source: source,
@@ -176,7 +195,8 @@ final class RuleBasedWritingChecker {
         }
 
         guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-            if SettingsStore.shared.grammarFallbackToLocal {
+            if AIRequestPolicy.shared.isEnabled && SettingsStore.shared.grammarFallbackToLocal {
+                completedEngineTitle = "Harper · AI fallback"
                 progress("AI unavailable · checking locally…")
                 correctIteratively(
                     source: source,
@@ -193,9 +213,10 @@ final class RuleBasedWritingChecker {
         }
 
         progress("Fixing writing…")
-        Task { [weak self] in
+        remoteTask = Task { [weak self] in
             guard let self else { return }
             do {
+                try Task.checkCancellation()
                 var corrected = try await self.api.correctText(
                     source,
                     configuration: configuration,
@@ -212,6 +233,7 @@ final class RuleBasedWritingChecker {
                 completion(.success(corrected))
             } catch {
                 guard self.operationID == operationID else { return }
+                guard !Task.isCancelled else { return }
                 if Self.isTransient(error: error) {
                     do {
                         let corrected = try await self.api.correctText(
@@ -230,7 +252,9 @@ final class RuleBasedWritingChecker {
                         // complete API failure without touching the selection.
                     }
                 }
-                if SettingsStore.shared.grammarFallbackToLocal {
+                guard self.operationID == operationID, !Task.isCancelled else { return }
+                if AIRequestPolicy.shared.isEnabled && SettingsStore.shared.grammarFallbackToLocal {
+                    self.completedEngineTitle = "Harper · AI fallback"
                     progress("AI unavailable · checking locally…")
                     self.correctIteratively(
                         source: source,
@@ -421,6 +445,7 @@ final class RuleBasedWritingChecker {
     }
 
     private func finish(success: Bool, output: Int = 0, detail: String? = nil) {
+        disabledCompletion = nil
         operationID = nil
         guard let usageID else { return }
         self.usageID = nil

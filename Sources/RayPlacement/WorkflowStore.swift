@@ -66,13 +66,21 @@ struct WorkflowExecutor {
         var results: [WorkflowExecutionReport.StepResult] = []
 
         for step in workflow.steps {
+            if Task.isCancelled {
+                results.append(.init(commandID: step.commandID, succeeded: false, message: "Cancelled"))
+                break
+            }
+            let measurementID = PerformanceMonitor.shared.begin("Workflow step", detail: step.commandID)
             do {
                 if !confirm { throw ConfirmationRequired() }
                 try await run(step.commandID)
+                try Task.checkCancellation()
+                PerformanceMonitor.shared.end(measurementID)
                 results.append(.init(commandID: step.commandID, succeeded: true))
             } catch {
+                PerformanceMonitor.shared.end(measurementID, succeeded: false)
                 results.append(.init(commandID: step.commandID, succeeded: false, message: error.localizedDescription))
-                if !step.continueOnFailure { break }
+                if Task.isCancelled || !step.continueOnFailure { break }
             }
         }
 

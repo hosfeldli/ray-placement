@@ -243,7 +243,14 @@ enum AIChatVisualFixtures {
             model: "gpt-5.4",
             reasoningEffort: .medium,
             messages: [
-                AIChatMessage(role: .user, text: "Why did the updater stop returning an answer?"),
+                AIChatMessage(
+                    role: .user,
+                    text: "Why did the updater stop returning an answer?",
+                    attachments: [
+                        AIAttachment(kind: .file, displayName: "updater-trace.txt", text: "Fixture trace"),
+                        AIAttachment(kind: .selection, displayName: "Selected error", text: "Fixture error")
+                    ]
+                ),
                 AIChatMessage(
                     role: .assistant,
                     text: "The request can fail before visible text arrives when a model receives an unsupported reasoning level or an authenticated MCP tool uses the wrong field. Lima now keeps the failed turn in the transcript and shows a safe failure summary.",
@@ -292,7 +299,8 @@ enum AIChatVisualFixtures {
     }
 
     private static var streamingConversation: AIConversation {
-        AIConversation(
+        let now = Date()
+        return AIConversation(
             title: "Investigate streaming transport",
             updatedAt: Date(),
             model: "gpt-5.4",
@@ -304,9 +312,9 @@ enum AIChatVisualFixtures {
                     text: "The parser reconstructed the multiline event with an actual newline and is now",
                     reasoningSummary: "Inspecting the raw SSE frame boundary.",
                     activities: [
-                        AIAgentActivity(kind: .started, title: "Started", detail: "Responses stream", startedAt: fixtureNow.addingTimeInterval(-4), endedAt: fixtureNow.addingTimeInterval(-4), completed: true),
-                        AIAgentActivity(kind: .reasoningSummary, title: "Reasoning", detail: "Inspecting SSE framing", startedAt: fixtureNow.addingTimeInterval(-3), endedAt: fixtureNow.addingTimeInterval(-2), completed: true),
-                        AIAgentActivity(kind: .toolStarted, title: "Search Files", detail: "Lima", startedAt: fixtureNow.addingTimeInterval(-1), endedAt: fixtureNow, duration: 1, completed: false)
+                        AIAgentActivity(kind: .started, title: "Started", detail: "Responses stream", startedAt: now.addingTimeInterval(-4), endedAt: now.addingTimeInterval(-4), completed: true),
+                        AIAgentActivity(kind: .reasoningSummary, title: "Reasoning", detail: "Inspecting SSE framing", startedAt: now.addingTimeInterval(-3), endedAt: now.addingTimeInterval(-2), completed: true),
+                        AIAgentActivity(kind: .toolStarted, title: "Search Files", detail: "Lima", startedAt: now.addingTimeInterval(-1), completed: false)
                     ]
                 )
             ]
@@ -383,7 +391,7 @@ enum AIChatVisualFixtures {
 
     private static func fixtureMCPServer() -> MCPServer {
         let id = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000001")!
-        let tool = MCPToolDescriptor(serverID: id, name: "search_docs", title: "Search documentation", description: "Fixture MCP search", risk: .read, enabled: true)
+        let tool = MCPToolDescriptor(serverID: id, name: "search_docs", title: "Search documentation", description: "Fixture MCP search", risk: .read, enabled: true, declaredReadOnly: true)
         return MCPServer(id: id, name: "Fixture Docs", url: "https://example.invalid/mcp", allowedToolNames: [tool.name], tools: [tool])
     }
 }

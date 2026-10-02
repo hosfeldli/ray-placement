@@ -15,7 +15,10 @@ import Testing
     let store = LimaAIToolStore(fixtures: [])
     var rows = CommandCenterCatalog.nativeToolEntries(definitions: definitions, enabledIDs: store.enabledToolIDs)
     #expect(rows.count == definitions.count)
-    #expect(rows.allSatisfy { !$0.isEnabled && $0.availableToAI == true })
+    #expect(rows.allSatisfy { !$0.isEnabled })
+    #expect(rows.filter { ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"].contains($0.id) }
+        .allSatisfy { $0.availableToAI == false })
+    #expect(rows.first { $0.id == "browser_read" }?.availableToAI == true)
     let bridge = try #require(definitions.first { $0.id == "browser_read" })
     store.setEnabled(bridge, enabled: true)
     rows = CommandCenterCatalog.nativeToolEntries(definitions: definitions, enabledIDs: store.enabledToolIDs)

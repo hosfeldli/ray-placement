@@ -293,7 +293,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             let paragraphRange = nsSource.paragraphRange(for: NSRange(location: location, length: 0))
             let paragraph = nsSource.substring(with: paragraphRange)
                 .trimmingCharacters(in: .newlines)
-            guard paragraph.count >= 3,
+            guard paragraph.count >= 3, paragraph.count <= 6_000,
                   !paragraph.contains("```") else {
                 textView.clearGrammarAnnotations()
                 return
@@ -301,7 +301,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             var workItem: DispatchWorkItem!
             workItem = DispatchWorkItem { [weak self, weak textView] in
                 guard let self, let textView, !workItem.isCancelled, self.grammarGeneration == generation else { return }
-                self.grammarChecker?.checkLocal(paragraph, progress: { _ in }) { [weak self, weak textView] result in
+                self.grammarChecker?.check(paragraph, progress: { _ in }) { [weak self, weak textView] result in
                     guard let textView, !workItem.isCancelled, self?.grammarGeneration == generation, textView.string == source else { return }
                     switch result {
                     case .success(let review):
@@ -313,7 +313,7 @@ struct InlineMarkdownEditor: NSViewRepresentable {
                 }
             }
             grammarWorkItem = workItem
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.65, execute: workItem)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: workItem)
         }
 
         func render(markdown: String, preservingSelection: Bool) {
@@ -535,8 +535,7 @@ final class MarkdownTextView: NSTextView {
         guard !wikiLinkCandidates.isEmpty else { return }
         let before = source.substring(to: cursor)
         guard let opening = before.range(of: "[[", options: .backwards) else { return }
-        let start = before.utf16.distance(from: before.startIndex, to: opening.lowerBound)
-        let prefix = before.substring(from: opening.upperBound)
+        let prefix = String(before[opening.upperBound...])
         guard !prefix.contains("]") else { return }
         let candidates = MarkdownNoteAnalysis.wikiLinkSuggestions(in: string, prefix: prefix, candidates: wikiLinkCandidates)
         guard !candidates.isEmpty else { return }

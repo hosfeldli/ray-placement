@@ -25,11 +25,11 @@ import Testing
 @Test func workspaceDestinationsHaveStableDistinctShortcuts() {
     let modules = LimaWorkspaceModule.allCases
     #expect(Set(modules.map(\.shortcutNumber)).count == modules.count)
-    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "4", "5", "6", "7", "8", "9"])
-    #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .notes, .ai, .grammar, .dictation])
+    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "C", "4", "5", "6", "7", "8", "9"])
+    #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .notes, .ai, .context, .grammar, .dictation])
     #expect(LimaWorkspaceModule.toolDestinations == [.extensions, .clipboard, .terminal, .formatter])
     #expect(LimaWorkspaceModule.primaryDestinations == LimaWorkspaceModule.workspaceDestinations + LimaWorkspaceModule.toolDestinations)
-    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter])
+    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .context, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter])
     #expect(modules.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
 }
 

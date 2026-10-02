@@ -428,15 +428,14 @@ import Testing
     ])
     #expect(Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id }) == [
         "browser_tabs", "browser_current", "browser_read",
-        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
-        "browser_open_tabs"
+        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
     ])
     #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file"
     ])
 }
 
-@Test @MainActor func browserNavigationPromptRoutesGrantedNavigationTools() async throws {
+@Test @MainActor func browserNavigationPromptRoutesInspectionOnly() async throws {
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
@@ -446,7 +445,9 @@ import Testing
     )
 
     let routed = Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id })
-    #expect(routed.contains("browser_open_tabs"))
+    #expect(!routed.contains("browser_open_tabs"))
+    #expect(!routed.contains("browser_focus_tab"))
+    #expect(!routed.contains("browser_navigate_tab"))
     #expect(routed.contains("salesforce_read_case_links"))
     #expect(routed.contains("salesforce_resolve_cases"))
 
@@ -456,6 +457,26 @@ import Testing
 
     #expect(!model.isStreaming)
     #expect(model.streamError == nil)
+}
+
+@Test @MainActor func browserNavigationIsBlockedAtEveryAIToolGate() async {
+    let navigationIDs = ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
+    let definitions = LimaAIToolRegistry.enabledDefinitions(Set(navigationIDs))
+    #expect(definitions.isEmpty)
+    for id in navigationIDs {
+        let call = AIOutputItem(
+            phase: .completed,
+            apiType: "function_call",
+            callID: "call_\(id)",
+            name: id,
+            arguments: "{}"
+        )
+        let bridgeResult = await BrowserBridgeAITools.execute(call)
+        #expect(bridgeResult.isError)
+        #expect(bridgeResult.output.contains("read-only"))
+        let registryResult = await LimaAIToolRegistry.execute(call)
+        #expect(registryResult.isError)
+    }
 }
 
 @Test @MainActor func strictToolSchemasAreProviderReadyAndNormalizeOptionalArguments() throws {
@@ -680,7 +701,7 @@ import Testing
 @Test func responsePayloadUsesMCPApprovalPolicyWithoutEmbeddingCredential() throws {
     let serverID = UUID()
     let tools = [
-        MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true),
+        MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true, declaredReadOnly: true),
         MCPToolDescriptor(serverID: serverID, name: "delete_repo", risk: .destructive, enabled: true)
     ]
     let body = AIChatResponsesClient.replyBody(
@@ -707,7 +728,7 @@ import Testing
         name: "Docs",
         url: "https://example.com/mcp",
         allowedToolNames: ["search"],
-        tools: [MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true)]
+        tools: [MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true, declaredReadOnly: true)]
     )
     let payload = try #require(
         AIChatResponsesClient.remoteMCPToolPayload(server: server, credential: "token")
@@ -837,7 +858,7 @@ import Testing
 @Test func mcpServerAllowlistDefaultsToDiscoveredTools() {
     let serverID = UUID()
     let tools = [
-        MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true),
+        MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true),
         MCPToolDescriptor(serverID: serverID, name: "delete_file", risk: .destructive, enabled: true)
     ]
     let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: tools.map(\.name), tools: tools)
@@ -847,9 +868,25 @@ import Testing
 
 @Test func mcpServerCanRepresentAllToolsDisabled() {
     let serverID = UUID()
-    let tool = MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true)
+    let tool = MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true)
     let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: [MCPServer.noToolsSentinel], tools: [tool])
     #expect(server.enabledTools.isEmpty)
+}
+
+@Test func mcpReadOnlyEligibilityRequiresExplicitDeclarationAndRejectsLegacyGuesses() throws {
+    #expect(MCPHTTPClient.risk(for: ["name": "search"], name: "search", description: nil) == .write)
+    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true]], name: "search", description: nil) == .read)
+    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true]], name: "open_tab", description: nil) == .write)
+    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true, "destructiveHint": true]], name: "delete_file", description: nil) == .destructive)
+
+    let id = UUID()
+    let verified = MCPToolDescriptor(serverID: id, name: "search", risk: .read, enabled: true, declaredReadOnly: true)
+    let legacy = MCPToolDescriptor(serverID: id, name: "list", risk: .read, enabled: true)
+    let encodedLegacy = try JSONEncoder().encode(legacy)
+    let restoredLegacy = try JSONDecoder().decode(MCPToolDescriptor.self, from: encodedLegacy)
+    #expect(restoredLegacy.declaredReadOnly == nil)
+    let server = MCPServer(name: "Docs", url: "https://example.com/mcp", tools: [verified, restoredLegacy])
+    #expect(AIReadOnlyPolicy.readableMCPTools(for: server).map(\.name) == ["search"])
 }
 
 @Test func remoteMCPPayloadOmitsWriteAndDestructiveTools() throws {
@@ -858,7 +895,7 @@ import Testing
         name: "Files",
         url: "https://example.com/mcp",
         tools: [
-            MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true),
+            MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true),
             MCPToolDescriptor(serverID: serverID, name: "write_file", risk: .write, enabled: true),
             MCPToolDescriptor(serverID: serverID, name: "delete_file", risk: .destructive, enabled: true)
         ]
@@ -1254,6 +1291,76 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
 
     #expect(store.conversations.isEmpty)
     #expect(registry.activeTasks.isEmpty)
+}
+
+@Test @MainActor func sentContextIsShownOnItsTurnAndNotReusedByTheNextPrompt() async {
+    let attachment = AIAttachment(kind: .selection, displayName: "Selected text", text: "First-turn context")
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Done"), .completed("context-test")])
+    )
+
+    model.add(attachment)
+    model.draft = "First prompt"
+    model.send()
+    #expect(model.attachments.isEmpty)
+    #expect(store.conversations.first?.attachments.isEmpty == true)
+    #expect(store.conversations.first?.messages.first?.attachments == [attachment])
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+
+    model.draft = "Second prompt"
+    model.send()
+    let userTurns = store.conversations.first?.messages.filter { $0.role == .user } ?? []
+    #expect(userTurns.count == 2)
+    #expect(userTurns.first?.attachments == [attachment])
+    #expect(userTurns.last?.attachments == nil)
+    #expect(model.attachments.isEmpty)
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+@Test @MainActor func longChatFixtureRepeatedTurnsCompleteAndMeasureComposerWork() async {
+    let history = (0..<80).map { index in
+        AIChatMessage(
+            role: index.isMultiple(of: 2) ? .user : .assistant,
+            text: "Prior turn \(index): " + String(repeating: "context ", count: 500)
+        )
+    }
+    let store = AIConversationStore(fixtures: [AIConversation(title: "Long Chat", messages: history)])
+    let registry = TaskRegistry()
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard,
+        taskRegistry: registry
+    )
+    var sendDurations: [TimeInterval] = []
+    for turn in 0..<8 {
+        model.draft = "Fixture follow-up \(turn)"
+        let startedAt = Date()
+        model.send()
+        sendDurations.append(Date().timeIntervalSince(startedAt))
+        for _ in 0..<300 where model.isStreaming {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(!model.isStreaming)
+        #expect(model.streamError == nil)
+        #expect(registry.activeTasks.isEmpty)
+    }
+    #expect(store.conversations.first?.messages.count == history.count + 16)
+    let longestDuration = sendDurations.max() ?? .infinity
+    #expect(longestDuration < 0.1, "Fixture long-chat composer work exceeded the 100 ms responsiveness budget.")
+    let longest = Int((longestDuration * 1_000).rounded())
+    print("Fixture long-chat composer send: 8 turns, longest synchronous call \(longest) ms; no live provider or UI rendering")
 }
 
 @Test @MainActor func returnDuringActiveTaskCannotStartAnotherAIRequest() async {

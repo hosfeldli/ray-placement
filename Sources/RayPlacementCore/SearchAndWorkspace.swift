@@ -1,7 +1,7 @@
 import Foundation
 
 public enum LimaSearchKind: String, Codable, CaseIterable, Sendable {
-    case command, application, note, dictation, terminal, window, clipboard, file
+    case command, application, note, dictation, aiConversation, terminal, window, clipboard, file, workspace, context
 }
 
 public struct LimaSearchResult: Identifiable, Hashable, Sendable {

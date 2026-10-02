@@ -27,9 +27,9 @@ function snapshot(body, ranges = []) {
   return vm.runInNewContext(source, {
     URL, NodeFilter: {SHOW_TEXT: 4, SHOW_ELEMENT: 1}, location: {href: "https://example.com/case"},
     getComputedStyle: node => node.style,
-    document: {body, documentElement: body, title: "Fixture", querySelector: () => body,
+    document: {body, documentElement: body, baseURI: "https://example.com/case", title: "Fixture", querySelector: () => body,
       createTreeWalker(root, mask) {
-        const nodes = descendants(root).filter(n => n.nodeType === (mask === 4 ? 3 : 1));
+        const nodes = descendants(root).filter(n => n.nodeType === 1 ? (mask & 1) : (mask & 4));
         let i = 0; return {nextNode: () => nodes[i++] || null};
       }},
     window: {getSelection: () => ({rangeCount: ranges.length, getRangeAt: index => ranges[index]})}
@@ -74,4 +74,47 @@ test("snapshot text and links remain bounded and omit credential-bearing links",
   assert(result.text.length <= 32000); assert.equal(result.links.length, 150);
   assert(!result.links.some(link => link.href.includes("password")));
   assert(result.truncated);
+});
+function shadow(host, children) {
+  const root = {children, host};
+  host.shadowRoot = root;
+  for (const child of children) child.getRootNode = () => root;
+  return host;
+}
+test("Lightning-style shadow links retain real URLs and visible row context", () => {
+  const link = element("a", [text("00012345")], {href: "/lightning/r/Case/500000000000001/view"});
+  const row = element("tr", [element("td", [link]), element("td", [text("Open shipment")])]);
+  const component = shadow(element("lightning-datatable"), [row]);
+  const result = snapshot(element("main", [component]));
+  assert.equal(result.links[0].href, "https://example.com/lightning/r/Case/500000000000001/view");
+  assert(result.links[0].rowContext.includes("Open shipment"));
+  assert(result.text.includes("00012345"));
+});
+test("hidden and private shadow hosts cannot leak text or URLs", () => {
+  for (const attributes of [{hidden: ""}, {"data-lima-private": ""}, {contenteditable: "true"}]) {
+    const host = shadow(element("x-private", [], attributes), [
+      element("a", [text("SHADOW SECRET")], {href: "https://example.com/secret"})
+    ]);
+    const result = snapshot(element("main", [host]));
+    assert(!JSON.stringify(result).includes("SHADOW SECRET"));
+    assert.equal(result.links.length, 0);
+  }
+});
+test("role links expose declared HTTPS destinations but never invented record IDs or onclick", () => {
+  const result = snapshot(element("main", [
+    element("span", [text("Report")], {role: "link", "data-href": "/lightning/r/Report/00O000000000001/view"}),
+    element("a", [text("Not navigable")], {href: "javascript:void(0)", "data-recordid": "500000000000002"}),
+    element("button", [text("Mutation")], {"data-url": "/delete", onclick: "save()"}),
+    element("a", [text("Bad")], {href: "http://example.com"}),
+    element("h2", [text("Report results")])
+  ]));
+  assert.equal(result.links.length, 1);
+  assert.equal(result.links[0].source, "data-href");
+  assert(result.links[0].href.endsWith("/lightning/r/Report/00O000000000001/view"));
+  assert.equal(result.headings[0], "Report results");
+});
+test("duplicate rendered links are deduplicated", () => {
+  const result = snapshot(element("main", Array.from({length: 4}, () =>
+    element("a", [text("Same report")], {href: "/report"}))));
+  assert.equal(result.links.length, 1);
 });

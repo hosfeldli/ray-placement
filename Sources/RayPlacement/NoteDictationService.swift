@@ -102,6 +102,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private var partialToCommitStartedAt: Date?
     private var sessionStarted = false
     private var usesDefaultConversationCallbacks = false
+    private var aiPolicyObserver: NSObjectProtocol?
 
     init(
         onTranscript: @escaping (String) -> Void,
@@ -122,6 +123,13 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         self.onSessionFinished = onSessionFinished
         self.onSessionFailed = onSessionFailed
         super.init()
+        aiPolicyObserver = NotificationCenter.default.addObserver(forName: AIRequestPolicy.changed, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, !AIRequestPolicy.shared.isEnabled else { return }
+                self.cancel()
+                self.lastError = AIRequestPolicy.disabledMessage
+            }
+        }
     }
 
     var actionTitle: String {
@@ -175,6 +183,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func performPrimaryAction(target: DictationTarget? = nil) {
+        guard AIRequestPolicy.shared.isEnabled else { lastError = AIRequestPolicy.disabledMessage; return }
         switch phase {
         case .idle:
             requestedTarget = target
@@ -254,6 +263,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     func retryFailedRecording() {
+        guard AIRequestPolicy.shared.isEnabled else { lastError = AIRequestPolicy.disabledMessage; return }
         guard phase == .idle, let recoveryAudioURL,
               FileManager.default.fileExists(atPath: recoveryAudioURL.path) else { return }
         lastError = nil
@@ -376,6 +386,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func startRecording(operation: UUID) {
+        guard AIRequestPolicy.shared.isEnabled else { cancel(); lastError = AIRequestPolicy.disabledMessage; return }
         guard operationIdentifier == operation, phase == .requestingPermission else { return }
         do {
             try ApplicationPaths.prepare()
@@ -762,6 +773,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private func startRecognition(of url: URL) {
+        guard AIRequestPolicy.shared.isEnabled else { fail(AIRequestPolicy.Disabled()); return }
         guard phase == .recording || phase == .transcribing, let recognizer = speechRecognizer else { return }
         let displayIndex = currentChunkIndex + 1
         transcriptionProgress = "Transcribing segment \(displayIndex) of \(totalChunkCount) on device…"

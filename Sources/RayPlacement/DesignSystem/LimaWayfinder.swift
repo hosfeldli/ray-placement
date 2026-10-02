@@ -1,3 +1,4 @@
+import RayPlacementCore
 import SwiftUI
 
 /// Navigation remembers destinations, never editor content or credentials.
@@ -13,7 +14,7 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
-    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .grammar, .dictation]
+    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .context, .grammar, .dictation]
     static let toolDestinations: [LimaWorkspaceModule] = [.extensions, .clipboard, .terminal, .formatter]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
 
@@ -22,6 +23,7 @@ extension LimaWorkspaceModule {
         case .home: "Home"
         case .notes: "Notes"
         case .ai: "AI"
+        case .context: "Context"
         case .grammar: "Grammar"
         case .dictation: "Dictation"
         case .extensions: "Extensions"
@@ -36,6 +38,7 @@ extension LimaWorkspaceModule {
         case .home: "house"
         case .notes: "note.text"
         case .ai: "sparkles"
+        case .context: "tray.full"
         case .grammar: "textformat.abc"
         case .dictation: "waveform"
         case .extensions: "puzzlepiece.extension"
@@ -51,6 +54,7 @@ extension LimaWorkspaceModule {
         case .home: "1"
         case .notes: "2"
         case .ai: "3"
+        case .context: "C"
         case .grammar: "4"
         case .dictation: "5"
         case .extensions: "6"
@@ -101,6 +105,12 @@ struct LimaWayfinderRail: View {
     let sizeClass: LimaWorkspaceSizeClass
     let select: (LimaWorkspaceModule) -> Void
     let openSettings: () -> Void
+    let isDocked: Bool
+    let openInWindow: () -> Void
+    var workspaceProfiles: [WorkspaceProfile] = []
+    var activeWorkspaceProfileID: UUID? = nil
+    var selectWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
+    var createWorkspaceProfile: (() -> Void)? = nil
     @State private var hovered: String?
     @ObservedObject private var typography = AppTypography.shared
 
@@ -124,6 +134,38 @@ struct LimaWayfinderRail: View {
             .frame(maxWidth: .infinity, alignment: labeled ? .leading : .center)
             .padding(.horizontal, labeled ? 9 : 0)
             .padding(.bottom, 16)
+
+            if let selectWorkspaceProfile, !workspaceProfiles.isEmpty {
+                Menu {
+                    ForEach(workspaceProfiles) { profile in
+                        Button {
+                            selectWorkspaceProfile(profile)
+                        } label: {
+                            if profile.id == activeWorkspaceProfileID {
+                                Label(profile.name, systemImage: "checkmark")
+                            } else {
+                                Text(profile.name)
+                            }
+                        }
+                    }
+                    if let createWorkspaceProfile {
+                        Divider()
+                        Button("New Workspace", systemImage: "plus", action: createWorkspaceProfile)
+                    }
+                } label: {
+                    railLabel(
+                        workspaceProfiles.first(where: { $0.id == activeWorkspaceProfileID })?.name ?? "Workspaces",
+                        symbol: "square.stack.3d.up",
+                        selected: false,
+                        hovered: hovered == "profiles"
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .help("Switch or create a named workspace")
+                .accessibilityLabel("Switch Workspace")
+                .onHover { hovered = $0 ? "profiles" : nil }
+                Divider().padding(.horizontal, 8)
+            }
 
             ScrollView(.vertical) {
                 VStack(spacing: 8) {
@@ -154,10 +196,20 @@ struct LimaWayfinderRail: View {
             Spacer(minLength: 12)
 
             if labeled {
-                Text("⌥⌘ 1–9").font(.system(size: 10, weight: .medium, design: .monospaced))
+                Text("⌥⌘ 1–9 · C").font(.system(size: 10, weight: .medium, design: .monospaced))
                     .foregroundStyle(LimaTheme.textTertiary)
                     .help("Switch workspaces; ⌥⌘0 returns to the previous one")
                     .padding(.bottom, 6)
+            }
+
+            if isDocked {
+                Button(action: openInWindow) {
+                    railLabel("Open in Window", symbol: "arrow.up.left.and.arrow.down.right", selected: false, hovered: hovered == "window")
+                }
+                .buttonStyle(.plain)
+                .help("Open the same workspace in a resizable window")
+                .accessibilityLabel("Open in Window")
+                .onHover { hovered = $0 ? "window" : nil }
             }
 
             Button(action: openSettings) {

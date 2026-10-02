@@ -52,6 +52,23 @@ final class ContextShelfCaptureService {
         from sourceApplication: NSRunningApplication?,
         completion: @escaping (Result<ContextShelfItem, Error>) -> Void
     ) {
+        readSelection(from: sourceApplication) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let selection):
+                self.finish(selection, completion: completion)
+            case .failure(let error):
+                completion(.failure(error))
+            }
+        }
+    }
+
+    /// Read a user-requested external selection without implicitly adding it to
+    /// Context. Capture-to-Note and Capture-to-Shelf share the same AX/fallback path.
+    func readSelection(
+        from sourceApplication: NSRunningApplication?,
+        completion: @escaping (Result<CapturedSelection, Error>) -> Void
+    ) {
         guard let application = sourceApplication,
               !application.isTerminated else {
             completion(.failure(CaptureError.noSourceApplication))
@@ -65,31 +82,24 @@ final class ContextShelfCaptureService {
         let processIdentifier = application.processIdentifier
         if let accessibilitySelection = try? SelectedTextService.selectionContext(in: processIdentifier),
            !accessibilitySelection.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            finish(
-                CapturedSelection(
-                    text: accessibilitySelection.text,
-                    applicationName: application.localizedName,
-                    bundleIdentifier: application.bundleIdentifier,
-                    captureMethod: .accessibility
-                ),
-                completion: completion
-            )
+            completion(.success(CapturedSelection(
+                text: accessibilitySelection.text,
+                applicationName: application.localizedName,
+                bundleIdentifier: application.bundleIdentifier,
+                captureMethod: .accessibility
+            )))
             return
         }
 
-        KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
-            guard let self else { return }
+        KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { result in
             switch result {
             case .success(let capture):
-                self.finish(
-                    CapturedSelection(
-                        text: capture.text,
-                        applicationName: application.localizedName,
-                        bundleIdentifier: application.bundleIdentifier,
-                        captureMethod: .clipboardFallback
-                    ),
-                    completion: completion
-                )
+                completion(.success(CapturedSelection(
+                    text: capture.text,
+                    applicationName: application.localizedName,
+                    bundleIdentifier: application.bundleIdentifier,
+                    captureMethod: .clipboardFallback
+                )))
             case .failure(let error):
                 completion(.failure(CaptureError.unavailable(error)))
             }

@@ -99,6 +99,35 @@ private func draftTestModel() -> AIChatViewModel {
     #expect(model.draft == "Keep this unsent text.\n\nSummarize.")
 }
 
+@Test @MainActor func workspaceShortcutsPreserveDraftAndRequireUsefulContext() {
+    let model = draftTestModel()
+    model.draft = "Keep my instructions."
+    #expect(!model.prepareWorkspaceAction(.summarize))
+    #expect(model.draft == "Keep my instructions.")
+    #expect(model.prepareWorkspaceAction(.brainstorm))
+    #expect(model.draft.contains("Keep my instructions."))
+    #expect(model.attachments.isEmpty)
+    model.add(AIAttachment(kind: .selection, displayName: "Selection", text: "A useful source."))
+    for action in AIWorkspaceAction.allCases {
+        #expect(model.prepareWorkspaceAction(action))
+        #expect(model.draft.contains(action.instruction))
+    }
+    #expect(model.attachments.count == 1)
+    #expect(model.store.conversations.isEmpty)
+    #expect(!model.canEndTask)
+    let draft = model.draft
+    model.applyVisualFixture(isStreaming: true)
+    for action in AIWorkspaceAction.allCases {
+        #expect(!model.prepareWorkspaceAction(action))
+    }
+    #expect(model.draft == draft)
+}
+
+@Test func workspaceShortcutsHaveUniqueUsefulDefinitions() {
+    #expect(Set(AIWorkspaceAction.allCases.map(\.id)).count == AIWorkspaceAction.allCases.count)
+    #expect(AIWorkspaceAction.allCases.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty && !$0.instruction.isEmpty })
+}
+
 @Test @MainActor func noteActionsCannotMutateAnActiveTask() {
     let model = draftTestModel()
     model.draft = "Untouched"

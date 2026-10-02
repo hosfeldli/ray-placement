@@ -2,8 +2,7 @@ import AppKit
 import RayPlacementWriting
 import SwiftUI
 
-/// A focused, local-only proofreading workspace. All mutations remain reviewable
-/// in the editor; this surface never requires an AI provider or account.
+/// A review-first workspace using the shared API/local writing preference.
 @MainActor
 struct GrammarWorkspaceView: View {
     private let characterLimit = 50_000
@@ -13,6 +12,8 @@ struct GrammarWorkspaceView: View {
     @State private var isChecking = false
     @State private var statusMessage: String?
     @State private var checker = RuleBasedWritingChecker()
+    @ObservedObject private var settings = SettingsStore.shared
+    private var usesAPI: Bool { settings.grammarEngineMode == .externalAPI }
 
     init() {}
 
@@ -94,7 +95,7 @@ struct GrammarWorkspaceView: View {
             acceptedIssueIDs.removeAll()
             statusMessage = nil
         }
-        .onDisappear { checker.cancel() }
+        .onDisappear { checker.cancel(); isChecking = false }
         .accessibilityIdentifier("lima-grammar-workspace")
     }
 
@@ -102,7 +103,7 @@ struct GrammarWorkspaceView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 11) {
                 LimaWorkspaceHeading(title: "Grammar checker",
-                    subtitle: isChecking ? (statusMessage ?? "Checking locally…") : "Review and improve your writing on this Mac.",
+                    subtitle: isChecking ? (statusMessage ?? "Checking writing…") : "Review every change before applying it.",
                     symbol: "textformat.abc", tint: .green)
                 if !compact { localOnlyBadge }
             }
@@ -126,7 +127,13 @@ struct GrammarWorkspaceView: View {
     }
 
     private var localOnlyBadge: some View {
-        Label("LOCAL ONLY", systemImage: "lock.fill")
+        Picker("Writing engine", selection: $settings.grammarEngineMode) {
+            Text("API AI").tag(GrammarEngineMode.externalAPI)
+            Text("Local").tag(GrammarEngineMode.local)
+        }
+            .pickerStyle(.menu)
+            .disabled(isChecking)
+            .help("API sends text to your configured provider; Local keeps it on this Mac")
             .font(.system(size: 9, weight: .bold))
             .tracking(0.6)
             .foregroundStyle(LimaTheme.accentInk)
@@ -181,7 +188,7 @@ struct GrammarWorkspaceView: View {
             .controlSize(.small)
             .disabled(!canCheck)
             .keyboardShortcut(.return, modifiers: [.command])
-            .help("Check locally with Harper · ⌘↩")
+            .help(usesAPI ? "Check with your configured AI provider · ⌘↩" : "Check locally with Harper · ⌘↩")
             .fixedSize(horizontal: true, vertical: false)
         }
     }
@@ -242,15 +249,15 @@ struct GrammarWorkspaceView: View {
 
     private var localStatusCard: some View {
         VStack(alignment: .leading, spacing: 11) {
-            Label("Private by design", systemImage: "lock.shield.fill")
+            Label(usesAPI ? "Your configured AI" : "Local writing", systemImage: usesAPI ? "sparkles" : "lock.shield.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(LimaTheme.textPrimary)
-            Text("Harper checks spelling and grammar on this Mac. Your text is not sent to a service.")
+            Text(usesAPI ? "Text is sent to your configured writing provider using your existing API key. Changes stay reviewable; no edits are applied automatically." : "Harper checks spelling and grammar on this Mac. Your text is not sent to a service.")
                 .font(.system(size: 11))
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             Divider()
-            Label("No account or API key", systemImage: "checkmark.circle")
+            Label(usesAPI ? "Provider and key: Settings → Grammar" : "No API key needed", systemImage: "checkmark.circle")
                 .font(.system(size: 10, weight: .medium))
                 .foregroundStyle(LimaTheme.textSecondary)
             Label("Up to 50,000 characters", systemImage: "text.alignleft")
@@ -317,7 +324,7 @@ struct GrammarWorkspaceView: View {
                         .foregroundStyle(LimaTheme.textPrimary)
                     Text(review.issues.isEmpty
                          ? "No spelling or grammar changes were suggested."
-                         : "\(review.issues.count) local suggestion\(review.issues.count == 1 ? "" : "s") · choose what to keep")
+                         : "\(review.issues.count) suggestion\(review.issues.count == 1 ? "" : "s") · choose what to keep")
                         .font(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -457,8 +464,8 @@ struct GrammarWorkspaceView: View {
         isChecking = true
         review = nil
         acceptedIssueIDs.removeAll()
-        statusMessage = "Checking locally…"
-        checker.checkLocal(sourceText, progress: { message in
+        statusMessage = usesAPI ? "Checking with AI…" : "Checking locally…"
+        checker.check(sourceText, progress: { message in
             statusMessage = message
         }) { result in
             isChecking = false
@@ -466,7 +473,7 @@ struct GrammarWorkspaceView: View {
             case .success(let result):
                 review = result
                 acceptedIssueIDs.removeAll()
-                statusMessage = result.issues.isEmpty ? "No changes suggested." : "Review each local suggestion before applying it."
+                statusMessage = result.issues.isEmpty ? "No changes suggested." : "Review each suggestion before applying it."
             case .failure(let error):
                 statusMessage = error.localizedDescription
             }

@@ -227,6 +227,7 @@ final class NotesStore: ObservableObject {
         let note = MarkdownNote(title: title, content: clean)
         notes.insert(note, at: 0)
         selectedNoteID = note.id
+        lastError = nil
         scheduleSave()
     }
 

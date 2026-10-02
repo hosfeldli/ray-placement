@@ -65,24 +65,36 @@ struct AIWorkspaceInspector: View {
                             .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
+                AIMemoryInspector(model: model, store: model.workspaceStore, tools: tools)
                 if model.hasProviderAPIKey {
                     LimaWorkspaceCard {
                         VStack(alignment: .leading, spacing: 10) {
                             Label("Suggested actions", systemImage: "sparkles").limaFont(.headline)
-                            prompt("Summarize", detail: "Create a concise overview", symbol: "text.alignleft",
-                                   text: "Summarize the attached context clearly and concisely.")
-                            prompt("Improve writing", detail: "Keep the original meaning", symbol: "wand.and.stars",
-                                   text: "Improve the clarity of the attached text while preserving its meaning.")
-                            prompt("Find action items", detail: "Prepare a task list", symbol: "checklist",
-                                   text: "Extract action items from the attached context as a Markdown checklist. Do not invent owners or dates.")
+                            ForEach(AIWorkspaceAction.allCases.filter { $0.requiresSource }) { action in
+                                actionButton(action)
+                            }
+                            if !model.hasWorkspaceActionSource {
+                                Text("Attach context or start a conversation to use these actions.")
+                                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                            }
                             Text("Adds instructions to your draft without sending.")
                                 .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     LimaWorkspaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Quick prompts", systemImage: "text.bubble").limaFont(.headline)
+                            ForEach(AIWorkspaceAction.allCases.filter { !$0.requiresSource }) { action in
+                                actionButton(action)
+                            }
+                        }
+                    }
+                    LimaWorkspaceCard {
                         VStack(alignment: .leading, spacing: 12) {
                             Label("Tools & actions", systemImage: "slider.horizontal.3").limaFont(.headline)
+                            Text("Control existing capabilities for your next message.")
+                                .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                             ForEach(LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)) { group in
                                 Toggle(isOn: Binding(
                                     get: { tools.isEnabled(group) },
@@ -110,10 +122,16 @@ struct AIWorkspaceInspector: View {
         .accessibilityIdentifier("lima-ai-context-inspector")
     }
 
-    private func prompt(_ title: String, detail: String, symbol: String, text: String) -> some View {
-        LimaWorkspaceActionRow(title: title, detail: detail, symbol: symbol) {
-            model.appendDraftPrompt(text)
+    private func actionButton(_ action: AIWorkspaceAction) -> some View {
+        Button { model.prepareWorkspaceAction(action) } label: {
+            Label(action.title, systemImage: action.symbol)
+                .limaFont(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 9))
         }
-        .disabled(model.canEndTask || model.attachments.isEmpty)
+        .buttonStyle(.plain)
+        .disabled(!model.aiEnabled || model.canEndTask || (action.requiresSource && !model.hasWorkspaceActionSource))
+        .help("Prepare instructions in the composer; review before sending")
     }
 }

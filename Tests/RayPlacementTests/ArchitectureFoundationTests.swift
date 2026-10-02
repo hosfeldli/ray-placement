@@ -25,6 +25,29 @@ import Testing
     #expect(registry.recentTasks.first?.detail == "Stopped by user")
 }
 
+@Test @MainActor func stopCurrentTaskCancelsOnlyNewestCancellableWork() {
+    let registry = TaskRegistry()
+    var stopped: [String] = []
+    let older = registry.begin(kind: .aiGeneration, title: "Older", isCancellable: true) {
+        stopped.append("older")
+    }
+    let protected = registry.begin(kind: .update, title: "Update", isCancellable: false)
+    let newer = registry.begin(kind: .workflow, title: "Newer", isCancellable: true) {
+        stopped.append("newer")
+    }
+
+    #expect(registry.cancelMostRecent())
+    #expect(stopped == ["newer"])
+    #expect(registry.task(id: newer)?.state == .cancelled)
+    #expect(registry.task(id: older)?.state == .running)
+    #expect(registry.task(id: protected)?.state == .running)
+
+    #expect(registry.cancelMostRecent())
+    #expect(stopped == ["newer", "older"])
+    #expect(!registry.cancelMostRecent())
+    #expect(registry.activeTasks.map(\.id) == [protected])
+}
+
 @Test @MainActor func crashRecoveryStoresOnlyRecoverableUIIdentifiers() {
     let suite = "dev.liam.lima.tests.recovery.\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!

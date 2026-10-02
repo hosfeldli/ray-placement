@@ -9,6 +9,7 @@ final class ClipboardHistoryService: ObservableObject {
     @Published var lastError: String?
     @Published private(set) var recoveryURL: URL?
 
+    private let persistenceEnabled: Bool
     private var timer: Timer?
     private var lastChangeCount = NSPasteboard.general.changeCount
     private var settingsObserver: NSObjectProtocol?
@@ -25,6 +26,7 @@ final class ClipboardHistoryService: ObservableObject {
     ])
 
     init() {
+        persistenceEnabled = true
         load()
         applySettings()
         settingsObserver = NotificationCenter.default.addObserver(
@@ -34,6 +36,12 @@ final class ClipboardHistoryService: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.applySettings() }
         }
+    }
+
+    /// In-memory fixtures never monitor or write the system clipboard.
+    init(fixtures: [ClipboardEntry]) {
+        persistenceEnabled = false
+        entries = fixtures
     }
 
     deinit {
@@ -55,7 +63,7 @@ final class ClipboardHistoryService: ObservableObject {
         timer?.invalidate()
         timer = nil
         if enforceLimits() { save() }
-        guard SettingsStore.shared.clipboardEnabled else { return }
+        guard persistenceEnabled, !LimaTestEnvironment.isEnabled, SettingsStore.shared.clipboardEnabled else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.captureIfNeeded() }
         }
@@ -133,6 +141,7 @@ final class ClipboardHistoryService: ObservableObject {
     }
 
     private func save() {
+        guard persistenceEnabled else { return }
         let snapshot = entries
         persistenceQueue.async {
             do {

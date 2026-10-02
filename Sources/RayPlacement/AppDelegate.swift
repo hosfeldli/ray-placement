@@ -126,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func showTerminal() { launcher.showDeveloperTerminal() }
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
+    @objc func stopCurrentTask() { TaskRegistry.shared.cancelMostRecent() }
     @objc func quit() { NSApp.terminate(nil) }
 
     private func registerActivationHotkey() {
@@ -501,6 +502,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         menu.addItem(dictate)
+        let stopTask = NSMenuItem(title: "Stop Current Task", action: #selector(stopCurrentTask), keyEquivalent: ".")
+        stopTask.target = self
+        menu.addItem(stopTask)
         let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
         store.target = self
         menu.addItem(store)
@@ -540,6 +544,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dictate = NSMenuItem(title: "Start or Stop Dictation Conversation", action: #selector(toggleNoteDictation), keyEquivalent: "")
         dictate.target = self
         appMenu.addItem(dictate)
+        let stopTask = NSMenuItem(title: "Stop Current Task", action: #selector(stopCurrentTask), keyEquivalent: ".")
+        stopTask.target = self
+        appMenu.addItem(stopTask)
         let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
         store.target = self
         appMenu.addItem(store)

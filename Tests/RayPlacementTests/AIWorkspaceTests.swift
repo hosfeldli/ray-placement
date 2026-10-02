@@ -85,7 +85,7 @@ import Testing
         store: AIConversationStore(fixtures: [conversation]),
         credentials: AIChatCredentialStore(configuration: .fixture),
         mcpStore: MCPServerStore(fixtures: []),
-        nativeToolStore: LimaAIToolStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: AIContextTools.memoryIDs),
         transport: FixtureAITransport.standard,
         workspaceStore: workspace
     )

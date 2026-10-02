@@ -152,10 +152,10 @@ final class StealthGrammarRemoteClient {
         }
     }
 
-    private let session: URLSession
+    private let injectedSession: URLSession?
 
-    init(session: URLSession = .shared) {
-        self.session = session
+    init(session: URLSession? = nil) {
+        self.injectedSession = session
     }
 
     @discardableResult
@@ -166,6 +166,14 @@ final class StealthGrammarRemoteClient {
         guard configuration.provider == .openAICompatible || !configuration.apiKey.isEmpty,
               let request = makeModelsRequest(configuration: configuration) else {
             completion(.failure(ClientError.invalidConfiguration))
+            return nil
+        }
+        let session: URLSession
+        do {
+            try AIRequestPolicy.shared.check()
+            session = try injectedSession ?? AIRequestPolicy.shared.checkedSession()
+        } catch {
+            completion(.failure(error))
             return nil
         }
         let task = session.dataTask(with: request) { data, response, error in
@@ -441,6 +449,14 @@ final class StealthGrammarRemoteClient {
         provider: DeveloperGrammarProvider,
         completion: @escaping (Result<String, Error>) -> Void
     ) -> URLSessionDataTask? {
+        let session: URLSession
+        do {
+            try AIRequestPolicy.shared.check()
+            session = try injectedSession ?? AIRequestPolicy.shared.checkedSession()
+        } catch {
+            completion(.failure(error))
+            return nil
+        }
         let task = session.dataTask(with: request) { data, response, error in
             DispatchQueue.main.async {
                 if let error {

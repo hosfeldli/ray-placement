@@ -38,18 +38,23 @@ final class LimaCompatibilityRegistry {
 
     func actions(for context: LimaContextValue) -> [LimaUseWithAction] {
         var result: [LimaUseWithAction] = []
-        if [.text, .clipboard, .shelfItem, .terminalOutput].contains(context.kind) {
+        if [.text, .note, .clipboard, .shelfItem, .terminalOutput].contains(context.kind) {
+            if AIRequestPolicy.shared.isEnabled {
+                result.append(LimaUseWithAction(id: "proofread", title: "Proofread in AI…", symbol: "text.badge.checkmark", acceptedKinds: [.text, .note, .clipboard, .shelfItem, .terminalOutput], action: .prepareAIContext(context, prompt: "Proofread the attached text. Preserve meaning and show the suggested corrections for review.")))
+            }
             result += [
-                LimaUseWithAction(id: "proofread", title: "Proofread", symbol: "text.badge.checkmark", acceptedKinds: [.text, .clipboard, .shelfItem, .terminalOutput], action: .checkSelectedText),
                 LimaUseWithAction(id: "copy", title: "Copy", symbol: "doc.on.doc", acceptedKinds: Set(LimaContextKind.allCases), action: .copyText(context.value)),
-                LimaUseWithAction(id: "note", title: "Create Note", symbol: "note.text.badge.plus", acceptedKinds: [.text, .clipboard, .shelfItem, .terminalOutput], action: .saveSelectionToQuickNote(context.value))
+                LimaUseWithAction(id: "note", title: "Create Note", symbol: "note.text.badge.plus", acceptedKinds: [.text, .note, .clipboard, .shelfItem, .terminalOutput], action: .saveSelectionToQuickNote(context.value))
             ]
         }
-        if [.text, .clipboard, .shelfItem, .file, .url, .terminalOutput].contains(context.kind) {
-            result.append(LimaUseWithAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", acceptedKinds: Set(LimaContextKind.allCases), action: .system(.addSelectionToShelf)))
+        if [.text, .note, .clipboard, .shelfItem, .file, .url, .terminalOutput].contains(context.kind) {
+            if AIRequestPolicy.shared.isEnabled {
+                result.append(LimaUseWithAction(id: "ai", title: "Ask AI…", symbol: "sparkles", acceptedKinds: Set(LimaContextKind.allCases), action: .prepareAIContext(context, prompt: "")))
+            }
+            result.append(LimaUseWithAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", acceptedKinds: Set(LimaContextKind.allCases), action: .addContextToShelf(context)))
         }
-        if [.file, .url, .application].contains(context.kind) {
-            result.append(LimaUseWithAction(id: "terminal", title: "Use with Terminal", symbol: "terminal", acceptedKinds: [.file, .url, .application], action: .system(.openTerminal)))
+        if context.kind == .file {
+            result.append(LimaUseWithAction(id: "terminal", title: "Open Terminal Here", symbol: "terminal", acceptedKinds: [.file], action: .fileAction(URL(fileURLWithPath: context.value), .openTerminalHere)))
         }
         return result
     }

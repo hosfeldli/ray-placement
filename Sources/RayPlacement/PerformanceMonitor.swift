@@ -29,6 +29,9 @@ final class PerformanceMonitor: ObservableObject {
 
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "dev.liam.lima", category: "performance")
     private var active: [UUID: ActiveOperation] = [:]
+    private let probeQueue = DispatchQueue(label: "dev.liam.lima.main-thread-probe", qos: .utility)
+    private var mainThreadProbe: DispatchSourceTimer?
+    private var mainThreadProbeToken: UUID?
 
     private init() {}
 
@@ -78,7 +81,46 @@ final class PerformanceMonitor: ObservableObject {
         logger.info("Lima operation completed: \(sample.operation, privacy: .public) in \(sample.milliseconds, privacy: .public)ms")
     }
 
+    /// Probe only while AI is working. A delayed callback measures scheduler
+    /// latency on the UI thread without sampling prompts, responses, or tools.
+    func startMainThreadProbe() {
+        guard mainThreadProbe == nil else { return }
+        let token = UUID()
+        mainThreadProbeToken = token
+        let timer = DispatchSource.makeTimerSource(queue: probeQueue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(250))
+        timer.setEventHandler { [weak self] in
+            let queuedAt = Date()
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.mainThreadProbeToken == token else { return }
+                let delay = Date().timeIntervalSince(queuedAt)
+                if delay >= 0.1 {
+                    self.record("Main thread scheduling delay", startedAt: queuedAt, duration: delay)
+                }
+            }
+        }
+        mainThreadProbe = timer
+        timer.resume()
+    }
+
+    func stopMainThreadProbe() {
+        mainThreadProbeToken = nil
+        mainThreadProbe?.cancel()
+        mainThreadProbe = nil
+    }
+
+    /// Safe to copy or export: never includes sample details, request bodies,
+    /// file paths, provider responses, or tool arguments.
+    func redactedTrace() -> String {
+        let formatter = ISO8601DateFormatter()
+        let rows = samples.reversed().map { sample in
+            "\(formatter.string(from: sample.startedAt))  \(sample.operation)  \(sample.milliseconds) ms  \(sample.succeeded ? "OK" : "FAILED")"
+        }
+        return (["Lima Developer Activity · metadata only"] + rows).joined(separator: "\n")
+    }
+
     func clear() {
+        stopMainThreadProbe()
         active = [:]
         samples = []
     }

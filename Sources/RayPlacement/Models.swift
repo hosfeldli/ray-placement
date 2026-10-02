@@ -254,9 +254,13 @@ enum SystemAction {
     case reloadExtensions
     case clearClipboardHistory
     case openNotes
+    case createNote
     case openAIChat
     case openQuickNote
     case toggleNoteDictation
+    case dictateIntoNote
+    case captureClipboardToNote
+    case captureSelectionToNote
     case openTerminal
     case openContextShelf
     case addSelectionToShelf
@@ -276,6 +280,9 @@ enum LauncherFileAction: String, CaseIterable {
     case reveal
     case copyPath
     case openTerminalHere
+    case openInCode
+    case describeWithAI
+    case askAIAboutFile
     case addToShelf
     case sendToNote
 
@@ -286,6 +293,9 @@ enum LauncherFileAction: String, CaseIterable {
         case .reveal: return "Reveal"
         case .copyPath: return "Copy Path"
         case .openTerminalHere: return "Open Terminal Here"
+        case .openInCode: return "Open in Code"
+        case .describeWithAI: return "Describe with AI…"
+        case .askAIAboutFile: return "Ask AI About File…"
         case .addToShelf: return "Add to Shelf"
         case .sendToNote: return "Send to Note"
         }
@@ -298,6 +308,9 @@ enum LauncherFileAction: String, CaseIterable {
         case .reveal: return "finder"
         case .copyPath: return "doc.on.doc"
         case .openTerminalHere: return "terminal"
+        case .openInCode: return "chevron.left.forwardslash.chevron.right"
+        case .describeWithAI: return "text.magnifyingglass"
+        case .askAIAboutFile: return "sparkles"
         case .addToShelf: return "tray.and.arrow.down"
         case .sendToNote: return "note.text.badge.plus"
         }
@@ -331,6 +344,8 @@ enum LauncherAction {
     case system(SystemAction)
     case noOp
     case useWith(LimaContextValue)
+    case prepareAIContext(LimaContextValue, prompt: String)
+    case addContextToShelf(LimaContextValue)
     case toggleFavorite(String)
     case forgetRanking(String)
 }

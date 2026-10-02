@@ -23,6 +23,7 @@ final class LiveAppleSpeechTranscriber {
 
     func start(locale: Locale = .current) throws {
         cancel()
+        try AIRequestPolicy.shared.check()
         guard let recognizer = SFSpeechRecognizer(locale: locale),
               recognizer.isAvailable,
               recognizer.supportsOnDeviceRecognition else {

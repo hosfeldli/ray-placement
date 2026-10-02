@@ -2,8 +2,8 @@ import Combine
 import Foundation
 
 /// A user-owned, local-only workspace for organizing AI chats and saving durable
-/// context. Nothing is created or inferred automatically: projects and memories
-/// exist only after the user explicitly saves them.
+/// context. Enabled memory tools can maintain durable user-supplied preferences;
+/// all entries remain visible, editable, and removable in the workspace.
 struct AIProject: Codable, Identifiable, Hashable, Sendable {
     var id: UUID
     var name: String
@@ -184,6 +184,19 @@ final class AIWorkspaceStore: ObservableObject {
         lastError = nil
         scheduleSave()
         return memory
+    }
+
+    @discardableResult
+    func updateMemory(_ id: UUID, title: String, content: String) -> AIMemory? {
+        guard let index = memories.firstIndex(where: { $0.id == id }) else { return nil }
+        let content = cleaned(content, maximum: Self.maximumMemoryCharacters)
+        guard !content.isEmpty else { return nil }
+        memories[index].title = cleaned(title, maximum: Self.maximumMemoryTitleCharacters)
+        memories[index].content = content
+        memories[index].updatedAt = Date()
+        lastError = nil
+        scheduleSave()
+        return memories[index]
     }
 
     func deleteMemory(_ id: UUID) {

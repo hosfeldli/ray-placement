@@ -33,6 +33,7 @@ private final class WorkspacePresentationModel: ObservableObject {
     }
     @Published var focusDictationEditor = false
     @Published var notesFocusMode = false
+    @Published var staysOnTop = false
     @Published var pinnedReferenceIDs: [UUID] = []
 
     init(mode: NotesWindowMode) {
@@ -63,6 +64,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private static let windowModeKey = "notesWindowMode"
     private static let dockWidthKey = "notesDockWidth"
     private static let workspaceFrameKey = "notesWorkspaceFrame"
+    private static let staysOnTopKey = "notesWorkspaceStaysOnTop"
     private static let quickNoteTargetIDKey = "quickNoteTargetID"
     private static let quickNoteTargetModeKey = "quickNoteTargetMode"
 
@@ -140,7 +142,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.presentation = WorkspacePresentationModel(
             mode: savedMode == .dockedLeft || savedMode == .dockedRight ? savedMode! : .workspace
         )
+        self.presentation.staysOnTop = LimaTestEnvironment.userDefaults.object(forKey: Self.staysOnTopKey) as? Bool
+            ?? self.presentation.mode.isDocked
         super.init()
+        WorkspaceProfileStore.shared.onActivation = { [weak self] in
+            self?.restoreWorkspaceSelection()
+        }
         self.dictation.targetProvider = { [weak conversations] in
             .conversation(conversations?.currentConversationID ?? conversations?.selectedConversationID ?? UUID())
         }
@@ -340,13 +347,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     private func presentDocked(_ edge: NotesDockEdge) {
-        selectQuickNoteTarget()
-        if let window {
-            LimaSurfaceCoordinator.shared.present(.workspace, window: window, module: .notes, activate: false)
-        }
-        presentation.activeModule = .notes
+        restoreWorkspaceSelection()
         dock(edge)
-        markQuickNoteTarget()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -430,6 +432,18 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    /// Route a root Search result to an exact saved AI chat before presenting
+    /// the workspace, so restoration cannot replace it with a stale selection.
+    @discardableResult
+    func selectAIConversation(_ id: UUID) -> Bool {
+        guard aiChatModel.store.conversation(id: id) != nil, !aiChatModel.canEndTask else { return false }
+        aiChatModel.select(id)
+        guard aiChatModel.selectedConversationID == id else { return false }
+        selectModule(.ai)
+        WorkspaceStateRegistry.shared.update { $0.selectedAIConversationID = id }
+        return true
+    }
+
     /// Presents the exact conversation associated with the active dictation
     /// session. This intentionally does not use the historically selected row.
     func presentDictationConversation(id: UUID) {
@@ -454,6 +468,38 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         present()
         guard dictation.phase == .idle || dictation.phase == .recording else { return }
         dictation.performPrimaryAction()
+    }
+
+    /// Explicit Capture destination: the current note stays visible while speech
+    /// is recorded, and committed transcript deltas append to that note.
+    @discardableResult
+    func presentAndToggleNoteCapture() -> Bool {
+        guard AIRequestPolicy.shared.isEnabled else {
+            dictation.lastError = AIRequestPolicy.disabledMessage
+            return false
+        }
+        if dictation.phase == .recording || dictation.phase == .paused {
+            guard case .note(let identifier) = dictation.currentTarget else {
+                dictation.lastError = "Finish the current dictation before capturing into a note."
+                return false
+            }
+            store.selectNote(identifier)
+            present(module: .notes)
+            dictation.performPrimaryAction()
+            return true
+        }
+        guard dictation.phase == .idle || dictation.phase == .completed || dictation.phase == .failed else {
+            dictation.lastError = "Wait for the current dictation task to finish."
+            return false
+        }
+        if store.selectedNoteID == nil { store.createNote() }
+        guard let identifier = store.selectedNoteID else {
+            dictation.lastError = store.lastError ?? "A note could not be created."
+            return false
+        }
+        present(module: .notes)
+        dictation.performPrimaryAction(target: .note(identifier))
+        return true
     }
 
     func shutdown() {
@@ -537,10 +583,12 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             reloadExtensions: reloadExtensions,
             openCommandSearch: onOpenCommandSearch,
             selectModule: { [weak self] in self?.selectModule($0) },
+            switchWorkspaceProfile: { WorkspaceProfileStore.shared.activate($0) },
             presentation: presentation,
             dockLeft: { [weak self] in self?.dock(.left) },
             dockRight: { [weak self] in self?.dock(.right) },
             restoreWorkspace: { [weak self] in self?.restoreWorkspace() },
+            setStaysOnTop: { [weak self] in self?.setStaysOnTop($0) },
             openSettings: onOpenSettings,
             setQuickNoteTarget: { [weak self] id in self?.setQuickNoteTarget(id) },
             setQuickNoteTargetMode: { [weak self] mode in self?.setQuickNoteTargetMode(mode) },
@@ -557,7 +605,9 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if presentation.mode == .workspace {
             rememberWorkspaceFrame(window.frame)
         }
-        if store.selectedNote == nil { selectQuickNoteTarget() }
+        if presentation.activeModule == .notes, store.selectedNote == nil {
+            selectQuickNoteTarget()
+        }
         applyPresentationMode(edge == .left ? .dockedLeft : .dockedRight, to: window, animated: true)
         LimaSurfaceCoordinator.shared.present(
             .workspace,
@@ -566,8 +616,19 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             activate: false,
             remembersFrame: false
         )
-        markQuickNoteTarget()
+        if presentation.activeModule == .notes { markQuickNoteTarget() }
         window.makeKeyAndOrderFront(nil)
+    }
+
+    private func setStaysOnTop(_ staysOnTop: Bool) {
+        presentation.staysOnTop = staysOnTop
+        LimaTestEnvironment.userDefaults.set(staysOnTop, forKey: Self.staysOnTopKey)
+        guard let window else { return }
+        window.level = staysOnTop ? .floating : .normal
+        if presentation.mode == .workspace {
+            window.collectionBehavior = staysOnTop
+                ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.managed]
+        }
     }
 
     private func restoreWorkspace() {
@@ -581,14 +642,18 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 
     private func applyPresentationMode(_ mode: NotesWindowMode, to window: NSWindow, animated: Bool) {
         presentation.setMode(mode)
+        if LimaTestEnvironment.userDefaults.object(forKey: Self.staysOnTopKey) == nil {
+            presentation.staysOnTop = mode.isDocked
+        }
         LimaTestEnvironment.userDefaults.set(mode.rawValue, forKey: Self.windowModeKey)
 
         switch mode {
         case .workspace:
             setWindowControls(hidden: false, on: window)
             window.isMovable = true
-            window.level = .normal
-            window.collectionBehavior = [.managed]
+            window.level = presentation.staysOnTop ? .floating : .normal
+            window.collectionBehavior = presentation.staysOnTop
+                ? [.canJoinAllSpaces, .fullScreenAuxiliary] : [.managed]
             window.minSize = NSSize(width: 800, height: 500)
             window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
             let target = workspaceFrame ?? initialWorkspaceFrame(for: window.screen)
@@ -596,7 +661,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         case .dockedLeft, .dockedRight:
             setWindowControls(hidden: false, on: window)
             window.isMovable = true
-            window.level = .floating
+            window.level = presentation.staysOnTop ? .floating : .normal
             window.hidesOnDeactivate = false
             window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             window.minSize = NSSize(width: NotesWindowLayout.minimumDockWidth, height: 480)
@@ -666,12 +731,15 @@ private struct WorkspaceView: View {
     let reloadExtensions: () -> Void
     let openCommandSearch: (String) -> Void
     let selectModule: (LimaWorkspaceModule) -> Void
+    var switchWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
     @ObservedObject var presentation: WorkspacePresentationModel
+    @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var contextShelf = ContextShelfStore.shared
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
+    let setStaysOnTop: (Bool) -> Void
     let openSettings: () -> Void
     let setQuickNoteTarget: (UUID) -> Void
     let setQuickNoteTargetMode: (QuickNoteTargetMode) -> Void
@@ -697,7 +765,6 @@ private struct WorkspaceView: View {
     @State private var showNoteInspector = false
     @State private var pendingInspectorAction: (() -> Void)?
     @State private var showTemplateEditor = false
-    @State private var showContextShelf = false
     @State private var editingTemplate: MarkdownUserTemplate?
     @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
@@ -728,7 +795,13 @@ private struct WorkspaceView: View {
                     previous: presentation.navigation.previous,
                     sizeClass: sizeClass,
                     select: selectModule,
-                    openSettings: openSettings
+                    openSettings: openSettings,
+                    isDocked: presentation.mode.isDocked,
+                    openInWindow: restoreWorkspace,
+                    workspaceProfiles: switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
+                    activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
+                    selectWorkspaceProfile: switchWorkspaceProfile,
+                    createWorkspaceProfile: switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
                 )
                 Rectangle()
                     .fill(LimaDesign.separator)
@@ -845,10 +918,6 @@ private struct WorkspaceView: View {
                 editingTemplate = nil
             }
         }
-        .sheet(isPresented: $showContextShelf) {
-            ContextShelfView(store: contextShelf)
-                .frame(minWidth: 420, idealWidth: 540, minHeight: 420, idealHeight: 620)
-        }
         .sheet(item: $compareRevision) { revision in
             RevisionDiffSheet(current: store.selectedNote?.content ?? "", revision: revision)
         }
@@ -863,6 +932,9 @@ private struct WorkspaceView: View {
         }
         .onChange(of: conversations.selectedConversationID) { id in
             WorkspaceStateRegistry.shared.update { $0.selectedDictationID = id }
+        }
+        .onChange(of: aiChatModel.selectedConversationID) { id in
+            WorkspaceStateRegistry.shared.update { $0.selectedAIConversationID = id }
         }
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.sidebarVisible)
         .limaAnimation(LimaDesign.spring(0.34), value: presentation.mode)
@@ -919,8 +991,15 @@ private struct WorkspaceView: View {
                     Divider()
                 }
                 Section("Window") {
+                    if presentation.mode.isDocked {
+                        Button("Open in Window", action: restoreWorkspace)
+                    }
                     Button("Dock Workspace Left", action: dockLeft)
                     Button("Dock Workspace Right", action: dockRight)
+                    Toggle("Keep on Top", isOn: Binding(
+                        get: { presentation.staysOnTop },
+                        set: setStaysOnTop
+                    ))
                     if presentation.activeModule == .notes {
                         Button(
                             presentation.notesFocusMode ? "Exit Focus Mode" : "Focus Mode",
@@ -953,7 +1032,7 @@ private struct WorkspaceView: View {
                     HomeWorkspaceView(
                         store: store,
                         open: selectModule,
-                        openShelf: { showContextShelf = true },
+                        openShelf: { selectModule(.context) },
                         openCommandSearch: openCommandSearch
                     )
                 case .notes:
@@ -972,6 +1051,9 @@ private struct WorkspaceView: View {
                             noteInspector.frame(width: LimaWorkspaceMetrics.inspectorWidth)
                         }
                     }
+                case .context:
+                    ContextShelfView(store: contextShelf)
+                        .background(LimaTheme.surfacePrimary)
                 case .ai:
                     AIChatWorkspaceView(
                         model: aiChatModel,
@@ -2652,7 +2734,7 @@ enum LimaMockupWorkspaceFixtures {
             extensionStoreModel: ExtensionStoreModel(onInstalled: {}),
             reloadExtensions: {}, openCommandSearch: { _ in },
             selectModule: { presentation.activeModule = $0 }, presentation: presentation,
-            dockLeft: {}, dockRight: {}, restoreWorkspace: {}, openSettings: {},
+            dockLeft: {}, dockRight: {}, restoreWorkspace: {}, setStaysOnTop: { _ in }, openSettings: {},
             setQuickNoteTarget: { _ in }, setQuickNoteTargetMode: { _ in },
             quickNoteTargetMode: { .lastQuickNote }, togglePinnedReference: { _ in },
             selectPinnedReference: { _ in }, toggleNotesFocusMode: { presentation.notesFocusMode.toggle() }

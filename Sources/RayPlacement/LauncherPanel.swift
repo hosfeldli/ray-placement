@@ -5,6 +5,14 @@ import AppKit
 enum LauncherPanelLayout {
     static let terminalSize = NSSize(width: 920, height: 620)
 
+    static func searchSize(density: AppInterfaceDensity) -> NSSize {
+        switch density {
+        case .compact: return NSSize(width: 940, height: 640)
+        case .balanced: return NSSize(width: 1040, height: 700)
+        case .comfortable: return NSSize(width: 1140, height: 740)
+        }
+    }
+
     static func size(
         for mode: LauncherMode,
         density: AppInterfaceDensity,
@@ -16,16 +24,11 @@ enum LauncherPanelLayout {
         let width = density.launcherWidth
         let standardHeight = density.launcherHeight
         if mode == .contextShelf { return NSSize(width: width, height: min(640, max(standardHeight, 520))) }
-        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
-
         switch mode {
-        case .root where cleanQuery.isEmpty && resultCount <= 6:
-            // Search, a handful of quick actions, and the quiet footer fit in
-            // a compact panel without leaving the screenshot-sized void that
-            // the old fixed-height launcher created. Grow only as rows are
-            // added so six idle actions do not get clipped by the compact size.
-            let idleHeight = 176 + CGFloat(resultCount) * 39
-            return NSSize(width: width, height: min(standardHeight, max(286, idleHeight)))
+        case .root:
+            // Keep Search stable as results change; the controller clamps to the
+            // current screen and the view collapses its optional preview and rail.
+            return searchSize(density: density)
         case .output, .writingReview:
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))
         case .extensionSurface(let session):

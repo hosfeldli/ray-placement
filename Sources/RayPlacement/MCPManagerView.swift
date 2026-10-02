@@ -119,22 +119,28 @@ private struct MCPManagerView: View {
                 Divider()
                 Text("Tools and permissions").limaFont(.headline)
                 if server.tools.isEmpty {
-                    Text("Test the connection to discover tools. Read tools run automatically; write and destructive tools require approval.")
+                    Text("Test the connection to discover tools. Only tools explicitly declared read-only are available to AI; other tools stay blocked.")
                         .limaFont(.caption).foregroundStyle(.secondary)
                 } else {
+                    Text("AI can use only tools this server explicitly declares read-only. Rediscover tools to review older connections; other tools stay blocked.")
+                        .limaFont(.caption).foregroundStyle(.secondary)
                     ScrollView {
                         VStack(alignment: .leading, spacing: 6) {
                             ForEach(server.tools) { tool in
                                 HStack {
                                     Toggle("", isOn: Binding(get: { toolIsEnabled(tool, server: server) }, set: { setToolEnabled(tool, enabled: $0, server: server) }))
                                         .labelsHidden()
+                                        .disabled(tool.risk != .read || tool.declaredReadOnly != true)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(tool.displayTitle).limaFont(.callout)
                                         Text("\(tool.risk.title) · \(tool.description ?? "No description")")
                                             .limaFont(.caption2).foregroundStyle(LimaColors.secondaryText).lineLimit(2)
                                     }
                                     Spacer()
-                                    if tool.risk.requiresApproval { Label("Ask", systemImage: "hand.raised") .limaFont(.caption2).foregroundStyle(LimaColors.warning) }
+                                    if tool.risk != .read || tool.declaredReadOnly != true {
+                                        Label("Blocked for AI", systemImage: "hand.raised.slash")
+                                            .limaFont(.caption2).foregroundStyle(LimaColors.warning)
+                                    }
                                 }
                                 .padding(8)
                                 .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))

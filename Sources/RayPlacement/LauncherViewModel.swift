@@ -20,6 +20,7 @@ final class LauncherViewModel: ObservableObject {
     @Published var query = "" {
         didSet {
             if oldValue != query {
+                closeActionPanel()
                 selectedIndex = 0
                 if mode == .files {
                     SurfaceStateCache.shared.set(.string(query), for: "files", key: "query")
@@ -50,6 +51,7 @@ final class LauncherViewModel: ObservableObject {
     @Published private(set) var timezoneDidCopy = false
     @Published private(set) var contextualSelectionText: String?
     @Published private(set) var actionPanelItem: LauncherItem?
+    @Published private(set) var actionPanelSelectedIndex = 0
 
     weak var delegate: LauncherViewModelDelegate?
 
@@ -63,6 +65,9 @@ final class LauncherViewModel: ObservableObject {
     private var applications: [ApplicationRecord] = []
     @Published private(set) var extensionCommands: [LoadedExtensionCommand] = []
     private var fileResults: [URL] = []
+    private var rootFileResults: [URL] = []
+    private var rootFileSearchPending = false
+    private var rootUniversalSearchPending = false
     private var manifestExtensionIssues: [ExtensionIssue] = []
     private var hotkeyExtensionIssues: [ExtensionIssue] = []
     private var searchWorkItem: DispatchWorkItem?
@@ -324,7 +329,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     var selectedFileURL: URL? {
-        guard mode == .files, let item = selectedItem else { return nil }
+        guard (mode == .files || mode == .root), let item = selectedItem else { return nil }
         switch item.action {
         case .openFile(let url), .fileAction(let url, _), .revealFile(let url): return url
         default: return nil
@@ -336,6 +341,9 @@ final class LauncherViewModel: ObservableObject {
         universalSearchTask?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
+        rootFileSearchPending = false
+        rootUniversalSearchPending = false
+        rootFileResults = []
         mode = newMode
         query = ""
         selectedIndex = 0
@@ -476,24 +484,50 @@ final class LauncherViewModel: ObservableObject {
     func openActionPanel(for item: LauncherItem? = nil) {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         guard let item = item ?? selectedItem, isActionable(item) else { return }
+        actionPanelSelectedIndex = 0
         actionPanelItem = item
         LauncherPerformanceDiagnostics.shared.mark("action-panel-open", startedAt: startedAt, budget: 50)
     }
 
-    func closeActionPanel() { actionPanelItem = nil }
+    func closeActionPanel() {
+        actionPanelItem = nil
+        actionPanelSelectedIndex = 0
+    }
+
+    func moveActionPanelSelection(by delta: Int) {
+        guard let item = actionPanelItem else { return }
+        let count = actionPanelActions(for: item).count
+        guard count > 0 else { return }
+        actionPanelSelectedIndex = min(max(actionPanelSelectedIndex + delta, 0), count - 1)
+    }
+
+    func executeSelectedPanelAction() {
+        guard let item = actionPanelItem else { return }
+        let actions = actionPanelActions(for: item)
+        guard actions.indices.contains(actionPanelSelectedIndex) else { return }
+        executeAction(actions[actionPanelSelectedIndex])
+    }
 
     func actionPanelActions(for item: LauncherItem) -> [LauncherItemAction] {
         switch item.action {
         case .fileAction(let url, _):
-            return [
+            var actions = [
                 LauncherItemAction(id: "open", title: "Open", symbol: "arrow.up.forward.app", shortcut: nil, role: .primary, action: .fileAction(url, .open)),
                 LauncherItemAction(id: "quick-look", title: "Quick Look", symbol: "eye", shortcut: nil, role: .secondary, action: .fileAction(url, .quickLook)),
                 LauncherItemAction(id: "reveal", title: "Reveal in Finder", symbol: "finder", shortcut: nil, role: .secondary, action: .fileAction(url, .reveal)),
                 LauncherItemAction(id: "copy-path", title: "Copy Path", symbol: "doc.on.doc", shortcut: nil, role: .secondary, action: .fileAction(url, .copyPath)),
-                LauncherItemAction(id: "terminal", title: "Open Terminal Here", symbol: "terminal", shortcut: nil, role: .secondary, action: .fileAction(url, .openTerminalHere)),
-                LauncherItemAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", shortcut: nil, role: .secondary, action: .fileAction(url, .addToShelf)),
-                LauncherItemAction(id: "note", title: "Append to Note", symbol: "note.text.badge.plus", shortcut: nil, role: .secondary, action: .fileAction(url, .sendToNote))
+                LauncherItemAction(id: "terminal", title: "Open Terminal Here", symbol: "terminal", shortcut: nil, role: .secondary, action: .fileAction(url, .openTerminalHere))
             ]
+            if ["com.microsoft.VSCode", "com.visualstudio.code.oss"].contains(where: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }) {
+                actions.append(LauncherItemAction(id: "code", title: "Open in Code", symbol: "chevron.left.forwardslash.chevron.right", shortcut: nil, role: .secondary, action: .fileAction(url, .openInCode)))
+            }
+            if AIRequestPolicy.shared.isEnabled && AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url)) {
+                actions.append(LauncherItemAction(id: "describe-ai", title: "Describe with AI…", symbol: "text.magnifyingglass", shortcut: nil, role: .secondary, action: .fileAction(url, .describeWithAI)))
+                actions.append(LauncherItemAction(id: "ask-ai", title: "Ask AI About File…", symbol: "sparkles", shortcut: nil, role: .secondary, action: .fileAction(url, .askAIAboutFile)))
+            }
+            actions.append(LauncherItemAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", shortcut: nil, role: .secondary, action: .fileAction(url, .addToShelf)))
+            actions.append(LauncherItemAction(id: "note", title: "Append to Note", symbol: "note.text.badge.plus", shortcut: nil, role: .secondary, action: .fileAction(url, .sendToNote)))
+            return actions
         case .launchApplication(let url):
             let name = item.title
             guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL == url || $0.localizedName == name }) else {
@@ -506,14 +540,12 @@ final class LauncherViewModel: ObservableObject {
                 LauncherItemAction(id: "force-quit", title: "Force Quit", symbol: "exclamationmark.octagon", shortcut: nil, role: .destructive, action: .applicationOperation(operation: "forceQuit", processIdentifier: app.processIdentifier, name: name))
             ]
         default:
-            var actions = [LauncherItemAction(id: "run", title: "Run", symbol: "play.fill", shortcut: "↩", role: .primary, action: item.action)]
+            var actions = [LauncherItemAction(id: "run", title: LauncherSearchDesign.primaryTitle(for: item), symbol: "play.fill", shortcut: "↩", role: .primary, action: item.action)]
             if let context = contextValue(for: item) {
-                actions.append(LauncherItemAction(id: "use-with", title: "Use With…", symbol: "arrow.triangle.branch", shortcut: nil, role: .secondary, action: .useWith(context)))
                 actions.append(contentsOf: LimaCompatibilityRegistry.shared.actions(for: context).map {
                     LauncherItemAction(id: "use-with.\($0.id)", title: $0.title, symbol: $0.symbol, shortcut: nil, role: .secondary, action: $0.action)
                 })
             }
-            actions.append(LauncherItemAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", shortcut: nil, role: .secondary, action: .system(.addSelectionToShelf)))
             let favoriteTitle = CommandManager.shared.isFavorite(item.id) ? "Unpin from Top" : "Pin to Top"
             actions.append(LauncherItemAction(id: "favorite", title: favoriteTitle, symbol: CommandManager.shared.isFavorite(item.id) ? "pin.slash" : "pin", shortcut: nil, role: .secondary, action: .toggleFavorite(item.id)))
             actions.append(LauncherItemAction(id: "forget", title: "Forget Ranking", symbol: "clock.badge.xmark", shortcut: nil, role: .destructive, action: .forgetRanking(item.id)))
@@ -530,11 +562,15 @@ final class LauncherViewModel: ObservableObject {
         case .openURL(let url):
             return LimaContextValue(kind: .url, title: item.title, value: url.absoluteString)
         case .universalSearch(let result):
-            let kind: LimaContextKind = result.kind == .note ? .note : .text
-            return LimaContextValue(kind: kind, title: result.title, value: result.subtitle)
+            if result.kind == .dictation,
+               let id = UUID(uuidString: String(result.id.dropFirst("dictation:".count))),
+               let conversation = DictationConversationStore.shared.conversations.first(where: { $0.id == id }) {
+                return LimaContextValue(id: id, kind: .text, title: result.title, value: conversation.transcript)
+            }
+            return nil
         case .note(let id):
             guard let note = NotesStore.shared.notes.first(where: { $0.id == id }) else { return nil }
-            return LimaContextValue(kind: .note, title: note.title, value: note.content)
+            return LimaContextValue(id: note.id, kind: .note, title: note.title, value: note.content)
         case .shelfItem(let id):
             guard let shelf = ContextShelfStore.shared.items.first(where: { $0.id == id }) else { return nil }
             return LimaContextValue(kind: .shelfItem, title: shelf.title, value: shelf.textValue ?? shelf.preview)
@@ -680,13 +716,40 @@ final class LauncherViewModel: ObservableObject {
         universalSearchGeneration += 1
         let generation = universalSearchGeneration
         universalSearchTask?.cancel()
+        searchWorkItem?.cancel()
+        fileSearch.cancel()
         universalResults = []
+        rootFileResults = []
+        rootFileSearchPending = false
+        rootUniversalSearchPending = false
         results = rootResults()
         guard !cleanQuery.isEmpty else {
             isSearching = false
             return
         }
+        let parsed = UniversalSearchCoordinator.parse(cleanQuery)
+        let shouldSearchFiles = (parsed.prefix == nil || parsed.prefix == "file") && parsed.query.count >= 2
+        rootUniversalSearchPending = true
+        rootFileSearchPending = shouldSearchFiles
         isSearching = true
+        if shouldSearchFiles {
+            let request = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.fileSearch.search(parsed.query) { [weak self] urls in
+                    guard let self, self.mode == .root,
+                          self.universalSearchGeneration == generation,
+                          self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
+                    let selectedID = self.selectedItem?.id
+                    self.rootFileResults = Array(urls.prefix(12))
+                    self.rootFileSearchPending = false
+                    self.results = self.rootResults()
+                    self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+                    self.isSearching = self.rootUniversalSearchPending
+                }
+            }
+            searchWorkItem = request
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: request)
+        }
         let searchStartedAt = Date()
         universalSearchTask = Task { [weak self] in
             let found = await UniversalSearchCoordinator.shared.search(cleanQuery)
@@ -706,9 +769,12 @@ final class LauncherViewModel: ObservableObject {
                       self.mode == .root,
                       self.universalSearchGeneration == generation,
                       self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
+                let selectedID = self.selectedItem?.id
                 self.universalResults = found
                 self.results = self.rootResults()
-                self.isSearching = false
+                self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+                self.rootUniversalSearchPending = false
+                self.isSearching = self.rootFileSearchPending
             }
         }
     }
@@ -718,17 +784,22 @@ final class LauncherViewModel: ObservableObject {
         switch result.kind {
         case .note: icon = .system("note.text")
         case .dictation: icon = .system("waveform")
+        case .aiConversation: icon = .system("bubble.left.and.bubble.right")
         case .terminal: icon = .system("terminal.fill")
         case .command: icon = .system("arrow.trianglehead.2.clockwise.rotate.90")
+        case .workspace: icon = .system("square.stack.3d.up")
+        case .context: icon = .system("tray.full")
+        case .clipboard: icon = .system("clipboard")
         default: icon = .system("magnifyingglass")
         }
         return LauncherItem(
-            id: result.id,
+            id: result.id.replacingOccurrences(of: ":", with: "."),
             title: result.title,
             subtitle: result.subtitle,
             icon: icon,
             keywords: result.keywords,
-            action: .universalSearch(result),
+            action: result.kind == .note && UUID(uuidString: String(result.id.dropFirst("note:".count))) != nil
+                ? .note(UUID(uuidString: String(result.id.dropFirst("note:".count)))!) : .universalSearch(result),
             accessory: "Open"
         )
     }
@@ -759,8 +830,30 @@ final class LauncherViewModel: ObservableObject {
         if let selection = contextualSelectionText {
             items.insert(contentsOf: contextualItems(for: selection), at: 0)
         }
-        let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = UniversalSearchCoordinator.parse(query)
+        let cleanQuery = parsed.query
+        if let scope = parsed.prefix {
+            switch scope {
+            case "app": items = applicationItems()
+            case "file": items = []
+            case "command": items = builtInItems() + extensionItems() + macroItems()
+            case "clipboard":
+                items = clipboard.entries.compactMap { entry in
+                    guard cleanQuery.isEmpty || FuzzyMatcher.score(entry.text, query: cleanQuery) != nil else { return nil }
+                    return LauncherItem(id: "clipboard.\(entry.id)", title: String(entry.text.prefix(100)),
+                        subtitle: "Clipboard history", icon: .system("clipboard"), keywords: [],
+                        action: .clipboardEntry(entry.id), accessory: "Copy")
+                }
+            default: items = []
+            }
+        }
+        items += rootFileResults.map(fileItem)
+        let localIDs = Set(items.map(\.id))
+        items += universalResults.map(universalItem).filter { !localIDs.contains($0.id) }
         searchIndex.rebuild(items: items)
+        if parsed.prefix != nil && cleanQuery.isEmpty {
+            return Array(items.prefix(24))
+        }
 
         // Deliberately undocumented developer gate. The configuration item is
         // not part of the normal catalog or searchable text.
@@ -776,17 +869,19 @@ final class LauncherViewModel: ObservableObject {
             )]
         }
 
-        if !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
+        if parsed.prefix == nil, !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
             items.insert(result, at: 0)
         }
-        if !cleanQuery.isEmpty {
+        if parsed.prefix == nil, !cleanQuery.isEmpty {
             items.append(contentsOf: directInvocationItems(for: cleanQuery))
         }
 
         guard !cleanQuery.isEmpty else {
             let priority = [
-                "builtin.quick-note", "builtin.notes", "builtin.search-files", "builtin.terminal",
-                "extension.local.system-controls.force-quit-application", "builtin.clipboard",
+                "builtin.notes", "builtin.capture-clipboard-note", "builtin.capture-selection-note",
+                "builtin.capture-dictation-note", "builtin.note-dictation", "builtin.clipboard", "builtin.ai-chat",
+                "builtin.search-files", "builtin.quick-note", "builtin.terminal",
+                "extension.local.system-controls.force-quit-application",
                 "extension.local.window-management.left-half", "extension.local.window-management.right-half",
                 "extension.local.window-management.maximize", "builtin.command-history", "builtin.extensions-folder",
                 "builtin.settings", "builtin.reload-extensions"
@@ -818,8 +913,20 @@ final class LauncherViewModel: ObservableObject {
             return Array(unique.prefix(11))
         }
 
+        let clipboardScores = Dictionary(clipboard.entries.compactMap { entry -> (UUID, Double)? in
+            guard let score = FuzzyMatcher.score(entry.text, query: cleanQuery) else { return nil }
+            return (entry.id, 14_000 + score)
+        }, uniquingKeysWith: max)
         let ranked = items.compactMap { item -> (LauncherItem, Double)? in
-            guard let baseScore = searchScore(for: item, query: cleanQuery) else { return nil }
+            // Provider matches may come from full note/transcript content, not the preview.
+            let providerScore = universalResults.first(where: { $0.id.replacingOccurrences(of: ":", with: ".") == item.id }).map { 14_000 + $0.score }
+            let contentScore: Double?
+            if case .clipboardEntry(let id) = item.action {
+                contentScore = clipboardScores[id]
+            } else {
+                contentScore = providerScore
+            }
+            guard let baseScore = searchScore(for: item, query: cleanQuery) ?? contentScore else { return nil }
             let provenance = aliasProvenance(for: item, query: cleanQuery)
             var rankedItem = item
             rankedItem.aliasKind = provenance.kind
@@ -831,15 +938,13 @@ final class LauncherViewModel: ObservableObject {
             if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
             return first.1 > second.1
         }
-        .prefix(12)
+        .prefix(24)
         .map(\.0)
         if ranked.isEmpty && universalResults.isEmpty {
-            return [placeholderItem(id: "root.empty", title: "No results", subtitle: "Try another app or command name", icon: "magnifyingglass")]
+            let subtitle = isSearching ? "Searching Spotlight and your workspace…" : "Try another app, file, or command name"
+            return [placeholderItem(id: "root.empty", title: isSearching ? "Searching…" : "No results", subtitle: subtitle, icon: "magnifyingglass")]
         }
-        let local = ranked
-        let localIDs = Set(local.map(\.id))
-        let universal = universalResults.filter { !localIDs.contains($0.id) }.map(universalItem)
-        return Array((local + universal).prefix(24))
+        return Array(ranked.prefix(24))
     }
 
     private func normalizedSearchTokens(_ value: String) -> [String] {
@@ -1326,7 +1431,7 @@ final class LauncherViewModel: ObservableObject {
         let shelf = ContextShelfStore.shared.items.prefix(30).map { item in
             LauncherItem(id: "shelf.\(item.id.uuidString)", title: item.title, subtitle: item.preview, icon: .system("tray.full"), keywords: ["shelf", item.kind.rawValue], action: .shelfItem(item.id), accessory: item.isPinned ? "Pinned" : "Shelf", aliasKind: nil)
         }
-        let clips = clipboard.entries.prefix(30).map { entry in
+        let clips = clipboard.entries.prefix(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 30 : 500).map { entry in
             LauncherItem(id: "clipboard.\(entry.id.uuidString)", title: String(entry.text.prefix(70)), subtitle: "Clipboard entry", icon: .system("clipboard"), keywords: ["clipboard", "copy", "paste"], action: .clipboardEntry(entry.id), accessory: entry.pinned ? "Pinned" : "Clipboard", aliasKind: nil)
         }
         let workflows = WorkflowStore.shared.workflows.prefix(30).map { workflow in
@@ -1348,9 +1453,13 @@ final class LauncherViewModel: ObservableObject {
         let items: [LauncherItem] = [
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
             LauncherItem(id: "builtin.notes", title: "Lima Notes", subtitle: "Open Notes in the unified Workspace", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: SettingsStore.shared.notesHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.create-note", title: "New Note", subtitle: "Create and open a local note", icon: .system("square.and.pencil"), keywords: ["notes", "create", "capture", "write"], action: .system(.createNote)),
             LauncherItem(id: "builtin.ai-chat", title: "Open AI Chat", subtitle: "Start a private, provider-configurable conversation", icon: .system("sparkles"), keywords: ["ai", "chat", "openai", "assistant", "conversation"], action: .system(.openAIChat)),
             LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Dictation", subtitle: "Capture live speech into a dictation conversation", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.capture-clipboard-note", title: "Capture Clipboard to Note", subtitle: "Create and open a local note from current clipboard text", icon: .system("clipboard.fill"), keywords: ["capture", "notes", "paste", "save"], action: .system(.captureClipboardToNote)),
+            LauncherItem(id: "builtin.capture-selection-note", title: "Capture Selection to Note", subtitle: "Create and open a local note from selected text in another app", icon: .system("text.badge.plus"), keywords: ["capture", "notes", "highlight", "selected text"], action: .system(.captureSelectionToNote)),
+            LauncherItem(id: "builtin.capture-dictation-note", title: "Dictate into Current Note", subtitle: "Start or stop speech capture in the visible note", icon: .system("mic.badge.plus"), keywords: ["capture", "notes", "speech", "transcribe"], action: .system(.dictateIntoNote)),
             // The terminal is an optional developer surface. Keeping it out of
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.

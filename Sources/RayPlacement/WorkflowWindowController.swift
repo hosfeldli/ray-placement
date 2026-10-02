@@ -52,8 +52,10 @@ final class WorkflowEditorModel: ObservableObject {
     @Published var commandFilter = ""
     @Published var error: String?
     var onExecute: ((WorkflowDefinition) -> Void)?
+    private let loadedCommands: [LoadedExtensionCommand]
 
     init(selected: WorkflowDefinition?) {
+        loadedCommands = ExtensionLoader().load().commands
         workflows = WorkflowStore.shared.workflows
         selectedID = selected?.id ?? workflows.first?.id
         if let selected, !workflows.contains(where: { $0.id == selected.id }) {
@@ -66,14 +68,14 @@ final class WorkflowEditorModel: ObservableObject {
         workflows.first { $0.id == selectedID }
     }
 
-    var availableCommands: [LoadedExtensionCommand] {
-        let commands = ExtensionLoader().load().commands
+    var availableCommands: [LimaWorkflowCommand] {
+        let commands = LimaWorkflowCommandCatalog.available(extensions: loadedCommands)
         let query = commandFilter.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return commands }
         return commands.filter {
-            $0.command.title.localizedCaseInsensitiveContains(query)
-                || $0.extensionName.localizedCaseInsensitiveContains(query)
-                || $0.command.id.localizedCaseInsensitiveContains(query)
+            $0.title.localizedCaseInsensitiveContains(query)
+                || $0.detail.localizedCaseInsensitiveContains(query)
+                || $0.id.localizedCaseInsensitiveContains(query)
         }
     }
 
@@ -110,10 +112,9 @@ final class WorkflowEditorModel: ObservableObject {
         WorkflowStore.shared.update(updated)
     }
 
-    func addCommand(_ command: LoadedExtensionCommand) {
+    func addCommand(_ command: LimaWorkflowCommand) {
         updateSelected { workflow in
-            let commandID = "extension.\(command.extensionID).\(command.command.id)"
-            workflow.steps.append(.init(commandID: commandID))
+            workflow.steps.append(.init(commandID: command.id))
         }
     }
 
@@ -137,8 +138,12 @@ final class WorkflowEditorModel: ObservableObject {
         }
     }
 
+    func displayName(for id: String) -> String {
+        LimaWorkflowCommandCatalog.resolve(id, extensions: loadedCommands)?.title ?? id
+    }
+
     func executeSelected() {
-        guard let selected else { return }
+        guard let selected, !selected.steps.isEmpty else { return }
         onExecute?(selected)
     }
 }
@@ -240,6 +245,7 @@ struct WorkflowEditorView: View {
                     Button { model.executeSelected() } label: { Label("Run", systemImage: "play.fill") }
                         .limaButton(prominent: true)
                         .controlSize(.small)
+                        .disabled(workflow.steps.isEmpty)
                     Button(role: .destructive) { model.deleteSelected() } label: { Image(systemName: "trash") }
                         .buttonStyle(.plain)
                 }
@@ -263,8 +269,8 @@ struct WorkflowEditorView: View {
                     TextField("Filter commands", text: $model.commandFilter)
                         .textFieldStyle(.roundedBorder)
                     Menu {
-                        ForEach(model.availableCommands, id: \.command.id) { command in
-                            Button("\(command.command.title) · \(command.extensionName)") {
+                        ForEach(model.availableCommands) { command in
+                            Button("\(command.title) · \(command.detail)") {
                                 model.addCommand(command)
                             }
                         }
@@ -310,7 +316,7 @@ struct WorkflowEditorView: View {
     }
 
     private func displayName(for id: String) -> String {
-        model.availableCommands.first { "extension.\($0.extensionID).\($0.command.id)" == id || $0.command.id == id }?.command.title ?? id
+        model.displayName(for: id)
     }
 }
 

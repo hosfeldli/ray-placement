@@ -163,6 +163,15 @@ final class TaskRegistry: ObservableObject {
         finish(id, state: .cancelled, detail: "Stopped by user")
     }
 
+    /// Stop one task for the global Command-period action. Never cancel
+    /// unrelated concurrent work as a side effect of this shortcut.
+    @discardableResult
+    func cancelMostRecent() -> Bool {
+        guard let id = activeTasks.last(where: \.isCancellable)?.id else { return false }
+        cancel(id)
+        return true
+    }
+
     func cancelAll() {
         activeTasks.filter(\.isCancellable).map(\.id).forEach(cancel)
     }

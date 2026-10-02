@@ -80,7 +80,7 @@ enum CommandCenterCatalog {
         enabledIDs: Set<String>
     ) -> [CommandCenterEntry] {
         definitions.filter { $0.extensionBinding == nil }.map { tool in
-            let eligible = tool.risk == .read || tool.risk == .navigation
+            let eligible = tool.risk == .read
             let schema = (try? JSONSerialization.data(withJSONObject: tool.parameters, options: [.sortedKeys]))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             return CommandCenterEntry(
@@ -592,12 +592,12 @@ struct CommandCenterView: View {
                 .controlSize(.small)
         case .tool:
             LabeledContent("Risk", value: entry.risk ?? "Unknown")
-            if let tool = LimaAIToolRegistry.definition(for: entry.id), tool.risk == .read || tool.risk == .navigation {
+            if let tool = LimaAIToolRegistry.definition(for: entry.id), tool.risk == .read {
                 Toggle("Enabled for AI", isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
                     set: { enabled in
                         // Recheck eligibility at interaction time; never revive a revoked extension.
-                        guard let current = LimaAIToolRegistry.definition(for: entry.id), current.risk == .read || current.risk == .navigation else { return }
+                        guard let current = LimaAIToolRegistry.definition(for: entry.id), current.risk == .read else { return }
                         nativeToolStore.setEnabled(current, enabled: enabled)
                     }
                 ))

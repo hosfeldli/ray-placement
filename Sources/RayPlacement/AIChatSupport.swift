@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreFoundation
 import Foundation
+import PDFKit
 import RayPlacementCore
 import Security
 import SwiftUI
@@ -162,7 +163,7 @@ final class AIModelCatalogStore: ObservableObject {
     private let defaults: UserDefaults
     private let storageKey: String
 
-    init(defaults: UserDefaults = .standard, storageKey: String = "aiModelCatalogs") {
+    init(defaults: UserDefaults = LimaTestEnvironment.userDefaults, storageKey: String = "aiModelCatalogs") {
         self.defaults = defaults
         self.storageKey = storageKey
         catalogs = (defaults.data(forKey: storageKey)).flatMap { try? JSONDecoder().decode([String: Catalog].self, from: $0) } ?? [:]
@@ -346,6 +347,9 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
 
     var displayTitle: String {
         switch title {
+        case "memory_search": return "Recall memory"
+        case "agent_models": return "Choose a subagent model"
+        case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
@@ -600,6 +604,9 @@ struct MCPToolDescriptor: Codable, Hashable, Identifiable, Sendable {
     var description: String?
     var risk: MCPToolRisk
     var enabled: Bool
+    /// Only a fresh tools/list declaration can mark a tool read-only. Legacy
+    /// persisted risk guesses decode as nil and remain unavailable to AI.
+    var declaredReadOnly: Bool? = nil
 
     var displayTitle: String { title?.isEmpty == false ? title! : name }
 }
@@ -890,8 +897,9 @@ struct MCPHTTPClient {
                 name: name,
                 title: tool["title"] as? String,
                 description: description,
-                risk: risk(for: tool, name: name, description: description),
-                enabled: true
+                risk: Self.risk(for: tool, name: name, description: description),
+                enabled: true,
+                declaredReadOnly: (tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true
             )
         }
     }
@@ -985,14 +993,22 @@ struct MCPHTTPClient {
         throw ClientError.invalidToolList
     }
 
-    private func risk(for tool: [String: Any], name: String, description: String?) -> MCPToolRisk {
-        if let annotations = tool["annotations"] as? [String: Any] {
-            if annotations["destructiveHint"] as? Bool == true { return .destructive }
-            if annotations["readOnlyHint"] as? Bool == true { return .read }
-        }
+    /// Tool names and descriptions are not proof of safety. Require a server's
+    /// explicit read-only declaration, then reject obvious mutating behavior
+    /// even if the declaration is contradictory.
+    static func risk(for tool: [String: Any], name: String, description: String?) -> MCPToolRisk {
+        let annotations = tool["annotations"] as? [String: Any]
         let lower = "\(name) \(description ?? "")".lowercased()
-        if ["delete", "remove", "destroy", "drop", "purge"].contains(where: lower.contains) { return .destructive }
-        if ["create", "update", "write", "send", "close", "move", "rename", "execute", "run"].contains(where: lower.contains) { return .write }
+        if annotations?["destructiveHint"] as? Bool == true ||
+            ["delete", "remove", "destroy", "drop", "purge", "purchase", "payment"].contains(where: lower.contains) {
+            return .destructive
+        }
+        if annotations?["readOnlyHint"] as? Bool != true ||
+            ["create", "update", "write", "send", "post", "submit", "close", "move", "rename",
+             "execute", "run", "open", "focus", "navigate", "click", "type", "save", "set_",
+             "install", "launch", "upload", "download", "archive", "publish", "transfer"].contains(where: lower.contains) {
+            return .write
+        }
         return .read
     }
 
@@ -1005,17 +1021,20 @@ struct MCPHTTPClient {
 
 enum AILocalToolRisk: String, Codable, Sendable {
     case read
-    /// Changes browser presentation only (open, focus, or navigate a granted tab).
-    /// A user’s explicit chat request is the authorization; it never submits or
-    /// modifies remote content.
+    /// Changes browser presentation (open, focus, or navigate). This is not
+    /// read-only and is never exposed to AI while computer actions are read-only.
     case navigation
+    /// Narrow local workspace mutation, controlled by the Memory capability.
+    case memory
+    /// Bounded API request with no child tools or inherited context.
+    case delegation
     case localAction
     case write
     case destructive
 
     var requiresApproval: Bool {
         switch self {
-        case .read, .navigation: return false
+        case .read, .navigation, .memory, .delegation: return false
         case .localAction, .write, .destructive: return true
         }
     }
@@ -1024,6 +1043,8 @@ enum AILocalToolRisk: String, Codable, Sendable {
         switch self {
         case .read: return "Read"
         case .navigation: return "Browser navigation"
+        case .memory: return "Local memory"
+        case .delegation: return "AI subagent"
         case .localAction: return "Local action"
         case .write: return "Write"
         case .destructive: return "Destructive"
@@ -1789,11 +1810,11 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use supplied tools only for their declared purpose. Read tools never change content. Browser navigation tools may open, focus, or navigate only explicitly granted browser sites when the user explicitly asks; they never submit forms, save records, upload, delete, or change account settings. Never write, delete, rename, install, launch, run shell commands, or execute extension-provided code. Do not attempt to use tools outside the supplied list. You may draft extension code or manifests in chat for the user to review, but never save, install, or run them.
+    You are Lima’s private assistant. Use supplied computer tools only to read existing content. Do not open, focus, close, or navigate browser tabs, click, type, submit, change files, launch applications, run shell commands, install extensions, execute extension-provided code, or create, edit, or forget local memory. If the user asks for a computer or memory change, explain that Lima AI can inspect or draft a plan, but the user must initiate the action through a separate manual command or the Memory inspector. Enabled subagents may analyze supplied evidence but cannot act or use tools. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never save, install, or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
-        server.enabledTools.filter { !$0.risk.requiresApproval }
+        server.enabledTools.filter { $0.risk == .read && $0.declaredReadOnly == true }
     }
 }
 
@@ -1967,16 +1988,16 @@ enum LimaAIToolRegistry {
     ]
 
     static var availableDefinitions: [LimaAIToolDefinition] {
-        (definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition))
+        (definitions + AIContextTools.definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition))
             .filter { $0.responsePayload != nil }
     }
 
     static func schemaValidationMessage(for id: String) -> String? {
-        let candidates = definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+        let candidates = definitions + AIContextTools.definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
         return candidates.first(where: { $0.id == id })?.schemaValidationMessage
     }
 
-    static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)) }
+    static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)).union(AIContextTools.ids) }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
         guard let name else { return nil }
@@ -1984,7 +2005,9 @@ enum LimaAIToolRegistry {
     }
 
     static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        availableDefinitions.filter { ids.contains($0.id) && ($0.risk == .read || $0.risk == .navigation) }
+        availableDefinitions.filter {
+            ids.contains($0.id) && ($0.risk == .read || AIContextTools.delegationIDs.contains($0.id))
+        }
     }
 
     private static func extensionDefinition(_ binding: ExtensionAIToolBinding) -> LimaAIToolDefinition {
@@ -2002,9 +2025,12 @@ enum LimaAIToolRegistry {
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
+        guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
+            return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
+        }
         guard let definition = definition(for: call.name),
-              definition.risk == .read || definition.risk == .navigation else {
-            return .json(["error": "Lima AI Chat only permits registered read or browser-navigation tools."], isError: true)
+              definition.risk == .read else {
+            return .json(["error": "Lima AI Chat only permits registered read-only computer tools."], isError: true)
         }
         if let binding = definition.extensionBinding {
             guard let arguments = call.arguments,
@@ -2316,7 +2342,7 @@ enum LimaAIToolRegistry {
         }
     }
 
-    static func isSensitivePath(_ url: URL) -> Bool {
+    nonisolated static func isSensitivePath(_ url: URL) -> Bool {
         let components = Set(url.pathComponents.map { $0.lowercased() })
         let blockedComponents: Set<String> = [".ssh", ".aws", ".gnupg", ".docker", "keychains", "secrets"]
         if !components.intersection(blockedComponents).isEmpty { return true }
@@ -2330,7 +2356,7 @@ enum LimaAIToolRegistry {
             || url.lastPathComponent.lowercased().contains("secret")
     }
 
-    static func isTextFile(url: URL, contentType: UTType?) -> Bool {
+    nonisolated static func isTextFile(url: URL, contentType: UTType?) -> Bool {
         if contentType?.conforms(to: .text) == true || contentType?.conforms(to: .sourceCode) == true { return true }
         let extensions: Set<String> = ["csv", "env.example", "json", "log", "md", "plist", "py", "rb", "sh", "sql", "swift", "toml", "ts", "tsx", "txt", "xml", "yaml", "yml", "zsh"]
         return extensions.contains(url.pathExtension.lowercased())
@@ -3037,6 +3063,10 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     let toolIDs: Set<String>
 
     static let coreGroups: [LimaAIToolGroup] = [
+        .init(id: "memory", title: "Memory", summary: "Read saved local context; add, edit, or forget entries in the inspector",
+              symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
+        .init(id: "subagents", title: "Subagents", summary: "Up to three analysis requests per turn using configured providers; API usage applies",
+              symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(
             id: "screen-context",
             title: "Screen context",
@@ -3061,12 +3091,11 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "browser",
             title: "Browser",
-            summary: "Inspect granted tabs and navigate only when asked",
+            summary: "Inspect granted tabs and visible page content",
             symbol: "safari",
             toolIDs: [
                 "browser_tabs", "browser_current", "browser_read",
-                "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
-                "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
+                "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
             ]
         ),
         .init(
@@ -3110,6 +3139,9 @@ struct LimaAIToolGroup: Identifiable, Hashable {
 extension LimaAIToolDefinition {
     var displayName: String {
         switch id {
+        case "memory_search": return "Recall memory"
+        case "agent_models": return "Subagent models"
+        case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
@@ -3142,6 +3174,8 @@ extension LimaAIToolDefinition {
 
     var symbol: String {
         switch id {
+        case "memory_search": return "brain.head.profile"
+        case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
         case "search_files", "find_files", "list_directory": return "folder"
         case "file_metadata": return "doc.badge.gearshape"
@@ -3168,6 +3202,13 @@ final class LimaAIToolStore: ObservableObject {
         self.defaults = defaults
         let saved = defaults.stringArray(forKey: defaultsKey)
         enabledToolIDs = saved.map(Set.init) ?? LimaAIToolRegistry.defaultEnabledToolIDs
+        // Introduce only these new capabilities once; later explicit off choices remain off.
+        let migrationKey = "lima.ai.context-tools-v1"
+        if !defaults.bool(forKey: migrationKey) {
+            enabledToolIDs.formUnion(AIContextTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: migrationKey)
+        }
     }
 
     init(fixtures: Set<String>) {
@@ -3405,6 +3446,94 @@ enum AIContextCapture {
     }
 }
 
+enum AIFileAttachmentPolicy {
+    static let maximumTextBytes = 96 * 1_024
+    static let maximumImageBytes = 8 * 1_024 * 1_024
+    private static let imageMIMETypes: Set<String> = ["image/jpeg", "image/png", "image/gif", "image/webp"]
+
+    static func canAttach(_ attachment: AIAttachment) -> Bool {
+        if attachment.kind == .file, attachment.text != nil { return true }
+        guard let path = attachment.path, let url = try? safeURL(path),
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentTypeKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize else { return false }
+        switch attachment.kind {
+        case .file:
+            if values.contentType?.conforms(to: .pdf) == true { return size <= maximumImageBytes }
+            return size <= maximumTextBytes && LimaAIToolRegistry.isTextFile(url: url, contentType: values.contentType)
+        case .image:
+            return size <= maximumImageBytes && imageMIMETypes.contains((attachment.mimeType ?? "").lowercased())
+        case .clipboard, .selection:
+            return attachment.text != nil
+        }
+    }
+
+    static func text(for attachment: AIAttachment) throws -> String {
+        if let embedded = attachment.text {
+            let excerpt = String(embedded.prefix(96_000))
+            return embedded.count > 96_000 ? excerpt + "\n[Attachment content truncated by Lima.]" : excerpt
+        }
+        guard let path = attachment.path else { throw failure("The file no longer has a readable path.") }
+        let url = try safeURL(path)
+        let values = try url.resourceValues(forKeys: [.contentTypeKey])
+        if values.contentType?.conforms(to: .pdf) == true {
+            let data = try boundedData(at: url, maximumBytes: maximumImageBytes)
+            guard let document = PDFDocument(data: data) else { throw failure("This PDF could not be read.") }
+            let pages = (0..<min(document.pageCount, 20)).compactMap { document.page(at: $0)?.string }
+            let extracted = pages.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !extracted.isEmpty else { throw failure("This PDF has no selectable text to describe.") }
+            let excerpt = String(extracted.prefix(96_000))
+            return document.pageCount > 20 || extracted.count > 96_000
+                ? excerpt + "\n[PDF extraction truncated by Lima.]" : excerpt
+        }
+        guard LimaAIToolRegistry.isTextFile(url: url, contentType: values.contentType) else {
+            throw failure("Only text and source-code files can be referenced in AI chat.")
+        }
+        let data = try boundedData(at: url, maximumBytes: maximumTextBytes)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw failure("This file is not UTF-8 text.")
+        }
+        return text
+    }
+
+    static func image(for attachment: AIAttachment) throws -> (mediaType: String, base64: String) {
+        guard let path = attachment.path else { throw failure("The image no longer has a readable path.") }
+        let url = try safeURL(path)
+        let mediaType = (attachment.mimeType ?? "").lowercased()
+        guard imageMIMETypes.contains(mediaType) else {
+            throw failure("AI chat accepts JPEG, PNG, GIF, or WebP images.")
+        }
+        let data = try boundedData(at: url, maximumBytes: maximumImageBytes)
+        return (mediaType, data.base64EncodedString())
+    }
+
+    private static func safeURL(_ path: String) throws -> URL {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        let resolved = url.resolvingSymlinksInPath()
+        guard url == resolved,
+              !url.pathComponents.contains(where: { $0.hasPrefix(".") }),
+              !LimaAIToolRegistry.isSensitivePath(url) else {
+            throw failure("This path is not available to AI file context.")
+        }
+        return url
+    }
+
+    private static func boundedData(at url: URL, maximumBytes: Int) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size <= maximumBytes else {
+            throw failure("This file is unavailable or exceeds the AI attachment limit.")
+        }
+        let data = try Data(contentsOf: url)
+        guard data.count <= maximumBytes else { throw failure("This file exceeds the AI attachment limit.") }
+        return data
+    }
+
+    private static func failure(_ message: String) -> NSError {
+        NSError(domain: "LimaAIFileContext", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+}
+
 struct AIInputEncoder {
     /// Keep explicit continuity payloads bounded when a provider/model cannot use
     /// a prior response ID. The durable local transcript remains unchanged.
@@ -3471,24 +3600,14 @@ struct AIInputEncoder {
             switch attachment.kind {
             case .clipboard, .selection:
                 if let value = attachment.text {
-                    content.append(["type": "input_text", "text": "\n\n[\(attachment.displayName)]\n\(value)"])
+                    content.append(["type": "input_text", "text": "\n\n[\(attachment.displayName)]\n\(String(value.prefix(96_000)))"])
                 }
-            case .file, .image:
-                guard let path = attachment.path else { continue }
-                let data = try Data(contentsOf: URL(fileURLWithPath: path))
-                guard data.count <= 50 * 1024 * 1024 else {
-                    throw NSError(
-                        domain: "LimaAI",
-                        code: 4,
-                        userInfo: [NSLocalizedDescriptionKey: "\(attachment.displayName) is larger than Lima’s 50 MB attachment limit."]
-                    )
-                }
-                let base64 = data.base64EncodedString()
-                if attachment.kind == .image {
-                    content.append(["type": "input_image", "image_url": "data:\(attachment.mimeType ?? "image/png");base64,\(base64)"])
-                } else {
-                    content.append(["type": "input_file", "filename": attachment.displayName, "file_data": "data:\(attachment.mimeType ?? "application/octet-stream");base64,\(base64)"])
-                }
+            case .file:
+                let value = try AIFileAttachmentPolicy.text(for: attachment)
+                content.append(["type": "input_text", "text": "[File: \(attachment.displayName)]\n\(value)"])
+            case .image:
+                let image = try AIFileAttachmentPolicy.image(for: attachment)
+                content.append(["type": "input_image", "image_url": "data:\(image.mediaType);base64,\(image.base64)"])
             }
         }
         return content
@@ -3525,8 +3644,10 @@ struct AIInputEncoder {
 // MARK: - Markdown rendering
 
 /// A reusable read-only Markdown document renderer for Lima workspaces.
-struct LimaMarkdownDocumentView: View {
+struct LimaMarkdownDocumentView: View, Equatable {
     let markdown: String
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.markdown == rhs.markdown }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {

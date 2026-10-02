@@ -46,6 +46,28 @@ enum LimaVisualAudit {
                         }
                     }
                 }
+                for width: CGFloat in [420, 800, 1040] {
+                    let search = LauncherSearchAuditFixtures.view()
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(search, size: NSSize(width: width, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("production-search-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
+                }
+                for scenario in ["filtered", "empty", "selection", "actions"] {
+                    let search = LauncherSearchAuditFixtures.view(scenario: scenario)
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(search, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("production-search-\(scenario)-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
+                }
+                let smallSearch = LauncherSearchAuditFixtures.view()
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(smallSearch, size: NSSize(width: 640, height: 480), appearance: appearance,
+                                  url: directory.appendingPathComponent("production-search-short-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
+                }
                 let preferences = LimaMockupWorkspaceFixtures.settings()
                     .environment(\.colorScheme, dark ? .dark : .light)
                 if !(await render(preferences, size: NSSize(width: 1060, height: 780), appearance: appearance,
@@ -63,6 +85,30 @@ enum LimaVisualAudit {
                                       url: directory.appendingPathComponent("grammar-review-\(Int(width))-\(dark ? "dark" : "light").png"))) {
                         failures += 1
                     }
+                }
+                for scenario: AIChatVisualScenario in [.streaming, .failure] {
+                    let ai = AIChatVisualPreview(scenario: scenario)
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(ai, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("functional-\(scenario.rawValue)-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
+                }
+                let memoryStore = AIWorkspaceStore(fixtures: [], memories: [
+                    AIMemory(title: "Writing preference", content: "Prefer concise updates and preserve technical terminology."),
+                    AIMemory(title: "Release workflow", content: "Keep release assets immutable and validate before publication.")
+                ])
+                let memoryModel = AIChatViewModel(store: AIConversationStore(fixtures: []),
+                    credentials: AIChatCredentialStore(configuration: .fixture),
+                    mcpStore: MCPServerStore(fixtures: []),
+                    nativeToolStore: LimaAIToolStore(fixtures: AIContextTools.ids),
+                    transport: FixtureAITransport.standard, workspaceStore: memoryStore)
+                let memory = AIMemoryInspector(model: memoryModel, store: memoryStore,
+                    tools: memoryModel.nativeToolStore, initiallyExpanded: true)
+                    .padding(14).environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(memory, size: NSSize(width: 300, height: 560), appearance: appearance,
+                                  url: directory.appendingPathComponent("functional-memory-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
                 }
                 let previewNotes = [
                     MarkdownNote(title: "Release checklist", content: "# Release checklist\n\n- [x] Run the test suite\n- [ ] Review the final build"),
@@ -148,7 +194,8 @@ private struct WayfinderAuditWorkspace: View {
             HStack(spacing: 0) {
                 LimaWayfinderRail(current: navigation.current, previous: navigation.previous,
                                   sizeClass: .classify(width: proxy.size.width),
-                                  select: { navigation.select($0) }, openSettings: {})
+                                  select: { navigation.select($0) }, openSettings: {},
+                                  isDocked: false, openInWindow: {})
                 Divider()
                 VStack(alignment: .leading, spacing: 16) {
                     LimaToolbarTitle(symbol: navigation.current.symbol, title: navigation.current.title, subtitle: "Workspace")
@@ -185,7 +232,7 @@ private struct WayfinderAuditAI: View {
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
             HStack(spacing: 0) {
                 LimaWayfinderRail(current: .ai, previous: .notes, sizeClass: sizeClass,
-                                  select: { _ in }, openSettings: {})
+                                  select: { _ in }, openSettings: {}, isDocked: true, openInWindow: {})
                 Divider()
                 AIChatVisualPreview(scenario: .conversation)
             }

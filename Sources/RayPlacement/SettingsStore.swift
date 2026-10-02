@@ -356,6 +356,13 @@ enum HUDDockPosition: String, Codable, CaseIterable, Identifiable {
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
+    @Published var aiEnabled: Bool {
+        didSet {
+            defaults.set(aiEnabled, forKey: AIRequestPolicy.preferenceKey)
+            AIRequestPolicy.shared.setEnabled(aiEnabled)
+        }
+    }
+
     private enum Key {
         static let activationShortcut = "activationShortcut"
         static let activationHotkeyEnabled = "activationHotkeyEnabled"
@@ -783,7 +790,7 @@ final class SettingsStore: ObservableObject {
     /// If AI correction is unavailable, complete the operation locally with Harper.
     /// The preference is intentionally independent of the selected engine.
     var grammarFallbackToLocal: Bool {
-        get { defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? true }
+        get { defaults.object(forKey: Key.grammarFallbackToLocal) as? Bool ?? false }
         set { defaults.set(newValue, forKey: Key.grammarFallbackToLocal) }
     }
 
@@ -959,7 +966,14 @@ final class SettingsStore: ObservableObject {
     @Published private(set) var launchAtLogin: Bool
     @Published var lastError: String?
 
+    static func resolvedGrammarMode(storedValue: String?, legacyAPIEnabled: Bool?) -> GrammarEngineMode {
+        if let storedValue, let mode = GrammarEngineMode(rawValue: storedValue) { return mode }
+        if let legacyAPIEnabled { return legacyAPIEnabled ? .externalAPI : .local }
+        return .externalAPI
+    }
+
     private init() {
+        aiEnabled = AIRequestPolicy.shared.isEnabled
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
         activationHotkeyEnabled = defaults.object(forKey: Key.activationHotkeyEnabled) as? Bool ?? true
         notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
@@ -1007,12 +1021,10 @@ final class SettingsStore: ObservableObject {
         // Existing explicit user choices remain respected.
         stealthGrammarEnabled = defaults.object(forKey: Key.stealthGrammarEnabled) as? Bool ?? true
         stealthGrammarShortcut = defaults.string(forKey: Key.stealthGrammarShortcut) ?? "control+option+g"
-        let legacyExternalGrammar = defaults.object(forKey: Key.developerGrammarEnabled) as? Bool ?? false
-        grammarEngineMode = GrammarEngineMode(
-            rawValue: defaults.string(forKey: Key.grammarEngineMode) ?? ""
-        ) ?? (defaults.object(forKey: Key.developerGrammarEnabled) == nil
-            ? .externalAPI
-            : (legacyExternalGrammar ? .externalAPI : .local))
+        grammarEngineMode = Self.resolvedGrammarMode(
+            storedValue: defaults.string(forKey: Key.grammarEngineMode),
+            legacyAPIEnabled: defaults.object(forKey: Key.developerGrammarEnabled) as? Bool
+        )
         grammarCorrectionMode = GrammarCorrectionMode(
             rawValue: defaults.string(forKey: Key.grammarCorrectionMode) ?? ""
         ) ?? .proofread
@@ -1041,7 +1053,7 @@ final class SettingsStore: ObservableObject {
         developerGrammarProvider = storedDeveloperProvider
         developerGrammarModel = defaults.string(forKey: Key.developerGrammarModel) ?? storedDeveloperProvider.defaultModel
         developerGrammarBaseURL = defaults.string(forKey: Key.developerGrammarBaseURL) ?? storedDeveloperProvider.defaultBaseURL
-        defaults.set(false, forKey: Key.grammarFallbackToLocal)
+        // Preserve an explicit fallback choice; API failures do not silently switch engines.
         inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
@@ -1385,7 +1397,7 @@ final class SettingsStore: ObservableObject {
             if let value = string(), let parsed = DeveloperGrammarProvider(rawValue: value) { developerGrammarProvider = parsed }
         case Key.developerGrammarModel: if let value = string() { developerGrammarModel = value }
         case Key.developerGrammarBaseURL: if let value = string() { developerGrammarBaseURL = value }
-        case Key.grammarFallbackToLocal: defaults.set(false, forKey: Key.grammarFallbackToLocal)
+        case Key.grammarFallbackToLocal: if let value = bool() { grammarFallbackToLocal = value }
         case Key.inlineGrammarCheckingEnabled: if let value = bool() { inlineGrammarCheckingEnabled = value }
         case Key.dictationPerformance:
             if let value = string(), let parsed = PerformanceScale(rawValue: value) { dictationPerformance = parsed }

@@ -49,6 +49,10 @@ enum BrowserBridgeAITools {
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
+        guard let definition = definitions.first(where: { $0.name == call.name }),
+              definition.risk == .read else {
+            return .json(["error": "Browser changes are unavailable to Lima AI while computer actions are read-only."], isError: true)
+        }
         do {
             let result: JSONValue
             switch call.name {

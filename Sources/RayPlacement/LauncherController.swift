@@ -80,6 +80,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var keyboardSelectionContext: KeyboardSelectionService.Capture?
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
+    private var workflowTask: Task<Void, Never>?
     private var writingOperationToken: UUID?
     private var writingHoldToken: UUID?
     private var quickLookTimeoutHeld = false
@@ -155,7 +156,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     self?.surfaceSessionController.setPinned(pinned)
                 },
                 onOpenSurfaceWorkspace: { [weak self] in self?.openSurfaceWorkspace() },
-                onPerformSurfacePrimaryAction: { [weak self] in self?.performCurrentSurfacePrimaryAction() }
+                onPerformSurfacePrimaryAction: { [weak self] in self?.performCurrentSurfacePrimaryAction() },
+                onOpenWorkspace: { [weak self] module in
+                    self?.hide()
+                    self?.notesWindow.present(module: module)
+                },
+                onOpenSettings: { [weak self] in self?.showSettings() },
+                onCreateNote: { [weak self] in
+                    guard let self else { return }
+                    self.notesWindow.store.createNote()
+                    self.hide()
+                    self.notesWindow.present(module: .notes)
+                },
+                onDismissSearch: { [weak self] in self?.hide() }
             )))
         surfaceSessionController.bind(to: viewModel)
         modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
@@ -390,6 +403,51 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
+    private func captureSelectionToNote(from sourceApplication: NSRunningApplication?) {
+        contextShelfCapture.readSelection(from: sourceApplication) { [weak self] result in
+            guard let self else { return }
+            do {
+                let selection = try result.get()
+                let id = try CaptureNoteService.save(
+                    selection.text,
+                    source: .selection(applicationName: selection.applicationName),
+                    in: self.notesWindow.store
+                )
+                self.hide()
+                self.notesWindow.selectNote(id)
+                self.notesWindow.present(module: .notes)
+                self.toast.show("Captured selection to Notes")
+            } catch {
+                self.toast.show(error.localizedDescription, style: .error, duration: 3.2)
+            }
+        }
+    }
+
+    private func createNoteAndOpen() throws {
+        let previousID = notesWindow.store.selectedNoteID
+        notesWindow.store.createNote()
+        guard notesWindow.store.selectedNoteID != previousID else {
+            throw NSError(domain: "LimaWorkflow", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: notesWindow.store.lastError ?? "The note could not be created."
+            ])
+        }
+        hide()
+        notesWindow.present(module: .notes)
+    }
+
+    private func captureClipboardToNote() {
+        do {
+            let text = NSPasteboard.general.string(forType: .string) ?? ""
+            let id = try CaptureNoteService.save(text, source: .clipboard, in: notesWindow.store)
+            hide()
+            notesWindow.selectNote(id)
+            notesWindow.present(module: .notes)
+            toast.show("Captured clipboard to Notes")
+        } catch {
+            toast.show(error.localizedDescription, style: .error, duration: 3.2)
+        }
+    }
+
     func executeExtensionFromHotkey(
         _ command: LoadedExtensionCommand,
         sourceApplication: NSRunningApplication? = nil
@@ -505,6 +563,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .useWith:
             viewModel.openActionPanel(for: item)
+
+        case .prepareAIContext(let context, let prompt):
+            guard aiChatModel.prepareContextDraft(context, prompt: prompt) else {
+                toast.show(aiChatModel.streamError ?? (AIRequestPolicy.shared.isEnabled
+                    ? "Finish the current AI task before adding context" : AIRequestPolicy.disabledMessage))
+                return
+            }
+            showAIChat()
+
+        case .addContextToShelf(let context):
+            if context.kind == .file {
+                ContextShelfIntegration.addFile(URL(fileURLWithPath: context.value), sourceApplication: "Lima Search")
+            } else {
+                _ = ContextShelfStore.shared.addText(context.value, title: context.title, kind: .plainText,
+                    source: .application(name: "Lima Search", bundleIdentifier: Bundle.main.bundleIdentifier))
+            }
+            toast.show("Added selected result to Shelf")
 
         case .toggleFavorite(let id):
             CommandManager.shared.toggleFavorite(id)
@@ -775,9 +850,36 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func installKeyboardMonitor() {
         localEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] (event: NSEvent) -> NSEvent? in
-            guard let self, self.panel.isVisible else { return event }
+            guard let self, self.panel.isVisible,
+                  event.window === self.panel, self.panel.attachedSheet == nil else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
+
+            // The launcher consumes menu shortcuts itself while its panel is key.
+            // Stop one active task even if an action menu or AI composer is open.
+            if flags.contains(.command), characters == "." {
+                TaskRegistry.shared.cancelMostRecent()
+                return nil
+            }
+
+            // Action menus own their selection. Never execute or move the
+            // search result hidden behind an open menu.
+            if self.viewModel.actionPanelItem != nil {
+                switch event.keyCode {
+                case 53: self.viewModel.closeActionPanel()
+                case 125: self.viewModel.moveActionPanelSelection(by: 1)
+                case 126: self.viewModel.moveActionPanelSelection(by: -1)
+                case 36, 76, 49: self.viewModel.executeSelectedPanelAction()
+                case 48:
+                    // Keep Tab navigation and Return on the same visible action.
+                    self.viewModel.moveActionPanelSelection(by: flags.contains(.shift) ? -1 : 1)
+                default:
+                    if flags.contains(.command), characters == "k" {
+                        self.viewModel.closeActionPanel()
+                    }
+                }
+                return nil
+            }
 
             // In terminal mode the PTY receives every ordinary keystroke.
             // Escape is the only launcher-level action, allowing the user to
@@ -876,6 +978,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return nil
             }
             if event.keyCode == 124 {
+                if self.panel.firstResponder is NSTextView { return event }
                 self.viewModel.openActionPanel()
                 return nil
             }
@@ -907,6 +1010,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return nil
             }
             if flags.contains(.command), characters == "c" {
+                if self.viewModel.mode == .root, self.panel.firstResponder is NSTextView { return event }
                 switch self.viewModel.mode {
                 case .extensionSurface(let session):
                     if session.kind == .generator {
@@ -1180,6 +1284,34 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             viewModel.enter(.terminal)
             presentPanel()
             DispatchQueue.main.async { [weak self] in self?.terminalModel.focus() }
+        case .openInCode:
+            let workspace = NSWorkspace.shared
+            let editor = ["com.microsoft.VSCode", "com.visualstudio.code.oss"]
+                .compactMap { workspace.urlForApplication(withBundleIdentifier: $0) }.first
+            guard let editor else {
+                presentError(title: "Open in Code", message: "Visual Studio Code is not installed.")
+                return
+            }
+            workspace.open([url], withApplicationAt: editor, configuration: NSWorkspace.OpenConfiguration()) { [weak self] _, error in
+                if let error {
+                    DispatchQueue.main.async { self?.presentError(title: "Open in Code", error: error) }
+                }
+            }
+            hide()
+        case .describeWithAI, .askAIAboutFile:
+            guard AIRequestPolicy.shared.isEnabled else {
+                toast.show(AIRequestPolicy.disabledMessage, style: .error)
+                return
+            }
+            let context = LimaContextValue(kind: .file, title: title, value: url.path)
+            let prompt = action == .describeWithAI
+                ? "Describe the contents and purpose of this file. Summarize its important sections without changing the file."
+                : ""
+            guard aiChatModel.prepareContextDraft(context, prompt: prompt) else {
+                toast.show(aiChatModel.streamError ?? "This file cannot be added to the AI draft.", style: .error)
+                return
+            }
+            showAIChat()
         case .addToShelf:
             ContextShelfIntegration.addFile(url, sourceApplication: NSRunningApplication.current.localizedName)
             toast.show("Added file to Shelf")
@@ -1194,7 +1326,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         pendingFileActionURL = url
         let menu = NSMenu(title: "File Actions")
         menu.autoenablesItems = false
+        let canUseAI = AIRequestPolicy.shared.isEnabled && AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url))
+        let hasCode = ["com.microsoft.VSCode", "com.visualstudio.code.oss"]
+            .contains { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }
         for action in LauncherFileAction.allCases {
+            if (action == .describeWithAI || action == .askAIAboutFile) && !canUseAI { continue }
+            if action == .openInCode && !hasCode { continue }
             let item = NSMenuItem(title: action.title, action: #selector(performFileActionMenuItem(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = action.rawValue
@@ -2535,11 +2672,56 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             hide()
             notesWindow.present()
 
+        case .aiConversation:
+            guard result.id.hasPrefix("conversation:"),
+                  let id = UUID(uuidString: String(result.id.dropFirst("conversation:".count))),
+                  notesWindow.aiChatModel.store.conversation(id: id) != nil else {
+                presentError(title: result.title, message: "The AI conversation is unavailable.")
+                return
+            }
+            guard notesWindow.selectAIConversation(id) else {
+                presentError(title: result.title, message: "Stop the current AI task before switching conversations.")
+                return
+            }
+            hide()
+            notesWindow.present()
+
         case .terminal:
             viewModel.enter(.terminal)
             presentPanel()
             terminalModel.startIfNeeded()
             terminalModel.focus()
+
+        case .workspace:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("workspace:".count))),
+                  let profile = WorkspaceProfileStore.shared.profiles.first(where: { $0.id == id }) else {
+                presentError(title: result.title, message: "The workspace is unavailable.")
+                return
+            }
+            WorkspaceProfileStore.shared.activate(profile)
+            hide()
+            notesWindow.present()
+
+        case .context:
+            guard result.id.hasPrefix("context:"),
+                  let id = UUID(uuidString: String(result.id.dropFirst("context:".count))),
+                  ContextShelfStore.shared.items.contains(where: { $0.id == id }) else {
+                presentError(title: result.title, message: "The Context Shelf item is unavailable.")
+                return
+            }
+            ContextShelfStore.shared.select(id: id)
+            hide()
+            notesWindow.present(module: .context)
+
+        case .clipboard:
+            guard let id = UUID(uuidString: String(result.id.dropFirst("clipboard:".count))),
+                  let entry = clipboard.entries.first(where: { $0.id == id }) else {
+                presentError(title: result.title, message: "The clipboard item is unavailable.")
+                return
+            }
+            clipboard.copy(entry.text)
+            hide()
+            toast.show("Copied from clipboard history")
 
         case .command:
             if result.id.hasPrefix("workflow:"),
@@ -2556,6 +2738,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func executeWorkflow(_ workflow: WorkflowDefinition) {
+        guard workflowTask == nil else {
+            presentError(title: "Workflow already running", message: "Stop the current workflow before starting another.")
+            return
+        }
+        guard !workflow.steps.isEmpty else {
+            presentError(title: workflow.name, message: "Add at least one command before running this workflow.")
+            return
+        }
         surfaceSessionController.suspendTimeout(for: "workflow-confirmation")
         let alert = NSAlert()
         alert.alertStyle = .informational
@@ -2568,13 +2758,28 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return
         }
         hide()
-        Task { @MainActor [weak self] in
+        let measurementID = PerformanceMonitor.shared.begin("Workflow execution")
+        let taskID = TaskRegistry.shared.begin(
+            kind: .workflow,
+            title: workflow.name,
+            detail: "Running \(workflow.steps.count) steps",
+            progress: 0,
+            isCancellable: true,
+            onCancel: { [weak self] in self?.workflowTask?.cancel() }
+        )
+        workflowTask = Task { @MainActor [weak self] in
             guard let self else { return }
             let report = await WorkflowExecutor().execute(workflow, confirm: true) { [weak self] commandID in
                 try await self?.executeWorkflowCommand(commandID)
             }
+            let cancelled = Task.isCancelled
             let failed = report.steps.filter { !$0.succeeded }
-            if failed.isEmpty {
+            let state: LimaTaskState = cancelled ? .cancelled : (failed.isEmpty ? .completed : .failed)
+            TaskRegistry.shared.finish(taskID, state: state)
+            PerformanceMonitor.shared.end(measurementID, succeeded: state == .completed)
+            if cancelled {
+                self.toast.show("Workflow stopped")
+            } else if failed.isEmpty {
                 self.toast.show("Workflow completed")
             } else {
                 self.presentError(
@@ -2582,31 +2787,45 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     message: failed.map { "\($0.commandID): \($0.message ?? "Failed")" }.joined(separator: "\n")
                 )
             }
+            self.workflowTask = nil
             self.surfaceSessionController.resumeTimeout(for: "workflow-confirmation")
         }
     }
 
     private func executeWorkflowCommand(_ commandID: String) async throws {
-        guard let command = viewModel.extensionCommands.first(where: {
-            "extension.\($0.extensionID).\($0.command.id)" == commandID || $0.command.id == commandID
-        }) else {
+        try Task.checkCancellation()
+        guard let resolved = LimaWorkflowCommandCatalog.resolve(commandID, extensions: viewModel.extensionCommands) else {
             throw NSError(domain: "LimaWorkflow", code: 1, userInfo: [NSLocalizedDescriptionKey: "Command \(commandID) is unavailable."])
         }
-        guard command.command.action.type != .form else {
-            throw NSError(domain: "LimaWorkflow", code: 2, userInfo: [NSLocalizedDescriptionKey: "Form commands require interactive input and cannot run unattended."])
-        }
-
-        let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
-        switch result.payload {
-        case .text:
-            return
-        case .native(let action):
-            await withCheckedContinuation { continuation in
-                dispatchNativeAction(action) { continuation.resume() }
+        switch resolved.source {
+        case .builtin(let builtin):
+            switch builtin {
+            case .openNotes: notesWindow.present(module: .notes)
+            case .openAI: notesWindow.present(module: .ai)
+            case .openContext: notesWindow.present(module: .context)
+            case .openTerminal: notesWindow.present(module: .terminal)
+            case .createNote:
+                try createNoteAndOpen()
+            case .captureClipboard:
+                let text = NSPasteboard.general.string(forType: .string) ?? ""
+                let id = try CaptureNoteService.save(text, source: .clipboard, in: notesWindow.store)
+                notesWindow.selectNote(id)
+                notesWindow.present(module: .notes)
             }
-        case .nativeChain(let actions):
-            await withCheckedContinuation { continuation in
-                dispatchNativeChain(actions) { continuation.resume() }
+            return
+        case .extensionCommand(let command):
+            let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
+            switch result.payload {
+            case .text:
+                return
+            case .native(let action):
+                await withCheckedContinuation { continuation in
+                    dispatchNativeAction(action) { continuation.resume() }
+                }
+            case .nativeChain(let actions):
+                await withCheckedContinuation { continuation in
+                    dispatchNativeChain(actions) { continuation.resume() }
+                }
             }
         }
     }
@@ -2659,6 +2878,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .openNotes:
             showNotes()
 
+        case .createNote:
+            do {
+                try createNoteAndOpen()
+            } catch {
+                toast.show(error.localizedDescription, style: .error, duration: 3.2)
+            }
+
         case .openAIChat:
             showAIChat()
 
@@ -2667,6 +2893,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .toggleNoteDictation:
             showNotesAndToggleDictation()
+
+        case .dictateIntoNote:
+            hide()
+            if !notesWindow.presentAndToggleNoteCapture() {
+                toast.show(notesWindow.dictation.lastError ?? "Dictation is unavailable.", style: .error, duration: 3.2)
+            }
+
+        case .captureClipboardToNote:
+            captureClipboardToNote()
+
+        case .captureSelectionToNote:
+            captureSelectionToNote(from: previousApplication ?? lastExternalApplication)
 
         case .openTerminal:
             showDeveloperTerminal()

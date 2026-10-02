@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 struct AIProviderSettingsView: View {
     @ObservedObject var model: AIChatViewModel
+    @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @State private var apiKey = ""
     @State private var customModel = ""
@@ -24,6 +25,11 @@ struct AIProviderSettingsView: View {
 
     var body: some View {
         Form {
+            Section("AI availability") {
+                Toggle("Enable AI throughout Lima", isOn: $settings.aiEnabled)
+                Text("Turning this off stops AI chats, provider requests, AI tools, grammar assistance, and dictation. Search, files, notes, and saved chats remain available. Keys and model preferences are retained.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
             Section("Conversation configuration") {
                 Text("Changes apply to the selected Workspace conversation and new conversations created from it. Writing and agents keep their own model selections.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -87,9 +93,9 @@ struct AIProviderSettingsView: View {
             Section("Connection") {
                 HStack {
                     Button("Test Connection") { message = nil; model.testConnection() }
-                        .disabled(busy || !model.hasProviderAPIKey || configurationChanged)
+                        .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
                     Button("Refresh Models") { message = nil; model.refreshModels() }
-                        .disabled(busy || !model.hasProviderAPIKey || configurationChanged)
+                        .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
                     if model.isLoadingModels {
                         ProgressView().controlSize(.small)
                         Button("Stop") { model.cancelModelDiscovery() }
