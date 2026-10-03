@@ -88,23 +88,25 @@
     return ["password", "file"].includes(kind) ||
       /(?:password|one-time-code|cc-)/.test(autocomplete);
   };
+  const readOnlyField = element => element.readOnly || element.hasAttribute("readonly") ||
+    element.getAttribute("aria-readonly") === "true";
   function controlKind(element) {
     const tag = element.tagName?.toLowerCase();
     if (!["form", "button", "input", "textarea"].includes(tag) &&
         !element.isContentEditable && element.getAttribute("role") !== "button") return null;
     if (element.disabled || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return null;
     if (tag === "form") {
-      return [...element.querySelectorAll("input")].some(sensitiveField) ? null : "submit";
+      return [...element.querySelectorAll("input,textarea,select,[contenteditable]")].some(sensitiveField) ? null : "submit";
     }
     if (tag === "button") return (element.getAttribute("type") || "submit").toLowerCase() === "button" ? "click" : null;
     if (tag === "input") {
       if (sensitiveField(element)) return null;
       const kind = (element.getAttribute("type") || "text").toLowerCase();
       if (["button", "checkbox", "radio"].includes(kind)) return "click";
-      if (["text", "search", "email", "url", "tel", "number"].includes(kind)) return "type";
+      if (["text", "search", "email", "url", "tel", "number"].includes(kind)) return readOnlyField(element) ? null : "type";
       return null;
     }
-    if (tag === "textarea" || element.isContentEditable) return sensitiveField(element) ? null : "type";
+    if (tag === "textarea" || element.isContentEditable) return sensitiveField(element) || readOnlyField(element) ? null : "type";
     if (tag !== "a" && element.getAttribute("role") === "button") return "click";
     return null;
   }

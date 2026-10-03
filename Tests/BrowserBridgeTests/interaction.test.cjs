@@ -62,6 +62,18 @@ test("page actions reject links, ambiguous controls, and credential fields", () 
   assert.equal(card.value, "");
 });
 
+test("page actions reject controls disabled or read-only after discovery", () => {
+  const disabled = element("button", {type: "button", disabled: ""});
+  const locked = element("input", {type: "text", readonly: ""});
+  const ariaLocked = element("textarea", {"aria-readonly": "true"});
+  const run = adapter({"button#disabled": [disabled], "input#locked": [locked], "textarea#aria-locked": [ariaLocked]});
+  assert.equal(run("browser.click", "button#disabled").error, "target_not_interactable");
+  assert.equal(run("browser.type", "input#locked", "changed").error, "target_not_interactable");
+  assert.equal(run("browser.type", "textarea#aria-locked", "changed").error, "target_not_interactable");
+  assert.equal(disabled.clicked, undefined);
+  assert.equal(locked.value, "");
+  assert.equal(ariaLocked.value, "");
+});
 test("page actions reject controls hidden or private after discovery", () => {
   const hidden = element("div", {"data-lima-private": ""});
   const button = element("button", {type: "button"});
@@ -77,9 +89,12 @@ test("page actions reject controls hidden or private after discovery", () => {
 test("form submission excludes credentials but accepts a nonsensitive form", () => {
   const safe = element("form", {fields: [element("input", {type: "hidden"}), element("input", {type: "search"})]});
   const login = element("form", {fields: [element("input", {type: "password"})]});
-  const run = adapter({"form#safe": [safe], "form#login": [login]});
+  const payment = element("form", {fields: [element("textarea", {autocomplete: "cc-number"})]});
+  const run = adapter({"form#safe": [safe], "form#login": [login], "form#payment": [payment]});
   assert.equal(run("browser.submit", "form#login").error, "sensitive_or_unsupported_target");
+  assert.equal(run("browser.submit", "form#payment").error, "sensitive_or_unsupported_target");
   assert.equal(login.submitted, undefined);
+  assert.equal(payment.submitted, undefined);
   assert.equal(run("browser.submit", "form#safe").performed, "submit");
   assert.equal(safe.submitted, true);
 });

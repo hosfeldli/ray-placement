@@ -24,7 +24,13 @@ function element(tag, children = [], attributes = {}, style = {}) {
     getClientRects: () => [{}], getAttribute: key => attributes[key] ?? null,
     hasAttribute: key => key in attributes,
     disabled: "disabled" in attributes, isContentEditable: attributes.contenteditable === "true",
-    querySelectorAll(selector) { return select(this, selector); },
+    querySelectorAll(selector) {
+      if (selector === "input,textarea,select,[contenteditable]") {
+        return descendants(this).filter(node => node.nodeType === 1 &&
+          (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName) || node.hasAttribute("contenteditable")));
+      }
+      return select(this, selector);
+    },
     closest() {
       for (let n = this; n; n = n.parentElement) {
         if (["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE", "INPUT", "TEXTAREA", "SELECT"].includes(n.tagName) ||
@@ -152,10 +158,14 @@ test("snapshot returns the exact IANA hyperlink and only uniquely selectable saf
     element("a", [text("Learn more")], {href: "https://iana.org/help/example-domains"}),
     element("button", [text("Inspect")], {id: "inspect", type: "button"}),
     element("input", [], {name: "query", type: "search", placeholder: "Search", value: "PRIVATE QUERY"}),
+    element("input", [], {id: "locked", type: "text", readonly: "", placeholder: "Read-only"}),
+    element("textarea", [], {id: "aria-locked", "aria-readonly": "true", placeholder: "Read-only"}),
     element("form", [element("input", [], {type: "hidden", value: "CSRF SECRET"})],
       {id: "send", "aria-label": "Send message"}),
     element("form", [element("input", [], {type: "password", value: "SECRET"})],
       {id: "login", "aria-label": "Sign in"}),
+    element("form", [element("textarea", [], {autocomplete: "cc-number"})],
+      {id: "payment", "aria-label": "Pay"}),
     element("button", [text("Ambiguous")], {id: "duplicate", type: "button"}),
     element("button", [text("Ambiguous")], {id: "duplicate", type: "button"}),
     element("div", [element("button", [text("Private button")], {id: "private", type: "button"})],

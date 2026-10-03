@@ -139,12 +139,15 @@ interaction access. Existing 1.0.0 installations keep Ask every time.
 The installed Mozilla-signed 1.3.0 XPI remains unchanged. It returns bounded
 visible links (including the tested IANA example-domain URL) and supports
 bounded navigation and limited page actions, but it does not enumerate safe
-control selectors. The unreleased 1.3.1 source adds up to 100 uniquely
-selectable, labeled main-document controls to page snapshots and hardens
-sensitive-field handling. It needs a new source-matching Mozilla-signed XPI
-before Lima can bundle or live-test those changes. Do not modify or re-submit
-the 1.3.0 signed bytes under the new version. Earlier navigation acceptance
-does not certify live click, type, or submit interactions.
+control selectors. The 1.3.1 signing attempt did not return an XPI locally;
+its submission receipt requires AMO dashboard review before any retry. The
+unreleased 1.3.2 source adds up to 100 uniquely selectable, labeled
+main-document controls, rejects read-only or disabled action targets, and
+hardens sensitive-field handling. It needs its own source-matching
+Mozilla-signed XPI before Lima can bundle or live-test those changes. Do not
+modify the signed 1.3.0 bytes or treat the 1.3.1 attempt as a release.
+Earlier navigation acceptance does not certify live click, type, or submit
+interactions.
 
 ## Development setup
 

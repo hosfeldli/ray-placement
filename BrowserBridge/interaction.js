@@ -17,6 +17,8 @@
     if (matches.length !== 1) throw new Error("target_ambiguous");
     const element = matches[0];
     if (!element.isConnected || !element.getClientRects().length) throw new Error("target_not_visible");
+    if (element.disabled || element.hasAttribute("disabled") ||
+        element.getAttribute("aria-disabled") === "true") throw new Error("target_not_interactable");
     for (let node = element, depth = 0; node && depth++ < 128; node = node.parentElement) {
       const style = getComputedStyle(node);
       if (node.hasAttribute("hidden") || node.hasAttribute("data-lima-private") ||
@@ -57,6 +59,8 @@
 
   function type(element, text) {
     if (!safeText(text)) throw new Error("invalid_text");
+    if (element.readOnly || element.hasAttribute("readonly") ||
+        element.getAttribute("aria-readonly") === "true") throw new Error("target_not_interactable");
     const tag = element.tagName.toLowerCase();
     if (tag === "input") {
       const kind = (element.type || "text").toLowerCase();
@@ -89,7 +93,7 @@
     if (element.tagName.toLowerCase() !== "form" || typeof element.requestSubmit !== "function") {
       throw new Error("unsupported_target");
     }
-    if ([...element.querySelectorAll("input")].some(sensitiveField)) {
+    if ([...element.querySelectorAll("input,textarea,select,[contenteditable]")].some(sensitiveField)) {
       throw new Error("sensitive_or_unsupported_target");
     }
     element.requestSubmit();
