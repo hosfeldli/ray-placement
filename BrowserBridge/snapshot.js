@@ -77,14 +77,93 @@
     }
     return null;
   }
+  // Return only controls the packaged interaction adapter can address with a
+  // unique, stable selector. Never include field values or controls in private
+  // subtrees. Shadow-root controls are omitted because the adapter targets the
+  // main document only.
+  const safeToken = value => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(value);
+  const sensitiveField = element => {
+    const kind = (element.getAttribute("type") || "").toLowerCase();
+    const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase();
+    return ["password", "file"].includes(kind) ||
+      /(?:password|one-time-code|cc-)/.test(autocomplete);
+  };
+  function controlKind(element) {
+    const tag = element.tagName?.toLowerCase();
+    if (!["form", "button", "input", "textarea"].includes(tag) &&
+        !element.isContentEditable && element.getAttribute("role") !== "button") return null;
+    if (element.disabled || element.hasAttribute("disabled") || element.getAttribute("aria-disabled") === "true") return null;
+    if (tag === "form") {
+      return [...element.querySelectorAll("input")].some(sensitiveField) ? null : "submit";
+    }
+    if (tag === "button") return (element.getAttribute("type") || "submit").toLowerCase() === "button" ? "click" : null;
+    if (tag === "input") {
+      if (sensitiveField(element)) return null;
+      const kind = (element.getAttribute("type") || "text").toLowerCase();
+      if (["button", "checkbox", "radio"].includes(kind)) return "click";
+      if (["text", "search", "email", "url", "tel", "number"].includes(kind)) return "type";
+      return null;
+    }
+    if (tag === "textarea" || element.isContentEditable) return sensitiveField(element) ? null : "type";
+    if (tag !== "a" && element.getAttribute("role") === "button") return "click";
+    return null;
+  }
+  function visibleControl(element) {
+    if (!element.getClientRects().length || element.hasAttribute("hidden") ||
+        element.hasAttribute("data-lima-private") || element.getAttribute("aria-hidden") === "true") return false;
+    const style = getComputedStyle(element);
+    return style.display !== "none" && style.visibility !== "hidden" &&
+      style.visibility !== "collapse" && Number(style.opacity) !== 0 &&
+      (!parent(element) || visible(parent(element)));
+  }
+  function controlSelector(element) {
+    if (element.getRootNode && element.getRootNode() !== document) return null;
+    const tag = element.tagName.toLowerCase();
+    const supportedTag = ["button", "input", "textarea", "form"].includes(tag);
+    const candidates = [];
+    const id = element.getAttribute("id");
+    if (safeToken(id)) candidates.push(supportedTag ? `${tag}#${id}` : `#${id}`);
+    const name = element.getAttribute("name");
+    if (supportedTag && safeToken(name)) candidates.push(`${tag}[name="${name}"]`);
+    const classes = (element.getAttribute("class") || "").split(/\s+/).filter(safeToken).slice(0, 3);
+    for (const className of classes) candidates.push(supportedTag ? `${tag}.${className}` : `.${className}`);
+    if (supportedTag) candidates.push(tag);
+    for (const selector of candidates) {
+      try {
+        const matches = document.querySelectorAll(selector);
+        if (matches.length === 1 && matches[0] === element) return selector;
+      } catch {}
+    }
+    return null;
+  }
+  let inspectedControls = 0;
+  function control(element) {
+    const action = controlKind(element);
+    if (!action) return null;
+    if (++inspectedControls > 200) { exhausted = true; return null; }
+    if (!visibleControl(element)) return null;
+    const selector = controlSelector(element);
+    if (!selector) return null;
+    const label = (element.getAttribute("aria-label") || element.getAttribute("title") ||
+      (action === "click" ? textWithin(element, 128) : "") ||
+      element.getAttribute("placeholder") || element.getAttribute("name") || element.getAttribute("id") || "").trim().slice(0, 128);
+    if (!label) return null;
+    return {selector, action, label};
+  }
   const documentRoot = document.body || document.documentElement;
   const root = document.querySelector("main,article,[role=main]") || documentRoot;
   const text = textWithin(root, 32000);
-  const links = [], headings = [], seen = new Set();
+  const links = [], headings = [], controls = [], seen = new Set();
   let scanned = 0;
   for (const element of nodes(documentRoot)) {
     if (++scanned > 20000) { exhausted = true; break; }
-    if (element.nodeType !== 1 || !visible(element)) continue;
+    if (element.nodeType !== 1) continue;
+    const actionable = control(element);
+    if (actionable) {
+      if (controls.length < 100) controls.push(actionable);
+      else exhausted = true;
+    }
+    if (!visible(element)) continue;
     if (headings.length < 60 && (/^H[1-6]$/.test(element.tagName) || element.getAttribute("role") === "heading")) {
       headings.push(textWithin(element, 256));
     }
@@ -105,7 +184,7 @@
   for (let i = 0; i < Math.min(selection?.rangeCount || 0, 8); i++) ranges.push(selection.getRangeAt(i));
   const selectedText = ranges.length ? textWithin(documentRoot, 8000, ranges) : "";
   return {url: location.href, title: document.title.slice(0, 256),
-    text, selection: selectedText, links, headings,
+    text, selection: selectedText, links, headings, controls,
     truncated: exhausted, untrustedPageContent: true,
-    interactionSupport: "Explicit HTTPS site grants support bounded navigation. Compatible companions also support Lima-confirmed click, text entry, and form submission; arbitrary scripts and password fields remain excluded."};
+    interactionSupport: "Explicit HTTPS site grants support bounded navigation. Discoverable controls list safe selectors for Lima-confirmed click, text entry, and form submission; arbitrary scripts and sensitive fields remain excluded."};
 })()

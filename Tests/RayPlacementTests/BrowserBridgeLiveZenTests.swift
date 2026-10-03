@@ -72,7 +72,18 @@ import RayPlacementCore
         Issue.record("Signed Zen companion returned an unexpected page identity")
         return
     }
-    print("Zen 1.3.0 read: example.com identity verified")
+    let ianaLinks: [String] = {
+        guard case .array(let links)? = pageFields["links"] else { return [] }
+        return links.compactMap { link in
+            guard case .object(let fields) = link,
+                  case .string(let href)? = fields["href"],
+                  let url = URL(string: href),
+                  url.host == "iana.org" || url.host == "www.iana.org" else { return nil }
+            return href
+        }
+    }()
+    #expect(ianaLinks.contains("https://iana.org/help/example-domains"))
+    print("Zen 1.3.0 read: example.com identity and IANA hyperlink verified")
 
     defaults.set(false, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
     let offAgain = try await exampleTabID()

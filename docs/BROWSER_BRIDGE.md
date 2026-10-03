@@ -31,10 +31,12 @@
    read: it must be denied. **Ask every time** removes only persistent interaction
    access. Test persistence by restarting the browser and reconnecting. Changing
    policy cancels pending mutations rather than approving them.
-9. Browser AI tools are separately off by default. Enable only the needed read,
-   navigation, or Experimental interaction group in AI Tools; site grants still
-   apply. Browser context sent to AI goes to the selected conversation provider.
-   Revocation does not erase past conversations.
+9. Browser AI reading tools are selected by default on new installations and
+   migrated once for older saved tool lists; users can disable them. AI still
+   needs a routed request, an enabled Bridge, and a site grant. Navigation and
+   Experimental interaction remain off until enabled separately in AI Settings
+   and Tools. Browser context sent to AI goes to the selected conversation
+   provider; revocation does not erase past conversations.
 
 **Setup Guide…** in the same Settings pane provides the complete offline guide,
 including updates, troubleshooting, removal, privacy, and Stop/Escape semantics.
@@ -78,15 +80,15 @@ Settings → Browser Bridge contains:
   Mutations default to **Ask every time**; the companion can explicitly remember
   **Always allow interactions** for each exact site.
 
-AI browser tools are **off by default** and separated into read, navigation,
-and Experimental interaction groups. Read tools inspect granted tabs and actual
-Salesforce Case links. Navigation tools can open, focus, and navigate granted
-HTTPS tabs. Experimental `browser_click`, `browser_type`, and `browser_submit`
-require a compatible 1.3.0 companion, explicit Lima settings, and individual
-user approval for every action; they exclude arbitrary scripts and password
-fields. Browser text is untrusted data, not instructions. AI context is sent to
-the selected conversation provider; revoking a site does not erase text already
-included in a conversation.
+AI browser tools are separated into read, navigation, and Experimental
+interaction groups. Read schemas are selected by default but remain subject
+to the enabled Bridge, a routed AI request, and site grants. Navigation tools
+can open, focus, and navigate granted HTTPS tabs. Experimental
+`browser_click`, `browser_type`, and `browser_submit` require explicit Lima
+settings and individual user approval for every action; they exclude arbitrary
+scripts and sensitive fields. Browser text is untrusted data, not instructions.
+AI context is sent to the selected conversation provider; revoking a site does
+not erase text already included in a conversation.
 
 ## Experimental broad HTTPS access in Lima
 
@@ -134,9 +136,15 @@ The popup confirmation defaults keyboard focus to Cancel. Lima Settings displays
 both modes after **Test Connection & Refresh Sites**; it cannot silently grant
 interaction access. Existing 1.0.0 installations keep Ask every time.
 
-Version 1.3.0 requires its own source-matching Mozilla-signed XPI. Preserve
-those signed bytes; do not modify or re-submit an earlier version under the same
-number. Earlier acceptance results do not certify page interactions.
+The installed Mozilla-signed 1.3.0 XPI remains unchanged. It returns bounded
+visible links (including the tested IANA example-domain URL) and supports
+bounded navigation and limited page actions, but it does not enumerate safe
+control selectors. The unreleased 1.3.1 source adds up to 100 uniquely
+selectable, labeled main-document controls to page snapshots and hardens
+sensitive-field handling. It needs a new source-matching Mozilla-signed XPI
+before Lima can bundle or live-test those changes. Do not modify or re-submit
+the 1.3.0 signed bytes under the new version. Earlier navigation acceptance
+does not certify live click, type, or submit interactions.
 
 ## Development setup
 
