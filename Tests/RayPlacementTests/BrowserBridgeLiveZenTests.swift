@@ -33,7 +33,7 @@ import RayPlacementCore
     let hasBroad = origins.contains(.string("https://*/*"))
     let hasExactExample = origins.contains(.string("https://example.com/*"))
     let hasInteractions = capabilities.contains(.string("browser_interaction_v1"))
-    print("Zen 1.3.0 status: broad=\(hasBroad), exactExample=\(hasExactExample), interactions=\(hasInteractions)")
+    print("Zen companion status: broad=\(hasBroad), exactExample=\(hasExactExample), interactions=\(hasInteractions)")
     // A signed companion may have an exact-site grant without the optional broad grant.
     #expect(hasBroad || hasExactExample)
     #expect(hasInteractions)
@@ -83,7 +83,7 @@ import RayPlacementCore
         }
     }()
     #expect(ianaLinks.contains("https://iana.org/help/example-domains"))
-    print("Zen 1.3.0 read: example.com identity and IANA hyperlink verified")
+    print("Zen companion read: example.com identity and IANA hyperlink verified")
 
     defaults.set(false, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
     let offAgain = try await exampleTabID()
@@ -138,7 +138,7 @@ import RayPlacementCore
         Issue.record("Zen did not confirm the approved background tab")
         return
     }
-    print("Zen 1.3.0 Open tab: user-approved background navigation verified")
+    print("Zen companion Open tab: user-approved background navigation verified")
 }
 
 /// Exact-site navigation acceptance for installations that deliberately leave
@@ -220,7 +220,7 @@ import RayPlacementCore
         Issue.record("Zen did not confirm the exact-site background tab after loading")
         return
     }
-    print("Zen 1.3.0 exact-site Open tab: user-approved navigation and page read verified")
+    print("Zen companion exact-site Open tab: user-approved navigation and page read verified")
 }
 
 /// Retrospective verification for a previously approved navigation. This never
@@ -272,5 +272,5 @@ import RayPlacementCore
         Issue.record("Previously approved tab could not be read at its expected URL")
         return
     }
-    print("Zen 1.3.0 exact-site Open tab: previously approved navigation and page read verified")
+    print("Zen companion exact-site Open tab: previously approved navigation and page read verified")
 }

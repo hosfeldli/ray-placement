@@ -13,6 +13,7 @@ struct AIProviderSettingsView: View {
     @State private var message: String?
     @State private var confirmRemove = false
     @State private var confirmBroadBrowserGrants = false
+    @State private var confirmInteractionJournal = false
 
     init(model: AIChatViewModel) {
         self.model = model
@@ -44,7 +45,7 @@ struct AIProviderSettingsView: View {
                     Button("Cancel", role: .cancel) {}
                     Button("Enable Experiment") { actionPolicy.setBroadBrowserGrantsExperimentalEnabled(true) }
                 } message: {
-                    Text("If Zen or Firefox has already granted https://*/*, Lima can read eligible tabs across HTTPS sites. AI may send selected page context to your configured provider. Private windows and form values remain excluded. Click, type, and submit still require individual approval. Turning this off stops Lima from using the broad grant; revoke the browser permission separately in the companion.")
+                    Text("If Zen or Firefox has already granted https://*/*, Lima can read eligible tabs across HTTPS sites. AI may send selected page context to your configured provider. Private windows and form values remain excluded. This switch does not grant browser interactions; those need a separate exact-site grant and AI action setting. Revoke the browser permission separately in the companion.")
                 }
                 Text("Off by default. This switch does not grant browser permission. It allows Lima to use a separately approved https://*/* reading grant; exact-site grants remain the default. Browser navigation and interactions still follow their separate AI action settings.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -55,7 +56,13 @@ struct AIProviderSettingsView: View {
                 ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
                     Picker(category.title, selection: Binding(
                         get: { actionPolicy.access(for: category) },
-                        set: { actionPolicy.setAccess($0, for: category) }
+                        set: { access in
+                            if category == .browserInteraction && access == .allowWithJournal {
+                                confirmInteractionJournal = true
+                            } else {
+                                actionPolicy.setAccess(access, for: category)
+                            }
+                        }
                     )) {
                         ForEach(category.supportedAccesses) { access in
                             Text(access.title).tag(access)
@@ -68,8 +75,14 @@ struct AIProviderSettingsView: View {
                     Text("Browser click, type, and submit are hidden until you enable Browser AI interaction in Advanced → Experimental Features.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Browser navigation can run with the Activity journal when enabled. Browser click, type, and submit, local file creation or replacement, and terminal or code commands always ask before each action. Browser interaction also requires a compatible signed Browser Bridge companion.")
+                Text("Browser navigation, click, and type can run without repeated Lima prompts only when their category is set to Allow with journal. Click and type still need an exact-site interaction grant in the companion. Form submission, local file writes, and terminal or code commands always ask. Browser interaction requires a compatible signed companion.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    .alert("Allow browser clicks and typing without repeated Lima prompts?", isPresented: $confirmInteractionJournal) {
+                        Button("Cancel", role: .cancel) {}
+                        Button("Allow with Journal") { actionPolicy.setAccess(.allowWithJournal, for: .browserInteraction) }
+                    } message: {
+                        Text("On sites where you separately enabled Always allow interactions in Zen or Firefox, Lima may click or type requested content without another prompt. Each action is recorded in Activity. Form submission still asks in Lima, and you can return to Ask every time or Off here.")
+                    }
                 Text("Approved build, test, or script commands run project code as your macOS user, not in a security sandbox. Review the full command and project before allowing it; a timeout may not stop child processes started by that code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }

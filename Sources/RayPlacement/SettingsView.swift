@@ -526,7 +526,7 @@ struct SettingsView: View {
                     get: { actionPolicy.browserInteractionExperimentalEnabled },
                     set: { actionPolicy.setBrowserInteractionExperimentalEnabled($0) }
                 ))
-                Text("Off by default. Unlocks browser click, type, and submit actions in AI Settings. Every action still requires approval, an enabled Browser interaction policy, site access, and a compatible signed Browser Bridge companion. Browser reading and navigation do not require this switch.")
+                Text("Off by default. Unlocks browser click, type, and submit actions in AI Settings. An enabled interaction policy, exact-site access, and a compatible signed Browser Bridge companion are still required. Click and type may use an explicitly selected Activity journal mode; form submission always asks in Lima. Browser reading and navigation do not require this switch.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }

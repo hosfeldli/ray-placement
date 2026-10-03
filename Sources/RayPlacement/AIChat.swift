@@ -3534,7 +3534,7 @@ struct AIChatWorkspaceView: View {
                 .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
             Text("Connect " + model.provider.title)
                 .limaFont(.title2.weight(.semibold))
-            Text("Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Context and tools are opt-in. Computer actions also need their category enabled in Settings → AI and their individual tool enabled here. Browser navigation can be journaled; browser interaction, file writes, and terminal or code commands always ask before they run.")
+            Text("Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Context and tools are opt-in. Computer actions also need their category enabled in Settings → AI and their individual tool enabled here. Browser navigation, click, and type can use an explicitly selected Activity journal mode; form submission, file writes, and terminal or code commands always ask before they run.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             providerPicker
@@ -3677,7 +3677,7 @@ struct AIChatWorkspaceView: View {
                 Label("Browser Bridge connected", systemImage: "network")
                     .limaFont(.caption2.weight(.medium))
                     .foregroundStyle(LimaTheme.textSecondary)
-                    .help("Lima can inspect granted tabs. Browser navigation and interaction require their own AI Settings category and tool toggle; interactions always ask before use.")
+                    .help("Lima can inspect granted tabs. Browser navigation and interaction require their own AI Settings category and tool toggle; click and type may use an explicit journal mode; submission still asks.")
             }
         }
     }
@@ -3868,7 +3868,7 @@ struct AIChatWorkspaceView: View {
                 Text("No connected services yet")
             }
             Divider()
-            Text("Tools act only when enabled here. Browser interactions, file writes, and terminal commands always ask before they run; navigation can use the Activity journal when configured.")
+            Text("Tools act only when enabled here. Browser navigation, click, and type can use an explicit Activity journal mode. Form submission, file writes, and terminal commands still ask before they run.")
             Button("Manage Connected Services…") {
                 model.openMCPManager()
             }

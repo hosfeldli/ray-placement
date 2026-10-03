@@ -3149,7 +3149,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "browser-interaction",
             title: "Browser interaction",
-            summary: "Click, type, and submit only with per-action approval",
+            summary: "Click and type with site access; submit always asks",
             symbol: "cursorarrow.click",
             toolIDs: ["browser_click", "browser_type", "browser_submit"]
         ),

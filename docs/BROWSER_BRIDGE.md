@@ -10,7 +10,7 @@
    companion; obtain an official release, not the unsigned development package.
 3. In the intended browser/profile, open **about:addons**, choose the gear menu
    → **Install Add-on From File…**, and select the saved XPI. Review the browser's
-   permission/data-consent prompts. Verify **Lima Browser Bridge 1.3.0** is enabled.
+   permission/data-consent prompts. Verify **Lima Browser Bridge 1.3.2** is enabled.
    Repeat separately for other browsers/profiles. Never disable signature checks.
 4. In Lima, enable **Enable browser bridge**, choose **Install Native Helper…**,
    and confirm. Open the companion popup and choose **Reconnect to Lima**.
@@ -24,8 +24,10 @@
 7. Leave interactions at **Ask every time** unless needed. Open, focus,
    navigate, close, click, type, and submit requests appear in the companion's
    pending actions for explicit approval or denial. **Always allow interactions…**
-   is a separate, site-named confirmation. AI click, type, and submit remain
-   Experimental and always require a separate per-action approval in Lima.
+   is a separate, site-named confirmation that prevents repeated companion
+   prompts on that exact site. In Lima, Browser interaction remains Experimental;
+   an explicit **Allow with journal** setting can skip repeated Lima prompts for
+   click and type. Form submission still needs individual Lima approval.
    Navigation, closing, and submission may discard or change work.
 8. To verify revocation, choose **Revoke all access**, refresh, and start a *new*
    read: it must be denied. **Ask every time** removes only persistent interaction
@@ -85,8 +87,10 @@ interaction groups. Read schemas are selected by default but remain subject
 to the enabled Bridge, a routed AI request, and site grants. Navigation tools
 can open, focus, and navigate granted HTTPS tabs. Experimental
 `browser_click`, `browser_type`, and `browser_submit` require explicit Lima
-settings and individual user approval for every action; they exclude arbitrary
-scripts and sensitive fields. Browser text is untrusted data, not instructions.
+settings and exact-site companion interaction access. Click and type may use
+an opt-in Activity journal mode instead of repeated Lima prompts; form
+submission always asks in Lima. They exclude arbitrary scripts and sensitive
+fields. Browser text is untrusted data, not instructions.
 AI context is sent to the selected conversation provider; revoking a site does
 not erase text already included in a conversation.
 
@@ -104,10 +108,11 @@ including a page read already in flight. Private windows stay excluded.
 
 Broad permission never enables AI click, type, or submit on its own. Those
 actions still require an exact-site grant, the separate Browser AI interaction
-setting, and individual Lima approval; the companion may also ask. The
-signed 1.3.0 XPI is not changed by this Lima-side setting.
+setting, and companion interaction access. Lima asks for click and type unless
+the user explicitly selected Allow with journal; form submission always asks.
+Broad HTTPS access alone never grants interactions.
 
-## Persistent site access (companion 1.3.0)
+## Persistent site access (companion 1.3.2)
 
 The popup separates two choices:
 - **Always allow reading on this site**: Firefox remembers the exact HTTPS-origin
@@ -115,8 +120,8 @@ The popup separates two choices:
   tab mutations.
 - **Always allow interactions…**: a second, site-named confirmation lets Lima
   open, focus, navigate and close tabs for that site without another popup.
-  In 1.3.0 it also governs bounded click, type, and submit requests, but never
-  enables arbitrary scripts or bypasses Lima's separate per-action AI approval.
+  It also governs bounded click, type, and submit requests, but never enables
+  arbitrary scripts or changes Lima's separate AI action policy.
   Cross-site navigation needs both source and destination interaction grants.
 
 Both choices survive browser restarts. Interaction preferences use local
@@ -136,18 +141,13 @@ The popup confirmation defaults keyboard focus to Cancel. Lima Settings displays
 both modes after **Test Connection & Refresh Sites**; it cannot silently grant
 interaction access. Existing 1.0.0 installations keep Ask every time.
 
-The installed Mozilla-signed 1.3.0 XPI remains unchanged. It returns bounded
-visible links (including the tested IANA example-domain URL) and supports
-bounded navigation and limited page actions, but it does not enumerate safe
-control selectors. The 1.3.1 signing attempt did not return an XPI locally;
-its submission receipt requires AMO dashboard review before any retry. The
-unreleased 1.3.2 source adds up to 100 uniquely selectable, labeled
-main-document controls, rejects read-only or disabled action targets, and
-hardens sensitive-field handling. It needs its own source-matching
-Mozilla-signed XPI before Lima can bundle or live-test those changes. Do not
-modify the signed 1.3.0 bytes or treat the 1.3.1 attempt as a release.
-Earlier navigation acceptance does not certify live click, type, or submit
-interactions.
+The signed 1.3.0 and 1.3.1 packages remain unchanged. A source-matching
+Mozilla-signed 1.3.2 XPI has been downloaded from the unlisted signing flow;
+Zen or Firefox must still verify its signature during installation. Version
+1.3.2 adds up to 100 uniquely selectable, labeled main-document controls to
+page snapshots, rejects read-only or disabled action targets, and hardens
+sensitive-field handling. Earlier live navigation and hyperlink reads do not
+certify 1.3.2 installation or live click, type, and submit interactions.
 
 ## Development setup
 

@@ -171,7 +171,7 @@ struct BrowserBridgeSettingsView: View {
                     }
                     if busy { Button("Stop") { operation?.cancel() } }
                 }
-                Text("Tab changes ask in the companion popup unless Always allow interactions is enabled for every involved site. Cross-site navigation requires source and destination access. AI click, type, and submit also require a compatible signed companion and an individual Lima confirmation; the bridge never evaluates arbitrary page scripts or reads form values.")
+                Text("Tab changes ask in the companion popup unless Always allow interactions is enabled for every involved site. Cross-site navigation requires source and destination access. AI click and type require an exact-site grant and a compatible signed companion; Lima asks for each action unless its Browser interaction policy is explicitly set to Allow with journal. Form submission always asks in Lima. The bridge never evaluates arbitrary page scripts or reads form values.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !inspection.isEmpty {
                     DisclosureGroup("Page preview (not saved)") {
