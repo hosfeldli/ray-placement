@@ -168,13 +168,98 @@ import RayPlacementCore
             "active": .bool(false)
         ]
     )
+    // Firefox/Zen can return a provisional URL from tabs.create while the new
+    // background tab is still loading. Verify the returned tab ID after it loads.
     guard case .object(let info) = result,
-          case .string(let rawURL)? = info["url"],
+          case .number(let openedID)? = info["id"] else {
+        Issue.record("Zen did not return an opened background tab ID")
+        return
+    }
+    var verified = false
+    for attempt in 0..<20 {
+        let listed = try await service.request("browser.tabs")
+        guard case .object(let fields) = listed,
+              case .array(let tabs)? = fields["tabs"] else {
+            Issue.record("Zen did not return granted tabs after opening")
+            return
+        }
+        let openedTab = tabs.contains { tab in
+            guard case .object(let tabInfo) = tab,
+                  case .number(let id)? = tabInfo["id"], id == openedID,
+                  case .string(let rawURL)? = tabInfo["url"],
+                  let url = URL(string: rawURL) else { return false }
+            return url.host == "example.com" && url.query == "lima-bridge-acceptance=1"
+        }
+        if openedTab {
+            let page = try await service.request("browser.read", arguments: ["tabID": .number(openedID)])
+            guard case .object(let pageFields) = page,
+                  case .string(let rawURL)? = pageFields["url"],
+                  let url = URL(string: rawURL),
+                  url.host == "example.com",
+                  url.query == "lima-bridge-acceptance=1" else {
+                Issue.record("Zen opened the tab but could not read its expected page")
+                return
+            }
+            verified = true
+            break
+        }
+        if attempt < 19 { try await Task.sleep(nanoseconds: 250_000_000) }
+    }
+    guard verified else {
+        Issue.record("Zen did not confirm the exact-site background tab after loading")
+        return
+    }
+    print("Zen 1.3.0 exact-site Open tab: user-approved navigation and page read verified")
+}
+
+/// Retrospective verification for a previously approved navigation. This never
+/// creates another tab or presents an approval prompt.
+@Test @MainActor func browserBridgeLiveZenVerifyOpenedExampleTab() async throws {
+    guard ProcessInfo.processInfo.environment["LIMA_LIVE_ZEN_VERIFY_OPEN"] == "1" else { return }
+    let suite = "lima-live-zen-verify-open-\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    let service = BrowserBridgeService(
+        defaults: defaults, socketURL: BrowserBridgeIdentity.socketURL, registry: TaskRegistry()
+    )
+    defer {
+        service.stop()
+        defaults.removePersistentDomain(forName: suite)
+    }
+    service.enabled = true
+    for _ in 0..<150 where service.sessions.isEmpty {
+        try await Task.sleep(nanoseconds: 100_000_000)
+    }
+    guard !service.sessions.isEmpty else {
+        Issue.record("Signed Zen companion did not connect")
+        return
+    }
+    let listed = try await service.request("browser.tabs")
+    guard case .object(let fields) = listed,
+          case .array(let tabs)? = fields["tabs"] else {
+        Issue.record("Signed Zen companion did not return granted tabs")
+        return
+    }
+    let matchingID: Double? = tabs.compactMap { tab in
+        guard case .object(let info) = tab,
+              case .string(let rawURL)? = info["url"],
+              let url = URL(string: rawURL),
+              url.host == "example.com",
+              url.query == "lima-bridge-acceptance=1",
+              case .number(let id)? = info["id"] else { return nil }
+        return id
+    }.first
+    guard let matchingID else {
+        Issue.record("Previously approved exact-site background tab was not found")
+        return
+    }
+    let page = try await service.request("browser.read", arguments: ["tabID": .number(matchingID)])
+    guard case .object(let pageFields) = page,
+          case .string(let rawURL)? = pageFields["url"],
           let url = URL(string: rawURL),
           url.host == "example.com",
           url.query == "lima-bridge-acceptance=1" else {
-        Issue.record("Zen did not confirm the exact-site background tab")
+        Issue.record("Previously approved tab could not be read at its expected URL")
         return
     }
-    print("Zen 1.3.0 exact-site Open tab: user-approved background navigation verified")
+    print("Zen 1.3.0 exact-site Open tab: previously approved navigation and page read verified")
 }
