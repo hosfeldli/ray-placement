@@ -55,7 +55,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             extensionStoreModel: extensionStoreModel,
             reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
             onOpenCommandSearch: { [weak self] query in self?.showCommandSearch(query: query) },
-            onOpenSettings: { [weak self] in self?.showSettings() }
+            onOpenSettings: { [weak self] in self?.showSettings() },
+            onRunWorkflow: { [weak self] workflow in self?.executeWorkflow(workflow) }
         )
         controller.onLauncherQueryDictation = { [weak self] delta in
             guard let self, !delta.isEmpty else { return }
@@ -1398,9 +1399,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .formatter:
             notesWindow.present(module: .formatter)
         case .workflows:
-            let window = WorkflowWindowController { [weak self] workflow in self?.executeWorkflow(workflow) }
-            retainedSurfaceWindows.append(window)
-            window.present()
+            notesWindow.present(module: .workflows)
         case .extensionDevelopment:
             let window = ExtensionDevelopmentWindowController()
             retainedSurfaceWindows.append(window)
@@ -2906,6 +2905,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .captureSelectionToNote:
             captureSelectionToNote(from: previousApplication ?? lastExternalApplication)
 
+        case .openGrammarWorkspace:
+            notesWindow.present(module: .grammar)
+
+        case .openTranscripts:
+            notesWindow.present(module: .dictation)
+
+        case .openFormatter:
+            notesWindow.present(module: .formatter)
+
         case .openTerminal:
             showDeveloperTerminal()
 
@@ -2928,7 +2936,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
         case .openWorkflows:
-            enterGenericSurface(id: "workflows", title: "Workflows", kind: .results, height: 600, canPopOut: true, handler: .workflows, primaryActionTitle: "Run Workflow")
+            notesWindow.present(module: .workflows)
 
         case .openSettings:
             showSettings()

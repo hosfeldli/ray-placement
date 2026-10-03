@@ -25,11 +25,15 @@ import Testing
 @Test func workspaceDestinationsHaveStableDistinctShortcuts() {
     let modules = LimaWorkspaceModule.allCases
     #expect(Set(modules.map(\.shortcutNumber)).count == modules.count)
-    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "C", "4", "5", "6", "7", "8", "9"])
-    #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .notes, .ai, .context, .grammar, .dictation])
-    #expect(LimaWorkspaceModule.toolDestinations == [.extensions, .clipboard, .terminal, .formatter])
+    #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "4", "5", "6", "7", "8", "9", "T", "F"])
+    #expect(LimaWorkspaceModule.context.shortcutAlias == "C")
+    #expect(LimaWorkspaceModule.notes.shortcutAlias == nil)
+    #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .notes, .ai, .context])
+    #expect(LimaWorkspaceModule.toolDestinations == [.clipboard, .workflows, .extensions])
     #expect(LimaWorkspaceModule.primaryDestinations == LimaWorkspaceModule.workspaceDestinations + LimaWorkspaceModule.toolDestinations)
-    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .context, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter])
+    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .context, .clipboard, .workflows, .extensions])
+    #expect(LimaWorkspaceModule.hiddenDestinations == [.grammar, .dictation, .terminal, .formatter])
+    #expect(Set(LimaWorkspaceModule.primaryDestinations).isDisjoint(with: LimaWorkspaceModule.hiddenDestinations))
     #expect(modules.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
 }
 

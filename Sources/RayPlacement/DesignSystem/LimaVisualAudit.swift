@@ -86,12 +86,14 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
-                for scenario: AIChatVisualScenario in [.streaming, .failure] {
-                    let ai = AIChatVisualPreview(scenario: scenario)
-                        .environment(\.colorScheme, dark ? .dark : .light)
-                    if !(await render(ai, size: NSSize(width: 1040, height: 700), appearance: appearance,
-                                      url: directory.appendingPathComponent("functional-\(scenario.rawValue)-\(dark ? "dark" : "light").png"))) {
-                        failures += 1
+                for scenario: AIChatVisualScenario in [.streaming, .failure, .markdown] {
+                    for width: CGFloat in scenario == .failure ? [1040] : [420, 1040] {
+                        let ai = AIChatVisualPreview(scenario: scenario)
+                            .environment(\.colorScheme, dark ? .dark : .light)
+                        if !(await render(ai, size: NSSize(width: width, height: 700), appearance: appearance,
+                                          url: directory.appendingPathComponent("functional-\(scenario.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                            failures += 1
+                        }
                     }
                 }
                 let memoryStore = AIWorkspaceStore(fixtures: [], memories: [
@@ -113,9 +115,21 @@ enum LimaVisualAudit {
                 let previewNotes = [
                     MarkdownNote(title: "Release checklist", content: "# Release checklist\n\n- [x] Run the test suite\n- [ ] Review the final build"),
                     MarkdownNote(title: "Workspace notes", content: "Keep project decisions close to the work."),
-                    MarkdownNote(title: "Ideas for later", content: "A small, searchable place for the next thought.")
+                    MarkdownNote(title: "Ideas for later", content: "A small, searchable place for the next thought.", isPinned: true)
                 ]
-                let home = HomeWorkspaceView(store: NotesStore(visualFixtures: previewNotes), open: { _ in }, openShelf: {}, openCommandSearch: { _ in })
+                let previewConversations = AIConversationStore(fixtures: [
+                    AIConversation(title: "Browser integration", messages: [
+                        AIChatMessage(role: .user, text: "Review the navigation-only browser scope.")
+                    ])
+                ])
+                let home = HomeWorkspaceView(
+                    store: NotesStore(visualFixtures: previewNotes),
+                    conversations: previewConversations,
+                    open: { _ in },
+                    openConversation: { _ in },
+                    startNoteDictation: {},
+                    openCommandSearch: { _ in }
+                )
                     .environment(\.colorScheme, dark ? .dark : .light)
                 if !(await render(home, size: NSSize(width: 1040, height: 700), appearance: appearance,
                                   url: directory.appendingPathComponent("workspace-home-\(dark ? "dark" : "light").png"))) {

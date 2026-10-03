@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 @MainActor
 struct BrowserBridgeSettingsView: View {
     @ObservedObject private var bridge = BrowserBridgeService.shared
+    @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @State private var message: String?
     @State private var installed = false
     @State private var confirmInstall = false
@@ -58,7 +59,7 @@ struct BrowserBridgeSettingsView: View {
                 Toggle("Enable browser bridge", isOn: $bridge.enabled)
                 LabeledContent("Connection", value: bridge.status)
                 LabeledContent("Native helper", value: installed ? "Installed for this app" : "Setup or repair required")
-                Text("Page access is opt-in per HTTPS site. No private windows, passwords, arbitrary scripts, or background browsing capture.")
+                Text("Exact-site access is the default. A separately approved broad HTTPS grant works only when enabled in AI Settings → Experimental browser access. No private windows, passwords, arbitrary scripts, or background browsing capture.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button(installed ? "Repair Native Helper…" : "Install Native Helper…") { confirmInstall = true }
@@ -100,13 +101,17 @@ struct BrowserBridgeSettingsView: View {
                 ForEach(grants, id: \.self) { site in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(site).font(.caption.monospaced())
-                        Text(interactionGrants.contains(site)
-                             ? "Reading: Always allowed · Interactions: Always allowed"
-                             : "Reading: Always allowed · Interactions: Ask every time")
+                        Text(site == "https://*/*"
+                             ? (actionPolicy.broadBrowserGrantsExperimentalEnabled
+                                ? "Broad HTTPS reading: Enabled in Lima · Interactions: Exact-site only"
+                                : "Broad HTTPS reading: Off in Lima · Interactions: Exact-site only")
+                             : (interactionGrants.contains(site)
+                                ? "Reading: Allowed · Companion interactions: Always allowed · AI: Ask each action"
+                                : "Reading: Allowed · Companion interactions: Ask · AI: Ask each action"))
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-                Text("Manage reading and interaction access separately in the companion popup, then refresh here. Reading stays allowed until revoked. Interactions default to Ask every time; Always allow interactions is an explicit per-site choice. Revoking reading clears both modes and invalidates pending work. Data already added to a conversation is not erased. Browser context used by AI is sent to the conversation's selected provider.")
+                Text("Manage browser permissions and per-site interaction modes in the companion popup, then refresh here. Lima's broad-grant switch does not grant or revoke browser permission. Turning it off stops broad-only reads; exact-site grants remain usable. AI click, type, and submit still require individual Lima approval and an exact-site grant. Data already added to a conversation is not erased. Browser context used by AI is sent to the conversation's selected provider.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Browser interactions") {
@@ -166,7 +171,7 @@ struct BrowserBridgeSettingsView: View {
                     }
                     if busy { Button("Stop") { operation?.cancel() } }
                 }
-                Text("Tab changes ask in the companion popup unless Always allow interactions is enabled for every involved site. Cross-site navigation requires source and destination access. These choices cover only tab actions, not form filling or arbitrary scripts.")
+                Text("Tab changes ask in the companion popup unless Always allow interactions is enabled for every involved site. Cross-site navigation requires source and destination access. AI click, type, and submit also require a compatible signed companion and an individual Lima confirmation; the bridge never evaluates arbitrary page scripts or reads form values.")
                     .font(.caption).foregroundStyle(.secondary)
                 if !inspection.isEmpty {
                     DisclosureGroup("Page preview (not saved)") {

@@ -99,7 +99,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .appearance:
             return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
         case .advanced:
-            return ["advanced", "performance", "privacy", "permissions", "usage", "logs", "developer", "secrets", "diagnostics", "clipboard"]
+            return ["advanced", "experimental", "browser interaction", "performance", "privacy", "permissions", "usage", "logs", "developer", "secrets", "diagnostics", "clipboard"]
         }
     }
 
@@ -136,6 +136,7 @@ struct SettingsView: View {
     @ObservedObject private var permissionCenter = PermissionCenter.shared
     @ObservedObject private var backups = DataBackupCoordinator.shared
     @ObservedObject private var secrets = LimaSecretStore.shared
+    @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @State private var secretName = ""
     @State private var secretValue = ""
     @State private var secretKind: LimaSecretKind = .localSecret
@@ -502,6 +503,7 @@ struct SettingsView: View {
                 Text("Privacy & Permissions").tag(1)
                 Text("Usage & Logs").tag(2)
                 Text("Developer").tag(3)
+                Text("Experimental").tag(4)
             }
             .pickerStyle(.segmented)
             .padding(12)
@@ -510,10 +512,28 @@ struct SettingsView: View {
                 case 1: privacyTab
                 case 2: usageTab
                 case 3: secretsTab
+                case 4: experimentalTab
                 default: advancedTab
                 }
             }
         }
+    }
+
+    private var experimentalTab: some View {
+        Form {
+            Section("Experimental Features") {
+                Toggle("Browser AI interaction", isOn: Binding(
+                    get: { actionPolicy.browserInteractionExperimentalEnabled },
+                    set: { actionPolicy.setBrowserInteractionExperimentalEnabled($0) }
+                ))
+                Text("Off by default. Unlocks browser click, type, and submit actions in AI Settings. Every action still requires approval, an enabled Browser interaction policy, site access, and a compatible signed Browser Bridge companion. Browser reading and navigation do not require this switch.")
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private var advancedTab: some View {

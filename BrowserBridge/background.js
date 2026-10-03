@@ -23,7 +23,10 @@ async function loadInteractionPolicy() {
 }
 function cancelMutations() {
   for (const [id, state] of active) {
-    if (["browser.open", "browser.open_tabs", "browser.navigate", "browser.focus", "browser.close"].includes(state.command)) cancel(id);
+    if ([
+      "browser.open", "browser.open_tabs", "browser.navigate", "browser.focus", "browser.close",
+      "browser.click", "browser.type", "browser.submit"
+    ].includes(state.command)) cancel(id);
   }
 }
 function failInteractionStorage() {
@@ -112,6 +115,21 @@ function info(tab) {
   return {id: tab.id, title: (tab.title || "").slice(0, 256), url: tab.url,
     active: !!tab.active, windowID: tab.windowId};
 }
+async function performPageInteraction(tab, m, state) {
+  check(state);
+  await browser.tabs.executeScript(tab.id, {file: "interaction.js", allFrames: false, runAt: "document_idle"});
+  check(state);
+  const current = await allowedTab(tab.id);
+  if (current.url !== tab.url || current.url !== m.arguments.expectedURL) error("page_changed");
+  const message = {type: "lima-browser-interaction", command: m.command, selector: m.arguments.selector};
+  if (m.command === "browser.type") message.text = m.arguments.text;
+  const result = await browser.tabs.sendMessage(tab.id, message);
+  // A reply means the page action may already have happened. Report its real
+  // result rather than mislabeling a late Stop as proof of non-execution.
+  if (result && typeof result.error === "string" && /^[a-z_]{1,64}$/.test(result.error)) error(result.error);
+  if (!result || typeof result !== "object" || typeof result.performed !== "string") error("invalid_response");
+  return result;
+}
 async function execute(m, state) {
   const a = m.arguments;
   check(state);
@@ -119,7 +137,8 @@ async function execute(m, state) {
     case "bridge.status":
       await policyQueue;
       return {connected: true, origins: (await browser.permissions.getAll()).origins || [],
-        interactionOrigins: [...interactionOrigins], interactionPolicyAvailable: storageAvailable};
+        interactionOrigins: [...interactionOrigins], interactionPolicyAvailable: storageAvailable,
+        capabilities: ["browser_interaction_v1"]};
     case "browser.tabs": {
       const result = [];
       for (const tab of (await browser.tabs.query({})).slice(0, 500)) {
@@ -178,6 +197,11 @@ async function performMutation(m, state) {
     }
     return {opened, failed: 0, background: a.background};
   }
+  if (["browser.click", "browser.type", "browser.submit"].includes(m.command)) {
+    const tab = await allowedTab(a.tabID);
+    if (tab.url !== a.expectedURL) error("page_changed");
+    return await performPageInteraction(tab, m, state);
+  }
   // Resolve destination grants first, then re-read the source immediately before
   // mutation. No asynchronous approval survives cancellation or grant removal.
   if (m.command === "browser.navigate" && !await granted(a.url)) error("site_not_granted");
@@ -230,7 +254,9 @@ function connect() {
       const state = {cancelled: false, connection, command: m.command}; active.set(m.id, state);
       try {
         const result = await execute(m, state);
-        check(state);
+        // Completed mutations may already be visible in the page. Do not turn
+        // their successful result into a false cancellation on a late Stop.
+        if (!P.mutationSites(m).length) check(state);
         response(connection, m, result);
       } catch (e) {
         response(connection, m, null, /^[a-z_]{1,64}$/.test(e.message) ? e.message : "request_failed");

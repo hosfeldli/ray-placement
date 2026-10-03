@@ -11,12 +11,12 @@
   <button id="grant">Always allow reading on this site</button>
   <p class="detail">Reading stays allowed until revoked. Only explicitly granted sites share tab URLs/titles, visible text, links, and selection with Lima. AI context may go to the provider selected in Lima. Private windows and form fields are excluded.</p>
   <ul id="grants"></ul>
-  <p class="detail">Interaction access is separate and defaults to Ask every time. It covers opening, focusing, navigating, and closing tabs—not arbitrary scripts, form filling, or clicks. Revoking reading also clears interaction access; it does not erase context already shared.</p>
+  <p class="detail">Interaction access is separate and defaults to Ask every time. It covers bounded tab changes and, with a compatible companion, Lima-confirmed clicks, text entry, and form submission. It never enables arbitrary scripts or password-field access. Revoking reading also clears interaction access; it does not erase context already shared.</p>
 </section>
 <section id="confirmation" hidden aria-labelledby="confirmation-title">
   <h2 id="confirmation-title">Always allow interactions?</h2>
   <p id="confirmation-detail"></p>
-  <p>Lima will be able to open, focus, navigate, and close tabs for this exact site without asking each time, including after restarting the browser. Navigation or closing may discard unsaved work. Cross-site navigation requires interaction access on both sites.</p>
+  <p>Lima will be able to dispatch bounded actions for this exact site without another companion prompt, including after restarting the browser. AI click, text entry, and form submission still require an individual confirmation in Lima. Navigation or closing may discard unsaved work. Cross-site navigation requires interaction access on both sites.</p>
   <button id="cancel-always">Cancel</button>
   <button id="confirm-always">Always allow interactions</button>
 </section>

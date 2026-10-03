@@ -52,7 +52,6 @@ final class LocalWhisperTranscriber {
         completion: @escaping (Result<String, Error>) -> Void
     ) {
         cancel()
-        guard AIRequestPolicy.shared.isEnabled else { completion(.failure(AIRequestPolicy.Disabled())); return }
         guard let resources = resources() else {
             completion(.failure(TranscriptionError.assetsMissing))
             return

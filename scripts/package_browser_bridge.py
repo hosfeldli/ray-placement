@@ -12,7 +12,7 @@ manifest = json.loads((source / "manifest.json").read_text())
 assert manifest["browser_specific_settings"]["gecko"]["id"] == "lima-browser-bridge@liamhosfeld.com"
 assert "<all_urls>" not in manifest.get("permissions", [])
 assert manifest["optional_permissions"] == ["https://*/*"]
-files = ["manifest.json", "policy.js", "background.js", "snapshot.js", "popup.html", "popup.css", "popup.js"]
+files = ["manifest.json", "policy.js", "background.js", "snapshot.js", "interaction.js", "popup.html", "popup.css", "popup.js"]
 destination.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
     for name in files:

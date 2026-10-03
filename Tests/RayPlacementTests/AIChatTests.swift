@@ -421,6 +421,8 @@ import Testing
 
     #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
+    #expect(model.isBrowserPrompt("Click the Continue button"))
+    #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
     #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map { $0.id }) == [
         "browser_tabs", "browser_current", "browser_read",
@@ -459,7 +461,7 @@ import Testing
     #expect(model.streamError == nil)
 }
 
-@Test @MainActor func browserNavigationIsBlockedAtEveryAIToolGate() async {
+@Test @MainActor func browserNavigationDefaultsOffAtEveryAIToolGate() async {
     let navigationIDs = ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
     let definitions = LimaAIToolRegistry.enabledDefinitions(Set(navigationIDs))
     #expect(definitions.isEmpty)
@@ -473,14 +475,84 @@ import Testing
         )
         let bridgeResult = await BrowserBridgeAITools.execute(call)
         #expect(bridgeResult.isError)
-        #expect(bridgeResult.output.contains("read-only"))
+        #expect(bridgeResult.output.contains("disabled or still needs your approval"))
         let registryResult = await LimaAIToolRegistry.execute(call)
         #expect(registryResult.isError)
     }
 }
 
+@Test @MainActor func computerActionPolicyRetainsPerCategoryConfirmationRules() throws {
+    let suite = "RayPlacementTests.computer-action-policy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    let navigation = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_navigate_tab" })
+    let interaction = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_type" })
+    let localFile = try #require(AILocalComputerActionTools.definitions.first { $0.id == "create_text_file" })
+    let terminal = try #require(AILocalComputerActionTools.definitions.first { $0.id == "run_terminal_command" })
+
+    #expect(policy.access(for: .browserNavigation) == .disabled)
+    #expect(policy.access(for: .browserInteraction) == .disabled)
+    #expect(!policy.browserInteractionExperimentalEnabled)
+    #expect(!policy.broadBrowserGrantsExperimentalEnabled)
+    #expect(policy.access(for: .localFiles) == .disabled)
+    #expect(policy.access(for: .terminal) == .disabled)
+
+    policy.setAccess(.allowWithJournal, for: .browserNavigation)
+    #expect(!policy.requiresApproval(for: navigation))
+    policy.setBroadBrowserGrantsExperimentalEnabled(true)
+    #expect(policy.broadBrowserGrantsExperimentalEnabled)
+    #expect(defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
+    #expect(AIComputerActionPolicy(defaults: defaults).broadBrowserGrantsExperimentalEnabled)
+    #expect(policy.requiresApproval(for: interaction))
+    policy.setBroadBrowserGrantsExperimentalEnabled(false)
+    #expect(!policy.broadBrowserGrantsExperimentalEnabled)
+    #expect(!defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
+    #expect(!AIComputerActionPolicy(defaults: defaults).broadBrowserGrantsExperimentalEnabled)
+    policy.setAccess(.askEveryTime, for: .browserInteraction)
+    #expect(policy.access(for: .browserInteraction) == .disabled)
+    policy.setBrowserInteractionExperimentalEnabled(true)
+    policy.setAccess(.askEveryTime, for: .browserInteraction)
+    #expect(policy.access(for: .browserInteraction) == .askEveryTime)
+    policy.setAccess(.askEveryTime, for: .localFiles)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    #expect(policy.requiresApproval(for: interaction))
+    #expect(policy.requiresApproval(for: localFile))
+    #expect(policy.requiresApproval(for: terminal))
+    policy.setBrowserInteractionExperimentalEnabled(false)
+    #expect(policy.access(for: .browserInteraction) == .disabled)
+    #expect(defaults.string(forKey: "lima.ai.computer-action.browserInteraction") == AIComputerActionAccess.disabled.rawValue)
+    #expect(defaults.string(forKey: "lima.ai.computer-action.browserNavigation") == AIComputerActionAccess.allowWithJournal.rawValue)
+}
+
+@Test func localCommandRunnerRejectsGitWritesAndEscapingOperands() {
+    let directory = URL(fileURLWithPath: "/Users/example/project", isDirectory: true)
+    #expect(AILocalCommandRunner.acceptsCommand("git status --short", workingDirectory: directory))
+    #expect(AILocalCommandRunner.acceptsCommand("git diff --stat", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git branch -D main", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git diff --output=changes.txt", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git diff --ext-diff", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("git show HEAD:.env", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("swift test --package-path=/tmp/other", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("swift build --scratch-path ../other", workingDirectory: directory))
+    #expect(!AILocalCommandRunner.acceptsCommand("xcodebuild -derivedDataPath /tmp/output build", workingDirectory: directory))
+}
+
+@Test func localCommandRunnerRejectsSymlinkedScriptAncestors() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LimaCommandSafety-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let scripts = root.appendingPathComponent("scripts", isDirectory: true)
+    try FileManager.default.createDirectory(at: scripts, withIntermediateDirectories: true)
+    try Data("print('safe')\n".utf8).write(to: scripts.appendingPathComponent("task.py"))
+    try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("alias"), withDestinationURL: scripts)
+
+    #expect(AILocalCommandRunner.approvedScript("scripts/task.py", workingDirectory: root, extensions: ["py"]))
+    #expect(!AILocalCommandRunner.approvedScript("alias/task.py", workingDirectory: root, extensions: ["py"]))
+    #expect(!AILocalCommandRunner.approvedScript("../task.py", workingDirectory: root, extensions: ["py"]))
+}
+
 @Test @MainActor func strictToolSchemasAreProviderReadyAndNormalizeOptionalArguments() throws {
-    let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions
+    let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions + AILocalComputerActionTools.definitions
     #expect(definitions.allSatisfy { $0.responsePayload != nil })
 
     for definition in definitions {
@@ -508,6 +580,11 @@ import Testing
 
     let queueLinks = try #require(definitions.first { $0.id == "salesforce_read_case_links" })
     #expect(queueLinks.risk == .read)
+    let replacement = try #require(definitions.first { $0.id == "replace_text_file" })
+    let replacementParameters = try #require(replacement.responsePayload?["parameters"] as? [String: Any])
+    #expect(Set(try #require(replacementParameters["required"] as? [String])) == ["content", "expected_modified_at", "path"])
+    let terminal = try #require(definitions.first { $0.id == "run_terminal_command" })
+    #expect(terminal.actionCategory == .terminal)
 }
 
 @Test @MainActor func browserURLToolsDoNotUseUnsupportedURIFormat() throws {

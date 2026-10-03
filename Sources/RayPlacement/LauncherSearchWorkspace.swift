@@ -3,9 +3,9 @@ import SwiftUI
 
 /// Presentation only: search ranking, grants, and command execution stay in the launcher model.
 enum LauncherSearchDesign {
-    static func railWidth(for width: CGFloat) -> CGFloat { width >= 880 ? 164 : 52 }
-    static func showsInspector(at width: CGFloat) -> Bool { width >= 900 }
-    static let inspectorWidth: CGFloat = 278
+    /// Search remains a launcher; result details are optional rather than a permanent third pane.
+    static func canShowInspector(at width: CGFloat) -> Bool { width >= 780 }
+    static let inspectorWidth: CGFloat = 250
 
     static func title(for item: LauncherItem) -> String {
         item.id == "builtin.notes" ? "Open Notes" : item.title
@@ -53,6 +53,7 @@ struct LauncherSearchWorkspace: View {
     @FocusState private var searchFocused: Bool
     @State private var hoveredID: String?
     @State private var showingDetails = false
+    @State private var showingInspector = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var idle: Bool { model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -63,33 +64,29 @@ struct LauncherSearchWorkspace: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let expanded = geometry.size.width >= 880
-            let hasInspector = LauncherSearchDesign.showsInspector(at: geometry.size.width)
+            let canShowInspector = LauncherSearchDesign.canShowInspector(at: geometry.size.width)
+            let hasInspector = canShowInspector && showingInspector
+            let wide = geometry.size.width >= 680
             VStack(spacing: 0) {
-                HStack(spacing: 0) {
-                    navigation(expanded: expanded)
-                        .frame(width: LauncherSearchDesign.railWidth(for: geometry.size.width))
-                    Rectangle().fill(LimaTheme.borderSubtle).frame(width: 0.5)
-                    VStack(spacing: 18) {
-                        searchField
-                        HStack(alignment: .top, spacing: 18) {
-                            results
-                            if hasInspector {
-                                Rectangle().fill(LimaTheme.borderSubtle).frame(width: 0.5)
-                                ScrollView {
-                                    if let item = selection { inspector(item) }
-                                    else { emptyInspector }
-                                }
-                                .frame(width: LauncherSearchDesign.inspectorWidth)
+                VStack(spacing: 14) {
+                    searchField
+                    HStack(alignment: .top, spacing: 14) {
+                        results
+                        if hasInspector {
+                            Rectangle().fill(LimaTheme.borderSubtle).frame(width: 0.5)
+                            ScrollView {
+                                if let item = selection { inspector(item) }
+                                else { emptyInspector }
                             }
+                            .frame(width: LauncherSearchDesign.inspectorWidth)
                         }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    .padding(expanded ? 20 : 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(LimaTheme.surfacePrimary.opacity(0.88))
                 }
-                footer(wide: expanded, hasInspector: hasInspector)
+                .padding(wide ? 16 : 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(LimaTheme.surfacePrimary.opacity(0.88))
+                footer(wide: wide, canShowInspector: canShowInspector)
             }
             .background(LimaTheme.windowBackground.opacity(0.9))
         }
@@ -120,7 +117,7 @@ struct LauncherSearchWorkspace: View {
         HStack(spacing: 13) {
             Menu {
                 Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
-                ForEach(["app", "command", "file", "note", "dictation", "workflow", "clipboard"], id: \.self) { scope in
+                ForEach(["app", "command", "file", "note", "dictation", "chat", "workflow", "workspace", "context", "clipboard"], id: \.self) { scope in
                     Button(scope.capitalized) {
                         model.query = scope + ": " + UniversalSearchCoordinator.parse(model.query).query
                         searchFocused = true
@@ -134,7 +131,7 @@ struct LauncherSearchWorkspace: View {
                     .foregroundStyle(LimaTheme.textSecondary)
             }
             .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .help("Narrow search: apps, commands, files, notes, dictation, workflows, or clipboard")
+            .help("Narrow search: apps, commands, files, notes, dictation, chats, workflows, workspaces, Context Shelf, or clipboard")
             .accessibilityLabel("Search scope")
             ZStack(alignment: .leading) {
                 if model.query.isEmpty {
@@ -170,58 +167,6 @@ struct LauncherSearchWorkspace: View {
         .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(
             searchFocused ? LimaTheme.fieldFocusedBorder.opacity(0.65) : LimaTheme.borderStrong,
             lineWidth: LimaDesign.hairlineWidth))
-    }
-
-    private func navigation(expanded: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 10) {
-                LimaWayfinderMark()
-                if expanded {
-                    Text("Lima").limaFont(.system(size: 21, weight: .semibold))
-                        .lineLimit(1)
-                }
-            }
-            .padding(.horizontal, expanded ? 12 : 3)
-            .padding(.top, 22)
-            .padding(.bottom, 14)
-            ScrollView {
-                VStack(spacing: 7) {
-                    navButton("Search", symbol: "magnifyingglass", selected: true, expanded: expanded) {
-                        model.query = ""; searchFocused = true
-                    }
-                    ForEach([LimaWorkspaceModule.notes, .ai, .context, .grammar, .dictation, .extensions, .clipboard], id: \.self) { module in
-                        navButton(module.title, symbol: module.symbol, expanded: expanded) { openWorkspace(module) }
-                    }
-                }
-            }
-            Spacer(minLength: 0)
-            navButton("Settings", symbol: "gearshape", expanded: expanded, action: openSettings)
-                .padding(.bottom, 12)
-        }
-        .padding(.horizontal, expanded ? 10 : 5)
-        .background(LimaTheme.surfaceSecondary.opacity(0.7))
-    }
-
-    private func navButton(_ title: String, symbol: String, selected: Bool = false,
-                           expanded: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            HStack(spacing: 11) {
-                Image(systemName: symbol).font(.system(size: 20, weight: .regular)).frame(width: 24)
-                if expanded { Text(title).limaFont(.callout.weight(selected ? .semibold : .medium)); Spacer(minLength: 0) }
-            }
-            .foregroundStyle(selected ? LimaTheme.accentInk : LimaTheme.textSecondary)
-            .padding(.horizontal, expanded ? 10 : 4)
-            .frame(maxWidth: .infinity, minHeight: 43)
-            .background(selected ? LimaTheme.surfaceSelected : .clear, in: RoundedRectangle(cornerRadius: 11))
-            .overlay(alignment: .leading) {
-                if selected { Capsule().fill(LimaTheme.accentInk).frame(width: 3, height: 23) }
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(title)
-        .accessibilityLabel(title)
-        .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
 
     private var results: some View {
@@ -377,34 +322,61 @@ struct LauncherSearchWorkspace: View {
         }.buttonStyle(.plain).foregroundStyle(LimaTheme.textPrimary)
     }
 
-    private func footer(wide: Bool, hasInspector: Bool) -> some View {
-        HStack(spacing: 14) {
-            if wide {
-                Image(systemName: "bolt.fill").font(.system(size: 23)).foregroundStyle(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("A faster, calmer you.").limaFont(.caption.weight(.medium))
-                    Text("Search. Command. Create.").limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
-                }
+    private func footer(wide: Bool, canShowInspector: Bool) -> some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 5) {
+                keycap("↑ ↓")
+                if wide { Text("Navigate") }
+            }
+            HStack(spacing: 5) {
+                keycap("↩")
+                if wide { Text("Open") }
             }
             Spacer(minLength: 0)
-            if wide { HStack(spacing: 5) { keycap("↑ ↓"); Text("Navigate") } }
-            Button { model.enter(.history) } label: { Label("History", systemImage: "clock") }
-                .buttonStyle(.plain).help("Open command history")
-            if !hasInspector {
-                Button { showingDetails = true } label: { Image(systemName: "sidebar.right") }
-                    .buttonStyle(.plain).disabled(selection == nil)
-                    .help("Preview selected result").accessibilityLabel("Preview selected result")
+            Button { model.enter(.history) } label: {
+                if wide { Label("History", systemImage: "clock") }
+                else { Image(systemName: "clock") }
             }
+            .buttonStyle(.plain)
+            .help("Open command history")
+
+            Button {
+                if canShowInspector { showingInspector.toggle() }
+                else { showingDetails = true }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: showingInspector && canShowInspector ? "sidebar.right.fill" : "sidebar.right")
+                    if wide { Text(showingInspector && canShowInspector ? "Hide details" : "Details") }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(selection == nil)
+            .help("Preview selected result")
+            .accessibilityLabel("Preview selected result")
+
             Button { model.openActionPanel() } label: {
-                HStack(spacing: 5) { if wide { keycap("⌘ K") }; Text("Actions") }
-            }.buttonStyle(.plain).disabled(selection == nil)
+                HStack(spacing: 5) {
+                    if wide { keycap("⌘ K") }
+                    if wide { Text("Actions") } else { Image(systemName: "ellipsis.circle") }
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(selection == nil)
+            .help("Open actions for the selected result")
+
             Button(action: dismiss) {
-                HStack(spacing: 5) { keycap("esc"); if wide { Text("Close") } }
-            }.buttonStyle(.plain).accessibilityLabel("Close Search")
+                HStack(spacing: 5) {
+                    keycap("esc")
+                    if wide { Text("Close") }
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Close Search")
         }
-        .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
-        .padding(.horizontal, wide ? 20 : 12)
-        .frame(height: wide ? 58 : 44)
+        .limaFont(.caption)
+        .foregroundStyle(LimaTheme.textSecondary)
+        .padding(.horizontal, wide ? 16 : 12)
+        .frame(height: wide ? 46 : 44)
         .background(LimaTheme.surfaceSecondary.opacity(0.85))
         .overlay(alignment: .top) { Rectangle().fill(LimaTheme.borderSubtle).frame(height: 0.5) }
     }

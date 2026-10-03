@@ -77,6 +77,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private let reloadExtensions: () -> Void
     private let onOpenCommandSearch: (String) -> Void
     private let onOpenSettings: () -> Void
+    private let onRunWorkflow: (WorkflowDefinition) -> Void
     var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
     private var dictationHUD: DictationHUDController!
@@ -100,7 +101,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         extensionStoreModel: ExtensionStoreModel,
         reloadExtensions: @escaping () -> Void,
         onOpenCommandSearch: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {}
+        onOpenSettings: @escaping () -> Void = {},
+        onRunWorkflow: @escaping (WorkflowDefinition) -> Void = { _ in }
     ) {
         self.aiChatModel = aiChatModel
         self.terminalModel = terminalModel
@@ -110,6 +112,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.reloadExtensions = reloadExtensions
         self.onOpenCommandSearch = onOpenCommandSearch
         self.onOpenSettings = onOpenSettings
+        self.onRunWorkflow = onRunWorkflow
         let store = NotesStore.shared
         let conversations = DictationConversationStore.shared
         self.store = store
@@ -474,10 +477,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     /// is recorded, and committed transcript deltas append to that note.
     @discardableResult
     func presentAndToggleNoteCapture() -> Bool {
-        guard AIRequestPolicy.shared.isEnabled else {
-            dictation.lastError = AIRequestPolicy.disabledMessage
-            return false
-        }
         if dictation.phase == .recording || dictation.phase == .paused {
             guard case .note(let identifier) = dictation.currentTarget else {
                 dictation.lastError = "Finish the current dictation before capturing into a note."
@@ -581,6 +580,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             launcherViewModel: launcherViewModel,
             extensionStoreModel: extensionStoreModel,
             reloadExtensions: reloadExtensions,
+            runWorkflow: onRunWorkflow,
             openCommandSearch: onOpenCommandSearch,
             selectModule: { [weak self] in self?.selectModule($0) },
             switchWorkspaceProfile: { WorkspaceProfileStore.shared.activate($0) },
@@ -729,6 +729,7 @@ private struct WorkspaceView: View {
     @ObservedObject var launcherViewModel: LauncherViewModel
     @ObservedObject var extensionStoreModel: ExtensionStoreModel
     let reloadExtensions: () -> Void
+    let runWorkflow: (WorkflowDefinition) -> Void
     let openCommandSearch: (String) -> Void
     let selectModule: (LimaWorkspaceModule) -> Void
     var switchWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
@@ -807,7 +808,7 @@ private struct WorkspaceView: View {
                     .fill(LimaDesign.separator)
                     .frame(width: LimaDesign.hairlineWidth)
                 VStack(spacing: 0) {
-                    if presentation.activeModule != .ai {
+                    if presentation.activeModule != .ai && presentation.activeModule != .workflows {
                         workspaceHeader(sizeClass: sizeClass)
                         GlassHairline()
                     }
@@ -1031,8 +1032,20 @@ private struct WorkspaceView: View {
                 case .home:
                     HomeWorkspaceView(
                         store: store,
+                        conversations: aiChatModel.store,
                         open: selectModule,
-                        openShelf: { selectModule(.context) },
+                        openConversation: { id in
+                            aiChatModel.select(id)
+                            selectModule(.ai)
+                        },
+                        startNoteDictation: {
+                            let previousID = store.selectedNoteID
+                            store.createNote()
+                            if let id = store.selectedNoteID, id != previousID {
+                                selectModule(.notes)
+                                dictation.performPrimaryAction(target: .note(id))
+                            }
+                        },
                         openCommandSearch: openCommandSearch
                     )
                 case .notes:
@@ -1066,6 +1079,8 @@ private struct WorkspaceView: View {
                         .background(LimaTheme.surfacePrimary)
                 case .dictation:
                     dictationSection
+                case .workflows:
+                    WorkflowWorkspaceView(execute: runWorkflow)
                 case .extensions:
                     ExtensionsSettingsView(
                         viewModel: launcherViewModel,
@@ -2732,7 +2747,7 @@ enum LimaMockupWorkspaceFixtures {
             aiChatModel: ai, terminalModel: DeveloperTerminalModel(),
             formatterModel: FormatterWorkspaceModel(), launcherViewModel: launcher,
             extensionStoreModel: ExtensionStoreModel(onInstalled: {}),
-            reloadExtensions: {}, openCommandSearch: { _ in },
+            reloadExtensions: {}, runWorkflow: { _ in }, openCommandSearch: { _ in },
             selectModule: { presentation.activeModule = $0 }, presentation: presentation,
             dockLeft: {}, dockRight: {}, restoreWorkspace: {}, setStaysOnTop: { _ in }, openSettings: {},
             setQuickNoteTarget: { _ in }, setQuickNoteTargetMode: { _ in },

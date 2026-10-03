@@ -13,6 +13,17 @@ private final class BridgeServiceFixture {
     let service: BrowserBridgeService
     var channel: BrowserBridgeChannel?
     var messages: [BrowserBridgeMessage] = []
+    var origins: [JSONValue] = [.string("https://example.com/*")]
+    var tabs: [JSONValue] = [
+        .object(["id": .number(1), "url": .string("https://example.com/page"), "title": .string("Example")])
+    ]
+    var capabilities: [JSONValue] = []
+    var autoStatus = true
+    var autoTabs = true
+
+    func sent(_ command: String) -> [BrowserBridgeMessage] {
+        messages.filter { $0.kind == "request" && $0.command == command }
+    }
 
     init() {
         defaults = UserDefaults(suiteName: suite)!
@@ -32,7 +43,17 @@ private final class BridgeServiceFixture {
         try await wait { self.service.sessions.count == 1 }
     }
 
-    private func record(_ message: BrowserBridgeMessage) { messages.append(message) }
+    private func record(_ message: BrowserBridgeMessage) {
+        messages.append(message)
+        guard message.kind == "request" else { return }
+        if message.command == "bridge.status" && autoStatus {
+            channel?.send(.init(id: message.id, kind: "response", command: message.command,
+                                result: .object(["origins": .array(origins), "capabilities": .array(capabilities)])))
+        } else if message.command == "browser.tabs" && autoTabs {
+            channel?.send(.init(id: message.id, kind: "response", command: message.command,
+                                result: .object(["tabs": .array(tabs), "restrictedToGrantedSites": .bool(true)])))
+        }
+    }
 
     func wait(_ predicate: @escaping @MainActor () -> Bool) async throws {
         for _ in 0..<300 {
@@ -55,14 +76,16 @@ private final class BridgeServiceFixture {
     defer { fixture.close() }
     try await fixture.connect()
     let request = Task { try await fixture.service.request("browser.read", arguments: ["tabID": .number(1)]) }
-    try await fixture.wait { fixture.messages.count == 1 }
-    let message = try #require(fixture.messages.first)
+    try await fixture.wait { fixture.sent("browser.read").count == 1 }
+    let message = try #require(fixture.sent("browser.read").first)
     fixture.channel?.send(.init(id: message.id, kind: "response", command: "wrong.command", result: .string("ignored")))
     try await Task.sleep(nanoseconds: 30_000_000)
     #expect(fixture.registry.activeTasks.count == 1)
-    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command, result: .string("private page text")))
-    #expect(try await request.value == .string("private page text"))
+    let page: JSONValue = .object(["url": .string("https://example.com/page"), "text": .string("private page text")])
+    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command, result: page))
+    #expect(try await request.value == page)
     #expect(fixture.registry.activeTasks.isEmpty)
+    #expect(fixture.registry.recentTasks.count == 1)
     let task = try #require(fixture.registry.recentTasks.first)
     #expect(task.state == .completed)
     #expect(!task.compactDetail.contains("private"))
@@ -75,9 +98,9 @@ private final class BridgeServiceFixture {
 
     let urls = ["https://example.com/case/one", "https://example.com/case/two"]
     let request = Task { try await fixture.service.openTabs(urls: urls, background: true) }
-    try await fixture.wait { fixture.messages.count == 1 }
-    let message = try #require(fixture.messages.first)
-    #expect(message.command == "browser.open_tabs")
+    try await fixture.wait { fixture.sent("browser.open_tabs").count == 1 }
+    let message = try #require(fixture.sent("browser.open_tabs").first)
+    #expect(fixture.sent("browser.open_tabs").count == 1)
     #expect(message.arguments["urls"] == .array(urls.map(JSONValue.string)))
     #expect(message.arguments["background"] == .bool(true))
 
@@ -90,19 +113,70 @@ private final class BridgeServiceFixture {
     #expect(try await request.value == response)
 }
 
+@Test @MainActor func browserBridgeActionJournalUsesOnlyDestinationMetadata() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    try await fixture.connect()
+
+    fixture.origins = [.string("https://source.example/*"), .string("https://destination.example/*")]
+    let request = Task {
+        try await fixture.service.request(
+            "browser.navigate",
+            arguments: [
+                "tabID": .number(3),
+                "expectedURL": .string("https://source.example/private-case"),
+                "url": .string("https://destination.example/investigation")
+            ]
+        )
+    }
+    try await fixture.wait { fixture.sent("browser.navigate").count == 1 }
+    let task = try #require(fixture.registry.activeTasks.first)
+    #expect(task.title == "AI browser navigation")
+    #expect(task.detail == "Navigate tab · destination.example")
+    #expect(!task.compactDetail.contains("private-case"))
+    fixture.channel?.send(.init(
+        id: try #require(fixture.sent("browser.navigate").first).id,
+        kind: "response",
+        command: "browser.navigate",
+        result: .object(["navigated": .bool(true)])
+    ))
+    _ = try await request.value
+    #expect(fixture.registry.recentTasks.first?.state == .completed)
+}
+
+@Test @MainActor func browserBridgeInteractionRequiresAdvertisedCapability() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    try await fixture.connect()
+
+    let unsupported = Task { try await fixture.service.requireInteractionCapability() }
+    try await fixture.wait { fixture.sent("bridge.status").count == 1 }
+    do {
+        try await unsupported.value
+        Issue.record("A companion without an interaction capability unexpectedly passed")
+    } catch {
+        #expect(error.localizedDescription.contains("compatible signed update"))
+    }
+
+    fixture.capabilities = [.string("browser_interaction_v1")]
+    let supported = Task { try await fixture.service.requireInteractionCapability() }
+    try await fixture.wait { fixture.sent("bridge.status").count == 2 }
+    try await supported.value
+}
+
 @Test @MainActor func browserBridgeActivityStopCancelsThePendingRequestAndSendsCancelFrame() async throws {
     let fixture = BridgeServiceFixture()
     defer { fixture.close() }
     try await fixture.connect()
     let request = Task { try await fixture.service.request("browser.open", arguments: ["url": .string("https://example.com"), "active": .bool(false)]) }
-    try await fixture.wait { fixture.messages.count == 1 }
+    try await fixture.wait { fixture.sent("browser.open").count == 1 }
     let task = try #require(fixture.registry.activeTasks.first)
     fixture.registry.cancel(task.id)
     do { _ = try await request.value; Issue.record("Cancelled request unexpectedly succeeded") }
     catch { #expect(error is CancellationError) }
     try await fixture.wait { fixture.messages.contains { $0.kind == "cancel" } }
     #expect(fixture.registry.task(id: task.id)?.state == .cancelled)
-    #expect(fixture.messages.last?.id == fixture.messages.first?.id)
+    #expect(fixture.messages.last?.id == fixture.sent("browser.open").first?.id)
 }
 
 @Test @MainActor func browserBridgeStopResumesPendingWorkAndSecondInstanceCannotRemoveSocket() async throws {
@@ -114,8 +188,9 @@ private final class BridgeServiceFixture {
     #expect(other.sessions.isEmpty)
     other.stop()
     #expect(FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("socket").path))
+    fixture.autoTabs = false
     let request = Task { try await fixture.service.request("browser.tabs") }
-    try await fixture.wait { fixture.messages.count == 1 }
+    try await fixture.wait { fixture.sent("browser.tabs").count == 1 }
     fixture.service.enabled = false
     do { _ = try await request.value; Issue.record("Disabled bridge unexpectedly returned data") }
     catch { #expect(error is BrowserBridgeError) }
@@ -123,4 +198,158 @@ private final class BridgeServiceFixture {
     #expect(fixture.registry.recentTasks.first?.state == .failed)
     #expect(fixture.service.sessions.isEmpty)
     #expect(!FileManager.default.fileExists(atPath: fixture.root.appendingPathComponent("socket").path))
+}
+
+@Test @MainActor func browserBridgeGrantPolicyKeepsExactSitesUsableAndInteractionsExactOnly() throws {
+    let policy = try BrowserBridgeGrantPolicy.parse([
+        .string("https://example.com/*"),
+        .string("https://*/*")
+    ])
+    try policy.require("https://example.com/page", broadEnabled: false)
+    #expect(policy.allows("https://example.com/page", broadEnabled: false))
+    #expect(!policy.allows("https://other.example/page", broadEnabled: false))
+    #expect(policy.allows("https://other.example/page", broadEnabled: true))
+    do {
+        try policy.require("https://other.example/page", broadEnabled: false)
+        Issue.record("Broad-only site unexpectedly passed with the experiment off")
+    } catch {
+        #expect(error.localizedDescription.contains("all-HTTPS"))
+    }
+    do {
+        try policy.require("https://other.example/page", broadEnabled: true, interaction: true)
+        Issue.record("Broad grant unexpectedly enabled browser interaction")
+    } catch {
+        #expect(error.localizedDescription.contains("site_not_granted"))
+    }
+    do {
+        _ = try BrowserBridgeGrantPolicy.parse([.string("http://*/*")])
+        Issue.record("Unsupported host permission unexpectedly passed")
+    } catch {
+        #expect(error.localizedDescription.contains("unsupported host grant"))
+    }
+}
+
+@Test @MainActor func browserBridgeTabsFilterBroadOnlyAndPrivateTabsUntilEnabled() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    fixture.origins = [.string("https://example.com/*"), .string("https://*/*")]
+    fixture.tabs = [
+        .object(["id": .number(1), "url": .string("https://example.com/page")]),
+        .object(["id": .number(2), "url": .string("https://other.example/page")]),
+        .object(["id": .number(3), "url": .string("https://example.com/private"), "incognito": .bool(true)])
+    ]
+    try await fixture.connect()
+
+    let exactOnly = try await fixture.service.request("browser.tabs")
+    guard case .object(let first) = exactOnly, case .array(let firstTabs)? = first["tabs"] else {
+        Issue.record("Expected filtered browser tab list")
+        return
+    }
+    #expect(firstTabs.count == 1)
+    fixture.defaults.set(true, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
+
+    let broad = try await fixture.service.request("browser.tabs")
+    guard case .object(let second) = broad, case .array(let broadTabs)? = second["tabs"] else {
+        Issue.record("Expected broad browser tab list")
+        return
+    }
+    #expect(broadTabs.count == 2)
+    #expect(!broadTabs.contains { tab in
+        guard case .object(let info) = tab else { return false }
+        return info["incognito"] == .bool(true)
+    })
+    fixture.defaults.set(false, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
+    let offAgain = try await fixture.service.request("browser.tabs")
+    guard case .object(let third) = offAgain, case .array(let thirdTabs)? = third["tabs"] else {
+        Issue.record("Expected filtered browser tab list after disabling broad access")
+        return
+    }
+    #expect(thirdTabs.count == 1)
+}
+
+@Test @MainActor func browserBridgeBroadReadRequiresExperimentAndRechecksRevocation() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    fixture.origins = [.string("https://example.com/*"), .string("https://*/*")]
+    fixture.tabs = [.object(["id": .number(2), "url": .string("https://other.example/page")])]
+    try await fixture.connect()
+
+    do {
+        _ = try await fixture.service.request("browser.read", arguments: ["tabID": .number(2)])
+        Issue.record("Broad-only page unexpectedly read with the experiment off")
+    } catch {
+        #expect(error.localizedDescription.contains("all-HTTPS"))
+    }
+    #expect(fixture.sent("browser.read").isEmpty)
+
+    fixture.defaults.set(true, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
+    let request = Task { try await fixture.service.request("browser.read", arguments: ["tabID": .number(2)]) }
+    try await fixture.wait { fixture.sent("browser.read").count == 1 }
+    fixture.origins = [.string("https://example.com/*")]
+    let message = try #require(fixture.sent("browser.read").first)
+    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command,
+                                result: .object(["url": .string("https://other.example/page"),
+                                                 "text": .string("not for AI after revocation")])))
+    do {
+        _ = try await request.value
+        Issue.record("Revoked broad grant unexpectedly returned page content")
+    } catch {
+        #expect(error.localizedDescription.contains("site_not_granted"))
+    }
+}
+
+@Test @MainActor func browserBridgeBroadGrantCannotAuthorizeClickOrPrivateRead() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    fixture.origins = [.string("https://*/*")]
+    fixture.tabs = [.object(["id": .number(4), "url": .string("https://other.example/private"),
+                              "incognito": .bool(true)])]
+    fixture.defaults.set(true, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
+    try await fixture.connect()
+
+    do {
+        _ = try await fixture.service.request("browser.click", arguments: [
+            "tabID": .number(4), "expectedURL": .string("https://other.example/private"),
+            "selector": .string("#continue")
+        ])
+        Issue.record("Broad grant unexpectedly authorized click")
+    } catch {
+        #expect(error.localizedDescription.contains("site_not_granted"))
+    }
+    #expect(fixture.sent("browser.click").isEmpty)
+    do {
+        _ = try await fixture.service.request("browser.read", arguments: ["tabID": .number(4)])
+        Issue.record("Private tab unexpectedly read")
+    } catch {
+        #expect(error.localizedDescription.contains("site_not_granted"))
+    }
+    #expect(fixture.sent("browser.read").isEmpty)
+}
+
+@Test @MainActor func browserBridgeBroadNavigationNeedsExperimentAndStillUsesOneCompanionAction() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    fixture.origins = [.string("https://example.com/*"), .string("https://*/*")]
+    try await fixture.connect()
+    let arguments: [String: JSONValue] = [
+        "tabID": .number(1),
+        "expectedURL": .string("https://example.com/page"),
+        "url": .string("https://other.example/destination")
+    ]
+    do {
+        _ = try await fixture.service.request("browser.navigate", arguments: arguments)
+        Issue.record("Broad-only destination unexpectedly navigated with the experiment off")
+    } catch {
+        #expect(error.localizedDescription.contains("all-HTTPS"))
+    }
+    #expect(fixture.sent("browser.navigate").isEmpty)
+
+    fixture.defaults.set(true, forKey: AIComputerActionPolicy.broadBrowserGrantsKey)
+    let request = Task { try await fixture.service.request("browser.navigate", arguments: arguments) }
+    try await fixture.wait { fixture.sent("browser.navigate").count == 1 }
+    let message = try #require(fixture.sent("browser.navigate").first)
+    let result: JSONValue = .object(["id": .number(1), "url": .string("https://other.example/destination")])
+    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command, result: result))
+    #expect(try await request.value == result)
+    #expect(fixture.sent("browser.navigate").count == 1)
 }

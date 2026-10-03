@@ -48,6 +48,22 @@ import RayPlacementCore
     #expect(scopedIDs.contains("builtin.capture-dictation-note"))
 }
 
+@Test @MainActor func hiddenWorkspaceModulesRemainAvailableInCommandSearch() {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let commandIDs = Set(model.commandDescriptors.map(\.id))
+    for id in ["builtin.grammar", "builtin.transcripts", "builtin.formatter"] {
+        #expect(commandIDs.contains(id))
+    }
+    for (query, id) in [
+        ("command: grammar", "builtin.grammar"),
+        ("command: transcripts", "builtin.transcripts"),
+        ("command: formatter", "builtin.formatter")
+    ] {
+        model.query = query
+        #expect(model.results.contains { $0.id == id })
+    }
+}
+
 @Test @MainActor func contextSearchFindsBoundedPayloadAndUsesStableRoutingID() async {
     let id = UUID()
     let entries = [

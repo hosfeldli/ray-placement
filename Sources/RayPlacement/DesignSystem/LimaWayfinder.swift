@@ -14,9 +14,10 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
-    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .context, .grammar, .dictation]
-    static let toolDestinations: [LimaWorkspaceModule] = [.extensions, .clipboard, .terminal, .formatter]
+    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .context]
+    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
+    static let hiddenDestinations: [LimaWorkspaceModule] = [.grammar, .dictation, .terminal, .formatter]
 
     var title: String {
         switch self {
@@ -26,6 +27,7 @@ extension LimaWorkspaceModule {
         case .context: "Context"
         case .grammar: "Grammar"
         case .dictation: "Dictation"
+        case .workflows: "Workflows"
         case .extensions: "Extensions"
         case .clipboard: "Clipboard"
         case .terminal: "Terminal"
@@ -41,6 +43,7 @@ extension LimaWorkspaceModule {
         case .context: "tray.full"
         case .grammar: "textformat.abc"
         case .dictation: "waveform"
+        case .workflows: "arrow.trianglehead.2.clockwise.rotate.90"
         case .extensions: "puzzlepiece.extension"
         case .clipboard: "clipboard"
         case .terminal: "terminal"
@@ -48,20 +51,27 @@ extension LimaWorkspaceModule {
         }
     }
 
-    /// Explicit assignments keep muscle memory stable if enum order changes.
+    /// Explicit assignments keep the workspace sequence stable if enum order changes.
     var shortcutNumber: String {
         switch self {
         case .home: "1"
         case .notes: "2"
         case .ai: "3"
-        case .context: "C"
-        case .grammar: "4"
-        case .dictation: "5"
-        case .extensions: "6"
-        case .clipboard: "7"
-        case .terminal: "8"
-        case .formatter: "9"
+        case .context: "4"
+        case .grammar: "5"
+        case .dictation: "6"
+        case .workflows: "7"
+        case .extensions: "8"
+        case .clipboard: "9"
+        case .terminal: "T"
+        case .formatter: "F"
         }
+    }
+
+    /// Preserve Context’s mnemonic for established keyboard users while the
+    /// numbered shortcut remains the consistent primary sequence.
+    var shortcutAlias: String? {
+        self == .context ? "C" : nil
     }
 }
 
@@ -195,13 +205,6 @@ struct LimaWayfinderRail: View {
 
             Spacer(minLength: 12)
 
-            if labeled {
-                Text("⌥⌘ 1–9 · C").font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .foregroundStyle(LimaTheme.textTertiary)
-                    .help("Switch workspaces; ⌥⌘0 returns to the previous one")
-                    .padding(.bottom, 6)
-            }
-
             if isDocked {
                 Button(action: openInWindow) {
                     railLabel("Open in Window", symbol: "arrow.up.left.and.arrow.down.right", selected: false, hovered: hovered == "window")
@@ -227,6 +230,15 @@ struct LimaWayfinderRail: View {
         .background(LimaTheme.navigationBackground)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace navigation")
+        .background {
+            // Keep established shortcuts working without showing these tools in the rail.
+            ForEach(LimaWorkspaceModule.hiddenDestinations, id: \.self) { module in
+                Button("") { select(module) }
+                    .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber.lowercased())), modifiers: [.command, .option])
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     @ViewBuilder
@@ -247,8 +259,16 @@ struct LimaWayfinderRail: View {
                 railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue)
             }
             .buttonStyle(.plain)
-            .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber)), modifiers: [.command, .option])
-            .help("\(module.title) · ⌥⌘\(module.shortcutNumber)")
+            .keyboardShortcut(KeyEquivalent(Character(module.shortcutNumber.lowercased())), modifiers: [.command, .option])
+            .background {
+                if let alias = module.shortcutAlias {
+                    Button("") { select(module) }
+                        .keyboardShortcut(KeyEquivalent(Character(alias.lowercased())), modifiers: [.command, .option])
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
+            }
+            .help("\(module.title) · ⌥⌘\(module.shortcutNumber)\(module.shortcutAlias.map { " · ⌥⌘\($0)" } ?? "")")
             .accessibilityLabel(module.title)
             .accessibilityValue(module == current ? "Current workspace" : "")
             .accessibilityAddTraits(module == current ? [.isSelected] : [])

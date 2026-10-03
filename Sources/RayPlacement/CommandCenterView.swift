@@ -77,10 +77,11 @@ enum CommandCenterCatalog {
 
     static func nativeToolEntries(
         definitions: [LimaAIToolDefinition],
-        enabledIDs: Set<String>
+        enabledIDs: Set<String>,
+        actionToolIDs: Set<String> = []
     ) -> [CommandCenterEntry] {
         definitions.filter { $0.extensionBinding == nil }.map { tool in
-            let eligible = tool.risk == .read
+            let eligible = tool.risk == .read || actionToolIDs.contains(tool.id)
             let schema = (try? JSONSerialization.data(withJSONObject: tool.parameters, options: [.sortedKeys]))
                 .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
             return CommandCenterEntry(
@@ -345,9 +346,14 @@ struct CommandCenterView: View {
             !contributionEntries.contains(where: { $0.id == existing.id })
         }
 
+        let availableToolDefinitions = LimaAIToolRegistry.availableDefinitions
+        let policyEnabledActionToolIDs = Set(availableToolDefinitions
+            .filter { $0.actionCategory != nil }
+            .map(\.id))
         let nativeTools = CommandCenterCatalog.nativeToolEntries(
-            definitions: LimaAIToolRegistry.availableDefinitions,
-            enabledIDs: nativeToolStore.enabledToolIDs
+            definitions: availableToolDefinitions,
+            enabledIDs: nativeToolStore.enabledToolIDs,
+            actionToolIDs: policyEnabledActionToolIDs
         )
         return commandEntries + contributionEntries + packageEntries + nativeTools + skillEntries + agentEntries
     }
@@ -592,16 +598,18 @@ struct CommandCenterView: View {
                 .controlSize(.small)
         case .tool:
             LabeledContent("Risk", value: entry.risk ?? "Unknown")
-            if let tool = LimaAIToolRegistry.definition(for: entry.id), tool.risk == .read {
+            if let tool = LimaAIToolRegistry.definition(for: entry.id),
+               tool.risk == .read || (tool.actionCategory != nil && AIComputerActionPolicy.shared.allows(tool)) {
                 Toggle("Enabled for AI", isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
                     set: { enabled in
                         // Recheck eligibility at interaction time; never revive a revoked extension.
-                        guard let current = LimaAIToolRegistry.definition(for: entry.id), current.risk == .read else { return }
+                        guard let current = LimaAIToolRegistry.definition(for: entry.id),
+                              current.risk == .read || (current.actionCategory != nil && AIComputerActionPolicy.shared.allows(current)) else { return }
                         nativeToolStore.setEnabled(current, enabled: enabled)
                     }
                 ))
-                Text("Applies to future AI requests. Browser tools still require site grants.")
+                Text("Applies to future AI requests. Browser actions still require site grants and their selected approval policy.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             } else {
                 LabeledContent("Enabled for AI", value: "Not eligible")

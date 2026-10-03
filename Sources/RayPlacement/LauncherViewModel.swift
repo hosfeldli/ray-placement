@@ -1460,6 +1460,9 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.capture-clipboard-note", title: "Capture Clipboard to Note", subtitle: "Create and open a local note from current clipboard text", icon: .system("clipboard.fill"), keywords: ["capture", "notes", "paste", "save"], action: .system(.captureClipboardToNote)),
             LauncherItem(id: "builtin.capture-selection-note", title: "Capture Selection to Note", subtitle: "Create and open a local note from selected text in another app", icon: .system("text.badge.plus"), keywords: ["capture", "notes", "highlight", "selected text"], action: .system(.captureSelectionToNote)),
             LauncherItem(id: "builtin.capture-dictation-note", title: "Dictate into Current Note", subtitle: "Start or stop speech capture in the visible note", icon: .system("mic.badge.plus"), keywords: ["capture", "notes", "speech", "transcribe"], action: .system(.dictateIntoNote)),
+            LauncherItem(id: "builtin.transcripts", title: "Open Transcripts", subtitle: "Review your local dictation history", icon: .system("waveform"), keywords: ["dictation", "speech", "history"], action: .system(.openTranscripts)),
+            LauncherItem(id: "builtin.grammar", title: "Open Grammar", subtitle: "Review local writing tools", icon: .system("textformat.abc"), keywords: ["writing", "proofread", "spelling"], action: .system(.openGrammarWorkspace)),
+            LauncherItem(id: "builtin.formatter", title: "Open Formatter", subtitle: "Format structured text in Workspace", icon: .system("curlybraces"), keywords: ["json", "text", "format"], action: .system(.openFormatter)),
             // The terminal is an optional developer surface. Keeping it out of
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.

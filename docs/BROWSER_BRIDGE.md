@@ -10,7 +10,7 @@
    companion; obtain an official release, not the unsigned development package.
 3. In the intended browser/profile, open **about:addons**, choose the gear menu
    → **Install Add-on From File…**, and select the saved XPI. Review the browser's
-   permission/data-consent prompts. Verify **Lima Browser Bridge 1.2.0** is enabled.
+   permission/data-consent prompts. Verify **Lima Browser Bridge 1.3.0** is enabled.
    Repeat separately for other browsers/profiles. Never disable signature checks.
 4. In Lima, enable **Enable browser bridge**, choose **Install Native Helper…**,
    and confirm. Open the companion popup and choose **Reconnect to Lima**.
@@ -21,17 +21,20 @@
    Refresh sites in Lima, choose **Refresh Granted Tabs**, select the page, and
    choose **Read Page**. Reading persists until revoked; private/internal pages
    are excluded.
-7. Leave interactions at **Ask every time** unless needed. An open/focus/navigate/
-   close action started in Lima appears in the companion's pending actions.
-   Explicitly approve or deny it there. **Always allow interactions…** is a
-   separate, site-named confirmation; navigation/closing may discard unsaved work.
+7. Leave interactions at **Ask every time** unless needed. Open, focus,
+   navigate, close, click, type, and submit requests appear in the companion's
+   pending actions for explicit approval or denial. **Always allow interactions…**
+   is a separate, site-named confirmation. AI click, type, and submit remain
+   Experimental and always require a separate per-action approval in Lima.
+   Navigation, closing, and submission may discard or change work.
 8. To verify revocation, choose **Revoke all access**, refresh, and start a *new*
    read: it must be denied. **Ask every time** removes only persistent interaction
    access. Test persistence by restarting the browser and reconnecting. Changing
    policy cancels pending mutations rather than approving them.
-9. Browser AI tools are separately off by default. Enable only needed read tools
-   in AI Tools; site grants still apply. Browser context sent to AI goes to the
-   selected conversation provider. Revocation does not erase past conversations.
+9. Browser AI tools are separately off by default. Enable only the needed read,
+   navigation, or Experimental interaction group in AI Tools; site grants still
+   apply. Browser context sent to AI goes to the selected conversation provider.
+   Revocation does not erase past conversations.
 
 **Setup Guide…** in the same Settings pane provides the complete offline guide,
 including updates, troubleshooting, removal, privacy, and Stop/Escape semantics.
@@ -48,7 +51,9 @@ including updates, troubleshooting, removal, privacy, and Stop/Escape semantics.
 - Signature/incompatibility error: update the browser and obtain a fresh official
   XPI; do not disable security settings or use temporary loading as a release fix.
 - Empty tabs or denied reads: use a normal HTTPS tab, grant its exact site, and
-  refresh. A different origin/subdomain requires its own grant.
+  refresh. A different origin/subdomain requires its own exact grant unless the
+  browser separately approved broad HTTPS access and Lima's AI Settings →
+  Experimental browser access switch is enabled.
 - Waiting actions: open the companion popup or choose **Stop** and retry. If the
   tab navigated, refresh tabs before retrying. Cross-site navigation requires both
   sites; persistent interactions require both sites to be explicitly trusted.
@@ -73,13 +78,34 @@ Settings → Browser Bridge contains:
   Mutations default to **Ask every time**; the companion can explicitly remember
   **Always allow interactions** for each exact site.
 
-AI exposes only read tools: `browser_tabs`, `browser_current`, `browser_read`,
-and `salesforce_resolve_case`. They are **off by default** and must be enabled in
-the existing AI Tools controls. Browser text is untrusted data, not instructions.
-AI context is sent to the selected conversation provider; revoking a site does
-not erase text already included in a conversation.
+AI browser tools are **off by default** and separated into read, navigation,
+and Experimental interaction groups. Read tools inspect granted tabs and actual
+Salesforce Case links. Navigation tools can open, focus, and navigate granted
+HTTPS tabs. Experimental `browser_click`, `browser_type`, and `browser_submit`
+require a compatible 1.3.0 companion, explicit Lima settings, and individual
+user approval for every action; they exclude arbitrary scripts and password
+fields. Browser text is untrusted data, not instructions. AI context is sent to
+the selected conversation provider; revoking a site does not erase text already
+included in a conversation.
 
-## Persistent site access (companion 1.2.0)
+## Experimental broad HTTPS access in Lima
+
+Exact-site grants remain the default. If the browser has separately approved
+`https://*/*`, Lima ignores broad-only tabs while **AI Settings → Experimental
+browser access → Allow broad HTTPS browser grants** is off. Exact-site tabs
+continue to work. Enabling that switch lets Lima list/read eligible HTTPS tabs
+and use navigation on broad-only sites, subject to the separate AI navigation
+policy and the companion's tab-action approval. The switch does not grant or
+revoke the browser permission; revoke it separately in the browser companion.
+Turning the switch off prevents future broad-only results from reaching Lima,
+including a page read already in flight. Private windows stay excluded.
+
+Broad permission never enables AI click, type, or submit on its own. Those
+actions still require an exact-site grant, the separate Browser AI interaction
+setting, and individual Lima approval; the companion may also ask. The
+signed 1.3.0 XPI is not changed by this Lima-side setting.
+
+## Persistent site access (companion 1.3.0)
 
 The popup separates two choices:
 - **Always allow reading on this site**: Firefox remembers the exact HTTPS-origin
@@ -87,7 +113,8 @@ The popup separates two choices:
   tab mutations.
 - **Always allow interactions…**: a second, site-named confirmation lets Lima
   open, focus, navigate and close tabs for that site without another popup.
-  It does **not** enable arbitrary clicks, scripts, form filling, or new AI tools.
+  In 1.3.0 it also governs bounded click, type, and submit requests, but never
+  enables arbitrary scripts or bypasses Lima's separate per-action AI approval.
   Cross-site navigation needs both source and destination interaction grants.
 
 Both choices survive browser restarts. Interaction preferences use local
@@ -107,9 +134,9 @@ The popup confirmation defaults keyboard focus to Cancel. Lima Settings displays
 both modes after **Test Connection & Refresh Sites**; it cannot silently grant
 interaction access. Existing 1.0.0 installations keep Ask every time.
 
-Version 1.2.0 requires a newly signed XPI. Do not modify, overwrite or re-submit
-the approved 1.1.0 package under the same version. Its earlier acceptance results
-do not certify the new batch-navigation path.
+Version 1.3.0 requires its own source-matching Mozilla-signed XPI. Preserve
+those signed bytes; do not modify or re-submit an earlier version under the same
+number. Earlier acceptance results do not certify page interactions.
 
 ## Development setup
 
@@ -266,9 +293,12 @@ References:
 ## Privacy and lifecycle
 
 - HTTPS origins only; no credential-bearing URLs, nondefault ports, wildcard
-  site grants from the popup, or `<all_urls>`.
-- Optional broad HTTPS permission declaration only enables individual runtime
-  grants; it does not grant every HTTPS site at install time.
+  site grants from the popup, or `<all_urls>`. A browser-approved
+  `https://*/*` grant can be present, but Lima's separate AI experiment is off
+  by default and does not acquire browser permission.
+- Exact-site grants keep working while broad access is off. Broad-only page
+  metadata and content are filtered before reaching Lima's AI tools; AI
+  click/type/submit still require exact-site permission and individual approval.
 - Main-frame bounded visible text, filtered links, and filtered selections.
   Inputs, editable descendants, hidden content, and private-marked DOM are
   excluded. Visible pages may still contain sensitive information: grant carefully.
@@ -300,6 +330,11 @@ helper's split-frame duplex stdio/socket relay.
 
 - Install the signed XPI in both target Zen and Firefox builds; verify discovery.
 - Confirm denied sites/private windows cannot be read.
+- With a browser-approved broad HTTPS grant, verify Lima's experiment defaults
+  off, exact-site tabs still work, broad-only tabs are hidden, enabling the
+  experiment permits eligible reads/navigation, and disabling it blocks them
+  again without revoking the browser grant. Verify broad-only click/type/submit
+  stay blocked and exact-site interactions still ask in Lima.
 - Read a granted page, revoke during an active operation, verify no result.
 - In Ask every time mode, approve/deny/expire each tab action; verify background
   opens do not steal focus.

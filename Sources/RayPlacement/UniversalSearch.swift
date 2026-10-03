@@ -212,11 +212,28 @@ final class UniversalSearchCoordinator {
         case "clipboard": providers = [clipboard]
         default: providers = [notes, dictation, aiConversations, terminal, workflows, workspaces, context, clipboard]
         }
-        var results: [LimaSearchResult] = []
-        for provider in providers {
-            guard !Task.isCancelled else { return [] }
-            results += await provider.search(query: query)
+        let results = await withTaskGroup(
+            of: (Int, [LimaSearchResult]).self,
+            returning: [LimaSearchResult].self
+        ) { group in
+            for (index, provider) in providers.enumerated() {
+                group.addTask {
+                    guard !Task.isCancelled else { return (index, []) }
+                    return (index, await provider.search(query: query))
+                }
+            }
+
+            var batches = Array(repeating: [LimaSearchResult](), count: providers.count)
+            for await (index, batch) in group {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return []
+                }
+                batches[index] = batch
+            }
+            return batches.flatMap { $0 }
         }
+        guard !Task.isCancelled else { return [] }
         return results.sorted { $0.score > $1.score }.prefix(24).map { $0 }
     }
 

@@ -261,6 +261,9 @@ enum SystemAction {
     case dictateIntoNote
     case captureClipboardToNote
     case captureSelectionToNote
+    case openGrammarWorkspace
+    case openTranscripts
+    case openFormatter
     case openTerminal
     case openContextShelf
     case addSelectionToShelf

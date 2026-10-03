@@ -14,7 +14,7 @@ function event() {
     emit: (...args) => Promise.all(handlers.map(handler => handler(...args)))};
 }
 function harness(storage = {}) {
-  const ports = [], grants = new Set(["https://example.com/*"]), changes = [], timers = new Map();
+  const ports = [], grants = new Set(["https://example.com/*"]), changes = [], injections = [], pageMessages = [], timers = new Map();
   const tabs = new Map([[1, {id: 1, url: "https://example.com/case", title: "Case", windowId: 2, active: true}],
     [2, {id: 2, url: "https://private.example/no", title: "Secret", windowId: 2}],
     [3, {id: 3, url: "https://example.com/private", incognito: true, windowId: 3}]]);
@@ -36,7 +36,14 @@ function harness(storage = {}) {
     tabs: {
       get: async id => { if (!tabs.has(id)) throw Error("Unknown tab"); return {...tabs.get(id)}; },
       query: async q => [...tabs.values()].filter(t => !q.active || t.active).map(t => ({...t})),
-      executeScript: async () => [{url: tabs.get(1).url, text: "Visible", links: [], untrustedPageContent: true}],
+      executeScript: async (id, options = {}) => {
+        if (options.file === "interaction.js") { injections.push([id, options]); return []; }
+        return [{url: tabs.get(1).url, text: "Visible", links: [], untrustedPageContent: true}];
+      },
+      sendMessage: async (id, message) => {
+        pageMessages.push([id, JSON.parse(JSON.stringify(message))]);
+        return {performed: message.command.replace("browser.", ""), target: "fixture"};
+      },
       create: async a => { changes.push(["create", a]); return {id: 9, windowId: 2, ...a}; },
       update: async (id, a) => { changes.push(["update", id, a]); return {...tabs.get(id), ...a}; },
       remove: async id => { changes.push(["remove", id]); }},
@@ -48,7 +55,7 @@ function harness(storage = {}) {
     clearTimeout(id) { timers.delete(id); }};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), context);
   const sender = {id: browser.runtime.id, url: browser.runtime.getURL("popup.html")};
-  return {browser, ports, grants, changes, timers, tabs, sender, storage,
+  return {browser, ports, grants, changes, injections, pageMessages, timers, tabs, sender, storage,
     popup: (m, from = sender) => browser.runtime.onMessage.emit(m, from),
     send: m => ports.at(-1).onMessage.emit(m)};
 }
@@ -60,12 +67,24 @@ test("only exact HTTPS sites and typed command schemas are accepted", () => {
   assert(P.validRequest(request("browser.open_tabs", {
     urls: ["https://example.com/a", "https://example.com/b"], background: true
   })));
+  assert(P.validRequest(request("browser.click", {
+    tabID: 1, expectedURL: "https://example.com/case", selector: "button#continue"
+  })));
+  assert(P.validRequest(request("browser.type", {
+    tabID: 1, expectedURL: "https://example.com/case", selector: "input[name=subject]", text: "Hello"
+  })));
+  assert(P.validRequest(request("browser.submit", {
+    tabID: 1, expectedURL: "https://example.com/case", selector: "form#contact"
+  })));
   for (const m of [request("eval", {}), request("browser.tabs", {extra: true}),
     request("browser.read", {tabID: -1}), request("browser.read", {tabID: 1.1}),
     request("browser.open", {url: "https://example.com", active: "false"}),
     request("browser.open_tabs", {urls: [], background: true}),
     request("browser.open_tabs", {urls: Array(51).fill("https://example.com"), background: true}),
     request("browser.open_tabs", {urls: ["https://example.com"], background: "true"}),
+    request("browser.click", {tabID: 1, expectedURL: "https://example.com/case", selector: "button .unsafe"}),
+    request("browser.type", {tabID: 1, expectedURL: "https://example.com/case", selector: "input#name", text: "x".repeat(4001)}),
+    request("browser.submit", {tabID: 1, expectedURL: "https://example.com/case", selector: "#"}),
     request("browser.close", {tabID: 1}), request("browser.tabs", {}, "a".repeat(36))]) assert(!P.validRequest(m));
 });
 test("tab listing and page reads are limited to explicitly granted non-private tabs", async () => {
@@ -249,6 +268,62 @@ test("individual typed tab actions honor opt-in but private tabs and stale URLs 
     assert.equal(h.ports[0].replies.at(-1).error, "site_not_granted");
   }
 });
+test("page interaction actions require consent, exact current URLs, and use only the static adapter", async () => {
+  const h = harness();
+  const typing = request("browser.type", {
+    tabID: 1, expectedURL: h.tabs.get(1).url, selector: "input[name=subject]", text: "Draft"
+  });
+  const pending = h.send(typing);
+  await flush();
+  assert.equal(h.injections.length, 0);
+  assert.equal(h.pageMessages.length, 0);
+  await h.popup({action: "decision", id: typing.id, allow: true});
+  await pending;
+  assert.equal(h.injections.length, 1);
+  assert.equal(h.injections[0][1].file, "interaction.js");
+  assert.deepEqual(h.pageMessages[0], [1, {
+    type: "lima-browser-interaction", command: "browser.type", selector: "input[name=subject]", text: "Draft"
+  }]);
+  assert.equal(h.ports[0].replies.at(-1).result.performed, "type");
+
+  const trusted = harness();
+  await trust(trusted);
+  const click = request("browser.click", {
+    tabID: 1, expectedURL: trusted.tabs.get(1).url, selector: "button#continue"
+  });
+  await trusted.send(click);
+  assert.equal(trusted.injections.length, 1);
+  assert.equal(trusted.pageMessages.length, 1);
+  assert.equal(trusted.changes.length, 0);
+
+  await trusted.send(request("browser.submit", {
+    tabID: 1, expectedURL: "https://example.com/stale", selector: "form#contact"
+  }));
+  assert.equal(trusted.pageMessages.length, 1);
+  assert.equal(trusted.ports[0].replies.at(-1).error, "page_changed");
+
+  await trusted.send(request("browser.click", {
+    tabID: 3, expectedURL: trusted.tabs.get(3).url, selector: "button#continue"
+  }));
+  assert.equal(trusted.pageMessages.length, 1);
+  assert.equal(trusted.ports[0].replies.at(-1).error, "site_not_granted");
+});
+test("late Stop after a completed page action reports the performed result", async () => {
+  const h = harness(); await trust(h);
+  const click = request("browser.click", {
+    tabID: 1, expectedURL: h.tabs.get(1).url, selector: "button#continue"
+  });
+  let performed = false;
+  h.browser.tabs.sendMessage = async () => {
+    performed = true;
+    await h.send({version: 1, kind: "cancel", id: click.id, command: click.command});
+    return {performed: "click", target: "button"};
+  };
+  await h.send(click);
+  assert(performed);
+  assert.equal(h.ports[0].replies.at(-1).result.performed, "click");
+});
+
 test("cross-site navigation requires both source and destination interaction grants", async () => {
   const h = harness(); h.grants.add("https://private.example/*"); await trust(h);
   const m = request("browser.navigate", {tabID: 1, expectedURL: h.tabs.get(1).url, url: "https://private.example/new"});

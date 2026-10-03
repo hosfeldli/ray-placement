@@ -246,48 +246,61 @@ struct ContextShelfView: View {
         }
     }
 
+    private var pinnedItems: [ContextShelfItem] {
+        visibleItems.filter(\.isPinned)
+    }
+
+    private var recentItems: [ContextShelfItem] {
+        visibleItems.filter { !$0.isPinned }
+    }
+
     private var actionItems: [ContextShelfItem] {
         let selected = store.selectedItems
         return selected.isEmpty ? (activeItem.map { [$0] } ?? []) : selected
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             header
-            HStack(spacing: 6) {
-                Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                TextField("Search Shelf", text: $searchQuery)
-                    .textFieldStyle(.plain)
-                if !searchQuery.isEmpty {
-                    Button { searchQuery = "" } label: { Image(systemName: "xmark.circle.fill") }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal, 8)
-            .frame(height: 28)
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+            LimaWorkspaceSearchField(placeholder: "Search context…", text: $searchQuery)
+
             if let errorMessage {
-                Label(errorMessage, systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(.red)
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.warning)
             }
+
             if store.items.isEmpty {
                 emptyState
+            } else if visibleItems.isEmpty {
+                searchEmptyState
             } else {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
-                        ForEach(visibleItems) { item in
-                            shelfRow(item)
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        if !pinnedItems.isEmpty {
+                            sectionHeader("PINNED")
+                            ForEach(pinnedItems) { item in
+                                shelfRow(item)
+                            }
+                        }
+                        if !recentItems.isEmpty {
+                            sectionHeader("RECENT")
+                            ForEach(recentItems) { item in
+                                shelfRow(item)
+                            }
                         }
                     }
-                    .padding(.horizontal, 2)
                     .padding(.vertical, 2)
                 }
                 .scrollIndicators(.automatic)
             }
+
+            if store.selectedCount > 0 {
+                selectionActionBar
+            }
         }
-        .padding(14)
-        .background(.background)
+        .padding(16)
+        .background(LimaTheme.surfacePrimary)
         .overlay(alignment: .topLeading) {
             ContextShelfKeyboardHandler { command in
                 handle(command)
@@ -298,7 +311,7 @@ struct ContextShelfView: View {
         .onAppear {
             activeID = activeID ?? store.items.first?.id
         }
-        .onChange(of: store.items.map(\.id)) { ids in
+        .onChange(of: store.items.map { $0.id }) { ids in
             if let activeID, ids.contains(activeID) { return }
             activeID = ids.first
         }
@@ -317,16 +330,12 @@ struct ContextShelfView: View {
 
     private var header: some View {
         HStack(spacing: 8) {
-            Label("Context Shelf", systemImage: "tray.full")
-                .font(.headline)
-            Text("\(store.count)")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-            if store.selectedCount > 0 {
-                Text("· \(store.selectedCount) selected")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            LimaWorkspaceBadge(
+                title: store.selectedCount > 0
+                    ? "\(store.selectedCount) selected"
+                    : "\(store.count) item\(store.count == 1 ? "" : "s")",
+                symbol: store.selectedCount > 0 ? "checkmark.circle.fill" : "tray.full"
+            )
             Spacer()
             Menu {
                 let actions = ContextShelfActionRegistry.shared.actions(for: actionItems)
@@ -350,23 +359,90 @@ struct ContextShelfView: View {
                 Button("Undo Clear") { store.undoClear() }.disabled(store.lastCleared.isEmpty)
                 Button("Clear Unpinned", role: .destructive) { store.clear() }
             } label: {
-                Label("Use With…", systemImage: "ellipsis.circle")
+                Label("More", systemImage: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
-            .disabled(actionItems.isEmpty)
+            .help("Context actions and shelf management")
+            .accessibilityLabel("Context actions")
+        }
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title)
+            .limaFont(.system(size: 9, weight: .bold))
+            .tracking(1)
+            .foregroundStyle(LimaTheme.textTertiary)
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
+    }
+
+    private var selectionActionBar: some View {
+        HStack(spacing: 8) {
+            Text("\(store.selectedCount) selected")
+                .limaFont(.caption.weight(.medium))
+                .foregroundStyle(LimaTheme.textSecondary)
+            Spacer(minLength: 0)
+            Button {
+                destinationMode = .append
+            } label: {
+                Label("Add to Note", systemImage: "note.text.badge.plus")
+            }
+            .buttonStyle(.bordered)
+            Menu {
+                ForEach(ContextShelfActionRegistry.shared.actions(for: store.selectedItems)
+                    .filter { !["append-quick-note", "send-to-note", "undo-remove", "undo-clear"].contains($0.id) }, id: \.id) { descriptor in
+                    Button { run(descriptor, items: store.selectedItems) } label: {
+                        Label(descriptor.title, systemImage: descriptor.icon)
+                    }
+                }
+                if store.selectedCount == 2 {
+                    Divider()
+                    Button {
+                        compareItems = store.selectedItems
+                    } label: {
+                        Label("Compare Selected Items", systemImage: "rectangle.split.2x1")
+                    }
+                }
+            } label: {
+                Label("More", systemImage: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
+        }
+        .padding(10)
+        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
         }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "tray").font(.title2).foregroundStyle(.secondary)
-            Text("Shelf is empty").font(.headline)
-            Text("Capture highlighted text from another app or add a result here.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        VStack(spacing: 10) {
+            LimaFeatureIcon(symbol: "tray", tint: .violet, size: 42)
+            Text("No context yet").limaFont(.headline)
+                .foregroundStyle(LimaTheme.textPrimary)
+            Text("Capture highlighted text, terminal output, or a result to keep it close to this work.")
+                .limaFont(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, minHeight: 180)
+        .padding(16)
+        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+    }
+
+    private var searchEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(LimaTheme.textSecondary)
+            Text("No matching context").limaFont(.callout.weight(.semibold))
+                .foregroundStyle(LimaTheme.textPrimary)
+            Text("Try another phrase or clear the search.")
+                .limaFont(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
+        }
+        .frame(maxWidth: .infinity, minHeight: 160)
     }
 
     private func shelfRow(_ item: ContextShelfItem) -> some View {
@@ -378,42 +454,50 @@ struct ContextShelfView: View {
                 activeID = item.id
             } label: {
                 Image(systemName: isSelected ? "checkmark.square.fill" : "square")
-                    .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                    .foregroundStyle(isSelected ? LimaTheme.accentInk : LimaTheme.textSecondary)
             }
             .buttonStyle(.plain)
             .help("Select for a batch action")
 
             Image(systemName: icon(for: item.kind))
                 .frame(width: 18)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(LimaTheme.textSecondary)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 5) {
                     Text(item.title)
-                        .font(.subheadline.weight(.medium))
+                        .limaFont(.callout.weight(.medium))
+                        .foregroundStyle(LimaTheme.textPrimary)
                         .lineLimit(1)
-                    if item.isPinned { Image(systemName: "pin.fill").font(.caption2) }
+                    if item.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                    }
                     Spacer(minLength: 4)
                     Text(ContextShelfMarkdownFormatter.relativeTime(for: item.createdAt))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .limaFont(.caption2)
+                        .foregroundStyle(LimaTheme.textTertiary)
                 }
-                Text("\(ContextShelfMarkdownFormatter.previewSource(for: item)) · \(ContextShelfMarkdownFormatter.relativeTime(for: item.createdAt))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text(ContextShelfMarkdownFormatter.previewSource(for: item))
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(1)
                 Text(item.preview)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(2)
             }
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 7)
-        .background(isActive ? Color.accentColor.opacity(0.10) : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 9)
+        .background(
+            isActive ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised,
+            in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+        )
         .overlay(
-            RoundedRectangle(cornerRadius: 7)
-                .stroke(isActive ? Color.accentColor.opacity(0.65) : Color.secondary.opacity(0.12), lineWidth: 1)
+            RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                .stroke(isActive ? LimaTheme.borderStrong : LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
         )
         .contentShape(Rectangle())
         .onTapGesture {

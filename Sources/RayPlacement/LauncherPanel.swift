@@ -7,9 +7,9 @@ enum LauncherPanelLayout {
 
     static func searchSize(density: AppInterfaceDensity) -> NSSize {
         switch density {
-        case .compact: return NSSize(width: 940, height: 640)
-        case .balanced: return NSSize(width: 1040, height: 700)
-        case .comfortable: return NSSize(width: 1140, height: 740)
+        case .compact: return NSSize(width: 720, height: 500)
+        case .balanced: return NSSize(width: 760, height: 520)
+        case .comfortable: return NSSize(width: 840, height: 580)
         }
     }
 
@@ -27,7 +27,7 @@ enum LauncherPanelLayout {
         switch mode {
         case .root:
             // Keep Search stable as results change; the controller clamps to the
-            // current screen and the view collapses its optional preview and rail.
+            // current screen and details remain an on-demand panel rather than a second workspace.
             return searchSize(density: density)
         case .output, .writingReview:
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))

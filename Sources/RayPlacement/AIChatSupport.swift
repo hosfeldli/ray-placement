@@ -1021,8 +1021,8 @@ struct MCPHTTPClient {
 
 enum AILocalToolRisk: String, Codable, Sendable {
     case read
-    /// Changes browser presentation (open, focus, or navigate). This is not
-    /// read-only and is never exposed to AI while computer actions are read-only.
+    /// Changes browser presentation (open, focus, or navigate). Exposure is
+    /// controlled by the user’s browser-navigation action policy.
     case navigation
     /// Narrow local workspace mutation, controlled by the Memory capability.
     case memory
@@ -1342,6 +1342,9 @@ struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     let description: String
     let parameters: [String: Any]
     let risk: AILocalToolRisk
+    /// A user-controlled computer-action category. Nil preserves the existing
+    /// read-only or analysis-only behavior for legacy definitions.
+    var actionCategory: AIComputerActionCategory? = nil
     var extensionBinding: ExtensionAIToolBinding? = nil
 
     /// Only validated strict schemas are serialized into an AI provider request.
@@ -1810,7 +1813,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use supplied computer tools only to read existing content. Do not open, focus, close, or navigate browser tabs, click, type, submit, change files, launch applications, run shell commands, install extensions, execute extension-provided code, or create, edit, or forget local memory. If the user asks for a computer or memory change, explain that Lima AI can inspect or draft a plan, but the user must initiate the action through a separate manual command or the Memory inspector. Enabled subagents may analyze supplied evidence but cannot act or use tools. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never save, install, or run them.
+    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Enabled subagents may analyze supplied evidence but cannot act or use tools. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
@@ -1987,27 +1990,44 @@ enum LimaAIToolRegistry {
         )
     ]
 
+    private static var candidateDefinitions: [LimaAIToolDefinition] {
+        definitions
+            + AIContextTools.definitions
+            + BrowserBridgeAITools.definitions
+            + AILocalComputerActionTools.definitions
+            + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
+    }
+
     static var availableDefinitions: [LimaAIToolDefinition] {
-        (definitions + AIContextTools.definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition))
+        candidateDefinitions
             .filter { $0.responsePayload != nil }
+            .filter { $0.actionCategory == nil || AIComputerActionPolicy.shared.allows($0) }
     }
 
     static func schemaValidationMessage(for id: String) -> String? {
-        let candidates = definitions + AIContextTools.definitions + BrowserBridgeAITools.definitions + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
-        return candidates.first(where: { $0.id == id })?.schemaValidationMessage
+        candidateDefinitions.first(where: { $0.id == id })?.schemaValidationMessage
     }
 
     static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)).union(AIContextTools.ids) }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
         guard let name else { return nil }
-        return availableDefinitions.first { $0.name == name || $0.id == name }
+        return candidateDefinitions.first { $0.name == name || $0.id == name }
     }
 
     static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        availableDefinitions.filter {
-            ids.contains($0.id) && ($0.risk == .read || AIContextTools.delegationIDs.contains($0.id))
+        availableDefinitions.filter { definition in
+            guard ids.contains(definition.id) else { return false }
+            if definition.actionCategory != nil {
+                return AIComputerActionPolicy.shared.allows(definition)
+            }
+            return definition.risk == .read || AIContextTools.delegationIDs.contains(definition.id)
         }
+    }
+
+    static func requiresApproval(for name: String?) -> Bool {
+        guard let definition = definition(for: name) else { return false }
+        return AIComputerActionPolicy.shared.requiresApproval(for: definition)
     }
 
     private static func extensionDefinition(_ binding: ExtensionAIToolBinding) -> LimaAIToolDefinition {
@@ -2024,13 +2044,17 @@ enum LimaAIToolRegistry {
         )
     }
 
-    static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
+    static func execute(_ call: AIOutputItem, approvalGranted: Bool = false) async -> LimaAIToolExecution {
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
             return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
         }
         guard let definition = definition(for: call.name),
-              definition.risk == .read else {
-            return .json(["error": "Lima AI Chat only permits registered read-only computer tools."], isError: true)
+              definition.risk == .read || definition.actionCategory != nil else {
+            return .json(["error": "Lima AI Chat only permits registered tools enabled by the current action policy."], isError: true)
+        }
+        guard definition.actionCategory == nil
+                || AIComputerActionPolicy.shared.permits(definition, approvalGranted: approvalGranted) else {
+            return .json(["error": "This computer action is disabled or still needs your approval in Lima Settings."], isError: true)
         }
         if let binding = definition.extensionBinding {
             guard let arguments = call.arguments,
@@ -2050,7 +2074,10 @@ enum LimaAIToolRegistry {
             }
         }
         if BrowserBridgeAITools.definitions.contains(where: { $0.id == definition.id }) {
-            return await BrowserBridgeAITools.execute(call)
+            return await BrowserBridgeAITools.execute(call, approvalGranted: approvalGranted)
+        }
+        if AILocalComputerActionTools.ids.contains(definition.id) {
+            return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted)
         }
         switch definition.id {
         case "read_screen_context":
@@ -2329,6 +2356,7 @@ enum LimaAIToolRegistry {
                 return .json(["error": "File Metadata supports regular files and directories only."], isError: true)
             }
             let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
             return .json([
                 "path": url.path,
                 "name": url.lastPathComponent,
@@ -3099,6 +3127,34 @@ struct LimaAIToolGroup: Identifiable, Hashable {
             ]
         ),
         .init(
+            id: "browser-navigation",
+            title: "Browser navigation",
+            summary: "Open, focus, and navigate granted tabs",
+            symbol: "safari",
+            toolIDs: ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
+        ),
+        .init(
+            id: "browser-interaction",
+            title: "Browser interaction",
+            summary: "Click, type, and submit only with per-action approval",
+            symbol: "cursorarrow.click",
+            toolIDs: ["browser_click", "browser_type", "browser_submit"]
+        ),
+        .init(
+            id: "local-files",
+            title: "Local files",
+            summary: "Create or replace bounded text and source files",
+            symbol: "doc.badge.plus",
+            toolIDs: ["create_text_file", "replace_text_file"]
+        ),
+        .init(
+            id: "terminal",
+            title: "Terminal and code",
+            summary: "Run one approved bounded local developer command",
+            symbol: "terminal",
+            toolIDs: ["run_terminal_command"]
+        ),
+        .init(
             id: "lima-workspace",
             title: "Lima workspace",
             summary: "Read Lima status and installed extensions",
@@ -3166,6 +3222,15 @@ extension LimaAIToolDefinition {
         case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
+        case "browser_open_tabs": return "Open granted tabs"
+        case "browser_focus_tab": return "Focus a granted tab"
+        case "browser_navigate_tab": return "Navigate a granted tab"
+        case "browser_click": return "Click in a granted tab"
+        case "browser_type": return "Type in a granted tab"
+        case "browser_submit": return "Submit a granted form"
+        case "create_text_file": return "Create a text file"
+        case "replace_text_file": return "Replace a text file"
+        case "run_terminal_command": return "Run a local developer command"
         default:
             if let extensionBinding { return extensionBinding.tool.description }
             return description
@@ -3184,6 +3249,10 @@ extension LimaAIToolDefinition {
         case "read_web": return "doc.text.magnifyingglass"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
+        case "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab": return "safari"
+        case "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
+        case "create_text_file", "replace_text_file": return "doc.badge.plus"
+        case "run_terminal_command": return "terminal"
         default: return "eye"
         }
     }
@@ -3208,6 +3277,19 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(AIContextTools.ids)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: migrationKey)
+        }
+        // Action schemas remain inert until their category is explicitly enabled
+        // in AI Settings. Preselect them once so enabling a category is sufficient
+        // and does not silently re-enable a later user opt-out.
+        let actionMigrationKey = "lima.ai.computer-actions-v1"
+        if !defaults.bool(forKey: actionMigrationKey) {
+            enabledToolIDs.formUnion(AILocalComputerActionTools.ids)
+            enabledToolIDs.formUnion([
+                "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab",
+                "browser_click", "browser_type", "browser_submit"
+            ])
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: actionMigrationKey)
         }
     }
 
@@ -3703,15 +3785,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
                         .limaFont(.caption2.weight(.semibold))
                         .foregroundStyle(LimaTheme.textTertiary)
                     Spacer()
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(value, forType: .string)
-                    } label: {
-                        Label("Copy", systemImage: "doc.on.doc")
-                            .limaFont(.caption2)
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(LimaTheme.textSecondary)
+                    AIChatCopyButton(text: value, style: .labeled, accessibilityID: "ai-copy-code")
                 }
                 Text(value)
                     .font(.system(size: 12.5, design: .monospaced))
@@ -3961,6 +4035,7 @@ struct AIToolApprovalView: View {
     let request: AIToolApprovalRequest
     let allow: () -> Void
     let deny: () -> Void
+    @State private var showingFullRequest = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -3968,24 +4043,37 @@ struct AIToolApprovalView: View {
                 Image(systemName: "hand.raised.fill")
                     .foregroundStyle(LimaColors.warning)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Lima wants to use a tool").limaFont(.callout.weight(.semibold))
+                    Text("Review tool request").limaFont(.callout.weight(.semibold))
                     Text("\(request.serverLabel) · \(request.toolName)")
                         .limaFont(.caption)
                         .foregroundStyle(LimaColors.secondaryText)
                 }
                 Spacer()
             }
-            if let arguments = request.arguments, !arguments.isEmpty {
-                Text(arguments)
-                    .font(.system(size: 11.5, design: .monospaced))
-                    .textSelection(.enabled)
-                    .lineLimit(8)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+
+            Text(requestSummary)
+                .limaFont(.caption)
+                .foregroundStyle(LimaColors.primaryText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let arguments = formattedArguments {
+                DisclosureGroup("Review full request", isExpanded: $showingFullRequest) {
+                    ScrollView(.vertical) {
+                        Text(arguments)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(8)
+                    }
+                    .frame(maxHeight: 220)
                     .background(LimaColors.editorBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .padding(.top, 4)
+                }
+                .limaFont(.caption)
             }
+
             HStack {
-                Text("Write and destructive tools always require a decision.")
+                Text("Allow Once runs this request only and records the result in Activity.")
                     .limaFont(.caption2)
                     .foregroundStyle(LimaColors.tertiaryText)
                 Spacer()
@@ -3997,6 +4085,79 @@ struct AIToolApprovalView: View {
         .padding(12)
         .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaColors.warning.opacity(0.55), lineWidth: 1))
+    }
+
+    private var requestSummary: String {
+        let arguments = decodedArguments
+        let toolID = request.localToolID ?? request.toolName
+        switch toolID {
+        case "browser_open_tabs":
+            let urls = arguments["urls"] as? [String] ?? []
+            return "Open \(urls.count) tab\(urls.count == 1 ? "" : "s")\(hostList(urls).isEmpty ? "" : " at " + hostList(urls))."
+        case "browser_focus_tab":
+            return "Focus \(host(arguments["expectedURL"] as? String) ?? "the requested tab")."
+        case "browser_navigate_tab":
+            let source = host(arguments["expectedURL"] as? String)
+            let destination = host(arguments["url"] as? String)
+            if let source, let destination { return "Navigate \(source) to \(destination)." }
+            return "Navigate the requested browser tab."
+        case "browser_click":
+            return "Click \(quoted(arguments["selector"] as? String) ?? "the requested element")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+        case "browser_type":
+            let count = (arguments["text"] as? String)?.count ?? 0
+            return "Type \(count) character\(count == 1 ? "" : "s") into \(quoted(arguments["selector"] as? String) ?? "the requested field")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+        case "browser_submit":
+            return "Submit \(quoted(arguments["selector"] as? String) ?? "the requested form")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+        case "create_text_file":
+            return "Create \(quoted(arguments["path"] as? String) ?? "the requested file") with \(characterCount(arguments["content"])) character\(characterCount(arguments["content"]) == 1 ? "" : "s")."
+        case "replace_text_file":
+            return "Replace \(quoted(arguments["path"] as? String) ?? "the requested file") with \(characterCount(arguments["content"])) character\(characterCount(arguments["content"]) == 1 ? "" : "s")."
+        case "run_terminal_command":
+            let command = quoted(arguments["command"] as? String) ?? "the requested command"
+            let directory = arguments["working_directory"] as? String
+            return directory.map { "Run \(command) in \(quoted($0) ?? $0)." } ?? "Run \(command)."
+        default:
+            return "Review the complete request before allowing this tool to run."
+        }
+    }
+
+    private var decodedArguments: [String: Any] {
+        guard let arguments = request.arguments,
+              let data = arguments.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data),
+              let object = value as? [String: Any] else { return [:] }
+        return object
+    }
+
+    private var formattedArguments: String? {
+        guard let arguments = request.arguments, !arguments.isEmpty else { return nil }
+        guard let data = arguments.data(using: .utf8),
+              let value = try? JSONSerialization.jsonObject(with: data),
+              JSONSerialization.isValidJSONObject(value),
+              let prettyData = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+              let pretty = String(data: prettyData, encoding: .utf8) else {
+            return arguments
+        }
+        return pretty
+    }
+
+    private func host(_ value: String?) -> String? {
+        guard let value, let parsed = URL(string: value), let host = parsed.host, !host.isEmpty else { return nil }
+        return host
+    }
+
+    private func hostList(_ urls: [String]) -> String {
+        let values = Array(Set(urls.compactMap(host))).sorted()
+        return values.prefix(3).joined(separator: ", ") + (values.count > 3 ? "…" : "")
+    }
+
+    private func quoted(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        return "“\(value)”"
+    }
+
+    private func characterCount(_ value: Any?) -> Int {
+        (value as? String)?.count ?? 0
     }
 }
 

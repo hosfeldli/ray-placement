@@ -148,6 +148,21 @@ final class WorkflowEditorModel: ObservableObject {
     }
 }
 
+/// Retains the same workflow model and execution callback inside the shared
+/// Workspace shell, avoiding a divergent editor window.
+struct WorkflowWorkspaceView: View {
+    let execute: (WorkflowDefinition) -> Void
+    @StateObject private var model = WorkflowEditorModel(selected: nil)
+
+    var body: some View {
+        WorkflowEditorView(model: model)
+            .onAppear {
+                model.onExecute = execute
+                model.refresh()
+            }
+    }
+}
+
 struct WorkflowEditorView: View {
     @ObservedObject var model: WorkflowEditorModel
     @ObservedObject private var store = WorkflowStore.shared

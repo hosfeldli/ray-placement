@@ -172,6 +172,7 @@ extension LimaWorkspaceModule {
         case .notes: .orange
         case .grammar: .green
         case .dictation: .rose
+        case .workflows: .violet
         case .extensions: .cyan
         case .clipboard: .mint
         case .terminal: .graphite

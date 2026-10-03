@@ -5,12 +5,14 @@ import SwiftUI
 struct AIProviderSettingsView: View {
     @ObservedObject var model: AIChatViewModel
     @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @State private var apiKey = ""
     @State private var customModel = ""
     @State private var endpoint = ""
     @State private var message: String?
     @State private var confirmRemove = false
+    @State private var confirmBroadBrowserGrants = false
 
     init(model: AIChatViewModel) {
         self.model = model
@@ -27,7 +29,48 @@ struct AIProviderSettingsView: View {
         Form {
             Section("AI availability") {
                 Toggle("Enable AI throughout Lima", isOn: $settings.aiEnabled)
-                Text("Turning this off stops AI chats, provider requests, AI tools, grammar assistance, and dictation. Search, files, notes, and saved chats remain available. Keys and model preferences are retained.")
+                Text("Turning this off stops AI chats, provider requests, AI tools, and grammar assistance. Local dictation, search, files, notes, and saved chats remain available. Keys, model preferences, and action choices are retained.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
+            Section("Experimental browser access") {
+                Toggle("Allow broad HTTPS browser grants", isOn: Binding(
+                    get: { actionPolicy.broadBrowserGrantsExperimentalEnabled },
+                    set: { enabled in
+                        if enabled { confirmBroadBrowserGrants = true }
+                        else { actionPolicy.setBroadBrowserGrantsExperimentalEnabled(false) }
+                    }
+                ))
+                .alert("Use a broad HTTPS browser grant?", isPresented: $confirmBroadBrowserGrants) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Enable Experiment") { actionPolicy.setBroadBrowserGrantsExperimentalEnabled(true) }
+                } message: {
+                    Text("If Zen or Firefox has already granted https://*/*, Lima can read eligible tabs across HTTPS sites. AI may send selected page context to your configured provider. Private windows and form values remain excluded. Click, type, and submit still require individual approval. Turning this off stops Lima from using the broad grant; revoke the browser permission separately in the companion.")
+                }
+                Text("Off by default. This switch does not grant browser permission. It allows Lima to use a separately approved https://*/* reading grant; exact-site grants remain the default. Browser navigation and interactions still follow their separate AI action settings.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
+            Section("Computer actions") {
+                Text("Off by default. These controls apply only when AI is enabled and the matching tool is selected. Browser site grants, path safeguards, timeouts, output limits, and the Activity journal still apply.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
+                    Picker(category.title, selection: Binding(
+                        get: { actionPolicy.access(for: category) },
+                        set: { actionPolicy.setAccess($0, for: category) }
+                    )) {
+                        ForEach(category.supportedAccesses) { access in
+                            Text(access.title).tag(access)
+                        }
+                    }
+                    Text(category.summary)
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                if !actionPolicy.browserInteractionExperimentalEnabled {
+                    Text("Browser click, type, and submit are hidden until you enable Browser AI interaction in Advanced → Experimental Features.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                Text("Browser navigation can run with the Activity journal when enabled. Browser click, type, and submit, local file creation or replacement, and terminal or code commands always ask before each action. Browser interaction also requires a compatible signed Browser Bridge companion.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Text("Approved build, test, or script commands run project code as your macOS user, not in a security sandbox. Review the full command and project before allowing it; a timeout may not stop child processes started by that code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Conversation configuration") {

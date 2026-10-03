@@ -107,5 +107,5 @@
   return {url: location.href, title: document.title.slice(0, 256),
     text, selection: selectedText, links, headings,
     truncated: exhausted, untrustedPageContent: true,
-    interactionSupport: "Explicit HTTPS links support granted tab navigation only; no control clicks or form submission."};
+    interactionSupport: "Explicit HTTPS site grants support bounded navigation. Compatible companions also support Lima-confirmed click, text entry, and form submission; arbitrary scripts and password fields remain excluded."};
 })()

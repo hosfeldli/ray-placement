@@ -27,13 +27,22 @@ import Testing
     #expect(LimaWorkspaceMetrics.showsInspector(contentWidth: 944, sidebarWidth: 232))
 }
 
-@Test func homeActionsSearchExistingDestinationsByAllTerms() {
-    #expect(Set(HomeQuickAction.all.map(\.id)).count == HomeQuickAction.all.count)
-    #expect(HomeQuickAction.matching("  ").count == HomeQuickAction.all.count)
-    #expect(HomeQuickAction.matching("CHECK mac").map(\.title) == ["Check Writing"])
-    #expect(HomeQuickAction.matching("clipboard").map(\.title) == ["Clipboard History"])
-    #expect(HomeQuickAction.matching("notion").isEmpty)
-    #expect(HomeQuickAction.matching("strong password").map(\.title) == ["Generate Password"])
+@Test func homeRecentItemsSortRealWorkAndSkipEmptyChats() {
+    let base = Date(timeIntervalSince1970: 1_800_000_000)
+    let olderNote = MarkdownNote(title: "Older note", content: "Saved work", modifiedAt: base)
+    let newerNote = MarkdownNote(title: "Newer note", content: "More work", modifiedAt: base.addingTimeInterval(120))
+    let conversation = AIConversation(
+        title: "Project discussion",
+        updatedAt: base.addingTimeInterval(60),
+        messages: [AIChatMessage(role: .user, text: "Decide the next step")]
+    )
+    let emptyChat = AIConversation(title: "New Chat", updatedAt: base.addingTimeInterval(180))
+    let recent = HomeRecentItem.sorted(
+        notes: [olderNote, newerNote],
+        conversations: [emptyChat, conversation]
+    )
+    #expect(recent.map(\.title) == ["Newer note", "Project discussion", "Older note"])
+    #expect(recent.map(\.id).count == Set(recent.map(\.id)).count)
 }
 
 @Test func noteFiltersUseLocalCalendarAndRealMetadata() {

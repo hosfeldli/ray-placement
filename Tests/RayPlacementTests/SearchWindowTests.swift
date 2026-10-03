@@ -8,19 +8,25 @@ import Testing
         let populated = LauncherPanelLayout.size(for: .root, density: density, resultCount: 24, query: "notes")
         #expect(idle == populated)
         #expect(idle == LauncherPanelLayout.searchSize(density: density))
-        #expect(LauncherSearchDesign.showsInspector(at: idle.width))
-        #expect(idle.width - LauncherSearchDesign.railWidth(for: idle.width) - LauncherSearchDesign.inspectorWidth - 80 >= 380)
+        let canShowInspector = LauncherSearchDesign.canShowInspector(at: idle.width)
+        #expect(canShowInspector == (density == .comfortable))
+        if canShowInspector {
+            #expect(idle.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
+        }
+        switch density {
+        case .compact: #expect(idle == NSSize(width: 720, height: 500))
+        case .balanced: #expect(idle == NSSize(width: 760, height: 520))
+        case .comfortable: #expect(idle == NSSize(width: 840, height: 580))
+        }
         #expect(LauncherPanelLayout.size(for: .files, density: density).width == density.launcherWidth)
         #expect(LauncherPanelLayout.size(for: .terminal, density: density) == LauncherPanelLayout.terminalSize)
     }
 }
 
-@Test func searchWindowCollapsesOptionalPanesOnConstrainedScreens() {
-    #expect(LauncherSearchDesign.railWidth(for: 420) == 52)
-    #expect(LauncherSearchDesign.railWidth(for: 800) == 52)
-    #expect(LauncherSearchDesign.railWidth(for: 1040) == 164)
-    #expect(!LauncherSearchDesign.showsInspector(at: 899))
-    #expect(LauncherSearchDesign.showsInspector(at: 900))
+@Test func searchWindowKeepsDetailsOnDemandAtCompactWidths() {
+    #expect(!LauncherSearchDesign.canShowInspector(at: 779))
+    #expect(LauncherSearchDesign.canShowInspector(at: 780))
+    #expect(LauncherSearchDesign.inspectorWidth == 250)
 }
 
 @Test func searchResultLabelsReflectActualActions() {
