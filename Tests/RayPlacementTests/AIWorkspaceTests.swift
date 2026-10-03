@@ -109,12 +109,12 @@ import Testing
     let webResearch = try #require(groups.first { $0.id == "web-research" })
 
     #expect(store.isEnabled(webResearch))
+    #expect(store.isEnabled(browser))
+    store.setEnabled(browser, enabled: false)
     #expect(!store.isEnabled(browser))
     store.setEnabled(browser, enabled: true)
     #expect(store.isEnabled(browser))
     #expect(browser.toolIDs.allSatisfy(store.enabledToolIDs.contains))
-    store.setEnabled(browser, enabled: false)
-    #expect(!store.isEnabled(browser))
 }
 
 @Test @MainActor func modelSelectionRemainsAvailableDuringBackgroundCatalogUpdate() async throws {

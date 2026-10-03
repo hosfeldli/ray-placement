@@ -219,7 +219,7 @@ private final class BridgeServiceFixture {
         try policy.require("https://other.example/page", broadEnabled: true, interaction: true)
         Issue.record("Broad grant unexpectedly enabled browser interaction")
     } catch {
-        #expect(error.localizedDescription.contains("site_not_granted"))
+        #expect(error.localizedDescription.contains("Site access is not granted"))
     }
     do {
         _ = try BrowserBridgeGrantPolicy.parse([.string("http://*/*")])
@@ -227,6 +227,16 @@ private final class BridgeServiceFixture {
     } catch {
         #expect(error.localizedDescription.contains("unsupported host grant"))
     }
+}
+
+@Test func browserBridgeRejectionMessagesAreActionableAndDoNotEchoUnknownCodes() {
+    let expired = BrowserBridgeError.rejected("approval_expired").localizedDescription
+    #expect(expired.contains("approval expired"))
+    #expect(expired.contains("toolbar popup"))
+    let changed = BrowserBridgeError.rejected("page_changed").localizedDescription
+    #expect(changed.contains("Refresh the granted tabs"))
+    let unknown = BrowserBridgeError.rejected("unexpected_secret_from_page").localizedDescription
+    #expect(!unknown.contains("unexpected_secret_from_page"))
 }
 
 @Test @MainActor func browserBridgeTabsFilterBroadOnlyAndPrivateTabsUntilEnabled() async throws {
@@ -294,7 +304,7 @@ private final class BridgeServiceFixture {
         _ = try await request.value
         Issue.record("Revoked broad grant unexpectedly returned page content")
     } catch {
-        #expect(error.localizedDescription.contains("site_not_granted"))
+        #expect(error.localizedDescription.contains("Site access is not granted"))
     }
 }
 
@@ -314,14 +324,14 @@ private final class BridgeServiceFixture {
         ])
         Issue.record("Broad grant unexpectedly authorized click")
     } catch {
-        #expect(error.localizedDescription.contains("site_not_granted"))
+        #expect(error.localizedDescription.contains("Site access is not granted"))
     }
     #expect(fixture.sent("browser.click").isEmpty)
     do {
         _ = try await fixture.service.request("browser.read", arguments: ["tabID": .number(4)])
         Issue.record("Private tab unexpectedly read")
     } catch {
-        #expect(error.localizedDescription.contains("site_not_granted"))
+        #expect(error.localizedDescription.contains("Site access is not granted"))
     }
     #expect(fixture.sent("browser.read").isEmpty)
 }

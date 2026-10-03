@@ -14,10 +14,28 @@ enum BrowserBridgeError: LocalizedError {
         case .timeout: return "The browser did not respond. Reconnect the companion extension and try again."
         case .invalidResponse: return "The browser returned an invalid response."
         case .rejected(let code):
-            if code == "unsupported_command" {
+            switch code {
+            case "site_not_granted":
+                return "Site access is not granted. Allow reading for this exact HTTPS site in the Browser Bridge popup, or use a non-private tab."
+            case "approval_expired":
+                return "Browser approval expired. Retry the action and approve it promptly in the Zen or Firefox toolbar popup."
+            case "denied":
+                return "The browser action was denied in the companion popup."
+            case "page_changed":
+                return "The page changed since Lima inspected it. Refresh the granted tabs and try again."
+            case "no_active_tab", "invalid_tab":
+                return "The requested browser tab is no longer available. Refresh the granted tabs and try again."
+            case "cancelled":
+                return "The browser action was stopped."
+            case "unsupported_command":
                 return "The installed signed Browser Bridge companion does not support this interaction yet. Install a compatible signed companion release, then reconnect."
+            case "site_policy_unavailable", "site_policy_update_failed":
+                return "Browser site access could not be updated. Reconnect the companion and try again."
+            case "target_not_found", "target_not_visible", "target_ambiguous", "invalid_selector", "unsupported_target", "sensitive_or_unsupported_target":
+                return "The requested page control is unavailable or unsafe to use. Inspect the page again and choose a specific visible control."
+            default:
+                return "The browser could not complete this request. Check site access and the companion popup, then try again."
             }
-            return "Browser request stopped: \(code). Check site access and the companion approval in the browser."
         }
     }
 }

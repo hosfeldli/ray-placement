@@ -1145,6 +1145,9 @@ final class AIChatViewModel: ObservableObject {
         if isBrowserPrompt(prompt) {
             requested.formUnion(browserToolIDs(for: prompt))
         }
+        if containsAny(["my note", "my notes", "lima note", "lima notes", "in notes", "from notes", "search notes", "find note", "read note", "what did i write"]) {
+            requested.formUnion(AINotesTools.ids)
+        }
         if containsAny(["file", "folder", "directory", "path", "repository", "repo", "source code", "swift"]) {
             requested.formUnion(["search_files", "find_files", "list_directory", "file_metadata", "read_file"])
         }
@@ -1194,6 +1197,10 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
+    func requestsBrowserNavigation(_ prompt: String) -> Bool {
+        !browserToolIDs(for: prompt).isDisjoint(with: ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"])
+    }
+
     private func browserToolIDs(for prompt: String) -> Set<String> {
         let value = prompt.lowercased()
         func containsAny(_ terms: [String]) -> Bool {
@@ -1212,13 +1219,13 @@ final class AIChatViewModel: ObservableObject {
                 "salesforce_resolve_cases"
             ])
         }
-        if containsAny(["open", "new tab", "new tabs", "launch"]) {
+        if containsAny(["open", "new tab", "new tabs", "launch", "take me to"]) {
             identifiers.insert("browser_open_tabs")
         }
         if containsAny(["focus", "switch to"]) {
             identifiers.insert("browser_focus_tab")
         }
-        if containsAny(["navigate", "go to", "visit"]) {
+        if containsAny(["navigate", "go to", "visit", "take me to"]) {
             identifiers.insert("browser_navigate_tab")
         }
         if containsAny(["click", "press button", "select option"]) {
@@ -1242,9 +1249,14 @@ final class AIChatViewModel: ObservableObject {
         let explicitURLNavigation = ["open", "navigate", "visit", "go to"].contains { term in
             value.localizedStandardContains(term)
         } && (value.localizedStandardContains("https://") || value.localizedStandardContains("http://"))
+        let linkOrCaseNavigation = ["open", "take me to", "navigate", "visit", "go to"].contains {
+            value.localizedStandardContains($0)
+        } && ["link", "result", "ticket", "case"].contains {
+            value.localizedStandardContains($0)
+        }
         let explicitInteraction = ["click", "press button", "select option", "fill", "enter text", "submit", "send form", "save form"]
             .contains { value.localizedStandardContains($0) }
-        return namedBrowserContext || standaloneTab || explicitURLNavigation || explicitInteraction
+        return namedBrowserContext || standaloneTab || explicitURLNavigation || linkOrCaseNavigation || explicitInteraction
     }
 
     var systemInstructions: String {
@@ -3621,6 +3633,36 @@ struct AIChatWorkspaceView: View {
                 .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                 .disabled(model.canEndTask)
                 .help("Enable one Browser capability bundle for granted-tab requests.")
+            } else if model.requestsBrowserNavigation(model.draft),
+                      computerActionPolicy.access(for: .browserNavigation) == .disabled {
+                Label("Enable browser navigation in AI Settings", systemImage: "lock")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.warning)
+            } else if model.requestsBrowserNavigation(model.draft),
+                      let navigationGroup = toolGroups.first(where: { $0.id == "browser-navigation" }),
+                      !nativeToolStore.isEnabled(navigationGroup) {
+                Button("Enable navigation tools") {
+                    nativeToolStore.setEnabled(navigationGroup, enabled: true)
+                }
+                .buttonStyle(.borderless)
+                .limaFont(.caption2.weight(.semibold))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                .disabled(model.canEndTask)
+            } else if model.selectedAgentID != nil,
+                      model.requestsBrowserNavigation(model.draft),
+                      !model.routedNativeTools(for: model.draft).contains(where: {
+                          ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"].contains($0.id)
+                      }) {
+                Label("Selected agent excludes Browser navigation; switch to General", systemImage: "lock")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.warning)
+            } else if model.selectedAgentID != nil,
+                      !model.routedNativeTools(for: model.draft).contains(where: {
+                          $0.id.hasPrefix("browser_") || $0.id.hasPrefix("salesforce_")
+                      }) {
+                Label("Selected agent excludes Browser tools; switch to General", systemImage: "lock")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.warning)
             } else if browserBridge.sessions.isEmpty {
                 Label(
                     browserBridge.enabled ? "Connect Browser Bridge" : "Enable Browser Bridge",
@@ -3632,7 +3674,7 @@ struct AIChatWorkspaceView: View {
                     ? "Connect a granted Zen or Firefox tab before asking Lima to inspect it."
                     : "Enable the Browser Bridge in Settings, then connect a granted Zen or Firefox tab.")
             } else {
-                Label("Browser ready", systemImage: "network")
+                Label("Browser Bridge connected", systemImage: "network")
                     .limaFont(.caption2.weight(.medium))
                     .foregroundStyle(LimaTheme.textSecondary)
                     .help("Lima can inspect granted tabs. Browser navigation and interaction require their own AI Settings category and tool toggle; interactions always ask before use.")

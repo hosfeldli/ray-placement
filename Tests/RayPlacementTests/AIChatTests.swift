@@ -421,6 +421,9 @@ import Testing
 
     #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
+    #expect(model.isBrowserPrompt("Open all of these links"))
+    #expect(model.isBrowserPrompt("Take me to this case"))
+    #expect(model.requestsBrowserNavigation("Take me to this case"))
     #expect(model.isBrowserPrompt("Click the Continue button"))
     #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))

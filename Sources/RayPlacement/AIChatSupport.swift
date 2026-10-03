@@ -351,6 +351,8 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "agent_models": return "Choose a subagent model"
         case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
+        case "search_notes": return "Search Notes"
+        case "read_note": return "Read Note"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
         case "search_web": return "Search the web"
@@ -1266,7 +1268,7 @@ enum AIChatConfigurationCatalog {
     }
 
     private static func toolReferenceID(_ id: String, extensionID: String) -> String {
-        if LimaAIToolRegistry.definitions.contains(where: { $0.id == id }) { return id }
+        if LimaAIToolRegistry.definition(for: id) != nil { return id }
         return scopedID(extensionID: extensionID, contributionID: id)
     }
 }
@@ -1993,6 +1995,7 @@ enum LimaAIToolRegistry {
     private static var candidateDefinitions: [LimaAIToolDefinition] {
         definitions
             + AIContextTools.definitions
+            + AINotesTools.definitions
             + BrowserBridgeAITools.definitions
             + AILocalComputerActionTools.definitions
             + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
@@ -2008,7 +2011,12 @@ enum LimaAIToolRegistry {
         candidateDefinitions.first(where: { $0.id == id })?.schemaValidationMessage
     }
 
-    static var defaultEnabledToolIDs: Set<String> { Set(definitions.map(\.id)).union(AIContextTools.ids) }
+    static var defaultEnabledToolIDs: Set<String> {
+        Set(definitions.map(\.id))
+            .union(AIContextTools.ids)
+            .union(AINotesTools.ids)
+            .union(BrowserBridgeAITools.readToolIDs)
+    }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
         guard let name else { return nil }
@@ -2072,6 +2080,9 @@ enum LimaAIToolRegistry {
             } catch {
                 return .json(["error": "The approved read-only extension tool could not be executed."], isError: true)
             }
+        }
+        if AINotesTools.ids.contains(definition.id) {
+            return await AINotesTools.execute(call)
         }
         if BrowserBridgeAITools.definitions.contains(where: { $0.id == definition.id }) {
             return await BrowserBridgeAITools.execute(call, approvalGranted: approvalGranted)
@@ -3095,6 +3106,8 @@ struct LimaAIToolGroup: Identifiable, Hashable {
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
         .init(id: "subagents", title: "Subagents", summary: "Up to three analysis requests per turn using configured providers; API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
+        .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
+              symbol: "note.text", toolIDs: AINotesTools.ids),
         .init(
             id: "screen-context",
             title: "Screen context",
@@ -3199,6 +3212,8 @@ extension LimaAIToolDefinition {
         case "agent_models": return "Subagent models"
         case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
+        case "search_notes": return "Search Notes"
+        case "read_note": return "Read Note"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
         case "search_web": return "Search the web"
@@ -3214,6 +3229,8 @@ extension LimaAIToolDefinition {
     var userSummary: String {
         switch id {
         case "read_screen_context": return "App, window, and selected text"
+        case "search_notes": return "Titles and short matching excerpts"
+        case "read_note": return "One bounded local note range"
         case "search_files", "find_files": return "Names and paths only"
         case "list_directory": return "Visible direct children only"
         case "file_metadata": return "Basic file metadata only"
@@ -3242,6 +3259,7 @@ extension LimaAIToolDefinition {
         case "memory_search": return "brain.head.profile"
         case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
+        case "search_notes", "read_note": return "note.text"
         case "search_files", "find_files", "list_directory": return "folder"
         case "file_metadata": return "doc.badge.gearshape"
         case "read_file": return "doc.text"
@@ -3266,8 +3284,11 @@ final class LimaAIToolStore: ObservableObject {
     private let defaultsKey = "lima.ai.enabled-native-tools"
     private let defaults: UserDefaults?
 
-    private init() {
-        let defaults = LimaTestEnvironment.userDefaults
+    private convenience init() {
+        self.init(defaults: LimaTestEnvironment.userDefaults)
+    }
+
+    init(defaults: UserDefaults) {
         self.defaults = defaults
         let saved = defaults.stringArray(forKey: defaultsKey)
         enabledToolIDs = saved.map(Set.init) ?? LimaAIToolRegistry.defaultEnabledToolIDs
@@ -3290,6 +3311,16 @@ final class LimaAIToolStore: ObservableObject {
             ])
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: actionMigrationKey)
+        }
+        // Existing installations may have saved a tool list before Browser and
+        // Notes reading were available. Add only read-only schemas once; actual
+        // browser content still requires a site grant and a routed AI request.
+        let readMigrationKey = "lima.ai.browser-notes-read-v1"
+        if !defaults.bool(forKey: readMigrationKey) {
+            enabledToolIDs.formUnion(AINotesTools.ids)
+            enabledToolIDs.formUnion(BrowserBridgeAITools.readToolIDs)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: readMigrationKey)
         }
     }
 

@@ -27,7 +27,7 @@ import Testing
     #expect(CommandCenterCatalog.visibleEntries(rows, filter: .tools, query: "browser").contains { $0.id == bridge.id })
     store.setEnabled(bridge, enabled: false)
     #expect(!store.isEnabled(bridge))
-    #expect(!LimaAIToolRegistry.defaultEnabledToolIDs.contains(bridge.id))
+    #expect(LimaAIToolRegistry.defaultEnabledToolIDs.contains(bridge.id))
 }
 
 @Test func commandCenterNeverDisplaysWriteToolsAsEnabledForAI() {

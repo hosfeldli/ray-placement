@@ -3,6 +3,11 @@ import RayPlacementCore
 
 @MainActor
 enum BrowserBridgeAITools {
+    static let readToolIDs: Set<String> = [
+        "browser_tabs", "browser_current", "browser_read",
+        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
+    ]
+
     static let definitions: [LimaAIToolDefinition] = [
         tool("browser_tabs", "List tabs on exact-site grants, plus browser-approved broad HTTPS sites only while the AI experiment is enabled.", [:]),
         tool("browser_current", "Read the active browser tab's identity only if Lima's exact-site or experimental broad HTTPS policy permits it. Never opens or focuses tabs.", [:]),

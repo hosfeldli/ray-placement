@@ -34,13 +34,16 @@ final class LocalWhisperTranscriber {
     }
 
     private var activeProcess: Process?
+    private var launchingProcess: Process?
     private var jobIdentifier: UUID?
     private var scratchURLs: [URL] = []
 
     func cancel() {
         jobIdentifier = nil
         if activeProcess?.isRunning == true { activeProcess?.terminate() }
+        if launchingProcess?.isRunning == true { launchingProcess?.terminate() }
         activeProcess = nil
+        launchingProcess = nil
         cleanupScratch()
     }
 
@@ -59,13 +62,13 @@ final class LocalWhisperTranscriber {
 
         let identifier = UUID()
         jobIdentifier = identifier
-        let normalizedAudio = normalizedRoomAudio(from: audioURL, identifier: identifier) ?? audioURL
+        let normalizedDestination = ApplicationPaths.dictationScratch.appendingPathComponent("room-normalized-\(identifier.uuidString).wav")
         let outputBase = ApplicationPaths.dictationScratch.appendingPathComponent("whisper-output-\(identifier.uuidString)")
         let outputURL = outputBase.appendingPathExtension("json")
         scratchURLs.append(outputURL)
         let compute = SettingsStore.shared.dictationComputeMode
 
-        func attempt(useGPU: Bool, allowFallback: Bool) {
+        func attempt(normalizedAudio: URL, useGPU: Bool, allowFallback: Bool) {
             guard self.jobIdentifier == identifier else { return }
             progress("Transcribing…")
             var arguments = [
@@ -95,33 +98,50 @@ final class LocalWhisperTranscriber {
                 case .failure(let error):
                     if allowFallback {
                         progress("Retrying transcription…")
-                        attempt(useGPU: false, allowFallback: false)
+                        attempt(normalizedAudio: normalizedAudio, useGPU: false, allowFallback: false)
                     } else { self.finish(.failure(error), completion: completion) }
                 case .success(let processOutput):
                     guard processOutput.status == 0 else {
                         if allowFallback {
                             progress("Retrying transcription…")
-                            attempt(useGPU: false, allowFallback: false)
+                            attempt(normalizedAudio: normalizedAudio, useGPU: false, allowFallback: false)
                         } else {
                             self.finish(.failure(TranscriptionError.processFailed(processOutput.stderr)), completion: completion)
                         }
                         return
                     }
-                    guard let data = try? Data(contentsOf: outputURL),
-                          let transcript = self.formattedTranscript(from: data),
-                          !transcript.isEmpty else {
-                        self.finish(.failure(TranscriptionError.emptyTranscript), completion: completion)
-                        return
+                    DispatchQueue.global(qos: .utility).async {
+                        let transcript = (try? Data(contentsOf: outputURL)).flatMap(Self.formattedTranscript(from:))
+                        DispatchQueue.main.async {
+                            guard self.jobIdentifier == identifier else { return }
+                            guard let transcript, !transcript.isEmpty else {
+                                self.finish(.failure(TranscriptionError.emptyTranscript), completion: completion)
+                                return
+                            }
+                            self.finish(.success(transcript), completion: completion)
+                        }
                     }
-                    self.finish(.success(transcript), completion: completion)
                 }
             }
         }
 
-        switch compute {
-        case .cpu: attempt(useGPU: false, allowFallback: false)
-        case .metal: attempt(useGPU: true, allowFallback: false)
-        case .automatic: attempt(useGPU: true, allowFallback: true)
+        // A PCM segment can be many megabytes. Reading and scanning it on the
+        // main actor made every dictation destination appear frozen at rollover.
+        DispatchQueue.global(qos: .utility).async {
+            let prepared = Self.normalizedRoomAudio(from: audioURL, destination: normalizedDestination)
+            DispatchQueue.main.async {
+                guard self.jobIdentifier == identifier else {
+                    if let prepared { try? FileManager.default.removeItem(at: prepared) }
+                    return
+                }
+                if let prepared { self.scratchURLs.append(prepared) }
+                let normalizedAudio = prepared ?? audioURL
+                switch compute {
+                case .cpu: attempt(normalizedAudio: normalizedAudio, useGPU: false, allowFallback: false)
+                case .metal: attempt(normalizedAudio: normalizedAudio, useGPU: true, allowFallback: false)
+                case .automatic: attempt(normalizedAudio: normalizedAudio, useGPU: true, allowFallback: true)
+                }
+            }
         }
     }
 
@@ -154,16 +174,29 @@ final class LocalWhisperTranscriber {
             "VECLIB_MAXIMUM_THREADS": String(performance.threadLimit)
         ]
 
-        do {
-            try process.run()
-            activeProcess = process
-        } catch {
-            completion(.failure(error))
-            return
-        }
-
+        // Process.run can synchronously wait for macOS process setup. Keep even
+        // launch off the main actor so dictation never stalls its destination UI.
+        launchingProcess = process
         let lock = NSLock()
-        DispatchQueue.global(qos: .utility).async {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                try process.run()
+            } catch {
+                DispatchQueue.main.async {
+                    guard self?.launchingProcess === process else { return }
+                    self?.launchingProcess = nil
+                    completion(.failure(error))
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                guard self?.launchingProcess === process else {
+                    if process.isRunning { process.terminate() }
+                    return
+                }
+                self?.launchingProcess = nil
+                self?.activeProcess = process
+            }
             let group = DispatchGroup()
             var stderrData = Data()
             group.enter()
@@ -189,7 +222,7 @@ final class LocalWhisperTranscriber {
         }
     }
 
-    private func formattedTranscript(from data: Data) -> String? {
+    private nonisolated static func formattedTranscript(from data: Data) -> String? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawSegments = root["transcription"] as? [[String: Any]] else { return nil }
         let segments = rawSegments.compactMap { item -> TimedSegment? in
@@ -241,7 +274,7 @@ final class LocalWhisperTranscriber {
     /// Quiet room microphones often produce valid speech at a low level. This
     /// normalizes only the PCM sample payload, never compresses it, and caps gain
     /// to avoid clipping or amplifying near-silence into noise.
-    private func normalizedRoomAudio(from source: URL, identifier: UUID) -> URL? {
+    private nonisolated static func normalizedRoomAudio(from source: URL, destination: URL) -> URL? {
         guard var data = try? Data(contentsOf: source), data.count > 48,
               let dataRange = Self.waveDataRange(in: data) else { return nil }
         var sumSquares = 0.0
@@ -271,15 +304,13 @@ final class LocalWhisperTranscriber {
             data[offset + 1] = UInt8(encoded >> 8)
             offset += 2
         }
-        let destination = ApplicationPaths.dictationScratch.appendingPathComponent("room-normalized-\(identifier.uuidString).wav")
         do {
             try data.write(to: destination, options: .atomic)
-            scratchURLs.append(destination)
             return destination
         } catch { return nil }
     }
 
-    private static func waveDataRange(in data: Data) -> Range<Int>? {
+    private nonisolated static func waveDataRange(in data: Data) -> Range<Int>? {
         guard data.count >= 12, String(decoding: data[0..<4], as: UTF8.self) == "RIFF" else { return nil }
         var offset = 12
         while offset + 8 <= data.count {
@@ -293,7 +324,7 @@ final class LocalWhisperTranscriber {
         return nil
     }
 
-    private static func integer(_ value: Any?) -> Int? {
+    private nonisolated static func integer(_ value: Any?) -> Int? {
         if let value = value as? Int { return value }
         if let value = value as? NSNumber { return value.intValue }
         if let value = value as? String { return Int(value) }
