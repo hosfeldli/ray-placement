@@ -100,6 +100,10 @@ struct AIProviderSettingsView: View {
                 }
                 .disabled(busy)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
+                if model.provider.isCLI {
+                    Text("Uses your local CLI sign-in. CLI chat accepts text context but cannot use Lima browser, Notes, or other native tools. Choose an API provider for tool-based requests. ‘CLI default’ lets the CLI choose a model.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
                 if model.provider == .openAICompatible {
                     TextField("Base URL", text: $endpoint).disabled(busy)
                     Text("Use an HTTPS API endpoint, including its base path (for example /v1). HTTP is allowed only for loopback servers. Authentication is optional for compatible servers.")
@@ -124,6 +128,7 @@ struct AIProviderSettingsView: View {
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
+            if !model.provider.isCLI {
             Section("Provider credentials") {
                 SecureField(credentials.hasAPIKey(for: model.provider) ? "Replacement API key" : "API key", text: $apiKey)
                     .disabled(busy)
@@ -146,18 +151,23 @@ struct AIProviderSettingsView: View {
                 Text("Keys are shared by provider across AI Chat and Writing. Removing a key affects both; endpoints and model selections remain separate.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            }
             Section("Connection") {
                 HStack {
                     Button("Test Connection") { message = nil; model.testConnection() }
                         .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
-                    Button("Refresh Models") { message = nil; model.refreshModels() }
-                        .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
+                    if !model.provider.isCLI {
+                        Button("Refresh Models") { message = nil; model.refreshModels() }
+                            .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
+                    }
                     if model.isLoadingModels {
                         ProgressView().controlSize(.small)
                         Button("Stop") { model.cancelModelDiscovery() }
                     }
                 }
-                Text("Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
+                Text(model.provider.isCLI
+                    ? "Test Connection sends a short prompt through the installed CLI and verifies its local sign-in. CLI model discovery and Lima native tools are not available; use CLI default or enter a model ID."
+                    : "Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let status = message ?? model.providerConnectionMessage {
                     Text(status).font(.caption).foregroundStyle(LimaTheme.textSecondary).textSelection(.enabled)

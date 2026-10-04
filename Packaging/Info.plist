@@ -41,7 +41,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Built for personal use.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Lima records audio only after you press Dictate and transcribes short local segments on this Mac.</string>
+	<string>Lima records audio only after you press Dictate. Recordings stay on this Mac unless you explicitly choose OpenAI Cloud Transcription.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

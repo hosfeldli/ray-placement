@@ -69,11 +69,13 @@ import Testing
 }
 
 @Test func sharedProviderRegistryIncludesChatCoreProviders() {
-    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible])
+    #expect(AIProvider.chatProviders == [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI])
     #expect(AIProviderClientRegistry.client(for: .openAI, openAICompatibleBaseURL: "") is AIChatResponsesClient)
     #expect(AIProviderClientRegistry.client(for: .anthropic, openAICompatibleBaseURL: "") is AnthropicAIProviderClient)
     #expect(AIProviderClientRegistry.client(for: .gemini, openAICompatibleBaseURL: "") is GeminiAIProviderClient)
     #expect(AIProviderClientRegistry.client(for: .openAICompatible, openAICompatibleBaseURL: "http://127.0.0.1:1234/v1") is OpenAICompatibleAIProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .codexCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .claudeCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
 }
 
 @Test @MainActor func aiProviderSelectionPersistsPerConversation() {

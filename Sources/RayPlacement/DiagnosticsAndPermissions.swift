@@ -115,6 +115,9 @@ struct RuntimeDiagnosticsSnapshot {
     let dictationIsActive: Bool
 
     var providerStatus: String {
+        if provider.isCLI {
+            return providerCredentialConfigured ? "CLI installed · sign-in checked on request" : "CLI not installed"
+        }
         if provider == .openAICompatible {
             return "Custom endpoint · connection checked on request"
         }
@@ -201,6 +204,7 @@ final class DiagnosticsService {
         let target = destination ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Diagnostics-\(Int(Date().timeIntervalSince1970)).json")
         let selectedProvider = AIConversationStore.shared.conversations.first?.provider ?? .openAI
         let credentialConfigured = selectedProvider == .openAICompatible
+            || (selectedProvider.isCLI && CLIChatProviderClient.executableURL(for: selectedProvider) != nil)
             || AIProviderCredentialStore.shared.hasAPIKey(for: selectedProvider)
         let extensionIssues = ExtensionLoader().load(prepare: false, registerPackages: false).issues
         let runtime = runtimeSnapshot(

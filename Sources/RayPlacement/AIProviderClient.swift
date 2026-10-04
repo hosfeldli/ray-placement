@@ -60,6 +60,8 @@ enum AIProviderClientRegistry {
         openAICompatibleBaseURL: String
     ) -> any AIProviderClient {
         switch provider {
+        case .codexCLI, .claudeCLI:
+            return CLIChatProviderClient(provider: provider)
         case .openAI:
             return AIChatResponsesClient()
         case .anthropic:

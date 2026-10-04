@@ -64,6 +64,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private let onSessionFailed: () -> Void
     private let localWhisper = LocalWhisperTranscriber()
     private let liveAppleTranscriber = LiveAppleSpeechTranscriber()
+    private var cloudTranscriptionTask: Task<Void, Never>?
     private var liveSpeechWarning: String?
     private var liveAppleRestartCount = 0
     private var recorder: AVAudioRecorder?
@@ -142,9 +143,9 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         case .idle:
             return "Records only when requested. Audio is secured in short local segments until Stop."
         case .requestingPermission:
-            return SettingsStore.shared.dictationEngine == .localWhisper
-                ? "Waiting for microphone permission."
-                : "Waiting for microphone and speech-recognition permission."
+            return SettingsStore.shared.dictationEngine == .appleSpeech
+                ? "Waiting for microphone and speech-recognition permission."
+                : "Waiting for microphone permission."
         case .recording, .paused:
             let seconds = activePerformance?.dictationMaximumDuration
                 ?? SettingsStore.shared.runtimeDictationPerformance.dictationMaximumDuration
@@ -185,12 +186,21 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             requestPermissionsAndStart()
         case .recording, .paused:
             stopAndTranscribe()
-        case .completed, .failed:
+        case .completed:
             requestedTarget = target
             currentTarget = target
-            recoveryAudioURL = nil
             lastError = nil
             requestPermissionsAndStart()
+        case .failed:
+            requestedTarget = target
+            currentTarget = target
+            if recoveryAudioURL != nil {
+                phase = .idle
+                retryFailedRecording()
+            } else {
+                lastError = nil
+                requestPermissionsAndStart()
+            }
         case .requestingPermission, .stopping, .transcribing:
             break
         }
@@ -239,6 +249,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         recognitionTask?.cancel()
         recognitionTask = nil
         localWhisper.cancel()
+        cloudTranscriptionTask?.cancel()
+        cloudTranscriptionTask = nil
 
         // Cancellation is unsuccessful, but it should not silently destroy
         // audio that has not yet been delivered to the conversation. Completed
@@ -280,7 +292,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             self.usageTaskID = UsageMonitor.shared.begin(
                 category: .dictation,
                 operation: "Retry saved dictation conversation",
-                model: self.activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
+                model: self.activeEngine == .openAICloud ? OpenAICloudTranscriber.model
+                    : (self.activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition"),
                 performance: self.activePerformance ?? .eco
             )
             if self.usesDefaultConversationCallbacks {
@@ -310,6 +323,18 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func requestPermissionsAndStart() {
         lastError = nil
+        if SettingsStore.shared.dictationEngine == .openAICloud {
+            guard AIRequestPolicy.shared.isEnabled else {
+                lastError = AIRequestPolicy.disabledMessage
+                phase = .failed
+                return
+            }
+            guard AIProviderCredentialStore.shared.hasAPIKey(for: .openAI) else {
+                lastError = OpenAICloudTranscriber.Failure.missingKey.localizedDescription
+                phase = .failed
+                return
+            }
+        }
         recoveryAudioURL = nil
         let operation = UUID()
         operationIdentifier = operation
@@ -320,7 +345,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             self.startRecording(operation: operation)
         }
 
-        if SettingsStore.shared.dictationEngine == .localWhisper {
+        if SettingsStore.shared.dictationEngine != .appleSpeech {
             requestMicrophoneAuthorization { [weak self] microphoneGranted in
                 guard let self, self.operationIdentifier == operation, self.phase == .requestingPermission else { return }
                 guard microphoneGranted else {
@@ -395,7 +420,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             // Keep a private rolling recording for interruption recovery. Apple
             // Speech receives continuous audio buffers; Whisper still consumes
             // short local windows while its persistent-worker path is developed.
-            activeTranscribeWhileRecording = true
+            activeTranscribeWhileRecording = activeEngine != .openAICloud
             let directory = ApplicationPaths.dictationScratch
                 .appendingPathComponent("note-dictation-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -454,7 +479,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             usageTaskID = UsageMonitor.shared.begin(
                 category: .dictation,
                 operation: "Record dictation conversation",
-                model: activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition",
+                model: activeEngine == .openAICloud ? OpenAICloudTranscriber.model
+                    : (activeEngine == .localWhisper ? "Whisper small.en TinyDiarize" : "Apple on-device speech recognition"),
                 performance: performance
             )
             startMetering()
@@ -594,6 +620,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         beginTranscriptionTaskIfNeeded()
         phase = .transcribing
 
+        if activeEngine == .openAICloud {
+            beginCloudTranscription()
+            return
+        }
+
         if activeEngine == .localWhisper {
             totalChunkCount = recordingSegmentURLs.count
             liveTranscriptionPaused = false
@@ -618,6 +649,49 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         totalChunkCount = recordingSegmentURLs.count
         currentChunkRetryCount = 0
         transcribeNextChunk()
+    }
+
+    private func beginCloudTranscription() {
+        guard cloudTranscriptionTask == nil, let operation = operationIdentifier else { return }
+        guard AIRequestPolicy.shared.isEnabled else {
+            fail(AIRequestPolicy.Disabled())
+            return
+        }
+        guard let apiKey = AIProviderCredentialStore.shared.apiKey(for: .openAI), !apiKey.isEmpty else {
+            fail(OpenAICloudTranscriber.Failure.missingKey)
+            return
+        }
+        let segments = recordingSegmentURLs
+        totalChunkCount = segments.count
+        chunkTranscripts = []
+        deliveredTranscriptCount = 0
+        deliveredCharacterCount = 0
+        transcriptionProgress = "Preparing segment 1 of \(segments.count) for OpenAI…"
+        cloudTranscriptionTask = Task { [weak self] in
+            guard let self else { return }
+            for (index, url) in segments.enumerated() {
+                guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+                self.transcriptionProgress = "Sending and transcribing segment \(index + 1) of \(segments.count) with OpenAI…"
+                do {
+                    let transcript = try await OpenAICloudTranscriber.transcribe(audioURL: url, apiKey: apiKey)
+                    try Task.checkCancellation()
+                    guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+                    self.chunkTranscripts.append(transcript)
+                } catch OpenAICloudTranscriber.Failure.emptyTranscript {
+                    // A quiet segment does not invalidate a longer recording.
+                } catch {
+                    guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+                    if Task.isCancelled { return }
+                    self.fail(error is OpenAICloudTranscriber.Failure
+                        ? error
+                        : DictationError.transcriptionFailed("Cloud transcription could not reach OpenAI."))
+                    return
+                }
+            }
+            guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+            self.cloudTranscriptionTask = nil
+            self.finishTranscription()
+        }
     }
 
     private func beginNextLocalWhisperSegment() {
@@ -952,6 +1026,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         recognitionTask?.cancel()
         recognitionTask = nil
         localWhisper.cancel()
+        cloudTranscriptionTask?.cancel()
+        cloudTranscriptionTask = nil
         localWhisperIsRunning = false
         recorder?.delegate = nil
         if let recorder { finalizeCurrentRecordingSegment(recorder) }
@@ -980,7 +1056,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         }
         try? ApplicationPaths.prepare()
         recoveryDuration = recordedDuration
-        let destination: URL
+        var destination: URL
         if recordingDirectoryURL.deletingLastPathComponent() == ApplicationPaths.failedDictations {
             destination = recordingDirectoryURL
         } else {
@@ -991,8 +1067,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             do {
                 try FileManager.default.moveItem(at: recordingDirectoryURL, to: destination)
             } catch {
-                cleanupAudioFiles()
-                return nil
+                // A failed move must never discard the only copy of the audio.
+                destination = recordingDirectoryURL
             }
         }
         self.recordingDirectoryURL = nil
@@ -1036,6 +1112,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         skippedChunkCount = 0
         localSegmentIndex = 0
         localWhisperIsRunning = false
+        cloudTranscriptionTask = nil
         liveTranscriptionPaused = false
         activeTranscribeWhileRecording = false
         rotatingRecorder = false
@@ -1055,7 +1132,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         registryTaskID = TaskRegistry.shared.begin(
             kind: .dictation,
             title: "Transcribing dictation",
-            detail: "Finishing on-device transcription",
+            detail: activeEngine == .openAICloud ? "Uploading recorded audio to OpenAI" : "Finishing on-device transcription",
             isCancellable: true,
             onCancel: { [weak self] in self?.cancel() }
         )

@@ -72,7 +72,7 @@ struct DeveloperGrammarSettingsView: View {
                     get: { settings.developerGrammarProvider },
                     set: { settings.selectDeveloperGrammarProvider($0) }
                 )) {
-                    ForEach(DeveloperGrammarProvider.allCases) { provider in
+                    ForEach(AIProvider.writingProviders) { provider in
                         Text(provider.title).tag(provider)
                     }
                 }

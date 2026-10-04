@@ -204,6 +204,7 @@ enum PerformanceScale: String, CaseIterable, Identifiable {
 enum DictationEngine: String, CaseIterable, Identifiable {
     case localWhisper
     case appleSpeech
+    case openAICloud
 
     var id: String { rawValue }
 
@@ -211,6 +212,7 @@ enum DictationEngine: String, CaseIterable, Identifiable {
         switch self {
         case .localWhisper: return "Local Whisper · Recommended"
         case .appleSpeech: return "Apple Speech"
+        case .openAICloud: return "OpenAI Cloud · Off-device"
         }
     }
 
@@ -220,6 +222,8 @@ enum DictationEngine: String, CaseIterable, Identifiable {
             return "More reliable for meetings and distant speech. Adds local transcript windows while you keep recording and needs only Microphone access."
         case .appleSpeech:
             return "Uses macOS on-device recognition for the fastest live updates, with short local windows and no cloud transcription."
+        case .openAICloud:
+            return "Uploads recorded audio segments to OpenAI after Stop. Requires an OpenAI API key in Settings → AI; audio is preserved locally if upload or transcription fails."
         }
     }
 }

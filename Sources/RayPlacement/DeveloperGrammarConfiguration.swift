@@ -9,6 +9,11 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     case deepSeek
     case openRouter
     case openAICompatible
+    case codexCLI
+    case claudeCLI
+
+    var isCLI: Bool { self == .codexCLI || self == .claudeCLI }
+    static let writingProviders: [AIProvider] = allCases.filter { !$0.isCLI }
 
     var id: String { rawValue }
 
@@ -22,6 +27,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .deepSeek: return "DeepSeek"
         case .openRouter: return "OpenRouter"
         case .openAICompatible: return "Custom OpenAI-compatible"
+        case .codexCLI: return "OpenAI Codex CLI"
+        case .claudeCLI: return "Claude CLI"
         }
     }
 
@@ -74,7 +81,7 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
                 .init(id: "anthropic/claude-3.5-haiku", title: "Anthropic · Claude 3.5 Haiku"),
                 .init(id: "google/gemini-2.0-flash-001", title: "Google · Gemini 2.0 Flash")
             ]
-        case .openAICompatible:
+        case .openAICompatible, .codexCLI, .claudeCLI:
             return []
         }
     }
@@ -89,11 +96,12 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
         case .deepSeek: return "https://api.deepseek.com/v1"
         case .openRouter: return "https://openrouter.ai/api/v1"
         case .openAICompatible: return "http://127.0.0.1:1234/v1"
+        case .codexCLI, .claudeCLI: return ""
         }
     }
 
     var usesChatCompletions: Bool {
-        self != .anthropic && self != .gemini
+        self != .anthropic && self != .gemini && !isCLI
     }
 }
 
@@ -127,7 +135,7 @@ struct AIModelReference: Codable, Hashable, Sendable {
 }
 
 extension AIProvider {
-    static let chatProviders: [AIProvider] = [.openAI, .anthropic, .gemini, .openAICompatible]
+    static let chatProviders: [AIProvider] = [.openAI, .anthropic, .gemini, .openAICompatible, .codexCLI, .claudeCLI]
 
     var chatModels: [AIModelOption] {
         switch self {
@@ -139,6 +147,8 @@ extension AIProvider {
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
         case .openAICompatible:
             return [AIModelOption(id: "local-model", displayName: "Custom model", supportsReasoning: false)]
+        case .codexCLI, .claudeCLI:
+            return [AIModelOption(id: "default", displayName: "CLI default", supportsReasoning: false)]
         case .mistral, .xAI, .deepSeek, .openRouter:
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
         }
@@ -150,6 +160,7 @@ extension AIProvider {
         case .anthropic: return "claude-sonnet-4-20250514"
         case .gemini: return "gemini-2.5-flash"
         case .openAICompatible: return "local-model"
+        case .codexCLI, .claudeCLI: return "default"
         case .mistral, .xAI, .deepSeek, .openRouter: return defaultModel
         }
     }

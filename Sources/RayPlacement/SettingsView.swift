@@ -148,6 +148,7 @@ struct SettingsView: View {
     @State private var advancedSubsection = 0
     @State private var writingSubsection = 0
     @State private var confirmUsageClear = false
+    @State private var confirmCloudDictation = false
     @State private var commandProfileName = ""
     @State private var aliasDrafts: [String: String] = [:]
     @State private var shortcutLookupDraft = ""
@@ -201,6 +202,12 @@ struct SettingsView: View {
         } message: {
             Text("This permanently removes Lima's local task history. It never contains your selected text or document contents.")
         }
+        .alert("Send dictation audio to OpenAI?", isPresented: $confirmCloudDictation) {
+            Button("Keep On-device", role: .cancel) {}
+            Button("Use OpenAI Cloud") { settings.dictationEngine = .openAICloud }
+        } message: {
+            Text("When you stop recording, Lima sends each recorded audio segment to OpenAI for transcription using your OpenAI API key. This is off-device and may incur provider charges. Recordings stay on your Mac if transcription fails; choose a local engine at any time.")
+        }
         .alert(item: $pendingShortcutAssignment) { request in
             Alert(
                 title: Text("Shortcut conflict"),
@@ -212,6 +219,19 @@ struct SettingsView: View {
                 secondaryButton: .cancel()
             )
         }
+    }
+
+    private var dictationEngineBinding: Binding<DictationEngine> {
+        Binding(
+            get: { settings.dictationEngine },
+            set: { engine in
+                if engine == .openAICloud && settings.dictationEngine != .openAICloud {
+                    confirmCloudDictation = true
+                } else {
+                    settings.dictationEngine = engine
+                }
+            }
+        )
     }
 
     private func shortcutBinding(for assignmentID: String) -> Binding<String> {
@@ -560,7 +580,7 @@ struct SettingsView: View {
             }
 
             Section("Dictation") {
-                Picker("Transcription engine", selection: $settings.dictationEngine) {
+                Picker("Transcription engine", selection: dictationEngineBinding) {
                     ForEach(DictationEngine.allCases) { engine in
                         Text(engine.title).tag(engine)
                     }
@@ -568,6 +588,13 @@ struct SettingsView: View {
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
+                if settings.dictationEngine == .openAICloud {
+                    Text(aiChatModel.credentials.hasAPIKey(for: .openAI)
+                         ? "OpenAI API key is available in Keychain."
+                         : "Add an OpenAI API key in Settings → AI before recording.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -838,7 +865,7 @@ struct SettingsView: View {
     private var dictationTab: some View {
         Form {
             Section("Dictation engine") {
-                Picker("Transcription engine", selection: $settings.dictationEngine) {
+                Picker("Transcription engine", selection: dictationEngineBinding) {
                     ForEach(DictationEngine.allCases) { engine in
                         Text(engine.title).tag(engine)
                     }
@@ -846,6 +873,13 @@ struct SettingsView: View {
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
+                if settings.dictationEngine == .openAICloud {
+                    Text(aiChatModel.credentials.hasAPIKey(for: .openAI)
+                         ? "OpenAI API key is available in Keychain."
+                         : "Add an OpenAI API key in Settings → AI before recording.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -860,7 +894,9 @@ struct SettingsView: View {
                     enabled: $settings.dictationHotkeyEnabled,
                     shortcut: shortcutBinding(for: "builtin.dictation")
                 )
-                Text("Speech recognition runs on this Mac. Start from the launcher, shortcut, or a Notes/AI microphone. Committed text goes to the selected target; sending an AI prompt shares it with that conversation’s provider.")
+                Text(settings.dictationEngine == .openAICloud
+                    ? "Recording stays on this Mac until Stop, then WAV segments are uploaded to OpenAI. A saved OpenAI API key is required. Committed text goes to the selected target; sending an AI prompt shares it with that conversation’s provider."
+                    : "Speech recognition runs on this Mac. Start from the launcher, shortcut, or a Notes/AI microphone. Committed text goes to the selected target; sending an AI prompt shares it with that conversation’s provider.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -1361,6 +1397,13 @@ struct SettingsView: View {
                 Text(settings.dictationEngine.detail)
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
+                if settings.dictationEngine == .openAICloud {
+                    Text(aiChatModel.credentials.hasAPIKey(for: .openAI)
+                         ? "OpenAI API key is available in Keychain."
+                         : "Add an OpenAI API key in Settings → AI before recording.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
                         ForEach(DictationComputeMode.allCases) { mode in Text(mode.title).tag(mode) }
@@ -2083,7 +2126,7 @@ private struct SimpleWritingSettingsView: View {
             }
             Section("AI connection") {
                 Picker("Provider", selection: Binding(get: { settings.developerGrammarProvider }, set: { settings.selectDeveloperGrammarProvider($0); apiKey = ""; message = nil })) {
-                    ForEach(AIProvider.allCases) { Text($0.title).tag($0) }
+                    ForEach(AIProvider.writingProviders) { Text($0.title).tag($0) }
                 }
                 SecureField("API key", text: $apiKey)
                 HStack {
