@@ -147,6 +147,35 @@ struct AIModelOption: Codable, Hashable, Identifiable, Sendable {
     ]
 }
 
+/// Keep the everyday picker small and conservative. Provider discovery is still
+/// the source of available API IDs; this policy removes old, preview, and
+/// non-chat families rather than claiming that every listed ID works in chat.
+enum AIModelPickerPolicy {
+    static func isRecentChatModel(_ id: String, for provider: AIProvider) -> Bool {
+        let value = id.lowercased()
+        let excluded = ["preview", "experimental", "deprecated", "legacy", "-exp", "-beta"]
+        guard !excluded.contains(where: value.contains) else { return false }
+        switch provider {
+        case .openAI:
+            guard AIModelOption.isChatModel(value) else { return false }
+            return ["gpt-5.4", "gpt-5.5", "gpt-5.6", "gpt-5.7", "gpt-5.8", "gpt-5.9", "gpt-6"]
+                .contains { value == $0 || value.hasPrefix($0 + "-") || value.hasPrefix($0 + ".") }
+        case .anthropic:
+            return ["claude-4", "claude-5", "claude-sonnet-4", "claude-opus-4", "claude-haiku-4",
+                    "claude-sonnet-5", "claude-opus-5", "claude-haiku-5"]
+                .contains { value == $0 || value.hasPrefix($0 + "-") || value.hasPrefix($0 + ".") }
+        case .gemini:
+            return value.hasPrefix("gemini-2.5-") || value.hasPrefix("gemini-3")
+        case .openAICompatible:
+            return true // The configured endpoint owns its own model names.
+        case .codexCLI, .claudeCLI:
+            return value == "default" // Explicit IDs appear only after a successful CLI probe.
+        case .mistral, .xAI, .deepSeek, .openRouter:
+            return false // Not currently exposed by AI Chat.
+        }
+    }
+}
+
 /// Shared provider-level model discovery state. Conversations only retain their
 /// selected model; switching between them never replaces a freshly discovered
 /// catalog with static fallback data.
@@ -162,11 +191,19 @@ final class AIModelCatalogStore: ObservableObject {
     @Published private(set) var catalogs: [String: Catalog]
     private let defaults: UserDefaults
     private let storageKey: String
+    private var listedModelIDs: [String: [String]]
+    private var verifiedCLIModels: [String: [String: Date]]
+    private var lastSelectedModels: [String: String]
 
     init(defaults: UserDefaults = LimaTestEnvironment.userDefaults, storageKey: String = "aiModelCatalogs") {
         self.defaults = defaults
         self.storageKey = storageKey
         catalogs = (defaults.data(forKey: storageKey)).flatMap { try? JSONDecoder().decode([String: Catalog].self, from: $0) } ?? [:]
+        listedModelIDs = (defaults.data(forKey: storageKey + ".listedModelIDs"))
+            .flatMap { try? JSONDecoder().decode([String: [String]].self, from: $0) } ?? [:]
+        verifiedCLIModels = (defaults.data(forKey: storageKey + ".verifiedCLIModels"))
+            .flatMap { try? JSONDecoder().decode([String: [String: Date]].self, from: $0) } ?? [:]
+        lastSelectedModels = defaults.dictionary(forKey: storageKey + ".lastSelectedModels") as? [String: String] ?? [:]
     }
 
     func models(for provider: AIProvider, compatibleModelID: String) -> [AIModelOption] {
@@ -183,6 +220,10 @@ final class AIModelCatalogStore: ObservableObject {
         let unique = uniqueModels(models)
         guard !unique.isEmpty else { return }
         catalogs[provider.rawValue] = Catalog(models: unique, refreshedAt: Date())
+        listedModelIDs[provider.rawValue] = unique.map(\.id)
+        if let data = try? JSONEncoder().encode(listedModelIDs) {
+            defaults.set(data, forKey: storageKey + ".listedModelIDs")
+        }
         persist()
     }
 
@@ -194,6 +235,36 @@ final class AIModelCatalogStore: ObservableObject {
     }
 
     func refreshedAt(for provider: AIProvider) -> Date? { catalogs[provider.rawValue]?.refreshedAt }
+
+    func listedIDs(for provider: AIProvider) -> Set<String> {
+        Set(listedModelIDs[provider.rawValue] ?? [])
+    }
+
+    func verifiedCLIModelIDs(for provider: AIProvider, now: Date = Date()) -> Set<String> {
+        guard provider.isCLI else { return [] }
+        let cutoff = now.addingTimeInterval(-30 * 24 * 60 * 60)
+        return Set((verifiedCLIModels[provider.rawValue] ?? [:]).compactMap { id, date in
+            date >= cutoff ? id : nil
+        })
+    }
+
+    func markCLIVerified(_ modelID: String, for provider: AIProvider, now: Date = Date()) {
+        guard provider.isCLI, modelID != "default" else { return }
+        verifiedCLIModels[provider.rawValue, default: [:]][modelID] = now
+        if let data = try? JSONEncoder().encode(verifiedCLIModels) {
+            defaults.set(data, forKey: storageKey + ".verifiedCLIModels")
+        }
+        objectWillChange.send()
+    }
+
+    func lastSelectedModelID(for provider: AIProvider) -> String? {
+        lastSelectedModels[provider.rawValue]
+    }
+
+    func rememberSelection(_ modelID: String, for provider: AIProvider) {
+        lastSelectedModels[provider.rawValue] = modelID
+        defaults.set(lastSelectedModels, forKey: storageKey + ".lastSelectedModels")
+    }
 
     private func merge(_ primary: [AIModelOption], _ fallback: [AIModelOption]) -> [AIModelOption] {
         uniqueModels(primary + fallback)

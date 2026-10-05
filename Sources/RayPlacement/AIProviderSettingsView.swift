@@ -96,9 +96,13 @@ struct AIProviderSettingsView: View {
                 Picker("Model", selection: Binding(get: { model.model }, set: { id in
                     if let option = model.availableModels.first(where: { $0.id == id }) { model.selectModel(option) }
                 })) {
-                    ForEach(model.availableModels) { Text($0.displayName).tag($0.id) }
+                    ForEach(model.pickerModels) { Text($0.displayName).tag($0.id) }
                 }
                 .disabled(busy)
+                Text(model.provider.isCLI
+                    ? "Shows the CLI default and model IDs that passed a connection test in the last 30 days. The current model stays visible even if it has not been tested."
+                    : "Shows recent models from the provider’s model list. The current custom or older model stays visible until you change it.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
                     Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Connected-service MCP tools are not yet supported by CLI providers. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
@@ -113,7 +117,9 @@ struct AIProviderSettingsView: View {
                     let saved = model.provider == .openAICompatible
                         ? model.configureCompatibleProvider(baseURL: endpoint, modelID: customModel)
                         : model.selectCustomModel(customModel)
-                    message = saved ? nil : "Enter a model ID and a valid HTTPS endpoint (or HTTP loopback endpoint), without URL credentials, query, or fragment."
+                    message = saved ? nil : (model.provider.isCLI
+                        ? "Enter a CLI model ID of at most 128 letters, digits, periods, underscores, colons, slashes, or hyphens; it cannot start with a hyphen."
+                        : "Enter a model ID and a valid HTTPS endpoint (or HTTP loopback endpoint), without URL credentials, query, or fragment.")
                     if saved { loadConfiguration() }
                 }
                 .disabled(busy || !configurationChanged)
@@ -166,7 +172,7 @@ struct AIProviderSettingsView: View {
                     }
                 }
                 Text(model.provider.isCLI
-                    ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in. It does not test Lima tools. CLI model discovery is unavailable; use CLI default or enter a model ID."
+                    ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in and selected model. It does not test Lima tools. CLI model discovery is unavailable; use CLI default or enter a model ID. Successfully tested IDs stay in the picker for 30 days."
                     : "Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let status = message ?? model.providerConnectionMessage {

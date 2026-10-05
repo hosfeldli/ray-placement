@@ -298,6 +298,12 @@ struct CLIChatProviderClient: AIChatTransport {
         "additionalProperties": false
     ]
 
+    static func isValidModelID(_ model: String) -> Bool {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-")
+        return model == "default" || (!model.isEmpty && model.count <= 128 && !model.hasPrefix("-")
+            && model.unicodeScalars.allSatisfy { allowed.contains($0) })
+    }
+
     static func arguments(
         for provider: AIProvider, model: String, workingDirectory: URL,
         responseSchemaURL: URL? = nil, imageURLs: [URL] = []
@@ -353,11 +359,7 @@ struct CLIChatProviderClient: AIChatTransport {
         structuredResponse: Bool, imageAttachments: [AIAttachment]
     ) async throws -> Data {
         guard let executable = executableURL(for: provider) else { throw Failure.missingCLI(provider.title) }
-        let allowedModelCharacters = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:/-")
-        guard model == "default" || (!model.isEmpty && model.count <= 128 && !model.hasPrefix("-")
-            && model.unicodeScalars.allSatisfy({ allowedModelCharacters.contains($0) })) else {
-            throw Failure.invalidModel
-        }
+        guard Self.isValidModelID(model) else { throw Failure.invalidModel }
         try Task.checkCancellation()
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("lima-cli-chat-" + UUID().uuidString, isDirectory: true)

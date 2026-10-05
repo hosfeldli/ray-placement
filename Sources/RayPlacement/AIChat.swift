@@ -1057,6 +1057,38 @@ final class AIChatViewModel: ObservableObject {
         availableModels.first(where: { $0.id == model }) ?? AIModelOption(id: model)
     }
 
+    private var recentListedModels: [AIModelOption] {
+        guard let catalog = modelCatalog.catalogs[provider.rawValue],
+              let refreshedAt = catalog.refreshedAt,
+              refreshedAt >= Date().addingTimeInterval(-7 * 24 * 60 * 60) else { return [] }
+        let listedIDs = modelCatalog.listedIDs(for: provider)
+        return catalog.models.filter {
+            listedIDs.contains($0.id) && AIModelPickerPolicy.isRecentChatModel($0.id, for: provider)
+        }
+    }
+
+    /// The everyday picker shows account-listed recent API models or recently
+    /// tested CLI IDs. Keep the current selection visible even if it is older or
+    /// custom so restoring a chat never silently switches its model.
+    var pickerModels: [AIModelOption] {
+        let choices: [AIModelOption]
+        if provider.isCLI {
+            let verified = modelCatalog.verifiedCLIModelIDs(for: provider)
+            choices = availableModels.filter { $0.id == "default" || verified.contains($0.id) }
+        } else {
+            choices = recentListedModels
+        }
+        var seen = Set<String>()
+        return ([selectedModelOption] + choices).filter { seen.insert($0.id).inserted }
+    }
+
+    var selectedModelIsRecommended: Bool {
+        if provider.isCLI {
+            return model == "default" || modelCatalog.verifiedCLIModelIDs(for: provider).contains(model)
+        }
+        return recentListedModels.contains { $0.id == model }
+    }
+
     var supportedReasoningEfforts: [AIReasoningEffort] {
         selectedModelOption.supportedReasoningEfforts
     }
@@ -1091,10 +1123,12 @@ final class AIChatViewModel: ObservableObject {
         if provider == .openAICompatible {
             model = providerPreferences.openAICompatibleModelID
         } else {
-            model = availableModels.first(where: { $0.id == provider.defaultChatModel })?.id
+            model = modelCatalog.lastSelectedModelID(for: provider)
+                ?? availableModels.first(where: { $0.id == provider.defaultChatModel })?.id
                 ?? availableModels.first?.id
                 ?? provider.defaultChatModel
         }
+        modelCatalog.rememberSelection(model, for: provider)
         reasoningEffort = .medium
         if let id = selectedConversationID, var conversation = store.conversation(id: id) {
             conversation.provider = provider
@@ -1543,7 +1577,8 @@ final class AIChatViewModel: ObservableObject {
         let age = modelCatalog.refreshedAt(for: provider).map { Date().timeIntervalSince($0) }
         // A short cache window keeps provider catalogs current without making every
         // chat selection perform a network request.
-        guard force || age == nil || age! > 15 * 60 else { return }
+        guard force || age == nil || age! > 15 * 60
+            || (!provider.isCLI && modelCatalog.listedIDs(for: provider).isEmpty) else { return }
         loadProviderModels(reportConnection: false)
     }
 
@@ -1663,9 +1698,13 @@ final class AIChatViewModel: ObservableObject {
                         self.providerConnectionMessage = "The model request ended before a response completed."
                         return
                     }
+                    if selectedProvider.isCLI {
+                        self.modelCatalog.markCLIVerified(testedModel, for: selectedProvider)
+                        self.useCatalog(for: selectedProvider)
+                    }
                     self.providerConnectionMessage = selectedProvider.isCLI
-                        ? "Verified a basic text response through " + selectedProvider.title + ". Lima tool calls were not tested by this check."
-                        : "Verified " + testedModel + " with a basic response request and a valid function-tool configuration · " + String(models.count) + " models available."
+                        ? "Verified " + testedModel + " with a basic text response through " + selectedProvider.title + ". Lima tool calls were not tested by this check."
+                        : "Verified " + testedModel + " with a basic response request and a valid function-tool configuration · " + String(models.count) + " models listed."
                 }
                 self.taskRegistry.finish(taskID)
                 self.streamError = nil
@@ -1698,7 +1737,8 @@ final class AIChatViewModel: ObservableObject {
     func selectCustomModel(_ raw: String) -> Bool {
         let id = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !canEndTask, !id.isEmpty, id.utf8.count <= 256,
-              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return false }
+              !id.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
+              !provider.isCLI || CLIChatProviderClient.isValidModelID(id) else { return false }
         selectModel(provider == .openAI ? AIModelOption(id: id)
             : AIModelOption(id: id, displayName: id, supportsReasoning: false))
         return true
@@ -1709,6 +1749,7 @@ final class AIChatViewModel: ObservableObject {
         let changed = model != option.id
         model = option.id
         retainInCatalog(option, for: provider)
+        modelCatalog.rememberSelection(model, for: provider)
         if provider == .openAICompatible {
             providerPreferences.openAICompatibleModelID = model
         }
@@ -2921,6 +2962,9 @@ struct AIChatWorkspaceView: View {
     @State private var memoryTitle = ""
     @State private var memoryContent = ""
     @State private var keyMessage: String?
+    @State private var showingCustomModelEditor = false
+    @State private var customModelID = ""
+    @State private var customModelError: String?
 
     private var filteredConversations: [AIConversation] {
         let query = model.conversationSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2988,6 +3032,50 @@ struct AIChatWorkspaceView: View {
         .sheet(isPresented: $showingMemoryEditor) {
             memoryEditor
         }
+        .sheet(isPresented: $showingCustomModelEditor) {
+            customModelEditor
+        }
+    }
+
+    private var customModelEditor: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Use a model ID")
+                .limaFont(.headline)
+            Text(model.provider.isCLI
+                ? "Enter a model supported by your local CLI. Test it before relying on it; Lima will add successful CLI models to this picker for 30 days."
+                : "Enter a model ID for \(model.provider.title). Custom IDs are not verified until you test the connection.")
+                .limaFont(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("Model ID", text: $customModelID)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(applyCustomModel)
+            if let customModelError {
+                Text(customModelError).limaFont(.caption).foregroundStyle(LimaTheme.warning)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { showingCustomModelEditor = false }
+                    .keyboardShortcut(.cancelAction)
+                Button("Use Model", action: applyCustomModel)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(18)
+        .frame(width: 390)
+    }
+
+    private func applyCustomModel() {
+        guard model.selectCustomModel(customModelID) else {
+            customModelError = model.provider.isCLI
+                ? "Use up to 128 letters, digits, periods, underscores, colons, slashes, or hyphens. The ID cannot start with a hyphen."
+                : "Enter a valid model ID without control characters."
+            return
+        }
+        customModelError = nil
+        showingCustomModelEditor = false
     }
 
     private func presentProjectEditor() {
@@ -3358,7 +3446,7 @@ struct AIChatWorkspaceView: View {
             VStack(alignment: .leading, spacing: 4) {
                 modelPicker
                     .limaFont(.callout.weight(.semibold))
-                Text(model.provider.title + (model.hasProviderAPIKey ? " · Configured" : " · Setup required"))
+                providerPicker
                     .limaFont(.caption2)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -3792,7 +3880,6 @@ struct AIChatWorkspaceView: View {
 
     private var aiOptionsMenu: some View {
         Menu {
-            providerPicker
             agentPicker
             skillPicker
             reasoningPicker
@@ -4017,73 +4104,87 @@ struct AIChatWorkspaceView: View {
 
     private var providerPicker: some View {
         Menu {
-            ForEach(AIProvider.chatProviders) { provider in
+            Text("Local CLI")
+            ForEach(AIProvider.chatProviders.filter(\.isCLI)) { provider in
                 Button {
                     model.selectProvider(provider)
                     keyMessage = nil
                 } label: {
-                    Label(provider.title, systemImage: model.provider == provider ? "checkmark" : "circle")
+                    Label(provider.title, systemImage: model.provider == provider ? "checkmark" : "terminal")
+                }
+            }
+            Divider()
+            Text("API providers")
+            ForEach(AIProvider.chatProviders.filter { !$0.isCLI }) { provider in
+                Button {
+                    model.selectProvider(provider)
+                    keyMessage = nil
+                } label: {
+                    Label(provider.title, systemImage: model.provider == provider ? "checkmark" : "cloud")
                 }
             }
         } label: {
-            Label(model.provider.title, systemImage: "chevron.down")
+            Label(model.provider.title + (model.hasProviderAPIKey ? "" : " · Setup required"), systemImage: "chevron.down")
                 .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask)
-        .help("Choose an AI provider")
+        .help("Switch between local CLI and API providers")
         .accessibilityLabel("AI provider")
-    }
-
-    private func modelNeedsVerification(_ option: AIModelOption) -> Bool {
-        // Identifier-only discovery is uncertain only for direct OpenAI models.
-        // Other providers own their catalog compatibility rules.
-        model.provider == .openAI && option.isLegacyOrUnknown
     }
 
     private var modelPicker: some View {
         Menu {
-            ForEach(model.availableModels) { option in
+            Text(model.provider.isCLI ? "CLI default and recently tested models" : "Recent models listed by the provider")
+            ForEach(model.pickerModels) { option in
                 Button {
                     model.selectModel(option)
                 } label: {
-                    HStack(spacing: 8) {
-                        Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
-                        if modelNeedsVerification(option) {
-                            Text("Compatibility unknown")
-                                .limaFont(.caption2)
-                                .foregroundStyle(LimaTheme.textSecondary)
-                        }
-                    }
+                    Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
                 }
             }
+            if !model.selectedModelIsRecommended {
+                Text("Current model is custom, older, or not yet tested.")
+            }
+            if !model.provider.isCLI && model.pickerModels.count == 1 {
+                Text("Refresh to load a current model list.")
+            }
             Divider()
-            if model.isLoadingModels {
-                Label("Updating available models…", systemImage: "arrow.triangle.2.circlepath")
+            Button("Use Model ID…") {
+                customModelID = model.model == "default" ? "" : model.model
+                customModelError = nil
+                showingCustomModelEditor = true
+            }
+            if model.provider.isCLI {
+                Button("Test Selected Model", action: model.testConnection)
+                    .disabled(model.isLoadingModels || !model.hasProviderAPIKey)
+            } else if model.isLoadingModels {
+                Label("Updating model list…", systemImage: "arrow.triangle.2.circlepath")
                     .foregroundStyle(LimaTheme.textSecondary)
             } else {
-                Button("Update Available Models", action: model.refreshModels)
+                Button("Refresh Model List", action: model.refreshModels)
+                    .disabled(!model.hasProviderAPIKey)
             }
         } label: {
             HStack(spacing: 5) {
                 Label(model.selectedModelOption.displayName, systemImage: "chevron.down")
                     .lineLimit(1)
-                if modelNeedsVerification(model.selectedModelOption) {
-                    Text("Unverified")
-                        .limaFont(.caption2)
+                if !model.selectedModelIsRecommended {
+                    Image(systemName: "questionmark.circle")
                         .foregroundStyle(LimaTheme.textTertiary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: true, vertical: false)
         .disabled(model.canEndTask)
-        .help(modelNeedsVerification(model.selectedModelOption)
-            ? "Compatibility unknown · Test Connection sends a basic request to this model."
-            : "Choose a model for " + model.provider.title)
+        .help(model.selectedModelIsRecommended
+            ? "Choose a model for " + model.provider.title
+            : "The current model is not in the recent provider list or has not passed a CLI connection test.")
+        .accessibilityLabel("AI model")
     }
 
     private var reasoningPicker: some View {

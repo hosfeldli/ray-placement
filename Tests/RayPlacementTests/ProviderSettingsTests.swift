@@ -189,6 +189,69 @@ private func providerSettingsFixture(
     #expect(model.store.conversation(id: conversation.id)?.messages.isEmpty == true)
 }
 
+@Test func recentModelPolicyDropsOldAndPreviewFamilies() {
+    #expect(AIModelPickerPolicy.isRecentChatModel("gpt-6-luna", for: .openAI))
+    #expect(!AIModelPickerPolicy.isRecentChatModel("gpt-4o", for: .openAI))
+    #expect(!AIModelPickerPolicy.isRecentChatModel("gpt-6-preview", for: .openAI))
+    #expect(!AIModelPickerPolicy.isRecentChatModel("gpt-6-realtime", for: .openAI))
+    #expect(AIModelPickerPolicy.isRecentChatModel("claude-sonnet-4-20250514", for: .anthropic))
+    #expect(!AIModelPickerPolicy.isRecentChatModel("claude-3-5-haiku-latest", for: .anthropic))
+    #expect(AIModelPickerPolicy.isRecentChatModel("gemini-2.5-flash", for: .gemini))
+    #expect(!AIModelPickerPolicy.isRecentChatModel("gemini-2.0-flash", for: .gemini))
+}
+
+@Test @MainActor func modelPickerShowsRecentProviderListingsAndPreservesOlderCurrentModel() {
+    let suite = "dev.liam.lima.tests.recent-models.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let catalog = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    catalog.replace([
+        AIModelOption(id: "gpt-4o"),
+        AIModelOption(id: "gpt-6-luna"),
+        AIModelOption(id: "gpt-6-preview")
+    ], for: .openAI)
+    let conversation = AIConversation(provider: .openAI, model: "gpt-4o")
+    let model = providerSettingsFixture(conversations: [conversation], modelCatalog: catalog)
+    #expect(Set(model.pickerModels.map(\.id)) == ["gpt-4o", "gpt-6-luna"])
+    #expect(!model.selectedModelIsRecommended)
+    model.selectModel(AIModelOption(id: "gpt-6-luna"))
+    #expect(model.selectedModelIsRecommended)
+    #expect(model.selectCustomModel("gpt-6-private"))
+    #expect(!model.selectedModelIsRecommended)
+    #expect(Set(model.pickerModels.map(\.id)) == ["gpt-6-private", "gpt-6-luna"])
+    #expect(catalog.listedIDs(for: .openAI) == ["gpt-4o", "gpt-6-luna", "gpt-6-preview"])
+    let restored = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    #expect(!restored.listedIDs(for: .openAI).contains("gpt-6-private"))
+}
+
+@Test @MainActor func cliModelPickerRemembersAndListsSuccessfullyTestedIDs() async throws {
+    let suite = "dev.liam.lima.tests.cli-model-picker.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let catalog = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    let conversation = AIConversation(provider: .codexCLI, model: "default")
+    let model = providerSettingsFixture(conversations: [conversation], modelCatalog: catalog)
+    #expect(!model.selectCustomModel("-unsafe"))
+    #expect(!model.selectCustomModel("two words"))
+    #expect(model.selectCustomModel("gpt-5.4"))
+    #expect(!model.selectedModelIsRecommended)
+    model.testConnection()
+    for _ in 0..<100 where model.isLoadingModels {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.providerConnectionMessage?.contains("Verified gpt-5.4") == true)
+    #expect(model.selectedModelIsRecommended)
+    #expect(Set(model.pickerModels.map(\.id)) == ["default", "gpt-5.4"])
+    model.selectProvider(.openAI)
+    model.selectProvider(.codexCLI)
+    #expect(model.model == "gpt-5.4")
+    let restored = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    #expect(restored.lastSelectedModelID(for: .codexCLI) == "gpt-5.4")
+    #expect(restored.verifiedCLIModelIDs(for: .codexCLI).contains("gpt-5.4"))
+    let future = Date().addingTimeInterval(31 * 24 * 60 * 60)
+    #expect(!restored.verifiedCLIModelIDs(for: .codexCLI, now: future).contains("gpt-5.4"))
+}
+
 @Test @MainActor func configurationCannotChangeDuringGeneration() {
     let conversation = AIConversation(provider: .openAI, model: "custom")
     var transport = FixtureAITransport.standard
