@@ -1227,11 +1227,20 @@ final class AIChatViewModel: ObservableObject {
         }
     }
 
+    /// CLI requests expose every eligible native/extension tool, rather than
+    /// guessing capabilities from English keywords. Eligibility still includes
+    /// the global AI switch, per-tool toggles, agent limits and action settings.
+    func requestLocalTools(for prompt: String) -> [LimaAIToolDefinition] {
+        guard provider.isCLI else { return routedNativeTools(for: prompt) }
+        return CLIChatProviderClient.requestTools(localTools: enabledNativeTools, mcpServers: routedMCPServers(for: prompt))
+    }
+
     func routedMCPServers(for prompt: String) -> [MCPServer] {
         guard AIRequestPolicy.shared.isEnabled else { return [] }
         let value = prompt.lowercased()
         return mcpStore.servers.filter { server in
             guard server.enabled, !AIReadOnlyPolicy.readableMCPTools(for: server).isEmpty else { return false }
+            if provider.isCLI { return true }
             let serverTerms = [server.name, server.apiLabel] + server.enabledTools.flatMap { [$0.name, $0.title ?? ""] }
             return serverTerms.contains { term in
                 let candidate = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -1646,7 +1655,7 @@ final class AIChatViewModel: ObservableObject {
                         reasoningEffort: self.reasoningEffort,
                         attachments: [],
                         mcpServers: [],
-                        localTools: selectedProvider.isCLI ? [] : [Self.connectionProbeTool],
+                        localTools: [Self.connectionProbeTool],
                         systemInstructions: "Connection test. Return a short confirmation only. Do not call functions."
                     )
                     do {
@@ -1960,8 +1969,8 @@ final class AIChatViewModel: ObservableObject {
         }
 
         let historyMessages = conversation.messages
-        let routedLocalTools = routedNativeTools(for: text)
-        let routedMCPServers = provider.isCLI ? [] : routedMCPServers(for: text)
+        let routedLocalTools = requestLocalTools(for: text)
+        let routedMCPServers = routedMCPServers(for: text)
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -2259,7 +2268,7 @@ final class AIChatViewModel: ObservableObject {
                     }
                     delegatedRequests += 1
                 }
-                if let output = await executeLocalTool(call, allowedTools: localTools, conversationID: conversationID) {
+                if let output = await executeLocalTool(call, allowedTools: localTools, allowedMCPServers: mcpServers, conversationID: conversationID) {
                     outputs.append(output)
                 }
             }
@@ -2347,14 +2356,42 @@ final class AIChatViewModel: ObservableObject {
     private func executeLocalTool(
         _ call: AIOutputItem,
         allowedTools: [LimaAIToolDefinition],
+        allowedMCPServers: [MCPServer] = [],
         conversationID: UUID,
         approvalGranted: Bool = false
     ) async -> [String: Any]? {
+        if call.name == CLIToolDiscovery.name {
+            guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled,
+                  allowedTools.contains(where: { $0.name == CLIToolDiscovery.name }),
+                  let callID = call.callID else {
+                return localToolFailureOutput(for: call, conversationID: conversationID, message: "Tool discovery is not enabled for this request.")
+            }
+            let eligible = Set((enabledNativeTools + CLIConnectedTools.definitions(servers: mcpStore.servers)).map(\.name))
+            let result = CLIToolDiscovery.execute(call, allowedTools: allowedTools.filter { eligible.contains($0.name) })
+            appendTurnActivity(AIAgentActivity(kind: result.isError ? .toolFailed : .toolCompleted,
+                title: "Find available tools", completed: true), conversationID: conversationID)
+            return ["type": "function_call_output", "call_id": callID, "output": result.output]
+        }
+        if CLIConnectedTools.handles(call.name) {
+            guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled,
+                  allowedTools.contains(where: { $0.name == call.name }),
+                  let callID = call.callID else {
+                return localToolFailureOutput(for: call, conversationID: conversationID, message: "The connected tool was not enabled for this request.")
+            }
+            let arguments = call.arguments.flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) as? [String: Any] }
+            let title = call.name == CLIConnectedTools.listName ? "Discover connected tools" : (arguments?["tool"] as? String ?? "Connected tool")
+            appendTurnActivity(AIAgentActivity(kind: .toolStarted, title: title, detail: "Connected service", completed: false), conversationID: conversationID)
+            let result = await CLIConnectedTools.execute(call, allowedServers: allowedMCPServers, store: mcpStore)
+            guard !Task.isCancelled else { return nil }
+            appendTurnActivity(AIAgentActivity(kind: result.isError ? .toolFailed : .toolCompleted,
+                title: title, detail: result.isError ? "Connected service returned an error." : nil, completed: true), conversationID: conversationID)
+            return ["type": "function_call_output", "call_id": callID, "output": result.output]
+        }
         guard let definition = LimaAIToolRegistry.definition(for: call.name) else {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is not registered.")
         }
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled,
-              nativeToolStore.enabledToolIDs.contains(definition.id),
+              enabledNativeTools.contains(where: { $0.id == definition.id }),
               allowedTools.contains(where: { $0.id == definition.id }) else {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool was not routed for this request.")
         }
@@ -2504,8 +2541,8 @@ final class AIChatViewModel: ObservableObject {
         streamError = nil
         isStreaming = true
         let routingPrompt = conversation.messages.last(where: { $0.role == .user })?.text ?? ""
-        let routedLocalTools = routedNativeTools(for: routingPrompt)
-        let routedMCPServers = conversation.provider.isCLI ? [] : routedMCPServers(for: routingPrompt)
+        let routedLocalTools = requestLocalTools(for: routingPrompt)
+        let routedMCPServers = routedMCPServers(for: routingPrompt)
         streamTask?.cancel()
         streamTask = Task { [weak self] in
             guard let self else { return }
@@ -2518,6 +2555,7 @@ final class AIChatViewModel: ObservableObject {
                     output = await self.executeLocalTool(
                         localCall,
                         allowedTools: routedLocalTools,
+                        allowedMCPServers: routedMCPServers,
                         conversationID: conversation.id,
                         approvalGranted: true
                     )
@@ -3039,7 +3077,7 @@ struct AIChatWorkspaceView: View {
 
     private var customModelEditor: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Use a model ID")
+            Text("Configure " + model.provider.title + " model")
                 .limaFont(.headline)
             Text(model.provider.isCLI
                 ? "Enter a model supported by your local CLI. Test it before relying on it; Lima will add successful CLI models to this picker for 30 days."
@@ -3047,6 +3085,13 @@ struct AIChatWorkspaceView: View {
                 .limaFont(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
+            if model.provider.isCLI {
+                Button("Use CLI Default") {
+                    customModelID = "default"
+                    applyCustomModel()
+                }
+                .disabled(model.canEndTask || model.isLoadingModels)
+            }
             TextField("Model ID", text: $customModelID)
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(applyCustomModel)
@@ -3057,6 +3102,11 @@ struct AIChatWorkspaceView: View {
                 Spacer()
                 Button("Cancel") { showingCustomModelEditor = false }
                     .keyboardShortcut(.cancelAction)
+                Button("Use & Test") {
+                    applyCustomModel()
+                    if !showingCustomModelEditor { model.testConnection() }
+                }
+                .disabled(customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.isLoadingModels)
                 Button("Use Model", action: applyCustomModel)
                     .buttonStyle(.borderedProminent)
                     .keyboardShortcut(.defaultAction)
@@ -3420,6 +3470,7 @@ struct AIChatWorkspaceView: View {
                     .padding(.top, 12)
             }
             conversationHeader
+            chatModelControls
             if model.selectedProject != nil { projectContextStrip }
 
             if model.showDiagnostics, !model.streamDiagnostics.isEmpty {
@@ -3443,15 +3494,9 @@ struct AIChatWorkspaceView: View {
 
     private var conversationHeader: some View {
         HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 4) {
-                modelPicker
-                    .limaFont(.callout.weight(.semibold))
-                providerPicker
-                    .limaFont(.caption2)
-                    .foregroundStyle(LimaTheme.textSecondary)
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-            .clipped()
+            providerPicker
+                .limaFont(.callout.weight(.semibold))
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             aiOptionsMenu
             Button { showingContextInspector = true } label: {
                 Image(systemName: "sidebar.right").frame(width: 28, height: 28)
@@ -3515,6 +3560,49 @@ struct AIChatWorkspaceView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+    }
+
+    private var chatModelControls: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 8) {
+                Text("Model").limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                modelPicker
+                    .limaFont(.callout.weight(.medium))
+                Button("Configure…", action: presentModelEditor)
+                    .buttonStyle(.borderless)
+                    .disabled(model.canEndTask || model.isLoadingModels)
+                    .accessibilityLabel("Configure chat model")
+            }
+            if model.provider.isCLI {
+                HStack(spacing: 8) {
+                    Label("Local CLI sign-in", systemImage: "terminal")
+                        .foregroundStyle(LimaTheme.textSecondary)
+                    Spacer(minLength: 0)
+                    if model.isLoadingModels {
+                        ProgressView().controlSize(.small)
+                        Text("Testing…")
+                    } else {
+                        Button("Test Model", action: model.testConnection)
+                            .disabled(model.canEndTask || !model.hasProviderAPIKey)
+                    }
+                }
+                .limaFont(.caption)
+                if let message = model.providerConnectionMessage {
+                    Text(message)
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+    }
+
+    private func presentModelEditor() {
+        customModelID = model.model == "default" ? "" : model.model
+        customModelError = nil
+        showingCustomModelEditor = true
     }
 
     private var taskStatusBar: some View {
@@ -3638,7 +3726,7 @@ struct AIChatWorkspaceView: View {
             Text("Connect " + model.provider.title)
                 .limaFont(.title2.weight(.semibold))
             Text(model.provider.isCLI
-                ? "Install and sign in to the CLI locally. Lima sends visible context through that CLI without storing a new API key. Enabled Lima tools, including Browser and Notes, use the same grants and approvals as API providers. Connected-service MCP tools are not yet supported. Codex CLI accepts explicitly attached images; Claude CLI is text-only."
+                ? "Install and sign in to the CLI locally. Lima sends visible context through that CLI without storing a new API key. Enabled Lima tools, including Browser and Notes, use the same grants and approvals as API providers. Enabled read-only connected-service MCP tools are discovered and executed by Lima, without sharing service credentials with the CLI. Codex CLI accepts explicitly attached images; Claude CLI is text-only."
                 : "Choose a provider and model for this conversation. API keys are saved only in your macOS Keychain. Context and tools are opt-in. Computer actions also need their category enabled in Settings → AI and their individual tool enabled here. Browser navigation, click, and type can use an explicitly selected Activity journal mode; form submission, file writes, and terminal or code commands always ask before they run.")
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -4152,11 +4240,7 @@ struct AIChatWorkspaceView: View {
                 Text("Refresh to load a current model list.")
             }
             Divider()
-            Button("Use Model ID…") {
-                customModelID = model.model == "default" ? "" : model.model
-                customModelError = nil
-                showingCustomModelEditor = true
-            }
+            Button("Configure Model ID…", action: presentModelEditor)
             if model.provider.isCLI {
                 Button("Test Selected Model", action: model.testConnection)
                     .disabled(model.isLoadingModels || !model.hasProviderAPIKey)

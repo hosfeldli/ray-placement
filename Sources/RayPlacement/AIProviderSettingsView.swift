@@ -105,7 +105,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Connected-service MCP tools are not yet supported by CLI providers. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
+                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Enabled read-only connected-service MCP tools are discovered and executed by Lima; service credentials are never passed to the CLI. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {

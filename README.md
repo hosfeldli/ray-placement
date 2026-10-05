@@ -67,6 +67,16 @@ The dictation lifecycle is explicit: **Idle**, **Recording**, **Paused**, **Stop
 
 The compact activity shelf is repositioned along the bottom of the visible screen so it does not cover application chrome. It shows dictation state and audio levels without taking keyboard focus. It also provides optional now-playing metadata and controls for supported local media players. Reduce Motion and Reduce Transparency settings are honored by the shelf and workspace animations.
 
+## CLI AI chat
+
+Choose **Codex CLI** or **Claude CLI** from the provider menu in the AI chat window. Sign in to the CLI locally first; Lima does not require a separate API key for these providers. The dedicated **Model** row is available in both the workspace and compact sidebar. **Configure…** accepts a custom model ID, **Use CLI Default** lets the CLI choose, and **Use & Test** checks the selection. Models are remembered per provider and conversation; a successful connection test does not certify every tool or attachment capability.
+
+CLI chats can request all enabled native and AI-enabled extension tools eligible under the current agent and action settings, without depending on prompt keywords. Large catalogs switch to on-demand tool discovery instead of dropping tools or failing the request.
+
+Enabled read-only MCP tools use Lima-owned HTTP or SSE sessions. The CLI discovers their full input schemas and requests calls through Lima; service credentials and endpoints are not included in the CLI prompt. Lima rechecks server identity, tool enablement, and the server's fresh read-only declaration before dispatch. Remote writes and destructive tools remain unavailable, matching API chat's existing MCP policy.
+
+Tool execution still uses Lima's browser grants, file restrictions, confirmations, and action controls. Processing activity reflects actual CLI requests and tool execution, not predicted steps. Codex accepts explicitly attached images; Claude remains text-only. MCP results must fit the bounded text/JSON result budget.
+
 ## Writing correction
 
 The bundled Writing Tools extension includes:
