@@ -31,6 +31,8 @@ struct ExtensionsSettingsView: View {
     @State private var confirmUninstallID: String?
     @State private var status: String?
     @State private var detailTab: DetailTab = .commands
+    @State private var cachedContributions: [String: ExtensionLoader.ContributionCatalogEntry] = [:]
+    @State private var cachedManifests: [ExtensionManifest] = []
 
     private enum DetailTab: String, CaseIterable, Identifiable { case commands = "Commands", contributions = "Tools, Skills & Agents", preferences = "Preferences", permissions = "Permissions"; var id: String { rawValue } }
 
@@ -62,11 +64,43 @@ struct ExtensionsSettingsView: View {
         let lifecycleState: ExtensionPackageState
     }
 
+    private func refreshPackageMetadata() {
+        let contributions = ExtensionLoader().contributionCatalog()
+        var manifests: [ExtensionManifest] = []
+        if let contents = try? FileManager.default.contentsOfDirectory(
+            at: ApplicationPaths.extensions,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            let decoder = JSONDecoder()
+            for item in contents {
+                let manifestURL: URL
+                var isDirectory: ObjCBool = false
+                FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
+                if isDirectory.boolValue {
+                    manifestURL = item.appendingPathComponent("manifest.json")
+                } else if item.pathExtension.lowercased() == "json" {
+                    manifestURL = item
+                } else {
+                    continue
+                }
+                guard let data = try? Data(contentsOf: manifestURL),
+                      let manifest = try? decoder.decode(ExtensionManifest.self, from: data) else { continue }
+                manifests.append(manifest)
+            }
+        }
+        cachedContributions = Dictionary(uniqueKeysWithValues: contributions.map { ($0.extensionID, $0) })
+        cachedManifests = manifests
+    }
+
+    private func reloadInstalled() {
+        reloadExtensions()
+        refreshPackageMetadata()
+    }
+
     private var installed: [InstalledPackage] {
         var packages: [String: InstalledPackage] = [:]
-        let contributionsByID = Dictionary(
-            uniqueKeysWithValues: ExtensionLoader().contributionCatalog().map { ($0.extensionID, $0) }
-        )
+        let contributionsByID = cachedContributions
 
         // Start with loaded commands so command settings remain available.
         for (id, commands) in Dictionary(grouping: viewModel.extensionCommands, by: \.extensionID) {
@@ -91,43 +125,23 @@ struct ExtensionsSettingsView: View {
 
         // Also discover valid package manifests with zero commands. This keeps
         // package lifecycle management independent from launcher registration.
-        if let contents = try? FileManager.default.contentsOfDirectory(
-            at: ApplicationPaths.extensions,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            let decoder = JSONDecoder()
-            for item in contents {
-                let manifestURL: URL
-                var isDirectory: ObjCBool = false
-                FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
-                if isDirectory.boolValue {
-                    manifestURL = item.appendingPathComponent("manifest.json")
-                } else if item.pathExtension.lowercased() == "json" {
-                    manifestURL = item
-                } else {
-                    continue
-                }
-                guard let data = try? Data(contentsOf: manifestURL),
-                      let manifest = try? decoder.decode(ExtensionManifest.self, from: data),
-                      packages[manifest.id] == nil else { continue }
-                let bundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
-                packages[manifest.id] = InstalledPackage(
-                    id: manifest.id,
-                    name: manifest.name,
-                    version: manifest.version ?? "Unknown",
-                    source: bundled ? "Built-in" : (manifest.provenance == .unsigned ? "Local" : "Installed"),
-                    enabled: !bundled || SettingsStore.shared.extensionEnabledOverrides[manifest.id] ?? true,
-                    commandCount: manifest.commands.count,
-                    commands: [],
-                    bundled: bundled,
-                    manifest: manifest,
-                    tools: manifest.contributions.tools,
-                    skills: manifest.contributions.skills,
-                    agents: manifest.contributions.agents,
-                    lifecycleState: ExtensionPackageManager.shared.record(for: manifest.id)?.state ?? (ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) ? .logicallyRemoved : .installed)
-                )
-            }
+        for manifest in cachedManifests where packages[manifest.id] == nil {
+            let bundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
+            packages[manifest.id] = InstalledPackage(
+                id: manifest.id,
+                name: manifest.name,
+                version: manifest.version ?? "Unknown",
+                source: bundled ? "Built-in" : (manifest.provenance == .unsigned ? "Local" : "Installed"),
+                enabled: !bundled || SettingsStore.shared.extensionEnabledOverrides[manifest.id] ?? true,
+                commandCount: manifest.commands.count,
+                commands: [],
+                bundled: bundled,
+                manifest: manifest,
+                tools: manifest.contributions.tools,
+                skills: manifest.contributions.skills,
+                agents: manifest.contributions.agents,
+                lifecycleState: ExtensionPackageManager.shared.record(for: manifest.id)?.state ?? (ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) ? .logicallyRemoved : .installed)
+            )
         }
 
         return packages.values.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
@@ -157,8 +171,9 @@ struct ExtensionsSettingsView: View {
     }
 
     private var updates: [(entry: ExtensionStoreEntry, installed: InstalledPackage)] {
-        storeModel.entries.compactMap { entry in
-            guard let package = installed.first(where: { $0.id == entry.id }),
+        let installedByID = Dictionary(uniqueKeysWithValues: installed.map { ($0.id, $0) })
+        return storeModel.entries.compactMap { entry in
+            guard let package = installedByID[entry.id],
                   let current = SemanticVersion(package.version),
                   let latest = SemanticVersion(entry.version),
                   current < latest else { return nil }
@@ -190,7 +205,7 @@ struct ExtensionsSettingsView: View {
             HStack(spacing: 10) {
                 LimaWorkspaceSearchField(placeholder: "Search extensions and commands…", text: $query)
                 Button {
-                    reloadExtensions()
+                    reloadInstalled()
                     if !localOnly { storeModel.load() }
                 } label: { Image(systemName: "arrow.clockwise").frame(width: 28, height: 28) }
                 .buttonStyle(.bordered)
@@ -211,8 +226,11 @@ struct ExtensionsSettingsView: View {
         }
         .onAppear {
             if !localOnly { storeModel.load() }
-            reloadExtensions()
+            reloadInstalled()
             if selectedID == nil { selectedID = filteredInstalled.first?.id }
+        }
+        .onChange(of: storeModel.installingID) { installingID in
+            if installingID == nil { refreshPackageMetadata() }
         }
         .onChange(of: query) { _ in reconcileSelection() }
         .onChange(of: installedFilter) { _ in reconcileSelection() }
@@ -280,6 +298,8 @@ struct ExtensionsSettingsView: View {
     private var installedView: some View {
         GeometryReader { proxy in
             let packages = filteredInstalled
+            let catalogByID = Dictionary(uniqueKeysWithValues: storeModel.entries.map { ($0.id, $0) })
+            let updatesByID = Dictionary(uniqueKeysWithValues: updates.map { ($0.installed.id, $0.entry) })
             let split = proxy.size.width >= 860
             HStack(alignment: .top, spacing: 0) {
                 ScrollView {
@@ -306,7 +326,8 @@ struct ExtensionsSettingsView: View {
                                        symbol: "puzzlepiece.extension")
                         }
                         ForEach(packages) { package in
-                            installedCard(package, inlineDetail: !split)
+                            installedCard(package, inlineDetail: !split,
+                                          catalogEntry: catalogByID[package.id], updateEntry: updatesByID[package.id])
                         }
                         if let status { statusLine(status) }
                     }
@@ -328,19 +349,20 @@ struct ExtensionsSettingsView: View {
         }
     }
 
-    private func installedCard(_ package: InstalledPackage, inlineDetail: Bool) -> some View {
+    private func installedCard(_ package: InstalledPackage, inlineDetail: Bool,
+                               catalogEntry: ExtensionStoreEntry?, updateEntry: ExtensionStoreEntry?) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
-                    installedSummary(package).fixedSize(horizontal: true, vertical: false)
+                    installedSummary(package, catalogEntry: catalogEntry).fixedSize(horizontal: true, vertical: false)
                     Spacer(minLength: 8)
-                    installedActions(package)
+                    installedActions(package, catalogEntry: catalogEntry, updateEntry: updateEntry)
                 }
                 VStack(alignment: .leading, spacing: 12) {
-                    installedSummary(package)
+                    installedSummary(package, catalogEntry: catalogEntry)
                     HStack {
                         Spacer(minLength: 0)
-                        installedActions(package)
+                        installedActions(package, catalogEntry: catalogEntry, updateEntry: updateEntry)
                     }
                 }
             }
@@ -357,35 +379,42 @@ struct ExtensionsSettingsView: View {
             .strokeBorder(selectedID == package.id ? LimaTheme.accentInk : LimaTheme.borderSubtle, lineWidth: 0.75))
     }
 
-    private func installedSummary(_ package: InstalledPackage) -> some View {
-        HStack(spacing: 10) {
+    private func installedSummary(_ package: InstalledPackage, catalogEntry: ExtensionStoreEntry?) -> some View {
+        Button {
+            selectedID = package.id
+            detailTab = .commands
+        } label: {
+            HStack(spacing: 10) {
                 LimaFeatureIcon(symbol: "puzzlepiece.extension.fill", tint: package.bundled ? .blue : .cyan)
                 VStack(alignment: .leading, spacing: 5) {
-                    Button { selectedID = selectedID == package.id ? nil : package.id } label: {
-                        Text(package.name).limaFont(.system(size: 15, weight: .semibold))
-                    }.buttonStyle(.plain)
+                    Text(package.name).limaFont(.system(size: 15, weight: .semibold))
                     Text("\(package.source) · v\(package.version) · \(package.commandCount) commands")
                         .fixedSize(horizontal: false, vertical: true)
                     Text("\(package.lifecycleState.rawValue) · \(package.commands.isEmpty ? "Contributions package" : (package.enabled ? "Commands enabled" : "Commands disabled"))")
                         .font(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
-                    if !localOnly, let available = storeModel.entries.first(where: { $0.id == package.id }) {
-                        Text("Available v\(available.version)")
+                    if !localOnly, let catalogEntry {
+                        Text("Available v\(catalogEntry.version)")
                             .font(.caption2)
                             .foregroundStyle(LimaTheme.textTertiary)
                     }
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Configure " + package.name)
     }
 
-    private func installedActions(_ package: InstalledPackage) -> some View {
+    private func installedActions(_ package: InstalledPackage,
+                                  catalogEntry: ExtensionStoreEntry?, updateEntry: ExtensionStoreEntry?) -> some View {
         HStack(spacing: 8) {
                 Button("Configure") { selectedID = package.id }
                     .buttonStyle(.bordered)
                     .help("Inspect commands, preferences, and permissions")
-                if !localOnly, let update = updates.first(where: { $0.installed.id == package.id }) {
-                    Button("Update") { storeModel.install(update.entry) }
+                if !localOnly, let updateEntry {
+                    Button("Update") { storeModel.install(updateEntry) }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                         .disabled(storeModel.installingID != nil)
@@ -401,7 +430,7 @@ struct ExtensionsSettingsView: View {
                         if ExtensionPackageManager.shared.isLogicallyRemoved(package.id) { Button("Restore Extension") { restoreBundled(package) } }
                         else { Button("Unload Extension", role: .destructive) { removeBundled(package) } }
                     } else {
-                        if !localOnly, let catalogEntry = storeModel.entries.first(where: { $0.id == package.id }) {
+                        if !localOnly, let catalogEntry {
                             Button("Reinstall") { storeModel.install(catalogEntry) }
                                 .disabled(storeModel.installingID != nil)
                         }
@@ -453,7 +482,7 @@ struct ExtensionsSettingsView: View {
             if detailTab == .permissions { extensionPermissions(package) }
             HStack {
                 Button("Open Extensions Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
-                Button("Reload") { reloadExtensions() }
+                Button("Reload") { reloadInstalled() }
             }
         }
         .padding(11)
@@ -605,7 +634,7 @@ struct ExtensionsSettingsView: View {
                 Text("Install and inspect local extension packages. Developer tools are intentionally separate from the Store.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Button("Open Extensions Folder") { NSWorkspace.shared.open(ApplicationPaths.extensions) }
-                Button("Reload Installed Extensions") { reloadExtensions() }
+                Button("Reload Installed Extensions") { reloadInstalled() }
             }
             Section("Package provenance") {
                 ForEach(filteredInstalled) { package in
@@ -658,18 +687,18 @@ struct ExtensionsSettingsView: View {
         for command in package.commands {
             CommandManager.shared.setEnabled(!package.enabled, for: command.settingsIdentifier)
         }
-        reloadExtensions()
+        reloadInstalled()
     }
 
     private func removeBundled(_ package: InstalledPackage) {
         ExtensionPackageManager.shared.logicallyRemoveBundled(id: package.id)
-        reloadExtensions()
+        reloadInstalled()
         status = "Unloaded \(package.id). The bundled package can be restored later."
     }
 
     private func restoreBundled(_ package: InstalledPackage) {
         ExtensionPackageManager.shared.restoreBundled(id: package.id)
-        reloadExtensions()
+        reloadInstalled()
         status = "Restored \(package.id)."
     }
 
@@ -680,7 +709,7 @@ struct ExtensionsSettingsView: View {
                 try FileManager.default.removeItem(at: url)
             }
             ExtensionApprovalStore.revoke(extensionID: id)
-            reloadExtensions()
+            reloadInstalled()
             status = "Removed \(id). Settings and shortcuts were preserved."
         } catch {
             status = "Could not remove \(id): \(error.localizedDescription)"

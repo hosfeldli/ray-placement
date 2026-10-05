@@ -101,7 +101,7 @@ struct AIProviderSettingsView: View {
                 .disabled(busy)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. CLI chat accepts text context but cannot use Lima browser, Notes, or other native tools. Choose an API provider for tool-based requests. ‘CLI default’ lets the CLI choose a model.")
+                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Connected-service MCP tools are not yet supported by CLI providers. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {
@@ -166,7 +166,7 @@ struct AIProviderSettingsView: View {
                     }
                 }
                 Text(model.provider.isCLI
-                    ? "Test Connection sends a short prompt through the installed CLI and verifies its local sign-in. CLI model discovery and Lima native tools are not available; use CLI default or enter a model ID."
+                    ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in. It does not test Lima tools. CLI model discovery is unavailable; use CLI default or enter a model ID."
                     : "Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let status = message ?? model.providerConnectionMessage {

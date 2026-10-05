@@ -299,7 +299,7 @@ struct SettingsView: View {
 
     private func shortcutTitle(for assignmentID: String) -> String {
         let titles = [
-            "builtin.activation": "Launcher",
+            "builtin.activation": "Open Search",
             "builtin.notes": "Notes",
             "builtin.quick-note": "Quick Note",
             "builtin.dictation": "Dictation",
@@ -1282,8 +1282,8 @@ struct SettingsView: View {
         Form {
             Section("Global hotkeys") {
                 PrimaryShortcutRow(
-                    title: "Launcher",
-                    symbol: "command",
+                    title: "Open Search",
+                    symbol: "magnifyingglass",
                     enabled: $settings.activationHotkeyEnabled,
                     shortcut: shortcutBinding(for: "builtin.activation")
                 )
@@ -1593,6 +1593,20 @@ struct SettingsView: View {
 
     private var generalTab: some View {
         Form {
+            Section {
+                PrimaryShortcutRow(
+                    title: "Open Search",
+                    symbol: "magnifyingglass",
+                    enabled: $settings.activationHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.activation")
+                )
+                Text("Click the shortcut field, then press the keys you want to use from any app. If macOS already uses that shortcut, change the macOS shortcut first.")
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            } header: {
+                Label("Search shortcut", systemImage: "magnifyingglass").limaFont(.headline)
+            }
+
             Section {
                 Toggle(isOn: Binding(get: { settings.launchAtLogin }, set: settings.setLaunchAtLogin)) {
                     VStack(alignment: .leading, spacing: 4) {
