@@ -24,6 +24,7 @@ struct LauncherView: View {
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var hoveredEmojiID: String?
     @State private var hoveredResultID: String?
     @State private var acceptedWritingIssueIDs: Set<String> = []
@@ -69,8 +70,8 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow, identityLayer: true)
-            LimaTheme.floatingWindowBackground.opacity(0.86)
+            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow,
+                                identityLayer: true, tintOpacity: 0.16)
             if viewModel.mode == .root {
                 LauncherSearchWorkspace(model: viewModel, openWorkspace: onOpenWorkspace,
                                         openSettings: onOpenSettings, createNote: onCreateNote,
@@ -78,6 +79,17 @@ struct LauncherView: View {
                     .disabled(viewModel.actionPanelItem != nil)
             } else {
                 VStack(spacing: 5) {
+                    LimaWindowDragRegion()
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 16)
+                        .overlay(alignment: .leading) {
+                            Text("LIMA")
+                                .limaFont(.system(size: 9, weight: .semibold))
+                                .tracking(1.6)
+                                .foregroundStyle(LimaTheme.textTertiary)
+                                .padding(.leading, 16)
+                                .allowsHitTesting(false)
+                        }
                     searchHeader
                     content
                         .id(viewModel.mode.visualIdentity)
@@ -108,13 +120,22 @@ struct LauncherView: View {
         // applied after the clip so it remains outside the perimeter and does
         // not become a fuzzy second border.
         .background(
-            LimaTheme.floatingWindowBackground,
+            LimaTheme.floatingWindowBackground
+                .opacity(reduceTransparency ? 1 : settings.glassStyle.launcherShellOpacity),
             in: RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
         )
         .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
-                .strokeBorder(LimaTheme.borderStrong, lineWidth: LimaDesign.focusWidth)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [LimaTheme.borderStrong, settings.accentTheme.primary.opacity(0.18),
+                                 LimaTheme.borderStrong],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ),
+                    lineWidth: LimaDesign.focusWidth
+                )
+                .allowsHitTesting(false)
         }
         .shadow(color: LimaTheme.shadowFloating, radius: 14, y: 6)
         .tint(settings.accentTheme.readablePrimary)

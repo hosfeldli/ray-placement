@@ -59,13 +59,16 @@ struct LimaGlassBackdrop: View {
     var material: NSVisualEffectView.Material = .underWindowBackground
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
     var identityLayer = false
+    var tintOpacity: Double? = nil
 
     var body: some View {
         ZStack {
-            LimaTheme.windowBackground
-            if !reduceTransparency {
+            if reduceTransparency {
+                LimaTheme.windowBackground
+            } else {
                 VisualEffectView(material: material, blendingMode: blendingMode)
-                    .opacity(0.18)
+                LimaTheme.windowBackground
+                    .opacity(tintOpacity ?? settings.glassStyle.backdropTintOpacity)
                 if identityLayer {
                     LinearGradient(
                         colors: [settings.accentTheme.primary.opacity(0.035), .clear, settings.accentTheme.tertiary.opacity(0.018)],
@@ -175,19 +178,7 @@ extension View {
     }
 
     func limaSelection(_ selected: Bool, hovered: Bool = false, radius: CGFloat = LimaRadius.control) -> some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        return background {
-            shape.fill(selected ? LimaColors.selectedFill : (hovered ? LimaColors.hoverFill : .clear))
-        }
-        .clipShape(shape)
-        .overlay(alignment: .leading) {
-            if selected {
-                Capsule()
-                    .fill(LimaTheme.accentInk)
-                    .frame(width: 2)
-                    .padding(.vertical, 7)
-            }
-        }
+        modifier(LimaSelection(selected: selected, hovered: hovered, radius: radius))
     }
 }
 

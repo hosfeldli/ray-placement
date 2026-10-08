@@ -75,7 +75,8 @@ private final class CLIMCPMock: URLProtocol {
         let envelope: [String: Any] = ["jsonrpc": "2.0", "id": body["id"] ?? "", "result": result]
         let response = try! JSONSerialization.data(withJSONObject: envelope)
         if method == "tools/list" && mode == "stall-list" { return }
-        if method == "tools/list" && mode == "delay-list" {
+        if (method == "tools/list" && mode == "delay-list") ||
+            (method == "tools/call" && mode == "delay-call") {
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.15) {
                 self.respond(status: 200, data: response)
             }
@@ -232,6 +233,23 @@ private func connectedCall(_ server: MCPServer, list: Bool = false) throws -> AI
     let result = await task.value
     #expect(result.isError)
     #expect(!CLIMCPMock.recorded(host: host).contains { $0["method"] as? String == "tools/call" })
+}
+
+@Test @MainActor func connectedToolsSuppressResponseAfterRevocationDuringCall() async throws {
+    let server = connectedFixture()
+    let host = server.validHTTPURL!.host!
+    CLIMCPMock.install(host: host, mode: "delay-call")
+    let store = MCPServerStore(fixtures: [server])
+    let call = try connectedCall(server)
+    let task = Task { await CLIConnectedTools.execute(call, allowedServers: [server], store: store, sessionFactory: mockSession) }
+    for _ in 0..<100 where !CLIMCPMock.recorded(host: host).contains(where: { $0["method"] as? String == "tools/call" }) {
+        try await Task.sleep(for: .milliseconds(1))
+    }
+    #expect(CLIMCPMock.recorded(host: host).contains { $0["method"] as? String == "tools/call" })
+    store.setEnabled(server.id, enabled: false)
+    let result = await task.value
+    #expect(result.isError)
+    #expect(!result.output.contains("actual MCP evidence"))
 }
 
 @Test @MainActor func connectedToolCancellationStopsBeforeExecution() async throws {

@@ -45,7 +45,7 @@ import RayPlacementCore
     #expect(missing.isError)
 }
 
-@Test @MainActor func notesToolsOnlyRouteForExplicitNotesRequests() {
+@Test @MainActor func enabledNotesToolsRemainVisibleForEveryPrompt() {
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
@@ -53,7 +53,7 @@ import RayPlacementCore
         nativeToolStore: LimaAIToolStore(fixtures: AINotesTools.ids),
         transport: FixtureAITransport.standard
     )
-    #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
+    #expect(Set(model.routedNativeTools(for: "Explain this query").map(\.id)) == AINotesTools.ids)
     #expect(Set(model.routedNativeTools(for: "Search my notes for browser integration").map(\.id)) == AINotesTools.ids)
 }
 

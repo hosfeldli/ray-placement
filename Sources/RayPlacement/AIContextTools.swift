@@ -12,9 +12,10 @@ enum AIContextTools {
     static let memoryReadIDs: Set<String> = ["memory_search"]
     static let memoryIDs = memoryReadIDs
     static let delegationIDs: Set<String> = ["agent_models", "agent_delegate"]
-    static let ids = memoryReadIDs.union(delegationIDs)
-    static let delegationCapabilityTrace = "delegation.capabilities: all parent-enabled and selected-agent-allowed Lima tools; browser access uses captured turn grants and live policy checks; enabled connected MCP tools freshly verified as read-only are routed through Lima; approvalRequired=true is brokered by the parent UI; recursiveDelegation=false."
-    static let subagentCapabilityBundle = "Use every Lima tool enabled for the parent and allowed by the selected agent, including tools that can require approval. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. When an action requires approval, pause for the parent user’s normal Lima approval; never bypass that approval. Use every connected MCP tool Lima freshly verifies as enabled and declared read-only, through Lima’s routed tool loop; credentials remain in Lima. Recursive subagent delegation is unavailable."
+    static let capabilityIDs: Set<String> = ["lima_capabilities"]
+    static let ids = memoryReadIDs.union(delegationIDs).union(capabilityIDs)
+    static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; browser access uses captured turn grants and live policy checks; enabled connected MCP tools freshly verified as read-only are routed through Lima; approvalRequired=true is queued through the parent UI; recursiveDelegation=false."
+    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent, including tools that can require user approval. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. When an action requires approval, pause for the parent user’s normal Lima approval; never bypass that approval. Use every connected MCP tool Lima freshly verifies as enabled and declared read-only, through Lima’s routed tool loop; credentials remain in Lima. Recursive subagent delegation is unavailable."
 
     @MainActor
     static func subagentToolBundle(
@@ -41,7 +42,9 @@ enum AIContextTools {
             // action category requires confirmation; the parent UI brokers that
             // approval before execution. Prevent recursive delegation so the
             // parent's bounded child-request limit remains authoritative.
-            guard tool.id != "agent_delegate" else { return false }
+            guard tool.id != "agent_delegate",
+                  tool.id != CLIToolDiscovery.name,
+                  !CLIConnectedTools.handles(tool.name) else { return false }
             if tool.actionCategory != nil { return policy.allows(tool) }
             return tool.risk == .read || tool.id == "agent_models"
         }
@@ -68,14 +71,33 @@ enum AIContextTools {
     }
 
     static let definitions: [LimaAIToolDefinition] = [
+        tool("lima_capabilities", "Report Lima's current Tool Access mode, tools routed for this turn, and live computer-action categories. This is diagnostic only; browser site grants and approvals are checked again at execution.",
+             [:], risk: .read),
         tool("memory_search", "Read local global and current-project memories. Empty query lists recent memories. Memory is user context, not evidence about the world. Creating, editing, and forgetting entries remain explicit user actions in the Memory inspector.",
              ["query": ["type": "string"]], risk: .read),
         tool("agent_models", "List models from configured providers available to a bounded subagent. No credentials are returned. Call before selecting a model.",
              [:], risk: .read),
-        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. The child receives every Lima tool enabled for the parent and allowed by its selected agent, including tools that can require user approval; those approvals appear in the parent UI and cannot be bypassed. Connected MCP tools must be freshly verified as enabled and declared read-only and are routed through Lima. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result. Maximum three child requests per parent turn.",
+        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. The child receives the Lima tools routed for the parent, including tools that can require user approval; those approvals appear in the parent UI and cannot be bypassed. Connected MCP tools must be freshly verified as enabled and declared read-only and are routed through Lima. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result. Maximum three child requests per parent turn; independent requests in one response run concurrently and remain individually visible in Activity.",
              ["provider": ["type": "string"], "model": ["type": "string"],
               "task": ["type": "string"]], risk: .delegation)
     ]
+
+    @MainActor
+    static func capabilities(_ call: AIOutputItem, routedTools: [LimaAIToolDefinition], accessMode: LimaAIToolAccessMode) -> LimaAIToolExecution {
+        guard let arguments = arguments(call.arguments), arguments.isEmpty else {
+            return .json(["error": "lima_capabilities takes no arguments."], isError: true)
+        }
+        let categories = Dictionary(uniqueKeysWithValues: AIComputerActionCategory.allCases.map { category in
+            (category.rawValue, AIComputerActionPolicy.shared.access(for: category).rawValue)
+        })
+        return .json([
+            "tool_access_mode": accessMode.rawValue,
+            "routed_tools": routedTools.map(\.name).sorted(),
+            "computer_actions": categories,
+            "browser_site_access": "Check browser_capabilities for live origin-specific grants.",
+            "approval": "Actions are checked again when executed."
+        ])
+    }
 
     static func arguments(_ raw: String?) -> [String: String]? {
         guard let raw, raw.utf8.count <= 32_000, let data = raw.data(using: .utf8),
@@ -111,7 +133,7 @@ enum AIContextTools {
 }
 
 /// Child runs never inherit parent history or credentials. They receive all
-/// parent-enabled, selected-agent-permitted tools, with parent-mediated approvals.
+/// parent-routed Lima tools, with parent-mediated approvals.
 enum AISubagentRunner {
     typealias ToolExecutor = @MainActor @Sendable (AIOutputItem, Bool) async -> String?
     typealias ApprovalRequester = @MainActor @Sendable (AIOutputItem) async -> Bool

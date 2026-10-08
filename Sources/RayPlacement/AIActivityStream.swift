@@ -16,6 +16,7 @@ struct AIActivityStreamStep: Identifiable, Equatable {
     var detail: String?
     var status: Status
     let isToolAction: Bool
+    var correlationID: String? = nil
 
     var symbol: String {
         switch status {
@@ -43,19 +44,23 @@ enum AIActivityStream {
             case .toolStarted:
                 steps.append(AIActivityStreamStep(
                     id: activity.id, title: activity.displayTitle,
-                    detail: meaningfulDetail(activity.detail), status: .running, isToolAction: true
+                    detail: meaningfulDetail(activity.detail), status: .running,
+                    isToolAction: true, correlationID: activity.correlationID
                 ))
             case .toolCompleted, .toolFailed:
                 let status: AIActivityStreamStep.Status = activity.kind == .toolFailed ? .failed : .completed
-                if let index = steps.indices.reversed().first(where: {
-                    steps[$0].status == .running && steps[$0].title == activity.displayTitle
+                if let index = steps.indices.reversed().first(where: { candidate in
+                    steps[candidate].status == .running &&
+                    (activity.correlationID.map { steps[candidate].correlationID == $0 }
+                     ?? (steps[candidate].correlationID == nil && steps[candidate].title == activity.displayTitle))
                 }) {
                     steps[index].status = status
                     steps[index].detail = meaningfulDetail(activity.detail) ?? steps[index].detail
                 } else {
                     steps.append(AIActivityStreamStep(
                         id: activity.id, title: activity.displayTitle,
-                        detail: meaningfulDetail(activity.detail), status: status, isToolAction: true
+                        detail: meaningfulDetail(activity.detail), status: status,
+                        isToolAction: true, correlationID: activity.correlationID
                     ))
                 }
             case .toolApproval:

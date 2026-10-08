@@ -421,8 +421,8 @@ final class BrowserBridgeService: ObservableObject {
         let context = suppliedContext ?? BrowserCapabilityTurnContext(
             selectedAgentID: nil,
             selectedAgentToolIDs: nil,
-            enabledToolIDs: toolStore.enabledToolIDs,
-            turnToolIDs: toolStore.enabledToolIDs,
+            enabledToolIDs: toolStore.effectiveEnabledToolIDs,
+            turnToolIDs: toolStore.effectiveEnabledToolIDs,
             pendingApproval: false
         )
         let session = selectedSession

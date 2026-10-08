@@ -472,7 +472,7 @@ import Testing
     #expect(body["instructions"] == nil)
 }
 
-@Test @MainActor func promptToolRoutingSendsOnlyRelevantEnabledTools() {
+@Test @MainActor func enabledToolsRemainVisibleRegardlessOfPromptWording() {
     let toolStore = LimaAIToolStore(fixtures: [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file",
         "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
@@ -487,7 +487,13 @@ import Testing
         transport: FixtureAITransport.standard
     )
 
-    #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
+    let routed = Set(model.routedNativeTools(for: "Explain this query").map(\.id))
+    #expect(routed == Set(model.routedNativeTools(for: "Read the current website in my browser").map(\.id)))
+    #expect(routed == Set(model.routedNativeTools(for: "Find and read the Swift source file").map(\.id)))
+    #expect(routed.contains("read_file"))
+    #expect(routed.contains("search_web"))
+    #expect(routed.contains("browser_read"))
+    #expect(!routed.contains("browser_open_tabs")) // Its live action category is Off.
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(model.isBrowserPrompt("Open all of these links"))
     #expect(model.isBrowserPrompt("Open this web result"))
@@ -495,15 +501,6 @@ import Testing
     #expect(model.isBrowserPrompt("Click the Continue button"))
     #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
-    #expect(Set(model.routedNativeTools(for: "Read the current website in my browser").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read"
-    ])
-    #expect(Set(model.routedNativeTools(for: "Open new tabs for these web results").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read"
-    ]) // Navigation remains absent while its user action policy is Off.
-    #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
-        "search_files", "find_files", "list_directory", "file_metadata", "read_file"
-    ])
 
     let pageReadRoute = model.browserToolIDs(for: "Read this website and summarize the page")
     #expect(pageReadRoute.contains("browser_read"))
@@ -670,6 +667,30 @@ import Testing
     #expect(Set(try #require(replacementParameters["required"] as? [String])) == ["content", "expected_modified_at", "path"])
     let terminal = try #require(definitions.first { $0.id == "run_terminal_command" })
     #expect(terminal.actionCategory == .terminal)
+    let terminalParameters = try #require(terminal.responsePayload?["parameters"] as? [String: Any])
+    #expect(Set(try #require(terminalParameters["required"] as? [String]))
+        == ["command", "working_directory", "timeout_seconds"])
+    let terminalProperties = try #require(terminalParameters["properties"] as? [String: Any])
+    let timeout = try #require(terminalProperties["timeout_seconds"] as? [String: Any])
+    #expect(timeout["type"] as? [String] == ["integer", "null"])
+    #expect(timeout["maximum"] as? Int == 300)
+    let terminalDirectory = try #require(terminalProperties["working_directory"] as? [String: Any])
+    #expect(terminalDirectory["type"] as? [String] == ["string", "null"])
+}
+
+@Test @MainActor func browserSearchBuildsOnlyBoundedHTTPSGoogleQueries() throws {
+    let search = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_search_web" })
+    #expect(search.risk == .navigation)
+    #expect(search.actionCategory == .browserNavigation)
+    let urlString = try #require(BrowserBridgeAITools.searchURL(for: "swift package tests & build"))
+    let url = try #require(URL(string: urlString))
+    #expect(url.scheme == "https")
+    #expect(url.host == "www.google.com")
+    #expect(url.path == "/search")
+    #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "swift package tests & build")
+    #expect(BrowserBridgeAITools.searchURL(for: "") == nil)
+    #expect(BrowserBridgeAITools.searchURL(for: "secret\nvalue") == nil)
+    #expect(BrowserBridgeAITools.searchURL(for: String(repeating: "a", count: 201)) == nil)
 }
 
 @Test @MainActor func browserURLToolsDoNotUseUnsupportedURIFormat() throws {

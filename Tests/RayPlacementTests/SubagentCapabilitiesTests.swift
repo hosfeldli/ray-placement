@@ -4,8 +4,8 @@ import Testing
 
 @Test func subagentCapabilityBundleIsExplicitAndSanitized() {
     let bundle = AIContextTools.subagentCapabilityBundle
-    #expect(bundle.contains("every Lima tool enabled for the parent and allowed by the selected agent"))
-    #expect(bundle.contains("including tools that can require approval"))
+    #expect(bundle.contains("every Lima tool routed for the parent"))
+    #expect(bundle.contains("including tools that can require user approval"))
     #expect(bundle.contains("pause for the parent user’s normal Lima approval"))
     #expect(bundle.contains("freshly verifies as enabled and declared read-only"))
     #expect(bundle.contains("Recursive subagent delegation is unavailable"))

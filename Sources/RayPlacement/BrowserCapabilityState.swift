@@ -39,20 +39,15 @@ struct BrowserCapabilityTurnContext: Equatable, Sendable {
         "browser_tabs", "browser_current", "browser_read",
         "browser_capabilities", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
     ]
-    static let navigationToolIDs: Set<String> = ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
+    static let navigationToolIDs: Set<String> = ["browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
     static let interactionToolIDs: Set<String> = ["browser_click", "browser_type", "browser_submit"]
-
-    func agentAllows(_ toolIDs: Set<String>) -> Bool {
-        guard selectedAgentID != nil else { return true }
-        return !(selectedAgentToolIDs ?? []).isDisjoint(with: toolIDs)
-    }
 
     func isEnabled(_ toolIDs: Set<String>) -> Bool { !enabledToolIDs.isDisjoint(with: toolIDs) }
     func isInTurn(_ toolIDs: Set<String>) -> Bool { !turnToolIDs.isDisjoint(with: toolIDs) }
 }
 
 /// One authoritative, read-only projection of bridge, grant, action-policy,
-/// selected-agent, and per-turn tool routing state.
+/// and per-turn tool routing state.
 struct BrowserCapabilityState: Equatable, Sendable {
     let read: BrowserCapabilityDecision
     let navigation: BrowserCapabilityDecision
@@ -162,9 +157,7 @@ struct BrowserCapabilityState: Equatable, Sendable {
         }
 
         let readableTools = BrowserCapabilityTurnContext.readToolIDs.subtracting(["browser_capabilities"])
-        if !context.agentAllows(readableTools) {
-            read = .blocked(.agentExcluded, "The selected agent excludes browser-read tools.")
-        } else if !context.isEnabled(readableTools) {
+        if !context.isEnabled(readableTools) {
             read = .blocked(.toolGroupDisabled, "Enable the Browser read tools in the AI Tools menu.")
         } else if !context.isInTurn(readableTools) {
             read = .blocked(.notInTurn, "Browser read tools were not routed for this model turn.")
@@ -176,9 +169,7 @@ struct BrowserCapabilityState: Equatable, Sendable {
             read = .available(exactReadOrigins.isEmpty ? "Broad HTTPS reading is enabled." : nil)
         }
 
-        if !context.agentAllows(BrowserCapabilityTurnContext.navigationToolIDs) {
-            navigation = .blocked(.agentExcluded, "The selected agent excludes browser-navigation tools.")
-        } else if navigationAccess == .disabled {
+        if navigationAccess == .disabled {
             navigation = .blocked(.disabledInSettings, "Browser navigation is disabled in AI Settings.")
         } else if !context.isEnabled(BrowserCapabilityTurnContext.navigationToolIDs) {
             navigation = .blocked(.toolGroupDisabled, "Enable Browser navigation in the AI Tools menu.")
@@ -195,8 +186,6 @@ struct BrowserCapabilityState: Equatable, Sendable {
 
         if !interactionPolicyAvailable || interactionAccess == .disabled {
             interaction = .blocked(.disabledInSettings, "Browser AI interaction is disabled in Experimental Features or AI Settings.")
-        } else if !context.agentAllows(BrowserCapabilityTurnContext.interactionToolIDs) {
-            interaction = .blocked(.agentExcluded, "The selected agent excludes browser-interaction tools.")
         } else if !context.isEnabled(BrowserCapabilityTurnContext.interactionToolIDs) {
             interaction = .blocked(.toolGroupDisabled, "Enable Browser interaction in the AI Tools menu.")
         } else if !context.isInTurn(BrowserCapabilityTurnContext.interactionToolIDs) {

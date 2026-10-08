@@ -65,7 +65,7 @@ private func makeCapabilities(
     #expect(state.navigation.status == .disabledInSettings)
 }
 
-@Test func capabilityProjectionDistinguishesMissingSiteGrantAndAgentExclusion() {
+@Test func capabilityProjectionDistinguishesMissingSiteGrantAndIgnoresAgentToolLists() {
     let missingGrant = makeCapabilities(readOrigins: [], interactionOrigins: [])
     #expect(missingGrant.read.status == .siteNotGranted)
     #expect(missingGrant.interaction.status == .siteNotGranted)
@@ -77,8 +77,8 @@ private func makeCapabilities(
             agentTools: ["notes_search"]
         )
     )
-    #expect(excluded.read.status == .agentExcluded)
-    #expect(excluded.navigation.status == .agentExcluded)
+    #expect(excluded.read.status == .available)
+    #expect(excluded.navigation.status == .available)
 }
 
 @Test func broadReadGrantRequiresSeparateExperimentalSetting() {

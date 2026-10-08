@@ -93,24 +93,35 @@ struct AIWorkspaceInspector: View {
                     LimaWorkspaceCard {
                         VStack(alignment: .leading, spacing: 12) {
                             Label("Tools & actions", systemImage: "slider.horizontal.3").limaFont(.headline)
-                            Text("Control existing capabilities for your next message.")
-                                .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
-                            ForEach(LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)) { group in
-                                Toggle(isOn: Binding(
-                                    get: { tools.isEnabled(group) },
-                                    set: { tools.setEnabled(group, enabled: $0) }
-                                )) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Label(group.title, systemImage: group.symbol).limaFont(.callout.weight(.medium))
-                                        Text(group.summary).limaFont(.caption)
-                                            .foregroundStyle(LimaTheme.textSecondary)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
+                            Picker("Mode", selection: Binding(
+                                get: { tools.accessMode },
+                                set: { tools.setAccessMode($0) }
+                            )) {
+                                ForEach(LimaAIToolAccessMode.allCases) { mode in
+                                    Text(mode.title).tag(mode)
                                 }
-                                .toggleStyle(.switch).controlSize(.small)
-                                .disabled(model.canEndTask)
                             }
-                            Text("Existing grants and tool restrictions still apply.")
+                            .disabled(model.canEndTask)
+                            Text(tools.accessMode.detail)
+                                .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                            if tools.accessMode == .custom {
+                                ForEach(LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)) { group in
+                                    Toggle(isOn: Binding(
+                                        get: { tools.isEnabled(group) },
+                                        set: { tools.setEnabled(group, enabled: $0) }
+                                    )) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Label(group.title, systemImage: group.symbol).limaFont(.callout.weight(.medium))
+                                            Text(group.summary).limaFont(.caption)
+                                                .foregroundStyle(LimaTheme.textSecondary)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    .toggleStyle(.switch).controlSize(.small)
+                                    .disabled(model.canEndTask)
+                                }
+                            }
+                            Text("Existing grants and computer-action settings still apply.")
                                 .limaFont(.caption2).foregroundStyle(LimaTheme.textSecondary)
                         }
                     }

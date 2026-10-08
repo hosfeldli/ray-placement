@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Keep Sparkle alive for production updates. UpdateService routes to the
     // legacy signed-custom updater only when explicitly requested.
     private let sparkleUpdateService = SparkleUpdateService.shared
+    private let accessService = LimaAccessService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
@@ -65,6 +66,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerExtensionHotkeys()
         installObservers()
         BrowserBridgeService.shared.start()
+        accessService.startIfEnabledAtLaunch()
         #if LIMA_QA
         qaService = LimaQAService.shared
         qaService?.configure(launcher: launcher)
@@ -121,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         BrowserBridgeService.shared.stop()
+        accessService.stopAll()
         #if LIMA_QA
         qaService?.stop()
         #endif

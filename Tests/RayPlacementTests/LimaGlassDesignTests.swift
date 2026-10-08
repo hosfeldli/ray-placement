@@ -29,6 +29,19 @@ import Testing
     #expect(LimaGlassDepth.allCases.count == 3)
 }
 
+@Test func glassStyleOptionsKeepContentAndMaterialIntensityOrdered() {
+    #expect(AppGlassStyle.allCases == [.system, .subtle, .standard, .clear])
+    #expect(AppGlassStyle.subtle.baseOpacity > AppGlassStyle.clear.baseOpacity)
+    #expect(AppGlassStyle.subtle.materialOpacity < AppGlassStyle.standard.materialOpacity)
+    #expect(AppGlassStyle.standard.materialOpacity < AppGlassStyle.clear.materialOpacity)
+    #expect(AppGlassStyle.clear.backdropTintOpacity < AppGlassStyle.system.backdropTintOpacity)
+    #expect(AppGlassStyle.system.backdropTintOpacity < AppGlassStyle.subtle.backdropTintOpacity)
+    #expect(AppGlassStyle.system.launcherShellOpacity < AppGlassStyle.system.baseOpacity)
+    #expect(AppGlassStyle.clear.launcherShellOpacity < AppGlassStyle.subtle.launcherShellOpacity)
+    #expect(LimaRadius.launcherWindow <= LimaRadius.majorSurface + 2)
+    #expect(LimaRadius.searchField < LimaRadius.launcherWindow)
+}
+
 @Test func glassDepthHierarchyUsesOpaqueReduceTransparencyFallbacks() {
     let depths = LimaGlassDepth.allCases
     let regularOpacities = depths.map { $0.backgroundOpacity(reduceTransparency: false) }

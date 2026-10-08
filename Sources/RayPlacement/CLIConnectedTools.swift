@@ -123,10 +123,16 @@ enum CLIConnectedTools {
             guard readable.contains(where: { $0["name"] as? String == toolName }) else {
                 throw MCPLocalSession.Failure.unavailable
             }
-            // Recheck current settings after discovery, immediately before
-            // dispatch. Cancellation remains active during the network request.
+            // Current settings were checked after discovery, immediately before
+            // dispatch. Suppress a response if the user revoked access while the
+            // network request was in flight.
             let result = try await session.callTool(name: toolName, arguments: toolArguments)
             try Task.checkCancellation()
+            guard AIRequestPolicy.shared.isEnabled,
+                  let latest = authorizedServer(id: id, allowed: allowedServers, current: store.servers),
+                  AIReadOnlyPolicy.readableMCPTools(for: latest).contains(where: { $0.name == toolName }) else {
+                throw MCPLocalSession.Failure.unavailable
+            }
             return .json(result, isError: result["isError"] as? Bool == true)
         } catch is CancellationError {
             return .json(["error": "Connected-service request stopped."], isError: true)

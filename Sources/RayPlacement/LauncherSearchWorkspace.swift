@@ -54,7 +54,9 @@ struct LauncherSearchWorkspace: View {
     @State private var hoveredID: String?
     @State private var showingDetails = false
     @State private var showingInspector = false
+    @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     private var idle: Bool { model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     private var selection: LauncherItem? {
@@ -68,6 +70,17 @@ struct LauncherSearchWorkspace: View {
             let hasInspector = canShowInspector && showingInspector
             let wide = geometry.size.width >= 680
             VStack(spacing: 0) {
+                LimaWindowDragRegion()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 24)
+                    .overlay(alignment: .leading) {
+                        Text("LIMA")
+                            .limaFont(.system(size: 9, weight: .semibold))
+                            .tracking(1.6)
+                            .foregroundStyle(LimaTheme.textTertiary)
+                            .padding(.leading, wide ? 18 : 14)
+                            .allowsHitTesting(false)
+                    }
                 VStack(spacing: 14) {
                     searchField
                     HStack(alignment: .top, spacing: 14) {
@@ -83,12 +96,15 @@ struct LauncherSearchWorkspace: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
-                .padding(wide ? 16 : 12)
+                .padding(.horizontal, wide ? 16 : 12)
+                .padding(.bottom, wide ? 16 : 12)
+                .padding(.top, 4)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(LimaTheme.surfacePrimary.opacity(0.88))
                 footer(wide: wide, canShowInspector: canShowInspector)
             }
-            .background(LimaTheme.windowBackground.opacity(0.9))
+            .background(LimaTheme.surfacePrimary.opacity(
+                reduceTransparency ? 1 : settings.glassStyle.baseOpacity
+            ))
         }
         .onAppear { searchFocused = true }
         .onChange(of: model.focusGeneration) { _ in searchFocused = true }
@@ -163,8 +179,8 @@ struct LauncherSearchWorkspace: View {
         }
         .padding(.horizontal, 17)
         .frame(height: 58)
-        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 15))
-        .overlay(RoundedRectangle(cornerRadius: 15).strokeBorder(
+        .limaGlassContainer(region: .toolbar, cornerRadius: LimaRadius.searchField)
+        .overlay(RoundedRectangle(cornerRadius: LimaRadius.searchField).strokeBorder(
             searchFocused ? LimaTheme.fieldFocusedBorder.opacity(0.65) : LimaTheme.borderStrong,
             lineWidth: LimaDesign.hairlineWidth))
     }
@@ -377,7 +393,9 @@ struct LauncherSearchWorkspace: View {
         .foregroundStyle(LimaTheme.textSecondary)
         .padding(.horizontal, wide ? 16 : 12)
         .frame(height: wide ? 46 : 44)
-        .background(LimaTheme.surfaceSecondary.opacity(0.85))
+        .background(LimaTheme.surfaceSecondary.opacity(
+            reduceTransparency ? 1 : settings.glassStyle.baseOpacity * 0.8
+        ))
         .overlay(alignment: .top) { Rectangle().fill(LimaTheme.borderSubtle).frame(height: 0.5) }
     }
 

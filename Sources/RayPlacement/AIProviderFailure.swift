@@ -50,7 +50,7 @@ enum AIProviderFailure {
         "file_metadata", "read_file", "search_web", "read_web", "list_extensions",
         "get_lima_status", "lima_connection_test", "browser_tabs", "browser_current",
         "browser_read", "salesforce_read_case_links", "salesforce_resolve_case",
-        "salesforce_resolve_cases", "browser_open_tabs", "browser_focus_tab",
+        "salesforce_resolve_cases", "browser_search_web", "browser_open_tabs", "browser_focus_tab",
         "browser_navigate_tab"
     ]
 
@@ -351,7 +351,7 @@ enum AIProviderFailure {
             "delegation.capabilities: tools=none, browserRead=false, publicSearch=false, writes=false.",
             "delegation.capabilities: turn-routed read/navigation/memory Lima tools and declared read-only MCP; writes=false; approval-gated actions=false; nested delegation=false.",
             "delegation.capabilities: turn-routed read/navigation/memory and journal-authorized browser click/type; freshly declared read-only MCP via Lima; formSubmit=false; localWrites=false; terminal=false; approvalGated=false; nestedDelegation=false.",
-            "delegation.capabilities: all parent-enabled and selected-agent-allowed Lima tools; browser access uses captured turn grants and live policy checks; enabled connected MCP tools freshly verified as read-only are routed through Lima; approvalRequired=true is brokered by the parent UI; recursiveDelegation=false.",
+            AIContextTools.delegationCapabilityTrace,
             "The provider stream exceeded Lima's safety limit.",
             "The request was cancelled.",
             "The provider returned no chat-capable models.",

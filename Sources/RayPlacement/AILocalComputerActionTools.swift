@@ -36,14 +36,15 @@ enum AILocalComputerActionTools {
         ),
         tool(
             "run_terminal_command",
-            "Run one bounded local developer command in an existing non-hidden directory under the current user’s home folder. Lima parses commands without a shell and permits only Swift build/test/run, Xcode build/test, read-only Git commands, or an existing local Python or Node script. Output is limited and the user must approve every run.",
+            "Run one bounded, approved local developer command without a shell. Supports Swift build/test/run, Xcode build/test, read-only Git, or an existing local Python or Node script. Set working_directory to the project for builds and tests; omit it only to use your home folder. Timeout defaults to 180 seconds (maximum 300); output is limited and every run requires user approval.",
             [
                 "command": ["type": "string", "description": "One supported local developer command of at most 4096 characters, such as swift test or python3 script.py. Lima does not interpret shell syntax."],
-                "working_directory": ["type": "string", "description": "Absolute existing non-sensitive working directory under the current user’s home folder."],
-                "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 60, "description": "Maximum execution time from 1 to 60 seconds."]
+                "working_directory": ["type": "string", "description": "Absolute existing non-sensitive project directory under your home folder; omit only to run in your home folder."],
+                "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 300, "description": "Optional maximum execution time from 1 to 300 seconds; defaults to 180."]
             ],
             risk: .localAction,
-            actionCategory: .terminal
+            actionCategory: .terminal,
+            required: ["command"]
         )
     ]
 
@@ -52,7 +53,8 @@ enum AILocalComputerActionTools {
         _ description: String,
         _ properties: [String: Any],
         risk: AILocalToolRisk,
-        actionCategory: AIComputerActionCategory
+        actionCategory: AIComputerActionCategory,
+        required: [String]? = nil
     ) -> LimaAIToolDefinition {
         LimaAIToolDefinition(
             id: id,
@@ -61,7 +63,7 @@ enum AILocalComputerActionTools {
             parameters: [
                 "type": "object",
                 "properties": properties,
-                "required": properties.keys.sorted(),
+                "required": required ?? properties.keys.sorted(),
                 "additionalProperties": false
             ],
             risk: risk,
@@ -106,18 +108,32 @@ enum AILocalComputerActionTools {
                 return .json(["replaced": true, "path": url.path, "bytes_written": data.count])
 
             case "run_terminal_command":
-                guard case .string(let command)? = arguments["command"],
-                      case .string(let directory)? = arguments["working_directory"],
-                      case .number(let rawTimeout)? = arguments["timeout_seconds"],
-                      rawTimeout.isFinite, rawTimeout.rounded() == rawTimeout,
-                      (1...60).contains(Int(rawTimeout)) else {
-                    return .json(["error": "Run Terminal Command needs a command, an absolute working directory, and a timeout from 1 to 60 seconds."], isError: true)
+                guard case .string(let command)? = arguments["command"] else {
+                    return .json(["error": "Run Terminal Command needs one supported command."], isError: true)
+                }
+                let directory: String
+                switch arguments["working_directory"] {
+                case .some(.string(let value)):
+                    directory = value
+                case .none, .some(.null):
+                    directory = FileManager.default.homeDirectoryForCurrentUser.path
+                default:
+                    return .json(["error": "working_directory must be an absolute non-sensitive directory under your home folder."], isError: true)
+                }
+                let timeout: Int
+                switch arguments["timeout_seconds"] {
+                case .some(.number(let value)) where value.isFinite && value.rounded() == value && (1...300).contains(value):
+                    timeout = Int(value)
+                case .none, .some(.null):
+                    timeout = 180
+                default:
+                    return .json(["error": "timeout_seconds must be an integer from 1 to 300."], isError: true)
                 }
                 let workingDirectory = try safeWorkingDirectory(directory)
                 return await AILocalCommandRunner.shared.run(
                     command: command,
                     workingDirectory: workingDirectory,
-                    timeoutSeconds: Int(rawTimeout)
+                    timeoutSeconds: timeout
                 )
 
             default:

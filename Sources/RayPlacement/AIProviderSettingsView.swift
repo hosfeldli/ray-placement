@@ -6,6 +6,7 @@ struct AIProviderSettingsView: View {
     @ObservedObject var model: AIChatViewModel
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
+    @ObservedObject private var toolStore = LimaAIToolStore.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @ObservedObject private var webSearchCredentials = PublicWebSearchCredentialStore.shared
     @ObservedObject private var mcpServers = MCPServerStore.shared
@@ -35,6 +36,20 @@ struct AIProviderSettingsView: View {
             Section("AI availability") {
                 Toggle("Enable AI throughout Lima", isOn: $settings.aiEnabled)
                 Text("Turning this off stops AI chats, provider requests, AI tools, and grammar assistance. Local dictation, search, files, notes, and saved chats remain available. Keys, model preferences, and action choices are retained.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
+            Section("Tool Access") {
+                Picker("Mode", selection: Binding(
+                    get: { toolStore.accessMode },
+                    set: { toolStore.setAccessMode($0) }
+                )) {
+                    ForEach(LimaAIToolAccessMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Text(toolStore.accessMode.detail)
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Text("Changing modes does not erase existing tool selections or enable a disabled computer-action category. Browser site grants and required approvals remain in effect.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("General web search") {
@@ -71,7 +86,7 @@ struct AIProviderSettingsView: View {
                 if let webSearchMessage {
                     Text(webSearchMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Requires the Search the web tool to be enabled in AI Chat. If no valid provider key is configured, Lima reports the provider as unavailable rather than claiming there were zero results.")
+                Text("Available when Tool Access permits web research. If no valid provider key is configured, Lima reports the provider as unavailable rather than claiming there were zero results. Alternatively, Browser Search can open a Google results tab if Browser navigation is enabled and that site has a Browser Bridge grant.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Connected tools (MCP)") {
@@ -107,7 +122,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Computer actions") {
-                Text("Off by default. These controls apply only when AI is enabled and the matching tool is selected. Browser site grants, path safeguards, timeouts, output limits, and the Activity journal still apply.")
+                Text("Off by default. To let AI run builds and tests, set Terminal and code to Ask every time; Automatic Tool Access will then expose the command tool without an extra tool toggle. Browser Search requires Browser navigation plus a grant for the search site. Path safeguards, timeouts, output limits, approvals, and the Activity journal still apply.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
                     Picker(category.title, selection: Binding(

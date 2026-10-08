@@ -376,6 +376,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
     var kind: AIAgentActivityKind
     var title: String
     var detail: String?
+    var correlationID: String?
     var startedAt: Date
     var endedAt: Date?
     var duration: TimeInterval?
@@ -388,6 +389,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         kind: AIAgentActivityKind,
         title: String,
         detail: String? = nil,
+        correlationID: String? = nil,
         startedAt: Date = Date(),
         endedAt: Date? = nil,
         duration: TimeInterval? = nil,
@@ -399,6 +401,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         self.kind = kind
         self.title = title
         self.detail = detail
+        self.correlationID = correlationID
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.duration = duration
@@ -1900,7 +1903,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Subagents inherit only this turn’s already-routed read-only tools and declared read-only MCP tools; they cannot write, run commands, request approvals, or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Subagents inherit only this turn’s routed Lima tools and declared read-only MCP tools. They may request computer actions only through the parent turn’s live grants and ordinary approval flow; they cannot bypass approvals or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
@@ -2254,9 +2257,9 @@ enum LimaAIToolRegistry {
         case "get_lima_status":
             return .json([
                 "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
-                "native_read_only_tools_enabled": enabledDefinitions(LimaAIToolStore.shared.enabledToolIDs).count,
+                "native_read_only_tools_enabled": enabledDefinitions(LimaAIToolStore.shared.effectiveEnabledToolIDs).filter { $0.risk == .read }.count,
                 "mcp_read_only_tools_enabled": MCPServerStore.shared.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count },
-                "write_access": false
+                "computer_action_categories_enabled": AIComputerActionPolicy.shared.enabledCategories.map(\.rawValue).sorted()
             ])
         default:
             return .json(["error": "The requested Lima tool is unavailable."], isError: true)
@@ -3161,7 +3164,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     static let coreGroups: [LimaAIToolGroup] = [
         .init(id: "memory", title: "Memory", summary: "Read saved local context; add, edit, or forget entries in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
-        .init(id: "subagents", title: "Subagents", summary: "Up to three analysis requests; inherits eligible routed tools and read-only MCP, API usage applies",
+        .init(id: "subagents", title: "Subagents", summary: "Up to three concurrent analyses per turn; inherits captured eligible tools and read-only MCP, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
               symbol: "note.text", toolIDs: AINotesTools.ids),
@@ -3199,9 +3202,9 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "browser-navigation",
             title: "Browser navigation",
-            summary: "Open, focus, and navigate granted tabs",
+            summary: "Search, open, focus, and navigate granted tabs",
             symbol: "safari",
-            toolIDs: ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
+            toolIDs: ["browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
         ),
         .init(
             id: "browser-interaction",
@@ -3296,6 +3299,7 @@ extension LimaAIToolDefinition {
         case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
+        case "browser_search_web": return "Search in a granted browser"
         case "browser_open_tabs": return "Open granted tabs"
         case "browser_focus_tab": return "Focus a granted tab"
         case "browser_navigate_tab": return "Navigate a granted tab"
@@ -3324,11 +3328,37 @@ extension LimaAIToolDefinition {
         case "read_web": return "doc.text.magnifyingglass"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
-        case "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab": return "safari"
+        case "browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab": return "safari"
         case "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
         case "create_text_file", "replace_text_file": return "doc.badge.plus"
         case "run_terminal_command": return "terminal"
         default: return "eye"
+        }
+    }
+}
+
+enum LimaAIToolAccessMode: String, CaseIterable, Identifiable {
+    case automatic
+    case askForActions
+    case fullControl
+    case custom
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .automatic: return "Automatic"
+        case .askForActions: return "Ask for actions"
+        case .fullControl: return "Full Control"
+        case .custom: return "Custom (existing choices)"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .automatic: return "Available tools follow your capability and action settings."
+        case .askForActions: return "Use available tools, but ask before computer actions."
+        case .fullControl: return "Expose every available tool; site grants and safety approvals still apply."
+        case .custom: return "Preserve your previous individual tool selections."
         }
     }
 }
@@ -3338,7 +3368,9 @@ final class LimaAIToolStore: ObservableObject {
     static let shared = LimaAIToolStore()
 
     @Published private(set) var enabledToolIDs: Set<String>
+    @Published private(set) var accessMode: LimaAIToolAccessMode
     private let defaultsKey = "lima.ai.enabled-native-tools"
+    private let accessModeKey = "lima.ai.tool-access-mode"
     private let defaults: UserDefaults?
 
     private convenience init() {
@@ -3349,6 +3381,14 @@ final class LimaAIToolStore: ObservableObject {
         self.defaults = defaults
         let saved = defaults.stringArray(forKey: defaultsKey)
         enabledToolIDs = saved.map(Set.init) ?? LimaAIToolRegistry.defaultEnabledToolIDs
+        accessMode = defaults.string(forKey: accessModeKey).flatMap(LimaAIToolAccessMode.init(rawValue:))
+            ?? (saved == nil ? .automatic : .custom)
+        // Persist the migration decision before the older migrations create a
+        // saved tool list; otherwise a fresh Automatic install becomes Custom
+        // on its next launch.
+        if defaults.string(forKey: accessModeKey) == nil {
+            defaults.set(accessMode.rawValue, forKey: accessModeKey)
+        }
         // Introduce only these new capabilities once; later explicit off choices remain off.
         let migrationKey = "lima.ai.context-tools-v1"
         if !defaults.bool(forKey: migrationKey) {
@@ -3385,28 +3425,49 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: capabilityMigrationKey)
         }
+        // A diagnostic meta-tool must remain discoverable even on installations
+        // whose earlier context-tool migration already ran.
+        let toolCapabilitiesMigrationKey = "lima.ai.tool-capabilities-v1"
+        if !defaults.bool(forKey: toolCapabilitiesMigrationKey) {
+            enabledToolIDs.formUnion(AIContextTools.capabilityIDs)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: toolCapabilitiesMigrationKey)
+        }
     }
 
-    init(fixtures: Set<String>) {
+    init(fixtures: Set<String>, accessMode: LimaAIToolAccessMode = .custom) {
         defaults = nil
         enabledToolIDs = fixtures
+        self.accessMode = accessMode
+    }
+
+    var effectiveEnabledToolIDs: Set<String> {
+        accessMode == .custom ? enabledToolIDs : Set(LimaAIToolRegistry.availableDefinitions.map(\.id))
+    }
+
+    func setAccessMode(_ mode: LimaAIToolAccessMode) {
+        guard accessMode != mode else { return }
+        accessMode = mode
+        defaults?.set(mode.rawValue, forKey: accessModeKey)
     }
 
     func isEnabled(_ definition: LimaAIToolDefinition) -> Bool {
-        enabledToolIDs.contains(definition.id)
+        effectiveEnabledToolIDs.contains(definition.id)
     }
 
     func isEnabled(_ group: LimaAIToolGroup) -> Bool {
-        !group.toolIDs.isEmpty && group.toolIDs.isSubset(of: enabledToolIDs)
+        !group.toolIDs.isEmpty && group.toolIDs.isSubset(of: effectiveEnabledToolIDs)
     }
 
     func setEnabled(_ definition: LimaAIToolDefinition, enabled: Bool) {
+        setAccessMode(.custom)
         if enabled { enabledToolIDs.insert(definition.id) }
         else { enabledToolIDs.remove(definition.id) }
         persist()
     }
 
     func setEnabled(_ group: LimaAIToolGroup, enabled: Bool) {
+        setAccessMode(.custom)
         if enabled { enabledToolIDs.formUnion(group.toolIDs) }
         else { enabledToolIDs.subtract(group.toolIDs) }
         persist()
@@ -4238,6 +4299,8 @@ struct AIToolApprovalView: View {
         let arguments = decodedArguments
         let toolID = request.localToolID ?? request.toolName
         switch toolID {
+        case "browser_search_web":
+            return "Open a Google results tab for \(quoted(arguments["query"] as? String) ?? "the requested query")."
         case "browser_open_tabs":
             let urls = arguments["urls"] as? [String] ?? []
             return "Open \(urls.count) tab\(urls.count == 1 ? "" : "s")\(hostList(urls).isEmpty ? "" : " at " + hostList(urls))."

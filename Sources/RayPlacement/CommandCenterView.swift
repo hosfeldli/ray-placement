@@ -242,7 +242,7 @@ struct CommandCenterView: View {
                     kind: .tool,
                     source: package.extensionName,
                     isEnabled: approvedToolIDs.contains("extension:\(package.extensionID):\(tool.id)")
-                        && nativeToolStore.enabledToolIDs.contains("extension:\(package.extensionID):\(tool.id)"),
+                        && nativeToolStore.effectiveEnabledToolIDs.contains("extension:\(package.extensionID):\(tool.id)"),
                     isFavorite: false,
                     shortcut: "",
                     isConflict: false,
@@ -352,7 +352,7 @@ struct CommandCenterView: View {
             .map(\.id))
         let nativeTools = CommandCenterCatalog.nativeToolEntries(
             definitions: availableToolDefinitions,
-            enabledIDs: nativeToolStore.enabledToolIDs,
+            enabledIDs: nativeToolStore.effectiveEnabledToolIDs,
             actionToolIDs: policyEnabledActionToolIDs
         )
         return commandEntries + contributionEntries + packageEntries + nativeTools + skillEntries + agentEntries

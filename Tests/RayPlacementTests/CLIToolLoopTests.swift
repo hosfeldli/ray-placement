@@ -15,13 +15,10 @@ import Testing
             transport: FixtureAITransport.standard
         )
         model.select(conversation.id)
-        #expect(model.routedNativeTools(for: "Explain this SQL").isEmpty)
-        #expect(Set(model.routedNativeTools(for: "Read the current browser page").map(\.id)) == [
-            "browser_tabs", "browser_current", "browser_read"
-        ])
-        #expect(Set(model.routedNativeTools(for: "Search my notes").map(\.id)) == [
-            "search_notes", "read_note"
-        ])
+        let routed = Set(model.routedNativeTools(for: "Explain this SQL").map(\.id))
+        #expect(routed == Set(["browser_tabs", "browser_current", "browser_read", "search_notes", "read_note"]))
+        #expect(routed == Set(model.routedNativeTools(for: "Read the current browser page").map(\.id)))
+        #expect(routed == Set(model.routedNativeTools(for: "Search my notes").map(\.id)))
     }
 }
 

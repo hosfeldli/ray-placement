@@ -30,6 +30,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case commands
     case writing
     case ai
+    case connections
     case browser
     case appearance
     case advanced
@@ -44,6 +45,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
         case .ai: return "AI Chat"
+        case .connections: return "AI Connections"
         case .browser: return "Browser Bridge"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
@@ -56,6 +58,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .commands: return "square.grid.2x2"
         case .writing: return "text.badge.checkmark"
         case .ai: return "sparkles"
+        case .connections: return "network.badge.shield.half.filled"
         case .browser: return "globe"
         case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
@@ -68,6 +71,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .commands: "Commands, extensions, and shortcuts"
         case .writing: "Notes, grammar, and speech to text"
         case .ai: "Existing providers and chat behavior"
+        case .connections: "Pair and revoke trusted AI apps"
         case .browser: "Browser access and site grants"
         case .appearance: "Theme, colors, and readable layouts"
         case .advanced: "Performance, privacy, and diagnostics"
@@ -79,6 +83,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .general, .commands: .blue
         case .writing: .green
         case .ai, .appearance: .violet
+        case .connections: .blue
         case .browser: .cyan
         case .advanced: .graphite
         }
@@ -94,6 +99,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
         case .ai:
             return ["ai", "chat", "provider", "model", "anthropic", "claude", "openai", "gemini", "compatible", "endpoint", "api key", "reasoning"]
+        case .connections:
+            return ["AI connections", "MCP", "pair", "revoke", "local", "network", "trusted clients", "token"]
         case .browser:
             return ["zen", "firefox", "browser", "bridge", "site", "permissions", "native", "helper", "salesforce", "tabs"]
         case .appearance:
@@ -170,23 +177,24 @@ struct SettingsView: View {
     @ObservedObject var extensionStoreModel: ExtensionStoreModel
 
     var body: some View {
-        ZStack {
-            LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+        LimaChrome {
             HStack(spacing: LimaDesign.panelGap) {
                 settingsSidebar
                 VStack(spacing: 0) {
                     HStack {
                         LimaWorkspaceHeading(title: selectedSection.title, subtitle: selectedSection.subtitle,
                                              symbol: selectedSection.symbol, tint: selectedSection.tint)
-                        Spacer()
+                        LimaWindowDragRegion()
+                            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 32)
                     }
                     .padding(.horizontal, LimaDesign.toolbarPadding)
                     .padding(.vertical, 20)
+                    .limaGlassContainer(region: .toolbar, cornerRadius: LimaRadius.window)
                     GlassHairline()
                     selectedContent
                         .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.992)))
                 }
-                .limaNativeSurface(fill: LimaTheme.surfaceRaised, radius: LimaRadius.window, border: LimaTheme.borderSubtle)
+                .limaContentSurface(cornerRadius: LimaRadius.window, fill: LimaTheme.surfaceRaised)
             }
             .padding(LimaDesign.windowPadding)
         }
@@ -388,7 +396,7 @@ struct SettingsView: View {
                 .padding(.bottom, 11)
         }
         .frame(width: 268)
-        .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.window, border: LimaTheme.borderSubtle)
+        .limaGlassContainer(region: .sidebar, cornerRadius: LimaRadius.window)
     }
 
     private var filteredSections: [SettingsSection] {
@@ -469,6 +477,7 @@ struct SettingsView: View {
         case .commands: commandCenterTab
         case .writing: writingSettingsTab
         case .ai: AIProviderSettingsView(model: aiChatModel)
+        case .connections: LimaAccessSettingsView()
         case .browser: BrowserBridgeSettingsView()
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
@@ -505,6 +514,11 @@ struct SettingsView: View {
                     ForEach(AppContrastMode.allCases) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
                 Text(settings.contrastMode.detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Picker("Glass", selection: $settings.glassStyle) {
+                    ForEach(AppGlassStyle.allCases) { Text($0.title).tag($0) }
+                }
+                Text("Glass affects navigation and controls; notes, messages, and results stay quiet. Reduce Transparency uses opaque surfaces.")
+                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Layout") {
                 InterfaceTextSizeControl()

@@ -18,7 +18,7 @@ private struct InspectingChildTransport: AIChatTransport {
         #expect(attachments.isEmpty)
         #expect(mcpServers.isEmpty)
         #expect(localTools.isEmpty)
-        #expect(systemInstructions.contains("every Lima tool enabled for the parent and allowed by the selected agent"))
+        #expect(systemInstructions.contains("every Lima tool routed for the parent"))
         #expect(systemInstructions.contains("untrusted data"))
         return AsyncThrowingStream { continuation in
             continuation.yield(.textDelta("Bounded findings"))
@@ -230,5 +230,5 @@ private struct ApprovalToolChildTransport: AIChatTransport {
         #expect(!store.isEnabled(group))
         #expect(group.toolIDs.isDisjoint(with: store.enabledToolIDs))
     }
-    #expect(store.enabledToolIDs.isEmpty)
+    #expect(store.enabledToolIDs == AIContextTools.capabilityIDs)
 }

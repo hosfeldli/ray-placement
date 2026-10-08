@@ -19,7 +19,7 @@ enum LimaSpacing {
 
 enum LimaRadius {
     // Keep geometry semantic so nested surfaces always read as a hierarchy.
-    static let launcherWindow: CGFloat = 26
+    static let launcherWindow: CGFloat = 18
     static let majorSurface: CGFloat = 16
     static let searchField: CGFloat = 14
     static let card: CGFloat = 12

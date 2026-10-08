@@ -30,6 +30,33 @@ enum AppAppearance: String, CaseIterable, Identifiable {
     var title: String { rawValue.capitalized }
 }
 
+enum AppGlassStyle: String, CaseIterable, Identifiable {
+    case system, subtle, standard, clear
+
+    var id: String { rawValue }
+    var title: String { rawValue.capitalized }
+    var baseOpacity: Double {
+        switch self {
+        case .system: return 0.62
+        case .subtle: return 0.88
+        case .standard: return 0.58
+        case .clear: return 0.42
+        }
+    }
+    var materialOpacity: Double {
+        switch self {
+        case .system: return 0.62
+        case .subtle: return 0.36
+        case .standard: return 0.68
+        case .clear: return 0.84
+        }
+    }
+    /// A single behind-window material provides continuity without making
+    /// note and message content translucent.
+    var backdropTintOpacity: Double { min(0.91, baseOpacity + 0.13) }
+    var launcherShellOpacity: Double { max(0.22, baseOpacity - 0.24) }
+}
+
 enum AppInterfaceDensity: String, CaseIterable, Identifiable {
     case compact
     case balanced
@@ -388,6 +415,7 @@ final class SettingsStore: ObservableObject {
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
         static let appearance = "appearance"
+        static let glassStyle = "glassStyle"
         static let interfaceDensity = "interfaceDensity"
         static let notesVisualTheme = "notesVisualTheme"
         static let notesFontStyle = "notesFontStyle"
@@ -597,6 +625,10 @@ final class SettingsStore: ObservableObject {
 
     @Published var appearance: AppAppearance {
         didSet { defaults.set(appearance.rawValue, forKey: Key.appearance); NotificationCenter.default.post(name: .rayPlacementAppearanceChanged, object: nil); NotificationCenter.default.post(name: .rayPlacementNotesAppearanceChanged, object: nil) }
+    }
+
+    @Published var glassStyle: AppGlassStyle {
+        didSet { defaults.set(glassStyle.rawValue, forKey: Key.glassStyle) }
     }
 
     @Published var interfaceDensity: AppInterfaceDensity {
@@ -998,6 +1030,7 @@ final class SettingsStore: ObservableObject {
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
         appearance = AppAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
+        glassStyle = AppGlassStyle(rawValue: defaults.string(forKey: Key.glassStyle) ?? "") ?? .system
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
         notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system
@@ -1365,6 +1398,8 @@ final class SettingsStore: ObservableObject {
             if let value = string(), let parsed = AppContrastMode(rawValue: value) { contrastMode = parsed }
         case Key.appearance:
             if let value = string(), let parsed = AppAppearance(rawValue: value) { appearance = parsed }
+        case Key.glassStyle:
+            if let value = string(), let parsed = AppGlassStyle(rawValue: value) { glassStyle = parsed }
         case Key.interfaceDensity:
             if let value = string(), let parsed = AppInterfaceDensity(rawValue: value) { interfaceDensity = parsed }
         case Key.notesVisualTheme:

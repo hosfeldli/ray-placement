@@ -40,10 +40,16 @@ struct LimaWorkspaceCard<Content: View>: View {
     init(@ViewBuilder content: () -> Content) { self.content = content() }
 
     var body: some View {
-        content
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .limaGlassPanel(cornerRadius: 16)
+        LimaContentSurface(cornerRadius: 16, fill: LimaTheme.surfaceRaised) {
+            content
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth)
+                .allowsHitTesting(false)
+        }
     }
 }
 

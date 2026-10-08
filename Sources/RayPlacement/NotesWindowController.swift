@@ -813,6 +813,11 @@ private struct WorkspaceView: View {
                         if presentation.activeModule != .ai && presentation.activeModule != .workflows {
                             workspaceHeader(sizeClass: sizeClass)
                             GlassHairline()
+                        } else {
+                            LimaWindowDragRegion()
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 14)
+                            GlassHairline()
                         }
                         workspaceModule(sizeClass: sizeClass)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -958,7 +963,8 @@ private struct WorkspaceView: View {
             )
             .frame(maxWidth: 240, alignment: .leading)
 
-            Spacer(minLength: 8)
+            LimaWindowDragRegion()
+                .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
 
             Button { openCommandSearch("") } label: {
                 Image(systemName: "magnifyingglass").frame(width: 28, height: 28)
