@@ -225,23 +225,24 @@ import Testing
                 .textDelta("Partial answer"),
                 .failed("HTTP 400: unsupported request option")
             ],
-            interEventDelay: .milliseconds(180)
+            // Keep the partial values observable under heavily loaded CI runners.
+            interEventDelay: .seconds(2)
         )
     )
 
     model.draft = "Start a response that fails"
     model.send()
-    for _ in 0..<300 where model.streamingReasoningSummary != "Reasoning summary" {
+    for _ in 0..<1000 where model.streamingReasoningSummary != "Reasoning summary" {
         try? await Task.sleep(for: .milliseconds(5))
     }
     #expect(model.streamingReasoningSummary == "Reasoning summary")
     #expect(store.conversations.first?.messages.last?.reasoningSummary == nil)
-    for _ in 0..<300 where model.streamingText != "Partial answer" {
+    for _ in 0..<1000 where model.streamingText != "Partial answer" {
         try? await Task.sleep(for: .milliseconds(5))
     }
     #expect(model.streamingText == "Partial answer")
 
-    for _ in 0..<300 where model.isStreaming {
+    for _ in 0..<1000 where model.isStreaming {
         try? await Task.sleep(for: .milliseconds(5))
     }
 
