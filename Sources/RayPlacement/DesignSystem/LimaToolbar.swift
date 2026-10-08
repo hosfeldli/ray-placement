@@ -62,20 +62,24 @@ struct LimaToolbarTitle: View {
     }
 }
 
-private struct LimaToolbarModifier: ViewModifier {
-    let depth: LiquidGlassDepth
-    let accentOpacity: Double
+private struct LimaGlassToolbarModifier: ViewModifier {
+    let depth: LimaGlassDepth
 
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 12)
             .frame(minHeight: LimaDesign.toolbarHeight)
-            .liquidGlass(cornerRadius: LimaDesign.standardCorner, depth: depth, accentOpacity: accentOpacity)
+            .limaGlassSurface(cornerRadius: LimaDesign.standardCorner, depth: depth)
     }
 }
 
 extension View {
+    func limaGlassToolbar(depth: LimaGlassDepth = .raised) -> some View {
+        modifier(LimaGlassToolbarModifier(depth: depth))
+    }
+
     func limaToolbar(depth: LiquidGlassDepth = .raised, accentOpacity: Double = 0.028) -> some View {
-        modifier(LimaToolbarModifier(depth: depth, accentOpacity: accentOpacity))
+        _ = accentOpacity
+        return limaGlassToolbar(depth: depth)
     }
 }

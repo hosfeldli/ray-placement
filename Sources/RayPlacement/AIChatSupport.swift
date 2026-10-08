@@ -564,6 +564,7 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         case stream
         case outputItem
         case tool
+        case delegation
         case transport
     }
 
@@ -1442,6 +1443,19 @@ struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     }
 }
 
+/// Immutable inputs captured for one provider turn. Keeping the local-tool,
+/// MCP, browser, and instruction routes together prevents approval continuation
+/// from mixing captured permissions with later mutable settings.
+struct AIApprovalContinuationContext: Sendable {
+    let localTools: [LimaAIToolDefinition]
+    let mcpServers: [MCPServer]
+    let browserRoutingContext: BrowserCapabilityTurnContext
+    let systemInstructions: String
+
+    var localToolIDs: [String] { localTools.map(\.id) }
+    var mcpServerIDs: [UUID] { mcpServers.map(\.id) }
+}
+
 struct AIToolSchemaValidationError: Error {
     let message: String
 }
@@ -1886,7 +1900,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Enabled subagents may analyze supplied evidence but cannot act or use tools. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Subagents inherit only this turn’s already-routed read-only tools and declared read-only MCP tools; they cannot write, run commands, request approvals, or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
     static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
@@ -2026,7 +2040,7 @@ enum LimaAIToolRegistry {
         LimaAIToolDefinition(
             id: "search_web",
             name: "search_web",
-            description: "Search public web results and return concise titles, URLs, and snippets. It never signs in, submits forms, follows private links, or changes web content.",
+            description: "Search through an explicitly configured general web-search provider and return title, URL, snippet, source, and status. Distinguishes no_results from provider_unavailable, request_failed, and unsupported_response; never treats an empty Instant Answer as comprehensive web search.",
             parameters: [
                 "type": "object",
                 "properties": ["query": ["type": "string", "description": "A concise public-web search query."]],
@@ -2123,7 +2137,11 @@ enum LimaAIToolRegistry {
         )
     }
 
-    static func execute(_ call: AIOutputItem, approvalGranted: Bool = false) async -> LimaAIToolExecution {
+    static func execute(
+        _ call: AIOutputItem,
+        approvalGranted: Bool = false,
+        browserRoutingContext: BrowserCapabilityTurnContext? = nil
+    ) async -> LimaAIToolExecution {
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
             return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
         }
@@ -2156,7 +2174,11 @@ enum LimaAIToolRegistry {
             return await AINotesTools.execute(call)
         }
         if BrowserBridgeAITools.definitions.contains(where: { $0.id == definition.id }) {
-            return await BrowserBridgeAITools.execute(call, approvalGranted: approvalGranted)
+            return await BrowserBridgeAITools.execute(
+                call,
+                approvalGranted: approvalGranted,
+                routingContext: browserRoutingContext
+            )
         }
         if AILocalComputerActionTools.ids.contains(definition.id) {
             return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted)
@@ -2473,49 +2495,13 @@ enum LimaAIToolRegistry {
     }
 
     static func searchWeb(query: String) async -> LimaAIToolExecution {
-        var components = URLComponents(string: "https://api.duckduckgo.com/")
-        components?.queryItems = [
-            URLQueryItem(name: "q", value: query),
-            URLQueryItem(name: "format", value: "json"),
-            URLQueryItem(name: "no_html", value: "1"),
-            URLQueryItem(name: "skip_disambig", value: "1")
-        ]
-        guard let url = components?.url else {
-            return .json(["error": "Lima could not form a public web search request."], isError: true)
-        }
-        var request = URLRequest(url: url)
-        request.timeoutInterval = 12
-        request.setValue("Lima/1.0 (read-only search)", forHTTPHeaderField: "User-Agent")
-        do {
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-                  let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                return .json(["error": "Public web search was unavailable."], isError: true)
-            }
-            var results: [[String: String]] = []
-            if let abstract = object["AbstractText"] as? String, !abstract.isEmpty {
-                results.append([
-                    "title": (object["Heading"] as? String) ?? query,
-                    "url": (object["AbstractURL"] as? String) ?? "",
-                    "snippet": abstract
-                ])
-            }
-            func collect(_ topics: [Any]) {
-                for topic in topics where results.count < 6 {
-                    if let item = topic as? [String: Any],
-                       let text = item["Text"] as? String,
-                       let firstURL = item["FirstURL"] as? String {
-                        results.append(["title": String(text.prefix(160)), "url": firstURL, "snippet": text])
-                    } else if let item = topic as? [String: Any], let nested = item["Topics"] as? [Any] {
-                        collect(nested)
-                    }
-                }
-            }
-            collect(object["RelatedTopics"] as? [Any] ?? [])
-            return .json(["query": query, "results": results, "source": "DuckDuckGo public instant answers"])
-        } catch {
-            return .json(["error": "Public web search could not be reached."], isError: true)
-        }
+        let response = await PublicWebSearchService.configuredForCurrentUser().search(query: query)
+        let isError = [
+            PublicWebSearchStatus.providerUnavailable,
+            .requestFailed,
+            .unsupportedResponse
+        ].contains(response.status)
+        return .json(response.json, isError: isError)
     }
 
     private final class NoRedirectWebReaderDelegate: NSObject, URLSessionTaskDelegate {
@@ -3175,7 +3161,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     static let coreGroups: [LimaAIToolGroup] = [
         .init(id: "memory", title: "Memory", summary: "Read saved local context; add, edit, or forget entries in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
-        .init(id: "subagents", title: "Subagents", summary: "Up to three analysis requests per turn using configured providers; API usage applies",
+        .init(id: "subagents", title: "Subagents", summary: "Up to three analysis requests; inherits eligible routed tools and read-only MCP, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
               symbol: "note.text", toolIDs: AINotesTools.ids),
@@ -3206,7 +3192,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
             summary: "Inspect granted tabs and visible page content",
             symbol: "safari",
             toolIDs: [
-                "browser_tabs", "browser_current", "browser_read",
+                "browser_capabilities", "browser_tabs", "browser_current", "browser_read",
                 "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
             ]
         ),
@@ -3392,6 +3378,12 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(BrowserBridgeAITools.readToolIDs)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: readMigrationKey)
+        }
+        let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
+        if !defaults.bool(forKey: capabilityMigrationKey) {
+            enabledToolIDs.insert("browser_capabilities")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: capabilityMigrationKey)
         }
     }
 
@@ -3917,7 +3909,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
     }
 
     private func inlineText(_ value: String) -> Text {
-        if let attributed = try? AttributedString(markdown: value, options: .init(interpretedSyntax: .full)) {
+        if let attributed = Self.cachedInlineMarkdown(for: value).attributed {
             return Text(attributed)
         }
         return Text(value)
@@ -3977,7 +3969,60 @@ struct LimaMarkdownDocumentView: View, Equatable {
         case rule
     }
 
-    private var blocks: [Block] {
+    private final class ParsedBlockEntry {
+        let blocks: [Block]
+        init(_ blocks: [Block]) { self.blocks = blocks }
+    }
+
+    private static let parsedBlockCache: NSCache<NSString, ParsedBlockEntry> = {
+        let cache = NSCache<NSString, ParsedBlockEntry>()
+        cache.countLimit = 64
+        cache.totalCostLimit = 8 * 1_024 * 1_024
+        return cache
+    }()
+
+    private final class InlineMarkdownEntry {
+        let attributed: AttributedString?
+
+        init(_ markdown: String) {
+            attributed = try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .full))
+        }
+    }
+
+    private static let inlineMarkdownCache: NSCache<NSString, InlineMarkdownEntry> = {
+        let cache = NSCache<NSString, InlineMarkdownEntry>()
+        cache.countLimit = 512
+        cache.totalCostLimit = 4 * 1_024 * 1_024
+        return cache
+    }()
+
+    private var blocks: [Block] { Self.cachedBlocks(for: markdown).blocks }
+
+    static func cachedDocumentIdentityForTesting(_ markdown: String) -> ObjectIdentifier {
+        ObjectIdentifier(cachedBlocks(for: markdown))
+    }
+
+    private static func cachedBlocks(for markdown: String) -> ParsedBlockEntry {
+        let key = markdown as NSString
+        if let cached = parsedBlockCache.object(forKey: key) { return cached }
+        let parsed = ParsedBlockEntry(parseBlocks(markdown))
+        parsedBlockCache.setObject(parsed, forKey: key, cost: max(1, markdown.utf8.count))
+        return parsed
+    }
+
+    private static func cachedInlineMarkdown(for markdown: String) -> InlineMarkdownEntry {
+        let key = markdown as NSString
+        if let cached = inlineMarkdownCache.object(forKey: key) { return cached }
+        let parsed = InlineMarkdownEntry(markdown)
+        inlineMarkdownCache.setObject(parsed, forKey: key, cost: max(1, markdown.utf8.count * 2))
+        return parsed
+    }
+
+    static func cachedInlineMarkdownIdentityForTesting(_ markdown: String) -> ObjectIdentifier {
+        ObjectIdentifier(cachedInlineMarkdown(for: markdown))
+    }
+
+    private static func parseBlocks(_ markdown: String) -> [Block] {
         let lines = markdown.components(separatedBy: .newlines)
         let codeFence = String(repeating: "\u{60}", count: 3)
         var result: [Block] = []
@@ -4056,7 +4101,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
         return result.isEmpty ? [.paragraph("")] : result
     }
 
-    private func heading(from line: String) -> (level: Int, value: String)? {
+    private static func heading(from line: String) -> (level: Int, value: String)? {
         let hashes = line.prefix { $0 == "#" }
         guard !hashes.isEmpty, hashes.count <= 6 else { return nil }
         let remainder = line.dropFirst(hashes.count)
@@ -4064,7 +4109,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
         return (hashes.count, remainder.trimmingCharacters(in: .whitespaces))
     }
 
-    private func listStart(_ line: String) -> (ordered: Bool, value: String)? {
+    private static func listStart(_ line: String) -> (ordered: Bool, value: String)? {
         if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
             return (false, String(line.dropFirst(2)))
         }
@@ -4075,12 +4120,12 @@ struct LimaMarkdownDocumentView: View, Equatable {
         return (true, String(line[line.index(after: afterPeriod)...]).trimmingCharacters(in: .whitespaces))
     }
 
-    private func isRule(_ line: String) -> Bool {
+    private static func isRule(_ line: String) -> Bool {
         let compact = line.replacingOccurrences(of: " ", with: "")
         return compact.count >= 3 && (Set(compact) == ["-"] || Set(compact) == ["*"] || Set(compact) == ["_"])
     }
 
-    private func isTableSeparator(_ line: String) -> Bool {
+    private static func isTableSeparator(_ line: String) -> Bool {
         let cells = tableCells(line)
         return !cells.isEmpty && cells.allSatisfy { cell in
             let compact = cell.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "-", with: "")
@@ -4088,7 +4133,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
         }
     }
 
-    private func tableCells(_ line: String) -> [String] {
+    private static func tableCells(_ line: String) -> [String] {
         line
             .trimmingCharacters(in: .whitespaces)
             .trimmingCharacters(in: CharacterSet(charactersIn: "|"))

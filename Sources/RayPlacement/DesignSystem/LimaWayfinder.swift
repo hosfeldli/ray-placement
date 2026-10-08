@@ -15,9 +15,9 @@ struct LimaWorkspaceNavigation: Equatable {
 
 extension LimaWorkspaceModule {
     static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .context]
-    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions]
+    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions, .terminal]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
-    static let hiddenDestinations: [LimaWorkspaceModule] = [.grammar, .dictation, .terminal, .formatter]
+    static let hiddenDestinations: [LimaWorkspaceModule] = [.grammar, .dictation, .formatter]
 
     var title: String {
         switch self {
@@ -227,9 +227,10 @@ struct LimaWayfinderRail: View {
         .padding(.vertical, 14)
         .frame(width: labeled ? max(sizeClass.moduleRailWidth, 48 + 114 * typography.scale) : sizeClass.moduleRailWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(LimaTheme.navigationBackground)
+        .limaGlassSidebar(cornerRadius: 0)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace navigation")
+        .accessibilityIdentifier(LimaQAIdentifiers.Workspace.sidebar)
         .background {
             // Keep established shortcuts working without showing these tools in the rail.
             ForEach(LimaWorkspaceModule.hiddenDestinations, id: \.self) { module in
@@ -270,6 +271,7 @@ struct LimaWayfinderRail: View {
             }
             .help("\(module.title) · ⌥⌘\(module.shortcutNumber)\(module.shortcutAlias.map { " · ⌥⌘\($0)" } ?? "")")
             .accessibilityLabel(module.title)
+            .accessibilityIdentifier(LimaQAIdentifiers.Workspace.module(module))
             .accessibilityValue(module == current ? "Current workspace" : "")
             .accessibilityAddTraits(module == current ? [.isSelected] : [])
             .onHover { hovered = $0 ? module.rawValue : nil }

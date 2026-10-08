@@ -7,7 +7,11 @@ struct AIProviderSettingsView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
+    @ObservedObject private var webSearchCredentials = PublicWebSearchCredentialStore.shared
+    @ObservedObject private var mcpServers = MCPServerStore.shared
     @State private var apiKey = ""
+    @State private var webSearchAPIKey = ""
+    @State private var webSearchMessage: String?
     @State private var customModel = ""
     @State private var endpoint = ""
     @State private var message: String?
@@ -31,6 +35,58 @@ struct AIProviderSettingsView: View {
             Section("AI availability") {
                 Toggle("Enable AI throughout Lima", isOn: $settings.aiEnabled)
                 Text("Turning this off stops AI chats, provider requests, AI tools, and grammar assistance. Local dictation, search, files, notes, and saved chats remain available. Keys, model preferences, and action choices are retained.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
+            Section("General web search") {
+                Text("Configure Brave Search for public web queries. Search terms are sent to Brave when the AI web-search tool runs. This key is stored separately in macOS Keychain and is never shown in Lima.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                SecureField(webSearchCredentials.isConfigured ? "Replacement Brave Search API key" : "Brave Search API key",
+                            text: $webSearchAPIKey)
+                HStack {
+                    Button("Save Key") {
+                        do {
+                            try webSearchCredentials.save(webSearchAPIKey)
+                            webSearchAPIKey = ""
+                            webSearchMessage = nil
+                        } catch {
+                            webSearchMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(webSearchAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Remove Key", role: .destructive) {
+                        do {
+                            try webSearchCredentials.remove()
+                            webSearchAPIKey = ""
+                            webSearchMessage = nil
+                        } catch {
+                            webSearchMessage = error.localizedDescription
+                        }
+                    }
+                    .disabled(!webSearchCredentials.isConfigured)
+                    Spacer()
+                    Label(webSearchCredentials.isConfigured ? "Stored in Keychain" : "Not configured",
+                          systemImage: webSearchCredentials.isConfigured ? "checkmark.circle.fill" : "magnifyingglass")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                if let webSearchMessage {
+                    Text(webSearchMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
+                Text("Requires the Search the web tool to be enabled in AI Chat. If no valid provider key is configured, Lima reports the provider as unavailable rather than claiming there were zero results.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
+            Section("Connected tools (MCP)") {
+                let enabledServers = mcpServers.servers.filter(\.enabled)
+                let enabledToolCount = enabledServers.reduce(0) { $0 + $1.enabledTools.count }
+                Text("Connect Lima to a local or network MCP server using its reachable HTTP endpoint. Enable individual tools in the MCP manager; only tools freshly declared read-only are available to AI Chat. Server credentials stay in Keychain.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                HStack {
+                    Text("\(enabledServers.count) enabled MCP servers · \(enabledToolCount) read-only tools")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    Spacer()
+                    Button("Manage MCP Servers") { model.openMCPManager() }
+                        .accessibilityIdentifier(LimaQAIdentifiers.Settings.mcpServers)
+                }
+                Text("Use an HTTPS endpoint for bearer authentication. Plain HTTP is unencrypted; use it only on a trusted isolated test network without sending reusable credentials. The QA control service remains a local Unix socket and is not a LAN listener.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Experimental browser access") {
@@ -187,7 +243,7 @@ struct AIProviderSettingsView: View {
         .onChange(of: model.provider) { _ in apiKey = ""; message = nil; loadConfiguration() }
         .onChange(of: model.model) { _ in loadConfiguration() }
         .onChange(of: model.selectedConversationID) { _ in apiKey = ""; message = nil; loadConfiguration() }
-        .onDisappear { apiKey = "" } // Navigation never cancels provider checks.
+        .onDisappear { apiKey = ""; webSearchAPIKey = "" } // Navigation never cancels provider checks.
         .alert("Remove shared provider key?", isPresented: $confirmRemove) {
             Button("Cancel", role: .cancel) {}
             Button("Remove", role: .destructive) {

@@ -415,6 +415,109 @@ final class BrowserBridgeService: ObservableObject {
         }
     }
 
+    /// Returns current app/companion policy state without reading or changing a tab.
+    func capabilitySnapshot(context suppliedContext: BrowserCapabilityTurnContext? = nil, requestedOrigin: String? = nil) async -> JSONValue {
+        let toolStore = LimaAIToolStore.shared
+        let context = suppliedContext ?? BrowserCapabilityTurnContext(
+            selectedAgentID: nil,
+            selectedAgentToolIDs: nil,
+            enabledToolIDs: toolStore.enabledToolIDs,
+            turnToolIDs: toolStore.enabledToolIDs,
+            pendingApproval: false
+        )
+        let session = selectedSession
+        let locallyConnected = enabled && session.map { sessions.contains($0) } == true
+        var permissionStatusAvailable = false
+        var companionConnected = locallyConnected
+        var exactReadOrigins: [String] = []
+        var exactInteractionOrigins: [String] = []
+        var broadGrantInstalled = false
+        var supportsInteraction = false
+        var interactionPolicyAvailable = false
+
+        if locallyConnected, let session {
+            do {
+                let response = try await rawRequest("bridge.status", expectedSession: session, recordActivity: false)
+                guard case .object(let fields) = response,
+                      case .array(let origins)? = fields["origins"] else {
+                    throw BrowserBridgeError.invalidResponse
+                }
+                let readPolicy = try BrowserBridgeGrantPolicy.parse(origins)
+                let interactionValues: [JSONValue]
+                if case .array(let values)? = fields["interactionOrigins"] { interactionValues = values }
+                else { interactionValues = [] }
+                let interactionPolicy = try BrowserBridgeGrantPolicy.parse(interactionValues)
+                exactReadOrigins = readPolicy.exactHosts.sorted().map { "https://\($0)" }
+                exactInteractionOrigins = interactionPolicy.exactHosts.sorted().map { "https://\($0)" }
+                broadGrantInstalled = readPolicy.hasBroadHTTPS
+                if case .array(let capabilities)? = fields["capabilities"] {
+                    supportsInteraction = capabilities.contains(.string("browser_interaction_v1"))
+                }
+                interactionPolicyAvailable = fields["interactionPolicyAvailable"] == .bool(true)
+                companionConnected = fields["connected"] == .bool(true)
+                permissionStatusAvailable = companionConnected
+            } catch {
+                permissionStatusAvailable = false
+            }
+        }
+
+        let actionPolicy = AIComputerActionPolicy.shared
+        let state = BrowserCapabilityState(
+            bridgeEnabled: enabled,
+            companionConnected: companionConnected,
+            permissionStatusAvailable: permissionStatusAvailable,
+            exactReadOrigins: exactReadOrigins,
+            broadHTTPSGrantInstalled: broadGrantInstalled,
+            broadHTTPSReadingEnabled: actionPolicy.broadBrowserGrantsExperimentalEnabled,
+            exactInteractionOrigins: exactInteractionOrigins,
+            companionSupportsInteraction: supportsInteraction,
+            interactionPolicyAvailable: actionPolicy.browserInteractionExperimentalEnabled && interactionPolicyAvailable,
+            navigationAccess: actionPolicy.access(for: .browserNavigation),
+            interactionAccess: actionPolicy.access(for: .browserInteraction),
+            context: context
+        )
+
+        func decision(_ value: BrowserCapabilityDecision) -> JSONValue {
+            .object([
+                "status": .string(value.status.rawValue),
+                "reason": value.reason.map(JSONValue.string) ?? .null
+            ])
+        }
+        let routedBrowserTools = (context.turnToolIDs
+            .intersection(BrowserCapabilityTurnContext.readToolIDs)
+            .union(context.turnToolIDs.intersection(BrowserCapabilityTurnContext.navigationToolIDs))
+            .union(context.turnToolIDs.intersection(BrowserCapabilityTurnContext.interactionToolIDs)))
+            .sorted()
+        let originDecisions = requestedOrigin.map { state.decisions(forOrigin: $0) }
+        return .object([
+            "bridge": .object([
+                "enabled": .bool(enabled),
+                "status": .string(status),
+                "companionConnected": .bool(companionConnected),
+                "selectedSessionID": session.map { .string($0.uuidString) } ?? .null,
+                "permissionStatusAvailable": .bool(permissionStatusAvailable)
+            ]),
+            "read": decision(state.read),
+            "navigation": decision(state.navigation),
+            "interaction": decision(state.interaction),
+            "requestedOrigin": originDecisions?.origin.map(JSONValue.string) ?? .null,
+            "originRead": originDecisions.map { decision($0.read) } ?? .null,
+            "originNavigation": originDecisions.map { decision($0.navigation) } ?? .null,
+            "originInteraction": originDecisions.map { decision($0.interaction) } ?? .null,
+            "exactReadOrigins": .array(state.exactReadOrigins.map(JSONValue.string)),
+            "exactInteractionOrigins": .array(state.exactInteractionOrigins.map(JSONValue.string)),
+            "broadHTTPSGrantInstalled": .bool(state.broadHTTPSGrantInstalled),
+            "broadHTTPSReadingEnabled": .bool(state.broadHTTPSReadingEnabled),
+            "interactionCapabilitySupported": .bool(supportsInteraction),
+            "interactionPolicyAvailable": .bool(interactionPolicyAvailable),
+            "navigationPolicy": .string(actionPolicy.access(for: .browserNavigation).rawValue),
+            "interactionPolicy": .string(actionPolicy.access(for: .browserInteraction).rawValue),
+            "submitRequiresApproval": .bool(state.interactionSubmitRequiresApproval),
+            "selectedAgentID": context.selectedAgentID.map(JSONValue.string) ?? .null,
+            "routedBrowserTools": .array(routedBrowserTools.map(JSONValue.string))
+        ])
+    }
+
     private static func journalMetadata(
         command: String,
         arguments: [String: JSONValue]
@@ -461,15 +564,24 @@ final class BrowserBridgeService: ObservableObject {
 
     /// Open a bounded batch through one companion request so site policy is
     /// preflighted before the extension creates any tabs.
-    func openTabs(urls: [String], background: Bool) async throws -> JSONValue {
+    func openTabs(urls: [String], background: Bool, reuseExisting: Bool = true) async throws -> JSONValue {
         guard (1...50).contains(urls.count) else { throw BrowserBridgeError.invalidResponse }
         return try await request(
             "browser.open_tabs",
             arguments: [
                 "urls": .array(urls.map(JSONValue.string)),
-                "background": .bool(background)
+                "background": .bool(background),
+                "reuseExisting": .bool(reuseExisting)
             ]
         )
+    }
+
+    func tabsSnapshot() async throws -> JSONValue {
+        try await request("browser.tabs")
+    }
+
+    func currentTabSnapshot() async throws -> JSONValue {
+        try await request("browser.current")
     }
 
     func resolveCase(number: String, tabID: Int) async throws -> JSONValue {

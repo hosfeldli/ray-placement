@@ -42,7 +42,7 @@ struct ClipboardWorkspaceView: View {
             }
             .padding(.horizontal, 18)
             .frame(minHeight: 58)
-            .background(LimaTheme.surfacePrimary)
+            .limaGlassSurface(cornerRadius: 0, depth: .recessed)
 
             GlassHairline()
 
@@ -65,8 +65,7 @@ struct ClipboardWorkspaceView: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 38)
-            .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+            .limaGlassField(cornerRadius: LimaRadius.control)
             .padding(.horizontal, 16)
             .padding(.vertical, 10)
 
@@ -109,7 +108,7 @@ struct ClipboardWorkspaceView: View {
                     }
                     .padding(14)
                 }
-                .background(LimaTheme.surfacePrimary)
+                .background(Color.clear)
             }
 
             HStack(spacing: 6) {
@@ -123,9 +122,9 @@ struct ClipboardWorkspaceView: View {
             .foregroundStyle(LimaTheme.textTertiary)
             .padding(.horizontal, 16)
             .frame(height: 26)
-            .background(LimaTheme.surfaceSecondary)
+            .limaGlassSurface(cornerRadius: 0, depth: .recessed)
         }
-        .background(LimaTheme.surfacePrimary)
+        .background(Color.clear)
         .alert("Clear clipboard history?", isPresented: $confirmClear) {
             Button("Cancel", role: .cancel) {}
             Button("Clear History", role: .destructive) { service.clear() }
@@ -185,7 +184,6 @@ struct ClipboardWorkspaceView: View {
             .limaFont(.caption2)
         }
         .padding(12)
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+        .limaGlassPanel(cornerRadius: LimaRadius.card, depth: .raised)
     }
 }

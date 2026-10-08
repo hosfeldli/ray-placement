@@ -266,10 +266,7 @@ struct ExtensionsSettingsView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .background(LimaTheme.surfacePrimary)
-        .overlay(alignment: .bottom) {
-            Rectangle().fill(LimaTheme.borderSubtle).frame(height: LimaDesign.hairlineWidth)
-        }
+        .limaGlassSurface(cornerRadius: 0, depth: .recessed)
     }
 
     private var localWorkspaceTitle: some View {
@@ -343,7 +340,7 @@ struct ExtensionsSettingsView: View {
                         }.padding(16)
                     }
                     .frame(width: 344)
-                    .background(LimaTheme.surfaceSecondary)
+                    .limaGlassSidebar(cornerRadius: 0)
                 }
             }
         }
@@ -373,10 +370,7 @@ struct ExtensionsSettingsView: View {
                 extensionDetail(package)
             }
         }
-        .background(selectedID == package.id ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised,
-                    in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .strokeBorder(selectedID == package.id ? LimaTheme.accentInk : LimaTheme.borderSubtle, lineWidth: 0.75))
+        .limaGlassSurface(cornerRadius: 14, depth: .raised, selected: selectedID == package.id)
     }
 
     private func installedSummary(_ package: InstalledPackage, catalogEntry: ExtensionStoreEntry?) -> some View {

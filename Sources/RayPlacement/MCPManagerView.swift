@@ -36,10 +36,13 @@ private struct MCPManagerView: View {
     @State private var isTesting = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            serverList
-            Divider()
-            editor
+        ZStack {
+            LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+            HStack(spacing: 0) {
+                serverList
+                Divider()
+                editor
+            }
         }
         .frame(minWidth: 620, minHeight: 440)
         .onAppear { select(store.servers.first) }
@@ -54,7 +57,7 @@ private struct MCPManagerView: View {
             }
             .padding(.horizontal, 14).padding(.top, 14)
             if store.servers.isEmpty {
-                Text("Connect remote HTTP MCP servers to give AI Chat approved tools.")
+                Text("Connect an HTTP MCP server on this Mac or your local network to give AI Chat approved tools.")
                     .limaFont(.caption).foregroundStyle(LimaColors.secondaryText)
                     .padding(14)
             } else {
@@ -74,13 +77,14 @@ private struct MCPManagerView: View {
                     .tag(server.id)
                 }
                 .listStyle(.sidebar)
+                .scrollContentBackground(.hidden)
             }
             Spacer()
             Text("Credentials are stored in Keychain. Server definitions contain no secrets.")
                 .limaFont(.caption2).foregroundStyle(LimaColors.tertiaryText).padding(12)
         }
         .frame(width: 245)
-        .background(LimaColors.sidebarBackground)
+        .limaGlassSidebar(cornerRadius: 0)
     }
 
     @ViewBuilder
@@ -90,7 +94,7 @@ private struct MCPManagerView: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(server.name).limaFont(.title3.weight(.semibold))
-                        Text(server.lastError == nil ? "Remote HTTP MCP" : (server.lastError ?? "Error"))
+                        Text(server.lastError == nil ? "HTTP MCP · local or remote" : (server.lastError ?? "Error"))
                             .limaFont(.caption).foregroundStyle(server.lastError == nil ? LimaColors.secondaryText : LimaColors.danger)
                     }
                     Spacer()
@@ -98,15 +102,23 @@ private struct MCPManagerView: View {
                         .toggleStyle(.switch)
                 }
                 TextField("Server name", text: $name)
-                    .textFieldStyle(.roundedBorder)
-                TextField("https://example.com/mcp", text: $url)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(8)
+                    .limaGlassField()
+                TextField("https://host.example/mcp or http://192.168.1.20:port/mcp", text: $url)
+                    .textFieldStyle(.plain)
+                    .padding(8)
+                    .limaGlassField()
+                Text("For a server on your LAN, enter its reachable private IP address and MCP path. Use HTTPS when sending bearer credentials; plain HTTP is unencrypted. Test & Discover Tools verifies the connection before you enable any read-only tools.")
+                    .limaFont(.caption).foregroundStyle(LimaColors.secondaryText)
                 Picker("Transport", selection: $transport) {
                     ForEach(MCPTransport.allCases) { Text($0.title).tag($0) }
                 }
                 .pickerStyle(.segmented)
                 SecureField("Bearer token (optional)", text: $token)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(8)
+                    .limaGlassField()
                 HStack {
                     Button(isTesting ? "Testing…" : "Test & Discover Tools") { test(server) }
                         .buttonStyle(.borderedProminent).disabled(isTesting)
@@ -143,7 +155,7 @@ private struct MCPManagerView: View {
                                     }
                                 }
                                 .padding(8)
-                                .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                .limaGlassSurface(cornerRadius: 8, depth: .recessed)
                             }
                         }
                     }
@@ -155,7 +167,7 @@ private struct MCPManagerView: View {
             VStack(spacing: 12) {
                 Image(systemName: "server.rack").font(.system(size: 28)).foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
                 Text("Add an MCP server").limaFont(.title3.weight(.semibold))
-                Text("Use the plus button to configure a remote HTTP MCP connection.").foregroundStyle(.secondary)
+                Text("Use the plus button to configure an HTTP MCP server on this Mac, your local network, or a remote host.").foregroundStyle(.secondary)
                 Button("Add Server", action: newServer).buttonStyle(.borderedProminent)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

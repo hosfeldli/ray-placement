@@ -15,6 +15,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
+    #if LIMA_QA
+    private var qaService: LimaQAService?
+    #endif
     private var registeredActivationShortcut: ShortcutSpec?
     private var registeredNotesShortcut: ShortcutSpec?
     private var registeredQuickNoteShortcut: ShortcutSpec?
@@ -62,6 +65,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerExtensionHotkeys()
         installObservers()
         BrowserBridgeService.shared.start()
+        #if LIMA_QA
+        qaService = LimaQAService.shared
+        qaService?.configure(launcher: launcher)
+        qaService?.startIfEnabledAtLaunch()
+        #endif
         NotificationCenter.default.addObserver(
             forName: .rayPlacementAppearanceChanged,
             object: nil,
@@ -73,7 +81,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let pendingRecovery = CrashRecoveryStore.shared.pendingRestoration
+        #if LIMA_QA
+        // QA artifacts never contact the public update channel.
+        let isShowingUpdateResult = false
+        #else
         let isShowingUpdateResult = configureUpdates()
+        #endif
         if pendingRecovery?.workWasActive == true {
             TaskRegistry.shared.recordInterruptedWork()
         }
@@ -108,6 +121,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         BrowserBridgeService.shared.stop()
+        #if LIMA_QA
+        qaService?.stop()
+        #endif
         launcher?.shutdown()
         UsageMonitor.shared.flush()
         CrashRecoveryStore.shared.markCleanShutdown()

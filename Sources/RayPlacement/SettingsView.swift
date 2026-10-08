@@ -160,6 +160,10 @@ struct SettingsView: View {
     @State private var isTestingGrammarConnection = false
     @State private var grammarCompatibilityMessage: String?
     @State private var isTestingGrammarCompatibility = false
+    #if LIMA_QA
+    @ObservedObject private var qaMCPService = LimaQAService.shared
+    @State private var qaMCPCopied = false
+    #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
     let openGrammarDebugger: () -> Void
@@ -524,6 +528,9 @@ struct SettingsView: View {
                 Text("Usage & Logs").tag(2)
                 Text("Developer").tag(3)
                 Text("Experimental").tag(4)
+                #if LIMA_QA
+                Text("QA MCP").tag(5)
+                #endif
             }
             .pickerStyle(.segmented)
             .padding(12)
@@ -533,11 +540,68 @@ struct SettingsView: View {
                 case 2: usageTab
                 case 3: secretsTab
                 case 4: experimentalTab
+                #if LIMA_QA
+                case 5: qaMCPSettings
+                #endif
                 default: advancedTab
                 }
             }
         }
     }
+
+    #if LIMA_QA
+    private var qaMCPSettings: some View {
+        Form {
+            Section("QA MCP Control") {
+                Toggle(isOn: Binding(
+                    get: { qaMCPService.isRunning },
+                    set: { qaMCPService.setEnabled($0) }
+                )) {
+                    Label("Enable Lima QA MCP", systemImage: "point.3.connected.trianglepath.dotted")
+                }
+                .disabled(!qaMCPService.runtimeAuthorized)
+                .accessibilityIdentifier("settings.qaMCP.enabled")
+
+                Text(qaMCPService.statusMessage
+                     ?? (qaMCPService.runtimeAuthorized
+                         ? "Off. Enable this only while running QA automation."
+                         : "Available only in a QA build launched with LIMA_TEST_MODE=1 and LIMA_ENABLE_QA_MCP=1."))
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+
+                LabeledContent("Transport", value: "MCP over stdio")
+                LabeledContent("App socket", value: qaMCPService.displaySocketPath)
+                Text("The stdio adapter connects to the running Lima QA app through a user-only Unix socket (mode 0600). This control is compiled out of production builds.")
+                    .limaFont(.caption)
+                    .foregroundStyle(LimaTheme.textSecondary)
+
+                if let configuration = qaMCPService.clientConfiguration {
+                    Text("Client configuration")
+                        .limaFont(.caption.weight(.semibold))
+                    Text(configuration)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(9)
+                        .limaGlassField(cornerRadius: 8)
+                    Button(qaMCPCopied ? "Copied" : "Copy Client Configuration") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(configuration, forType: .string)
+                        qaMCPCopied = true
+                    }
+                    .disabled(!qaMCPService.isRunning)
+                } else {
+                    Text("Build the QA app package to generate a client configuration.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
+    }
+    #endif
 
     private var experimentalTab: some View {
         Form {

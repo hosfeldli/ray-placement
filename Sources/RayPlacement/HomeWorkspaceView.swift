@@ -142,7 +142,7 @@ struct HomeWorkspaceView: View {
             .frame(maxWidth: .infinity)
             .padding(24)
         }
-        .background(LimaTheme.surfacePrimary)
+        .background(Color.clear)
         .accessibilityIdentifier("lima-home-workspace")
     }
 

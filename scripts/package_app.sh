@@ -10,7 +10,9 @@ SCRATCH_DIRECTORY="${RAYPLACEMENT_SCRATCH_DIRECTORY:-$PROJECT_DIRECTORY/.build}"
 # Supply a known-good compiler cache when a cold Swift toolchain cache is slow
 # or interrupted; otherwise keep all build artifacts inside the scratch path.
 MODULE_CACHE_DIRECTORY="${RAYPLACEMENT_MODULE_CACHE_DIRECTORY:-$SCRATCH_DIRECTORY/module-cache}"
-APP_DIRECTORY="$PROJECT_DIRECTORY/build/Lima.app"
+QA_BUILD="${RAYPLACEMENT_QA_BUILD:-0}"
+[[ "$QA_BUILD" == "0" || "$QA_BUILD" == "1" ]] || { echo "RAYPLACEMENT_QA_BUILD must be 0 or 1." >&2; exit 1; }
+APP_DIRECTORY="${RAYPLACEMENT_APP_DIRECTORY:-$PROJECT_DIRECTORY/build/Lima.app}"
 CONTENTS_DIRECTORY="$APP_DIRECTORY/Contents"
 FRAMEWORKS_DIRECTORY="$CONTENTS_DIRECTORY/Frameworks"
 SPARKLE_FRAMEWORK_SOURCE="${RAYPLACEMENT_SPARKLE_FRAMEWORK_SOURCE:-$PROJECT_DIRECTORY/.build/artifacts/sparkle/Sparkle/Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework}"
@@ -41,8 +43,13 @@ mkdir -p "$MODULE_CACHE_DIRECTORY"
 if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" ]]; then
     "$WHISPER_ASSEMBLER"
 fi
-swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
-BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
+if [[ "$QA_BUILD" == "1" ]]; then
+    LIMA_BUILD_QA_MCP=1 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
+    BIN_DIRECTORY="$(LIMA_BUILD_QA_MCP=1 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
+else
+    LIMA_BUILD_QA_MCP=0 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
+    BIN_DIRECTORY="$(LIMA_BUILD_QA_MCP=0 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
+fi
 if [[ -z "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
     SPARKLE_FRAMEWORK_SOURCE="$BIN_DIRECTORY/Sparkle.framework"
 fi
@@ -59,6 +66,11 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources" "$FRAMEWORK
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
 cp "$BIN_DIRECTORY/LimaBrowserBridgeHost" "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
+if [[ "$QA_BUILD" == "1" ]]; then
+    [[ -x "$BIN_DIRECTORY/LimaQAMCPServer" ]] || { echo "The QA MCP executable is missing from the opt-in build." >&2; exit 1; }
+    cp "$BIN_DIRECTORY/LimaQAMCPServer" "$CONTENTS_DIRECTORY/MacOS/LimaQAMCPServer"
+    chmod 755 "$CONTENTS_DIRECTORY/MacOS/LimaQAMCPServer"
+fi
 ditto "$PROJECT_DIRECTORY/BrowserBridge" "$CONTENTS_DIRECTORY/Resources/BrowserBridge"
 cp "$PROJECT_DIRECTORY/docs/BROWSER_BRIDGE.md" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/README.md"
 python3 "$PROJECT_DIRECTORY/scripts/package_browser_bridge.py" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-unsigned.xpi"
@@ -81,6 +93,11 @@ install_name_tool -add_rpath '@loader_path/../Frameworks' "$CONTENTS_DIRECTORY/M
 rm -rf "$FRAMEWORKS_DIRECTORY/Sparkle.framework"
 ditto "$SPARKLE_FRAMEWORK_SOURCE" "$FRAMEWORKS_DIRECTORY/Sparkle.framework"
 cp "$PROJECT_DIRECTORY/Packaging/Info.plist" "$CONTENTS_DIRECTORY/Info.plist"
+if [[ "$QA_BUILD" == "1" ]]; then
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleName "Lima Test"' "$CONTENTS_DIRECTORY/Info.plist"
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName "Lima Test"' "$CONTENTS_DIRECTORY/Info.plist"
+    /usr/libexec/PlistBuddy -c 'Add :LimaQABuild bool true' "$CONTENTS_DIRECTORY/Info.plist"
+fi
 
 # Keep the uninstaller inside the bundle so the packaged app is self-contained
 # and the release verifier checks the same artifact users receive.
@@ -150,6 +167,9 @@ cp "$PROJECT_DIRECTORY/docs/EXTENSION_AUTHORING_FOR_AI.md" "$CONTENTS_DIRECTORY/
 cp "$PROJECT_DIRECTORY/docs/EXTENSIONS.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSIONS.md"
 cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY/Resources/Documentation/extension-manifest.schema.json"
 cp "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
+if [[ "$QA_BUILD" == "1" ]]; then
+    cp "$PROJECT_DIRECTORY/docs/QA_MCP.md" "$CONTENTS_DIRECTORY/Resources/Documentation/QA_MCP.md"
+fi
 chmod 644 "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension"
 cp "$PROJECT_DIRECTORY/docs/starter-extension/manifest.json" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/manifest.json"
@@ -262,7 +282,7 @@ else
     echo "Warning: ad-hoc signing can make macOS forget Accessibility approval after a rebuild."
 fi
 if [[ "${RAYPLACEMENT_SKIP_PACKAGING_VERIFICATION:-0}" != "1" ]]; then
-    RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" "$PROJECT_DIRECTORY/scripts/verify_liamflow_app.sh" "$APP_DIRECTORY"
+    RAYPLACEMENT_MODEL_FREE_UPDATE="$MODEL_FREE_UPDATE_BUILD" RAYPLACEMENT_QA_BUILD="$QA_BUILD" "$PROJECT_DIRECTORY/scripts/verify_liamflow_app.sh" "$APP_DIRECTORY"
 fi
 
 echo "Packaged: $APP_DIRECTORY"

@@ -43,12 +43,7 @@ struct LimaWorkspaceCard<Content: View>: View {
         content
             .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
-                    .allowsHitTesting(false)
-            }
+            .limaGlassPanel(cornerRadius: 16)
     }
 }
 
@@ -77,6 +72,7 @@ struct LimaWorkspaceSearchField: View {
     let placeholder: String
     @Binding var text: String
     var submit: () -> Void = {}
+    var accessibilityID: String? = nil
 
     var body: some View {
         HStack(spacing: 11) {
@@ -88,6 +84,7 @@ struct LimaWorkspaceSearchField: View {
                 .limaFont(.system(size: 15))
                 .onSubmit(submit)
                 .accessibilityLabel(placeholder)
+                .accessibilityIdentifier(accessibilityID ?? LimaQAIdentifiers.Workspace.searchField)
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill")
@@ -100,12 +97,7 @@ struct LimaWorkspaceSearchField: View {
         }
         .padding(.horizontal, 15)
         .frame(height: 48)
-        .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
-                .allowsHitTesting(false)
-        }
+        .limaGlassField(cornerRadius: 14)
     }
 }
 

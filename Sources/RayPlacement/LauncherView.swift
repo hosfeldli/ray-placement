@@ -191,6 +191,7 @@ struct LauncherView: View {
                     .limaFont(.system(size: 17, weight: .medium))
                     .focused($searchFocused)
                     .accessibilityLabel(viewModel.placeholder)
+                    .accessibilityIdentifier(LimaQAIdentifiers.Launcher.searchField)
             } else {
                 Spacer(minLength: 0)
             }
@@ -214,7 +215,7 @@ struct LauncherView: View {
         }
         .padding(.horizontal, 13)
         .frame(height: 46)
-        .liquidGlass(cornerRadius: LimaRadius.searchField, depth: .raised, accentOpacity: 0.024)
+        .limaGlassField(cornerRadius: LimaRadius.searchField)
         .padding(.horizontal, 8)
         .padding(.top, 8)
     }
@@ -603,15 +604,19 @@ struct LauncherView: View {
                             .accessibilityHint(Text("Press to \(actionLabel(for: item).lowercased())"))
                             .accessibilityValue(Text(index == viewModel.selectedIndex ? "Selected" : ""))
                             .accessibilityAddTraits(index == viewModel.selectedIndex ? .isSelected : [])
+                            .accessibilityIdentifier(index == viewModel.selectedIndex
+                                ? LimaQAIdentifiers.Launcher.selectedResult
+                                : LimaQAIdentifiers.Launcher.result)
                             .id(item.id)
                             .onHover { hovering in
                                 hoveredResultID = hovering ? item.id : (hoveredResultID == item.id ? nil : hoveredResultID)
                             }
                         } else {
                             ResultRow(item: item, selected: false, actionLabel: nil, hovered: hoveredResultID == item.id)
-                                .accessibilityElement(children: .combine)
-                                .accessibilityLabel(Text(accessibilityLabel(for: item)))
-                                .id(item.id)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel(Text(accessibilityLabel(for: item)))
+                            .accessibilityIdentifier(LimaQAIdentifiers.Launcher.result)
+                            .id(item.id)
                         }
                         }
                     }
@@ -629,6 +634,8 @@ struct LauncherView: View {
             .scrollIndicators(.hidden)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(LimaQAIdentifiers.Launcher.results)
     }
 
     private var idleLauncherHeader: some View {

@@ -285,6 +285,72 @@ import Testing
     #expect(assistant?.text == "Task ended before the requested tool was run.")
     #expect(assistant?.activities?.contains(where: { $0.title == "Task ended" }) == true)
     #expect(model.currentTaskState.title == "Task ended")
+    #expect(model.approvalContinuationContextForTesting == nil)
+}
+
+@Test @MainActor func approvalPauseRetainsTheCapturedTurnRoutingBundle() async {
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-approval"),
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
+                arguments: "{}"
+            ))
+        ])
+    )
+
+    model.draft = "Open settings"
+    model.send()
+    for _ in 0..<300 where model.pendingApproval == nil || model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let continuation = model.approvalContinuationContextForTesting
+    #expect(model.pendingApproval != nil)
+    #expect(continuation != nil)
+    #expect(continuation?.localTools.isEmpty == true)
+    #expect(continuation?.mcpServers.isEmpty == true)
+    #expect(continuation?.browserRoutingContext.turnToolIDs.isEmpty == true)
+    #expect(continuation?.systemInstructions.contains("Browser routing for this turn") == true)
+
+    model.endTask()
+    #expect(model.approvalContinuationContextForTesting == nil)
+}
+
+@Test @MainActor func missingApprovalContinuationContextFailsClosedInViewModel() async {
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        mcpStore: MCPServerStore(fixtures: []),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-approval"),
+            .approval(AIToolApprovalRequest(
+                serverLabel: "Fixture",
+                toolName: "Blocked action",
+                arguments: "{}"
+            ))
+        ])
+    )
+
+    model.draft = "Open settings"
+    model.send()
+    for _ in 0..<300 where model.pendingApproval == nil || model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(model.pendingApproval != nil)
+    model.discardApprovalContinuationContextForTesting()
+    model.resolvePendingApproval(allow: true)
+
+    #expect(model.pendingApproval == nil)
+    #expect(!model.isStreaming)
+    #expect(model.streamError == "AI Chat couldn’t continue this approval because the original tool routing is unavailable. Retry the request.")
 }
 
 /// Intentionally inert unless all three live-test variables are set by the
@@ -410,7 +476,7 @@ import Testing
     let toolStore = LimaAIToolStore(fixtures: [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file",
         "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
-        "browser_tabs", "browser_current", "browser_read", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases",
+        "browser_tabs", "browser_current", "browser_read",
         "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
     let model = AIChatViewModel(
@@ -424,22 +490,26 @@ import Testing
     #expect(model.routedNativeTools(for: "Explain this query").isEmpty)
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(model.isBrowserPrompt("Open all of these links"))
-    #expect(model.isBrowserPrompt("Take me to this case"))
-    #expect(model.requestsBrowserNavigation("Take me to this case"))
+    #expect(model.isBrowserPrompt("Open this web result"))
+    #expect(model.requestsBrowserNavigation("Open this web result"))
     #expect(model.isBrowserPrompt("Click the Continue button"))
     #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
-    #expect(Set(model.routedNativeTools(for: "Inspect the Salesforce cases in my current browser tab").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read",
-        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
+    #expect(Set(model.routedNativeTools(for: "Read the current website in my browser").map { $0.id }) == [
+        "browser_tabs", "browser_current", "browser_read"
     ])
-    #expect(Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id }) == [
-        "browser_tabs", "browser_current", "browser_read",
-        "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
-    ])
+    #expect(Set(model.routedNativeTools(for: "Open new tabs for these web results").map { $0.id }) == [
+        "browser_tabs", "browser_current", "browser_read"
+    ]) // Navigation remains absent while its user action policy is Off.
     #expect(Set(model.routedNativeTools(for: "Find and read the Swift source file").map { $0.id }) == [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file"
     ])
+
+    let pageReadRoute = model.browserToolIDs(for: "Read this website and summarize the page")
+    #expect(pageReadRoute.contains("browser_read"))
+    #expect(!pageReadRoute.contains("browser_submit"))
+    #expect(model.systemInstructions.contains("Distinguish search snippets"))
+    #expect(model.systemInstructions.contains("independent verification"))
 }
 
 @Test @MainActor func browserNavigationPromptRoutesInspectionOnly() async throws {
@@ -451,14 +521,12 @@ import Testing
         transport: FixtureAITransport.standard
     )
 
-    let routed = Set(model.routedNativeTools(for: "Open new tabs for the Salesforce cases").map { $0.id })
+    let routed = Set(model.routedNativeTools(for: "Open new tabs for these web results").map { $0.id })
     #expect(!routed.contains("browser_open_tabs"))
     #expect(!routed.contains("browser_focus_tab"))
     #expect(!routed.contains("browser_navigate_tab"))
-    #expect(routed.contains("salesforce_read_case_links"))
-    #expect(routed.contains("salesforce_resolve_cases"))
 
-    model.draft = "Open new tabs for the Salesforce cases"
+    model.draft = "Open new tabs for these web results"
     model.send()
     for _ in 0..<100 where model.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
 

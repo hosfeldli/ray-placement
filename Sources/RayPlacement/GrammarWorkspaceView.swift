@@ -87,7 +87,7 @@ struct GrammarWorkspaceView: View {
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             }
-            .background(LimaTheme.surfacePrimary)
+            .background(Color.clear)
         }
         .onChange(of: sourceText) { _ in
             guard !isChecking else { return }
@@ -242,9 +242,7 @@ struct GrammarWorkspaceView: View {
             .frame(minHeight: 300)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-            .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+        .limaGlassPanel(cornerRadius: LimaRadius.card, depth: .raised)
     }
 
     private var localStatusCard: some View {
@@ -266,9 +264,7 @@ struct GrammarWorkspaceView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-            .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+        .limaGlassPanel(cornerRadius: LimaRadius.card, depth: .raised)
     }
 
     private func textPanel(title: String, text: String, symbol: String, tint: Color) -> some View {
@@ -310,9 +306,7 @@ struct GrammarWorkspaceView: View {
             }.padding(13)
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-            .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+        .limaGlassPanel(cornerRadius: LimaRadius.card, depth: .raised)
     }
 
     private func reviewChanges(_ review: WritingReview) -> some View {
@@ -347,9 +341,7 @@ struct GrammarWorkspaceView: View {
                         }
                     }
                 }
-                .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-                    .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+                .limaGlassPanel(cornerRadius: LimaRadius.card, depth: .raised)
             }
             reviewInsights(review)
 
@@ -384,9 +376,7 @@ struct GrammarWorkspaceView: View {
             reviewInsight(value: correctedText.count.formatted(), label: "Characters", symbol: "text.alignleft")
         }
         .padding(.vertical, 9)
-        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.card, style: .continuous)
-            .stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
+        .limaGlassSurface(cornerRadius: LimaRadius.card, depth: .recessed)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(review.issues.count) suggestions, \(acceptedIssueIDs.count) accepted, \(correctedText.count) characters")
     }

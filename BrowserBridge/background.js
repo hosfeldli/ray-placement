@@ -111,6 +111,9 @@ async function allowedTab(id) {
   if (tab.incognito || !await granted(tab.url)) error("site_not_granted");
   return tab;
 }
+function canonicalURL(value) {
+  try { const url = new URL(value); url.hash = ""; return url.href; } catch { return null; }
+}
 function info(tab) {
   return {id: tab.id, title: (tab.title || "").slice(0, 256), url: tab.url,
     active: !!tab.active, windowID: tab.windowId};
@@ -184,18 +187,70 @@ async function performMutation(m, state) {
   }
   if (m.command === "browser.open_tabs") {
     // Validate every destination before opening anything, so a missing grant
-    // cannot leave a partial batch behind.
+    // cannot leave a partial batch behind. Reuse is exact canonical URL matching,
+    // not title matching; fragments are ignored and query strings are preserved.
     for (const url of a.urls) {
       if (!await granted(url)) error("site_not_granted");
       check(state);
     }
-    let opened = 0;
-    for (let index = 0; index < a.urls.length; index++) {
-      check(state);
-      await browser.tabs.create({url: a.urls[index], active: !a.background && index === a.urls.length - 1});
-      opened += 1;
+    const reuseExisting = a.reuseExisting === true;
+    const existingByURL = new Map();
+    if (reuseExisting) {
+      const tabs = (await browser.tabs.query({})).filter(tab => !tab.incognito && Number.isSafeInteger(tab.id))
+        .sort((left, right) => left.id - right.id);
+      for (const tab of tabs) {
+        const key = canonicalURL(tab.url);
+        if (key && !existingByURL.has(key)) existingByURL.set(key, tab);
+      }
     }
-    return {opened, failed: 0, background: a.background};
+    const resultByURL = new Map();
+    const results = [];
+    let opened = 0, failed = 0, lastTab = null;
+    for (const requestedURL of a.urls) {
+      check(state);
+      const key = canonicalURL(requestedURL);
+      let tab = reuseExisting && key ? existingByURL.get(key) : null;
+      let reusedExisting = !!tab;
+      let openedNew = false;
+      if (!tab && reuseExisting && key) {
+        const earlier = resultByURL.get(key);
+        if (earlier?.tabID != null) {
+          tab = {id: earlier.tabID, url: earlier.finalURL || earlier.requestedURL,
+            title: earlier.title || "", windowId: earlier.windowID, active: false};
+          reusedExisting = true;
+        }
+      }
+      if (!tab) {
+        try {
+          tab = await browser.tabs.create({url: requestedURL, active: false});
+          check(state);
+          opened += 1;
+          openedNew = true;
+        } catch {
+          failed += 1;
+          const failure = {requestedURL, tabID: null, finalURL: null, openedNew: false,
+            reusedExisting: false, title: "", error: "open_failed"};
+          results.push(failure);
+          continue;
+        }
+      }
+      const identity = info(tab);
+      const item = {requestedURL, tabID: tab.id, finalURL: typeof tab.url === "string" ? tab.url : null,
+        openedNew, reusedExisting, title: identity.title,
+        ...(identity.semanticLabel ? {semanticLabel: identity.semanticLabel} : {}),
+        ...(identity.caseRecordID ? {caseRecordID: identity.caseRecordID} : {}),
+        ...(tab.windowId != null ? {windowID: tab.windowId} : {})};
+      results.push(item);
+      if (key && reuseExisting) resultByURL.set(key, item);
+      lastTab = tab;
+    }
+    if (!a.background && lastTab) {
+      try {
+        await browser.tabs.update(lastTab.id, {active: true});
+        if (lastTab.windowId != null) await browser.windows.update(lastTab.windowId, {focused: true});
+      } catch { /* The per-URL open result remains truthful; focus is best-effort. */ }
+    }
+    return {opened, failed, background: a.background, reuseExisting, results};
   }
   if (["browser.click", "browser.type", "browser.submit"].includes(m.command)) {
     const tab = await allowedTab(a.tabID);

@@ -5,6 +5,7 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
 source "$SCRIPT_DIRECTORY/release_config.sh"
 APP_DIRECTORY="${1:-$PROJECT_DIRECTORY/build/Lima.app}"
+QA_BUILD="${RAYPLACEMENT_QA_BUILD:-0}"
 RESOURCES="$APP_DIRECTORY/Contents/Resources"
 BINARY="$APP_DIRECTORY/Contents/MacOS/Lima"
 SPARKLE_FRAMEWORK="$APP_DIRECTORY/Contents/Frameworks/Sparkle.framework"
@@ -20,6 +21,14 @@ require "Lima.app is missing" test -d "$APP_DIRECTORY"
 require "the Lima executable is missing" test -x "$BINARY"
 require "the browser native helper is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
 require "the browser helper signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+if [[ "$QA_BUILD" == "1" ]]; then
+    require "the QA MCP executable is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer"
+    require "the QA MCP executable signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer"
+    [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" == "true" ]] || { echo "Verification failed: the QA build marker is missing" >&2; exit 1; }
+else
+    [[ ! -e "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer" ]] || { echo "Verification failed: the production app contains the QA MCP executable" >&2; exit 1; }
+    [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" != "true" ]] || { echo "Verification failed: the production app is marked as a QA build" >&2; exit 1; }
+fi
 require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"
 if [[ -f "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" ]]; then
     require "the signed browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" --require-signature
@@ -73,7 +82,9 @@ if [[ "${RAYPLACEMENT_REQUIRE_STABLE_SIGNING:-0}" == "1" ]]; then
     [[ "${ACTUAL_CERTIFICATE:u}" == "${EXPECTED_CERTIFICATE:u}" ]] || { echo 'Verification failed: signing certificate does not match policy' >&2; exit 1; }
 fi
 
-[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the display name is not Lima" >&2; exit 1; }
+EXPECTED_DISPLAY_NAME="Lima"
+[[ "$QA_BUILD" == "1" ]] && EXPECTED_DISPLAY_NAME="Lima Test"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleDisplayName' "$APP_DIRECTORY/Contents/Info.plist")" == "$EXPECTED_DISPLAY_NAME" ]] || { echo "Verification failed: the app display name does not match $EXPECTED_DISPLAY_NAME" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_DIRECTORY/Contents/Info.plist")" == "Lima" ]] || { echo "Verification failed: the executable name is not Lima" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_DIRECTORY/Contents/Info.plist")" == "dev.liam.lima" ]] || { echo "Verification failed: the bundle identifier is incorrect" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :SUFeedURL' "$APP_DIRECTORY/Contents/Info.plist")" == "https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml" ]] || { echo "Verification failed: Sparkle feed URL is missing or incorrect" >&2; exit 1; }

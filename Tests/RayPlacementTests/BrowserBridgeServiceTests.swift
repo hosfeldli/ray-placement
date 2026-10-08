@@ -97,12 +97,13 @@ private final class BridgeServiceFixture {
     try await fixture.connect()
 
     let urls = ["https://example.com/case/one", "https://example.com/case/two"]
-    let request = Task { try await fixture.service.openTabs(urls: urls, background: true) }
+    let request = Task { try await fixture.service.openTabs(urls: urls, background: true, reuseExisting: false) }
     try await fixture.wait { fixture.sent("browser.open_tabs").count == 1 }
     let message = try #require(fixture.sent("browser.open_tabs").first)
     #expect(fixture.sent("browser.open_tabs").count == 1)
     #expect(message.arguments["urls"] == .array(urls.map(JSONValue.string)))
     #expect(message.arguments["background"] == .bool(true))
+    #expect(message.arguments["reuseExisting"] == .bool(false))
 
     let response: JSONValue = .object([
         "opened": .number(2),

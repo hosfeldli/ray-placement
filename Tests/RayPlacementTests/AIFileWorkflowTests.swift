@@ -51,10 +51,19 @@ import Testing
     else { Issue.record("The latest user prompt must remain.") }
 }
 
-@Test func completedMarkdownViewsCompareByContent() {
-    let first = LimaMarkdownDocumentView(markdown: "# Summary\nUseful content")
-    #expect(first == LimaMarkdownDocumentView(markdown: "# Summary\nUseful content"))
+@Test func completedMarkdownViewsCompareByContentAndReuseParsedDocuments() {
+    let markdown = "# Summary\nUseful content\n\n- one\n- two"
+    let first = LimaMarkdownDocumentView(markdown: markdown)
+    #expect(first == LimaMarkdownDocumentView(markdown: markdown))
     #expect(first != LimaMarkdownDocumentView(markdown: "# Other"))
+    #expect(LimaMarkdownDocumentView.cachedDocumentIdentityForTesting(markdown)
+        == LimaMarkdownDocumentView.cachedDocumentIdentityForTesting(markdown))
+    #expect(LimaMarkdownDocumentView.cachedDocumentIdentityForTesting(markdown)
+        != LimaMarkdownDocumentView.cachedDocumentIdentityForTesting("# Other"))
+    #expect(LimaMarkdownDocumentView.cachedInlineMarkdownIdentityForTesting("a **bold** span")
+        == LimaMarkdownDocumentView.cachedInlineMarkdownIdentityForTesting("a **bold** span"))
+    #expect(LimaMarkdownDocumentView.cachedInlineMarkdownIdentityForTesting("a **bold** span")
+        != LimaMarkdownDocumentView.cachedInlineMarkdownIdentityForTesting("another span"))
 }
 
 @Test @MainActor func fileActionsAndFileScopeAreAvailableFromRootSearch() {

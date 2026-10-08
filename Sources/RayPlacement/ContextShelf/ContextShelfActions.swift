@@ -262,7 +262,8 @@ struct ContextShelfView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            LimaWorkspaceSearchField(placeholder: "Search context…", text: $searchQuery)
+            LimaWorkspaceSearchField(placeholder: "Search context…", text: $searchQuery,
+                                     accessibilityID: LimaQAIdentifiers.Context.search)
 
             if let errorMessage {
                 Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
@@ -293,6 +294,8 @@ struct ContextShelfView: View {
                     .padding(.vertical, 2)
                 }
                 .scrollIndicators(.automatic)
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(LimaQAIdentifiers.Context.list)
             }
 
             if store.selectedCount > 0 {
@@ -300,7 +303,7 @@ struct ContextShelfView: View {
             }
         }
         .padding(16)
-        .background(LimaTheme.surfacePrimary)
+        .background(Color.clear)
         .overlay(alignment: .topLeading) {
             ContextShelfKeyboardHandler { command in
                 handle(command)

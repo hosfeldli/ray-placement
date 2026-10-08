@@ -1,11 +1,27 @@
 import AppKit
 import SwiftUI
 
-enum LiquidGlassDepth {
+/// Interior surfaces never add another native blur; the window owns its single backdrop.
+enum LimaGlassDepth: CaseIterable {
     case recessed
     case raised
     case floating
+
+    /// Interior glass uses a restrained translucent fill; floating controls are
+    /// denser for legibility. Reduced Transparency switches every level to an
+    /// opaque system-aware palette color.
+    func backgroundOpacity(reduceTransparency: Bool) -> Double {
+        guard !reduceTransparency else { return 1 }
+        switch self {
+        case .recessed: return 0.76
+        case .raised: return 0.88
+        case .floating: return 0.94
+        }
+    }
 }
+
+/// Source-compatible name used by existing feature views.
+typealias LiquidGlassDepth = LimaGlassDepth
 
 /// The crystalline silhouette is intentionally retained for the launcher and
 /// a small number of identity surfaces. Ordinary controls use rounded native
@@ -37,7 +53,7 @@ struct PrismaticPanelShape: InsettableShape {
     }
 }
 
-struct LiquidGlassBackdrop: View {
+struct LimaGlassBackdrop: View {
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     var material: NSVisualEffectView.Material = .underWindowBackground
@@ -64,17 +80,22 @@ struct LiquidGlassBackdrop: View {
     }
 }
 
+typealias LiquidGlassBackdrop = LimaGlassBackdrop
+
 private struct LiquidGlassSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let cornerRadius: CGFloat
     let depth: LiquidGlassDepth
     let selected: Bool
 
     private var fill: Color {
+        let base: Color
         switch depth {
-        case .recessed: return LimaDesign.recessedFill
-        case .raised: return LimaDesign.controlFill
-        case .floating: return LimaTheme.floatingWindowBackground
+        case .recessed: base = LimaDesign.recessedFill
+        case .raised: base = LimaDesign.controlFill
+        case .floating: base = LimaTheme.floatingWindowBackground
         }
+        return base.opacity(depth.backgroundOpacity(reduceTransparency: reduceTransparency))
     }
 
     func body(content: Content) -> some View {
@@ -100,13 +121,48 @@ private struct LiquidGlassSurfaceModifier: ViewModifier {
 }
 
 extension View {
+    /// Lightweight interior glass. Apply a native material only once through `LimaGlassBackdrop` per window.
+    func limaGlassSurface(
+        cornerRadius: CGFloat,
+        depth: LimaGlassDepth = .raised,
+        selected: Bool = false
+    ) -> some View {
+        modifier(LiquidGlassSurfaceModifier(cornerRadius: cornerRadius, depth: depth, selected: selected))
+    }
+
+    func limaGlassPanel(cornerRadius: CGFloat = LimaRadius.panel, depth: LimaGlassDepth = .raised) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: depth)
+    }
+
+    func limaGlassField(cornerRadius: CGFloat = LimaRadius.control, selected: Bool = false) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: .recessed, selected: selected)
+    }
+
+    func limaGlassSidebar(cornerRadius: CGFloat = 0) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: .recessed)
+    }
+
+    func limaGlassInspector(cornerRadius: CGFloat = LimaRadius.panel) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: .floating)
+    }
+
+    func limaGlassHUD(cornerRadius: CGFloat = LimaRadius.panel) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: .floating)
+    }
+
+    func limaGlassSelection(cornerRadius: CGFloat = LimaRadius.control) -> some View {
+        limaGlassSurface(cornerRadius: cornerRadius, depth: .raised, selected: true)
+    }
+
+    /// Compatibility entry point for established Liquid Glass call sites.
     func liquidGlass(
         cornerRadius: CGFloat,
         depth: LiquidGlassDepth = .raised,
         selected: Bool = false,
         accentOpacity: Double = 0.035
     ) -> some View {
-        modifier(LiquidGlassSurfaceModifier(cornerRadius: cornerRadius, depth: depth, selected: selected))
+        _ = accentOpacity // Retained for source compatibility; accent is reserved for selection and focus.
+        return limaGlassSurface(cornerRadius: cornerRadius, depth: depth, selected: selected)
     }
 
     func limaNativeSurface(
@@ -136,6 +192,7 @@ extension View {
 }
 
 struct LimaSurfaceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     let fill: Color
     let radius: CGFloat
     let border: Color?
@@ -143,8 +200,9 @@ struct LimaSurfaceModifier: ViewModifier {
 
     func body(content: Content) -> some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let surfaceFill = fill.opacity(LimaGlassDepth.raised.backgroundOpacity(reduceTransparency: reduceTransparency))
         return content
-            .background(fill, in: shape)
+            .background(surfaceFill, in: shape)
             // Keep the surface perimeter authoritative. Child backgrounds and
             // overlays must not escape the same geometry as the border.
             .clipShape(shape)

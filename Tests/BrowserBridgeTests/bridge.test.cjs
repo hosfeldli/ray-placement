@@ -50,7 +50,7 @@ function harness(storage = {}) {
     windows: {update: async (...a) => { changes.push(["window", ...a]); }},
     browserAction: {setBadgeText() {}}
   };
-  const context = {LimaBridgePolicy: P, browser, TextEncoder, crypto: {randomUUID}, console,
+  const context = {LimaBridgePolicy: P, browser, TextEncoder, URL, crypto: {randomUUID}, console,
     setTimeout(fn, ms) { const id = randomUUID(); timers.set(id, {fn, ms}); return id; },
     clearTimeout(id) { timers.delete(id); }};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), context);
@@ -65,7 +65,7 @@ test("only exact HTTPS sites and typed command schemas are accepted", () => {
     "https://example.com:8443", "https://*.example.com", "https://example.com/\n", null, {}]) assert.equal(P.site(url), null);
   assert(P.validRequest(request("browser.open", {url: "https://example.com/a", active: false})));
   assert(P.validRequest(request("browser.open_tabs", {
-    urls: ["https://example.com/a", "https://example.com/b"], background: true
+    urls: ["https://example.com/a", "https://example.com/b"], background: true, reuseExisting: true
   })));
   assert(P.validRequest(request("browser.click", {
     tabID: 1, expectedURL: "https://example.com/case", selector: "button#continue"
@@ -79,9 +79,10 @@ test("only exact HTTPS sites and typed command schemas are accepted", () => {
   for (const m of [request("eval", {}), request("browser.tabs", {extra: true}),
     request("browser.read", {tabID: -1}), request("browser.read", {tabID: 1.1}),
     request("browser.open", {url: "https://example.com", active: "false"}),
-    request("browser.open_tabs", {urls: [], background: true}),
-    request("browser.open_tabs", {urls: Array(51).fill("https://example.com"), background: true}),
-    request("browser.open_tabs", {urls: ["https://example.com"], background: "true"}),
+    request("browser.open_tabs", {urls: [], background: true, reuseExisting: true}),
+    request("browser.open_tabs", {urls: Array(51).fill("https://example.com"), background: true, reuseExisting: true}),
+    request("browser.open_tabs", {urls: ["https://example.com"], background: "true", reuseExisting: true}),
+    request("browser.open_tabs", {urls: ["https://example.com"], background: true, reuseExisting: "yes"}),
     request("browser.click", {tabID: 1, expectedURL: "https://example.com/case", selector: "button .unsafe"}),
     request("browser.type", {tabID: 1, expectedURL: "https://example.com/case", selector: "input#name", text: "x".repeat(4001)}),
     request("browser.submit", {tabID: 1, expectedURL: "https://example.com/case", selector: "#"}),
@@ -113,7 +114,7 @@ test("mutations require exact popup consent and do not focus background tabs", a
 });
 test("batch opening preflights every destination and keeps requested tabs in the background", async () => {
   const h = harness(), urls = ["https://example.com/one", "https://example.com/two", "https://example.com/three"];
-  const batch = request("browser.open_tabs", {urls, background: true});
+  const batch = request("browser.open_tabs", {urls, background: true, reuseExisting: true});
   const pending = h.send(batch);
   await flush(); assert.equal(h.changes.length, 0);
   await h.popup({action: "decision", id: batch.id, allow: true}); await pending;
@@ -123,14 +124,39 @@ test("batch opening preflights every destination and keeps requested tabs in the
   );
   const result = h.ports[0].replies.at(-1).result;
   assert.equal(result.opened, 3); assert.equal(result.failed, 0); assert.equal(result.background, true);
+  assert.equal(result.reuseExisting, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.results.map(item => [item.requestedURL, item.tabID, item.openedNew, item.reusedExisting]))),
+    urls.map(url => [url, 9, true, false]));
 
   const blocked = request("browser.open_tabs", {
-    urls: ["https://example.com/four", "https://private.example/blocked"], background: true
+    urls: ["https://example.com/four", "https://private.example/blocked"], background: true, reuseExisting: true
   });
   const rejected = h.send(blocked);
   await flush(); await h.popup({action: "decision", id: blocked.id, allow: true}); await rejected;
   assert.equal(h.changes.length, 3);
   assert.equal(h.ports[0].replies.at(-1).error, "site_not_granted");
+});
+test("batch reuse is URL-based, reports each request, and never matches generic titles", async () => {
+  const h = harness();
+  const urls = ["https://example.com/case#first", "https://example.com/case#second"];
+  const batch = request("browser.open_tabs", {urls, background: true, reuseExisting: true});
+  const pending = h.send(batch); await flush();
+  await h.popup({action: "decision", id: batch.id, allow: true}); await pending;
+  const result = h.ports[0].replies.at(-1).result;
+  assert.equal(result.opened, 0);
+  assert.equal(result.failed, 0);
+  assert.equal(result.results.length, 2);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.results.map(item => [item.tabID, item.openedNew, item.reusedExisting]))), [[1, false, true], [1, false, true]]);
+
+  const duplicate = request("browser.open_tabs", {
+    urls: ["https://example.com/new#one", "https://example.com/new#two"],
+    background: true, reuseExisting: true
+  });
+  const duplicatePending = h.send(duplicate); await flush();
+  await h.popup({action: "decision", id: duplicate.id, allow: true}); await duplicatePending;
+  const duplicateResult = h.ports[0].replies.at(-1).result;
+  assert.equal(duplicateResult.opened, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(duplicateResult.results.map(item => [item.tabID, item.openedNew, item.reusedExisting]))), [[9, true, false], [9, false, true]]);
 });
 test("denial, expiry, and explicit cancellation never mutate tabs", async () => {
   for (const outcome of ["deny", "expire", "cancel"]) {

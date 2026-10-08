@@ -57,6 +57,7 @@ struct BrowserBridgeSettingsView: View {
         Form {
             Section("Zen / Firefox Browser Bridge") {
                 Toggle("Enable browser bridge", isOn: $bridge.enabled)
+                    .accessibilityIdentifier(LimaQAIdentifiers.Settings.browserBridge)
                 LabeledContent("Connection", value: bridge.status)
                 LabeledContent("Native helper", value: installed ? "Installed for this app" : "Setup or repair required")
                 Text("Exact-site access is the default. A separately approved broad HTTPS grant works only when enabled in AI Settings → Experimental browser access. No private windows, passwords, arbitrary scripts, or background browsing capture.")

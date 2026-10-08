@@ -1,0 +1,12 @@
+#!/bin/zsh
+set -euo pipefail
+
+SCRIPT_DIRECTORY="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIRECTORY="$(cd "$SCRIPT_DIRECTORY/.." && pwd)"
+
+export RAYPLACEMENT_QA_BUILD=1
+export LIMA_BUILD_QA_MCP=1
+export RAYPLACEMENT_APP_DIRECTORY="${RAYPLACEMENT_APP_DIRECTORY:-$PROJECT_DIRECTORY/build/Lima Test.app}"
+export RAYPLACEMENT_SCRATCH_DIRECTORY="${RAYPLACEMENT_SCRATCH_DIRECTORY:-$PROJECT_DIRECTORY/.build-qa}"
+
+exec "$SCRIPT_DIRECTORY/package_app.sh" "$@"

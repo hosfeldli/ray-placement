@@ -790,30 +790,33 @@ private struct WorkspaceView: View {
     var body: some View {
         GeometryReader { proxy in
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
-            HStack(spacing: 0) {
-                LimaWayfinderRail(
-                    current: presentation.activeModule,
-                    previous: presentation.navigation.previous,
-                    sizeClass: sizeClass,
-                    select: selectModule,
-                    openSettings: openSettings,
-                    isDocked: presentation.mode.isDocked,
-                    openInWindow: restoreWorkspace,
-                    workspaceProfiles: switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
-                    activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
-                    selectWorkspaceProfile: switchWorkspaceProfile,
-                    createWorkspaceProfile: switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
-                )
-                Rectangle()
-                    .fill(LimaDesign.separator)
-                    .frame(width: LimaDesign.hairlineWidth)
-                VStack(spacing: 0) {
-                    if presentation.activeModule != .ai && presentation.activeModule != .workflows {
-                        workspaceHeader(sizeClass: sizeClass)
-                        GlassHairline()
+            ZStack {
+                LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+                HStack(spacing: 0) {
+                    LimaWayfinderRail(
+                        current: presentation.activeModule,
+                        previous: presentation.navigation.previous,
+                        sizeClass: sizeClass,
+                        select: selectModule,
+                        openSettings: openSettings,
+                        isDocked: presentation.mode.isDocked,
+                        openInWindow: restoreWorkspace,
+                        workspaceProfiles: switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
+                        activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
+                        selectWorkspaceProfile: switchWorkspaceProfile,
+                        createWorkspaceProfile: switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
+                    )
+                    Rectangle()
+                        .fill(LimaDesign.separator)
+                        .frame(width: LimaDesign.hairlineWidth)
+                    VStack(spacing: 0) {
+                        if presentation.activeModule != .ai && presentation.activeModule != .workflows {
+                            workspaceHeader(sizeClass: sizeClass)
+                            GlassHairline()
+                        }
+                        workspaceModule(sizeClass: sizeClass)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    workspaceModule(sizeClass: sizeClass)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .environment(\.limaWorkspaceSizeClass, sizeClass)
@@ -825,7 +828,7 @@ private struct WorkspaceView: View {
             }
             .padding(sizeClass == .compact ? 4 : 8)
         }
-        .background(LimaTheme.windowBackground)
+        .background(Color.clear)
         .frame(
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
@@ -1020,7 +1023,7 @@ private struct WorkspaceView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 48)
-        .background(LimaTheme.surfacePrimary)
+        .limaGlassSurface(cornerRadius: 0, depth: .recessed)
         }
         .frame(height: 48)
     }
@@ -1066,7 +1069,7 @@ private struct WorkspaceView: View {
                     }
                 case .context:
                     ContextShelfView(store: contextShelf)
-                        .background(LimaTheme.surfacePrimary)
+                        .background(Color.clear)
                 case .ai:
                     AIChatWorkspaceView(
                         model: aiChatModel,
@@ -1076,7 +1079,7 @@ private struct WorkspaceView: View {
                     )
                 case .grammar:
                     GrammarWorkspaceView()
-                        .background(LimaTheme.surfacePrimary)
+                        .background(Color.clear)
                 case .dictation:
                     dictationSection
                 case .workflows:
@@ -1088,7 +1091,7 @@ private struct WorkspaceView: View {
                         reloadExtensions: reloadExtensions,
                         localOnly: true
                     )
-                    .background(LimaTheme.surfacePrimary)
+                    .background(Color.clear)
                 case .clipboard:
                     ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
                 case .terminal:
@@ -1186,6 +1189,7 @@ private struct WorkspaceView: View {
                         Image(systemName: "magnifyingglass").foregroundStyle(LimaTheme.textSecondary)
                         TextField("Search notes", text: $searchQuery)
                             .textFieldStyle(.plain)
+                            .accessibilityIdentifier(LimaQAIdentifiers.Notes.search)
                         if compact {
                             Button {
                                 searchQuery = ""
@@ -1275,6 +1279,8 @@ private struct WorkspaceView: View {
                 .menuIndicator(.hidden)
                 .fixedSize(horizontal: true, vertical: false)
                 .help("Note templates")
+                .accessibilityLabel("New note")
+                .accessibilityIdentifier(LimaQAIdentifiers.Notes.new)
             }
             .padding(compact ? 8 : 10)
 
@@ -1338,6 +1344,8 @@ private struct WorkspaceView: View {
                 .padding(.horizontal, 7)
                 .padding(.vertical, 7)
             }
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(LimaQAIdentifiers.Notes.list)
 
             if !compact {
                 GlassHairline()
@@ -1975,6 +1983,7 @@ private struct WorkspaceView: View {
             wikiLinkCandidates: store.notes.filter { $0.id != note.id }
         )
         .accessibilityLabel("Inline formatted Markdown editor")
+        .accessibilityIdentifier(LimaQAIdentifiers.Notes.editor)
 
         if settings.notesContentWidth != .fluid {
             HStack(spacing: 0) {

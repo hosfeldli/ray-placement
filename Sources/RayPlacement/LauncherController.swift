@@ -337,6 +337,86 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.present(module: .ai)
     }
 
+    #if LIMA_QA
+    /// Narrow QA routes into the same production presentation controllers. These
+    /// methods do not exist in the normal production compilation.
+    func openQASurface(_ surface: String) -> Bool {
+        switch surface {
+        case "search": show()
+        case "notes": hide(); notesWindow.present(module: .notes)
+        case "ai": showAIChat()
+        case "context": hide(); notesWindow.present(module: .context)
+        case "settings": showSettings()
+        default: return false
+        }
+        return true
+    }
+
+    func closeQASurface(_ surface: String) -> Bool {
+        switch surface {
+        case "search":
+            guard panel.isVisible else { return false }
+            hide()
+        case "notes", "ai", "context":
+            let module = surface == "notes" ? LimaWorkspaceModule.notes :
+                (surface == "ai" ? LimaWorkspaceModule.ai : LimaWorkspaceModule.context)
+            let state = WorkspaceStateRegistry.shared.state
+            guard state.activeWorkspace == LimaSurfaceID.workspace.rawValue,
+                  state.activeModule == module.rawValue else { return false }
+            notesWindow.hideQuickNote()
+        case "settings":
+            guard let window = settingsWindow.window, window.isVisible else { return false }
+            window.performClose(nil)
+        default:
+            return false
+        }
+        return true
+    }
+
+    func qaAIStateSnapshot() -> [String: Any] {
+        let conversation = aiChatModel.selectedConversation
+        return [
+            "selectedConversationID": conversation?.id.uuidString as Any? ?? NSNull(),
+            "messageCount": conversation?.messages.count ?? 0,
+            "isStreaming": aiChatModel.isStreaming,
+            "awaitingApproval": aiChatModel.pendingApproval != nil
+        ]
+    }
+
+    func qaAIActivitySnapshot() -> [String: Any] {
+        guard let conversation = aiChatModel.selectedConversation,
+              let assistant = conversation.messages.last(where: { $0.role == .assistant }) else {
+            return ["available": false, "steps": []]
+        }
+        let steps = AIActivityStream.steps(
+            from: assistant.activities ?? [],
+            isActive: aiChatModel.isStreaming || aiChatModel.pendingApproval != nil
+        )
+        return [
+            "available": true,
+            "conversationID": conversation.id.uuidString,
+            "steps": steps.map { step in
+                [
+                    "id": step.id.uuidString,
+                    "title": step.title,
+                    "status": Self.qaStatus(for: step.status),
+                    "isToolAction": step.isToolAction
+                ] as [String: Any]
+            }
+        ]
+    }
+
+    private static func qaStatus(for status: AIActivityStreamStep.Status) -> String {
+        switch status {
+        case .running: "running"
+        case .waiting: "waiting"
+        case .completed: "completed"
+        case .failed: "failed"
+        case .interrupted: "interrupted"
+        }
+    }
+    #endif
+
     func showExtensionStore() {
         showSettings()
     }
