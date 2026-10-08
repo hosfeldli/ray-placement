@@ -25,7 +25,7 @@ enum BrowserBridgeAITools {
                 "case_numbers": ["type": "array", "minItems": 1, "maxItems": 30,
                                  "items": ["type": "string", "pattern": "^[0-9]{1,32}$"]]
              ]),
-        tool("browser_open_tabs", "Open up to 50 HTTPS URLs in one bounded batch. Returns one identity result per URL. reuse_existing defaults to true and matches canonical URL, never title; set false to deliberately create duplicates. Every destination needs a grant before any tab opens.",
+        tool("browser_open_tabs", "Open up to 50 HTTPS URLs in one bounded approved batch. reuse_existing defaults to true and matches canonical URL, never title; set false to deliberately create duplicates. Returns one result per requested URL; tab IDs and final URLs are included only when Lima can observe them unambiguously. Every destination needs a grant before any tab opens.",
              [
                 "urls": ["type": "array", "minItems": 1, "maxItems": 50,
                          "items": ["type": "string", "description": "An HTTPS URL previously resolved from granted browser content."]],

@@ -35,7 +35,7 @@
       case "bridge.status": case "browser.tabs": case "browser.current": keys = []; break;
       case "browser.read": keys = ["tabID"]; break;
       case "browser.open": keys = ["url", "active"]; break;
-      case "browser.open_tabs": keys = ["urls", "background", "reuseExisting"]; break;
+      case "browser.open_tabs": keys = ["urls", "background"]; break;
       case "browser.focus": case "browser.close": keys = ["tabID", "expectedURL"]; break;
       case "browser.navigate": keys = ["tabID", "expectedURL", "url"]; break;
       case "browser.click": case "browser.submit": keys = ["tabID", "expectedURL", "selector"]; break;
@@ -49,8 +49,7 @@
       (!keys.includes("selector") || selector(a.selector)) &&
       (!keys.includes("text") || interactionText(a.text)) &&
       (!keys.includes("active") || typeof a.active === "boolean") &&
-      (!keys.includes("background") || typeof a.background === "boolean") &&
-      (!keys.includes("reuseExisting") || typeof a.reuseExisting === "boolean");
+      (!keys.includes("background") || typeof a.background === "boolean");
   }
   const validCancel = m => m && m.version === 1 && m.kind === "cancel" && uuid(m.id) && commands.has(m.command);
   function mutationSites(m) {

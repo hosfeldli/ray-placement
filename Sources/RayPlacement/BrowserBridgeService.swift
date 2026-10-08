@@ -562,18 +562,190 @@ final class BrowserBridgeService: ObservableObject {
         complete(message.id, result: .failure(error))
     }
 
-    /// Open a bounded batch through one companion request so site policy is
-    /// preflighted before the extension creates any tabs.
+    private struct TabIdentity {
+        let id: Double
+        let url: String
+        let title: String
+        let windowID: Double?
+    }
+
+    private enum BatchDestination {
+        case existing(TabIdentity)
+        case opened(index: Int, firstForURL: Bool)
+    }
+
+    /// Canonicalize only for matching; preserve the caller's requested and
+    /// observed URLs in results. URL fragments do not create separate tabs.
+    private static func canonicalTabURL(_ rawValue: String) -> String? {
+        guard var components = URLComponents(string: rawValue),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil, components.password == nil,
+              components.port == nil else { return nil }
+        components.scheme = "https"
+        components.host = host.lowercased()
+        if components.path.isEmpty { components.path = "/" }
+        components.fragment = nil
+        return components.string
+    }
+
+    private func tabIdentities(in value: JSONValue) -> [TabIdentity] {
+        guard case .object(let fields) = value, case .array(let tabs)? = fields["tabs"] else { return [] }
+        return tabs.compactMap { tab in
+            guard case .object(let fields) = tab,
+                  case .number(let id)? = fields["id"], id.isFinite, id >= 0, id.rounded() == id,
+                  case .string(let url)? = fields["url"], Self.canonicalTabURL(url) != nil else { return nil }
+            let title: String
+            if case .string(let value)? = fields["title"] { title = value } else { title = "" }
+            let windowID: Double?
+            if case .number(let value)? = fields["windowID"], value.isFinite { windowID = value }
+            else { windowID = nil }
+            return TabIdentity(id: id, url: url, title: title, windowID: windowID)
+        }
+    }
+
+    private func correlateOpenedTabs(
+        requestedURLs: [String],
+        before: [TabIdentity],
+        after: [TabIdentity]
+    ) -> [Int: TabIdentity] {
+        let previousIDs = Set(before.map(\.id))
+        let newlyObserved = after.filter { !previousIDs.contains($0.id) }
+        var requestedByCanonicalURL: [String: [Int]] = [:]
+        for index in requestedURLs.indices {
+            guard let key = Self.canonicalTabURL(requestedURLs[index]) else { continue }
+            requestedByCanonicalURL[key, default: []].append(index)
+        }
+
+        var identities: [Int: TabIdentity] = [:]
+        for (key, indices) in requestedByCanonicalURL {
+            var candidates = newlyObserved
+                .filter { Self.canonicalTabURL($0.url) == key }
+                .sorted { $0.id < $1.id }
+            var unmatchedIndices = indices
+
+            for requestedURL in Set(indices.map { requestedURLs[$0] }) {
+                let exactIndices = unmatchedIndices.filter { requestedURLs[$0] == requestedURL }
+                let exactCandidates = candidates.filter { $0.url == requestedURL }
+                guard !exactIndices.isEmpty, exactCandidates.count == exactIndices.count else { continue }
+                let candidateIDs = Set(exactCandidates.map(\.id))
+                for (index, candidate) in zip(exactIndices, exactCandidates) { identities[index] = candidate }
+                unmatchedIndices.removeAll { exactIndices.contains($0) }
+                candidates.removeAll { candidateIDs.contains($0.id) }
+            }
+
+            // If a redirect changed the URL, correlate only when the remaining
+            // URL group is one-to-one; otherwise leave identity explicitly unknown.
+            if unmatchedIndices.count == candidates.count {
+                for (index, candidate) in zip(unmatchedIndices, candidates) { identities[index] = candidate }
+            }
+        }
+        return identities
+    }
+
+    /// Keep the companion wire format at its signed 1.3.2 contract. Lima does
+    /// URL-based reuse and identity projection around that bounded batch request.
     func openTabs(urls: [String], background: Bool, reuseExisting: Bool = true) async throws -> JSONValue {
-        guard (1...50).contains(urls.count) else { throw BrowserBridgeError.invalidResponse }
-        return try await request(
-            "browser.open_tabs",
-            arguments: [
-                "urls": .array(urls.map(JSONValue.string)),
-                "background": .bool(background),
-                "reuseExisting": .bool(reuseExisting)
+        guard (1...50).contains(urls.count), urls.allSatisfy({ Self.canonicalTabURL($0) != nil }),
+              let session = selectedSession else { throw BrowserBridgeError.invalidResponse }
+
+        let beforeSnapshot = try await tabsSnapshot()
+        guard selectedSession == session else { throw BrowserBridgeError.unavailable }
+        let before = tabIdentities(in: beforeSnapshot).sorted { $0.id < $1.id }
+        var existingByURL: [String: TabIdentity] = [:]
+        for tab in before {
+            if let key = Self.canonicalTabURL(tab.url), existingByURL[key] == nil { existingByURL[key] = tab }
+        }
+
+        var openURLs: [String] = []
+        var firstOpenByURL: [String: Int] = [:]
+        var destinations: [BatchDestination] = []
+        for url in urls {
+            guard let key = Self.canonicalTabURL(url) else { throw BrowserBridgeError.invalidResponse }
+            if reuseExisting, let existing = existingByURL[key] {
+                destinations.append(.existing(existing))
+            } else if reuseExisting, let index = firstOpenByURL[key] {
+                destinations.append(.opened(index: index, firstForURL: false))
+            } else {
+                let index = openURLs.count
+                openURLs.append(url)
+                if reuseExisting { firstOpenByURL[key] = index }
+                destinations.append(.opened(index: index, firstForURL: true))
+            }
+        }
+
+        var opened = 0
+        var failed = 0
+        var identities: [Int: TabIdentity] = [:]
+        if !openURLs.isEmpty {
+            let response = try await request("browser.open_tabs", arguments: [
+                "urls": .array(openURLs.map(JSONValue.string)),
+                "background": .bool(background)
+            ])
+            guard selectedSession == session, case .object(let fields) = response,
+                  case .number(let openedValue)? = fields["opened"], openedValue.isFinite,
+                  openedValue >= 0, openedValue.rounded() == openedValue,
+                  openedValue <= Double(openURLs.count) else { throw BrowserBridgeError.invalidResponse }
+            opened = Int(openedValue)
+            if case .number(let failedValue)? = fields["failed"], failedValue.isFinite,
+               failedValue >= 0, failedValue.rounded() == failedValue,
+               failedValue <= Double(openURLs.count) {
+                failed = Int(failedValue)
+            }
+
+            // Opening is already complete. If a later tab snapshot is unavailable,
+            // keep the successful action result and mark identities as unavailable.
+            if opened > 0, let afterSnapshot = try? await tabsSnapshot(), selectedSession == session {
+                identities = correlateOpenedTabs(
+                    requestedURLs: openURLs,
+                    before: before,
+                    after: tabIdentities(in: afterSnapshot)
+                )
+            }
+        }
+
+        func resultRow(
+            requestedURL: String,
+            identity: TabIdentity?,
+            openedNew: Bool,
+            reusedExisting: Bool,
+            error: String? = nil
+        ) -> JSONValue {
+            var fields: [String: JSONValue] = [
+                "requestedURL": .string(requestedURL),
+                "tabID": identity.map { .number($0.id) } ?? .null,
+                "finalURL": identity.map { .string($0.url) } ?? .null,
+                "openedNew": .bool(openedNew),
+                "reusedExisting": .bool(reusedExisting),
+                "title": .string(identity?.title ?? ""),
+                "identityStatus": .string(identity == nil ? "unavailable" : "observed")
             ]
-        )
+            if let windowID = identity?.windowID { fields["windowID"] = .number(windowID) }
+            if let error { fields["error"] = .string(error) }
+            return .object(fields)
+        }
+
+        let results = destinations.enumerated().map { requestIndex, destination -> JSONValue in
+            switch destination {
+            case .existing(let identity):
+                return resultRow(requestedURL: urls[requestIndex], identity: identity,
+                                 openedNew: false, reusedExisting: true)
+            case .opened(let index, let firstForURL):
+                guard index < opened else {
+                    return resultRow(requestedURL: urls[requestIndex], identity: nil,
+                                     openedNew: false, reusedExisting: false, error: "open_failed")
+                }
+                return resultRow(requestedURL: urls[requestIndex], identity: identities[index],
+                                 openedNew: firstForURL, reusedExisting: reuseExisting && !firstForURL)
+            }
+        }
+        return .object([
+            "opened": .number(Double(opened)),
+            "failed": .number(Double(failed)),
+            "background": .bool(background),
+            "reuseExisting": .bool(reuseExisting),
+            "results": .array(results)
+        ])
     }
 
     func tabsSnapshot() async throws -> JSONValue {

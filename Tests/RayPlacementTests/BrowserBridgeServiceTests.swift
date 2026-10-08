@@ -18,6 +18,7 @@ private final class BridgeServiceFixture {
         .object(["id": .number(1), "url": .string("https://example.com/page"), "title": .string("Example")])
     ]
     var capabilities: [JSONValue] = []
+    var nextTabID = 10
     var autoStatus = true
     var autoTabs = true
 
@@ -52,6 +53,20 @@ private final class BridgeServiceFixture {
         } else if message.command == "browser.tabs" && autoTabs {
             channel?.send(.init(id: message.id, kind: "response", command: message.command,
                                 result: .object(["tabs": .array(tabs), "restrictedToGrantedSites": .bool(true)])))
+        } else if message.command == "browser.open_tabs" {
+            guard case .array(let values)? = message.arguments["urls"] else { return }
+            let urls = values.compactMap { value -> String? in
+                guard case .string(let url) = value else { return nil }
+                return url
+            }
+            for url in urls {
+                tabs.append(.object(["id": .number(Double(nextTabID)), "url": .string(url),
+                                    "title": .string("Opened tab"), "windowID": .number(2)]))
+                nextTabID += 1
+            }
+            channel?.send(.init(id: message.id, kind: "response", command: message.command,
+                                result: .object(["opened": .number(Double(urls.count)), "failed": .number(0),
+                                                 "background": message.arguments["background"] ?? .bool(false)])))
         }
     }
 
@@ -91,27 +106,57 @@ private final class BridgeServiceFixture {
     #expect(!task.compactDetail.contains("private"))
 }
 
-@Test @MainActor func browserBridgeBatchOpenUsesOneBoundedRequest() async throws {
+@Test @MainActor func browserBridgeBatchOpenUsesSignedLegacyWireAndReturnsObservedIdentityPerURL() async throws {
     let fixture = BridgeServiceFixture()
     defer { fixture.close() }
     try await fixture.connect()
 
     let urls = ["https://example.com/case/one", "https://example.com/case/two"]
-    let request = Task { try await fixture.service.openTabs(urls: urls, background: true, reuseExisting: false) }
-    try await fixture.wait { fixture.sent("browser.open_tabs").count == 1 }
+    let result = try await fixture.service.openTabs(urls: urls, background: true, reuseExisting: false)
     let message = try #require(fixture.sent("browser.open_tabs").first)
     #expect(fixture.sent("browser.open_tabs").count == 1)
+    #expect(Set(message.arguments.keys) == Set(["urls", "background"]))
     #expect(message.arguments["urls"] == .array(urls.map(JSONValue.string)))
     #expect(message.arguments["background"] == .bool(true))
-    #expect(message.arguments["reuseExisting"] == .bool(false))
 
-    let response: JSONValue = .object([
-        "opened": .number(2),
-        "failed": .number(0),
-        "background": .bool(true)
-    ])
-    fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command, result: response))
-    #expect(try await request.value == response)
+    guard case .object(let fields) = result, case .array(let rows)? = fields["results"] else {
+        Issue.record("Expected one tab identity result per requested URL")
+        return
+    }
+    #expect(fields["opened"] == .number(2))
+    #expect(fields["failed"] == .number(0))
+    #expect(rows.count == 2)
+    #expect(rows.compactMap { row -> Double? in
+        guard case .object(let values) = row, case .number(let id)? = values["tabID"] else { return nil }
+        return id
+    } == [10.0, 11.0])
+}
+
+@Test @MainActor func browserBridgeBatchReuseMatchesCanonicalURLsAndDeduplicatesNewTabs() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    fixture.tabs = [.object(["id": .number(1), "url": .string("https://example.com/case#old"), "title": .string("Lightning Experience")])]
+    try await fixture.connect()
+
+    let urls = ["https://example.com/case#requested", "https://example.com/new#one", "https://example.com/new#two"]
+    let result = try await fixture.service.openTabs(urls: urls, background: true, reuseExisting: true)
+    let message = try #require(fixture.sent("browser.open_tabs").first)
+    #expect(message.arguments["urls"] == .array([.string("https://example.com/new#one")]))
+    guard case .object(let fields) = result, case .array(let rows)? = fields["results"],
+          rows.count == 3, case .object(let existing) = rows[0],
+          case .object(let firstNew) = rows[1], case .object(let reusedNew) = rows[2] else {
+        Issue.record("Expected per-request identity results for existing and new tabs")
+        return
+    }
+    #expect(existing["tabID"] == .number(1))
+    #expect(existing["reusedExisting"] == .bool(true))
+    #expect(existing["finalURL"] == .string("https://example.com/case#old"))
+    #expect(firstNew["tabID"] == .number(10))
+    #expect(firstNew["openedNew"] == .bool(true))
+    #expect(firstNew["reusedExisting"] == .bool(false))
+    #expect(reusedNew["tabID"] == .number(10))
+    #expect(reusedNew["openedNew"] == .bool(false))
+    #expect(reusedNew["reusedExisting"] == .bool(true))
 }
 
 @Test @MainActor func browserBridgeActionJournalUsesOnlyDestinationMetadata() async throws {
