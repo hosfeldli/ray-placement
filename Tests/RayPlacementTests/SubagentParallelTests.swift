@@ -7,8 +7,6 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     private var active = 0
     private var peak = 0
     private var recordedOutputs: [[String: Any]] = []
-    private var providerMCPCount: Int?
-    private var providerToolNames: Set<String> = []
 
     func beganChild() {
         lock.lock()
@@ -20,13 +18,6 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     func endedChild() {
         lock.lock()
         active -= 1
-        lock.unlock()
-    }
-
-    func recordProviderRequest(servers: [MCPServer], tools: [LimaAIToolDefinition]) {
-        lock.lock()
-        providerMCPCount = servers.count
-        providerToolNames = Set(tools.map(\.name))
         lock.unlock()
     }
 
@@ -48,17 +39,6 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
         return recordedOutputs
     }
 
-    var providerSawNoDirectMCP: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return providerMCPCount == 0
-    }
-
-    func providerSawTool(_ name: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return providerToolNames.contains(name)
-    }
 }
 
 #if DEBUG
@@ -67,7 +47,6 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: [conversation]),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: ["run_terminal_command"]),
         transport: FixtureAITransport.standard
     )
@@ -114,45 +93,7 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
 }
 #endif
 
-@Test @MainActor func apiProviderDiscoversConnectedReadsThroughLimaWithoutDirectMCP() async {
-    let serverID = UUID()
-    let server = MCPServer(
-        id: serverID, name: "Evidence", url: "https://example.invalid/mcp",
-        tools: [MCPToolDescriptor(serverID: serverID, name: "lookup",
-            risk: .read, enabled: true, declaredReadOnly: true)]
-    )
-    let probe = ParallelSubagentProbe()
-    var transport = FixtureAITransport(events: [])
-    transport.replyStream = { _, servers, tools in
-        probe.recordProviderRequest(servers: servers, tools: tools)
-        return AsyncThrowingStream { continuation in
-            continuation.yield(.textDelta("Ready"))
-            continuation.yield(.completed("api-broker-fixture"))
-            continuation.finish()
-        }
-    }
-    let model = AIChatViewModel(
-        store: AIConversationStore(fixtures: [AIConversation(provider: .openAICompatible, model: "fixture-model")]),
-        credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: [server]),
-        nativeToolStore: LimaAIToolStore(fixtures: []),
-        transport: transport
-    )
-    #expect(model.routedMCPServers(for: "Unrelated request").map(\.id) == [server.id])
-    #expect(Set(model.requestLocalTools(for: "Unrelated request").map(\.name)) ==
-            Set([CLIConnectedTools.listName, CLIConnectedTools.callName]))
-    model.draft = "Reply briefly"
-    model.send()
-    for _ in 0..<300 where model.isStreaming {
-        try? await Task.sleep(for: .milliseconds(10))
-    }
-    #expect(!model.isStreaming)
-    #expect(probe.providerSawNoDirectMCP)
-    #expect(probe.providerSawTool(CLIConnectedTools.listName))
-    #expect(probe.providerSawTool(CLIConnectedTools.callName))
-}
-
-@Test @MainActor func twoSubagentsRunConcurrentlyAndKeepOrderedIndividualActivity() async throws {
+@Test @MainActor func configuredSubagentBudgetBoundsConcurrencyAndAllowsMoreThanThreeChildren() async throws {
     let suite = "ParallelSubagent.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -171,24 +112,30 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     var transport = FixtureAITransport(events: [])
     transport.toolOutputEvents = [.textDelta("Combined answer"), .completed("parent-final")]
     transport.onToolOutputs = { outputs, _ in probe.recordOutputs(outputs) }
-    transport.replyStream = { input, servers, tools in
+    transport.replyStream = { input, _ in
         if input == "Compare two sources" {
-            probe.recordProviderRequest(servers: servers, tools: tools)
             return AsyncThrowingStream { continuation in
                 continuation.yield(.responseCreated("parent-initial"))
                 continuation.yield(delegate("child-a", "Analyze A"))
                 continuation.yield(delegate("child-b", "Analyze B"))
+                continuation.yield(delegate("child-c", "Analyze C"))
+                continuation.yield(delegate("child-d", "Analyze D"))
                 continuation.yield(.completed("parent-initial"))
                 continuation.finish()
             }
         }
         probe.beganChild()
-        let delay: Duration = input == "Analyze A" ? .milliseconds(120) : .milliseconds(20)
+        let delay: Duration
+        switch input {
+        case "Analyze A": delay = .milliseconds(120)
+        case "Analyze B": delay = .milliseconds(20)
+        default: delay = .milliseconds(10)
+        }
         return AsyncThrowingStream { continuation in
             Task {
                 try? await Task.sleep(for: delay)
                 probe.endedChild()
-                continuation.yield(.textDelta(input == "Analyze A" ? "Analysis A" : "Analysis B"))
+                continuation.yield(.textDelta("Analysis \(input.suffix(1))"))
                 continuation.yield(.completed("child-result"))
                 continuation.finish()
             }
@@ -201,10 +148,10 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: ["agent_delegate"]),
         transport: transport,
-        modelCatalog: catalog
+        modelCatalog: catalog,
+        subagentBudgetOverride: AIExecutionSubagentBudget(maximumConcurrent: 2, maximumPerRun: 4)
     )
     model.draft = "Compare two sources"
     model.send()
@@ -215,14 +162,21 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     #expect(!model.isStreaming)
     #expect(model.streamError == nil)
     #expect(probe.maximumConcurrentChildren == 2)
-    #expect(probe.outputs.compactMap { $0["call_id"] as? String } == ["child-a", "child-b"])
+    #expect(probe.outputs.compactMap { $0["call_id"] as? String } == ["child-a", "child-b", "child-c", "child-d"])
     #expect((probe.outputs[0]["output"] as? String)?.contains("Analysis A") == true)
     #expect((probe.outputs[1]["output"] as? String)?.contains("Analysis B") == true)
+    #expect((probe.outputs[2]["output"] as? String)?.contains("Analysis C") == true)
+    #expect((probe.outputs[3]["output"] as? String)?.contains("Analysis D") == true)
+    #expect(model.executionRun?.subagentRequestsUsed == 4)
+    #expect(model.executionRun?.subagents.count == 4)
+    #expect(model.executionRun?.subagents.allSatisfy { $0.state == .completed } == true)
     let activities = try #require(store.conversations.first?.messages.last?.activities)
     let children = AIActivityStream.steps(from: activities, isActive: false)
         .filter { $0.title.hasPrefix("Subagent ") }
-    #expect(children.map(\.title) == ["Subagent 1", "Subagent 2"])
+    #expect(children.map(\.title) == ["Subagent 1", "Subagent 2", "Subagent 3", "Subagent 4"])
     #expect(children.allSatisfy { $0.status == .completed })
     #expect(children[0].detail?.contains("Analyze A") == true)
     #expect(children[1].detail?.contains("Analyze B") == true)
+    #expect(children[2].detail?.contains("Analyze C") == true)
+    #expect(children[3].detail?.contains("Analyze D") == true)
 }

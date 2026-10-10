@@ -168,8 +168,10 @@ enum AIModelPickerPolicy {
             return value.hasPrefix("gemini-2.5-") || value.hasPrefix("gemini-3")
         case .openAICompatible:
             return true // The configured endpoint owns its own model names.
-        case .codexCLI, .claudeCLI:
-            return value == "default" // Explicit IDs appear only after a successful CLI probe.
+        case .codexCLI:
+            return CLIChatProviderClient.isValidModelID(id)
+        case .claudeCLI:
+            return value == "default" // No model catalog endpoint in this adapter.
         case .mistral, .xAI, .deepSeek, .openRouter:
             return false // Not currently exposed by AI Chat.
         }
@@ -446,7 +448,6 @@ enum AIToolApprovalDecision: String, Codable, Sendable {
 
 struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     var id: UUID
-    var remoteApprovalID: String?
     var localCallID: String?
     var localToolID: String?
     var serverLabel: String
@@ -457,7 +458,6 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
 
     init(
         id: UUID = UUID(),
-        remoteApprovalID: String? = nil,
         localCallID: String? = nil,
         localToolID: String? = nil,
         serverLabel: String,
@@ -467,7 +467,6 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         createdAt: Date = Date()
     ) {
         self.id = id
-        self.remoteApprovalID = remoteApprovalID
         self.localCallID = localCallID
         self.localToolID = localToolID
         self.serverLabel = serverLabel
@@ -484,8 +483,6 @@ enum AIOutputItemKind: String, Codable, Sendable {
     case message
     case reasoning
     case functionCall = "function_call"
-    case mcpCall = "mcp_call"
-    case mcpApprovalRequest = "mcp_approval_request"
     case toolCall = "tool_call"
     case unknown
 
@@ -494,15 +491,13 @@ enum AIOutputItemKind: String, Codable, Sendable {
         case "message": self = .message
         case "reasoning": self = .reasoning
         case "function_call": self = .functionCall
-        case "mcp_call": self = .mcpCall
-        case "mcp_approval_request": self = .mcpApprovalRequest
         default:
             self = apiType.contains("tool") ? .toolCall : .unknown
         }
     }
 
     var isToolActivity: Bool {
-        self == .functionCall || self == .mcpCall || self == .mcpApprovalRequest || self == .toolCall
+        self == .functionCall || self == .toolCall
     }
 }
 
@@ -609,7 +604,7 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         self.responseID = nil
         self.eventType = AIProviderFailure.diagnosticEvent(eventType)
         self.outputItemType = outputItemType.map {
-            ["message", "reasoning", "function_call", "mcp_call", "mcp_approval_request"].contains($0) ? $0 : "unknown"
+            ["message", "reasoning", "function_call"].contains($0) ? $0 : "unknown"
         }
         self.toolName = AIProviderFailure.localToolName(toolName)
         self.errorCode = AIProviderFailure.code(errorCode)
@@ -652,445 +647,6 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         if let errorParameter { fields.append("Parameter: \(errorParameter)") }
         fields.append(message)
         return fields.joined(separator: " · ")
-    }
-}
-
-// MARK: - Remote HTTP MCP
-
-enum MCPTransport: String, Codable, CaseIterable, Identifiable, Sendable {
-    case streamableHTTP
-    case sse
-    var id: String { rawValue }
-    var title: String { self == .sse ? "HTTP / SSE" : "Streamable HTTP" }
-}
-
-enum MCPToolRisk: String, Codable, Sendable {
-    case read
-    case write
-    case destructive
-
-    var title: String { rawValue.capitalized }
-    var requiresApproval: Bool { self != .read }
-}
-
-struct MCPToolDescriptor: Codable, Hashable, Identifiable, Sendable {
-    var id: String { "\(serverID.uuidString):\(name)" }
-    var serverID: UUID
-    var name: String
-    var title: String?
-    var description: String?
-    var risk: MCPToolRisk
-    var enabled: Bool
-    /// Only a fresh tools/list declaration can mark a tool read-only. Legacy
-    /// persisted risk guesses decode as nil and remain unavailable to AI.
-    var declaredReadOnly: Bool? = nil
-
-    var displayTitle: String { title?.isEmpty == false ? title! : name }
-}
-
-struct MCPServer: Codable, Hashable, Identifiable, Sendable {
-    var id: UUID
-    var name: String
-    var url: String
-    var transport: MCPTransport
-    var enabled: Bool
-    var allowedToolNames: [String]
-    var tools: [MCPToolDescriptor]
-    var lastTestedAt: Date?
-    var lastError: String?
-
-    init(
-        id: UUID = UUID(),
-        name: String,
-        url: String,
-        transport: MCPTransport = .streamableHTTP,
-        enabled: Bool = true,
-        allowedToolNames: [String] = [],
-        tools: [MCPToolDescriptor] = [],
-        lastTestedAt: Date? = nil,
-        lastError: String? = nil
-    ) {
-        self.id = id
-        self.name = name
-        self.url = url
-        self.transport = transport
-        self.enabled = enabled
-        self.allowedToolNames = allowedToolNames
-        self.tools = tools
-        self.lastTestedAt = lastTestedAt
-        self.lastError = lastError
-    }
-
-    var validURL: URL? { URL(string: url.trimmingCharacters(in: .whitespacesAndNewlines)) }
-
-    var validHTTPURL: URL? {
-        guard let validURL,
-              ["http", "https"].contains(validURL.scheme?.lowercased()),
-              let host = validURL.host,
-              !host.isEmpty,
-              validURL.user == nil,
-              validURL.password == nil else { return nil }
-        return validURL
-    }
-
-    var apiLabel: String {
-        let label = name.unicodeScalars.map { scalar in
-            CharacterSet.alphanumerics.contains(scalar) ? String(scalar) : "_"
-        }.joined()
-        let trimmed = String(label.prefix(64)).trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        let base = trimmed.isEmpty ? "mcp_\(id.uuidString.prefix(8))" : trimmed
-        return base.first?.isNumber == true ? "mcp_\(base)" : base
-    }
-
-    static let noToolsSentinel = "__lima_no_mcp_tools__"
-
-    var enabledTools: [MCPToolDescriptor] {
-        guard allowedToolNames != [Self.noToolsSentinel] else { return [] }
-        return tools.filter { $0.enabled && (allowedToolNames.isEmpty || allowedToolNames.contains($0.name)) }
-    }
-}
-
-@MainActor
-final class MCPServerStore: ObservableObject {
-    static let shared = MCPServerStore()
-
-    @Published private(set) var servers: [MCPServer] = []
-    @Published private(set) var lastError: String?
-
-    private let fileURL: URL
-    private let persistsChanges: Bool
-    private let queue = DispatchQueue(label: "dev.liam.lima.mcp-persistence", qos: .utility)
-    private var pendingSave: DispatchWorkItem?
-
-    private init() {
-        if let testURL = LimaTestEnvironment.storageURL(relativePath: "AI/mcp-servers.json") {
-            fileURL = testURL
-        } else {
-            let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            fileURL = base.appendingPathComponent("Lima/AI/mcp-servers.json")
-        }
-        persistsChanges = true
-        load()
-    }
-
-    init(fixtures: [MCPServer]) {
-        fileURL = FileManager.default.temporaryDirectory.appendingPathComponent("LimaMCPFixtures.json")
-        persistsChanges = false
-        servers = fixtures
-    }
-
-    func addOrUpdate(_ server: MCPServer) {
-        servers.removeAll { $0.id == server.id }
-        servers.insert(server, at: 0)
-        scheduleSave()
-    }
-
-    func remove(id: UUID) {
-        servers.removeAll { $0.id == id }
-        MCPCredentialStore.remove(serverID: id)
-        scheduleSave()
-    }
-
-    func setEnabled(_ id: UUID, enabled: Bool) {
-        guard var server = servers.first(where: { $0.id == id }) else { return }
-        server.enabled = enabled
-        addOrUpdate(server)
-    }
-
-    func updateTools(_ tools: [MCPToolDescriptor], for id: UUID) {
-        guard var server = servers.first(where: { $0.id == id }) else { return }
-        server.tools = tools.map { tool in
-            var updated = tool
-            updated.enabled = server.allowedToolNames == [MCPServer.noToolsSentinel]
-                ? false
-                : (server.allowedToolNames.isEmpty || server.allowedToolNames.contains(tool.name))
-            return updated
-        }
-        server.lastTestedAt = Date()
-        server.lastError = nil
-        if server.allowedToolNames.isEmpty { server.allowedToolNames = tools.map(\.name) }
-        addOrUpdate(server)
-    }
-
-    func setToolEnabled(_ toolName: String, enabled: Bool, for serverID: UUID) {
-        guard var server = servers.first(where: { $0.id == serverID }) else { return }
-        var names: [String]
-        if server.allowedToolNames == [MCPServer.noToolsSentinel] {
-            names = []
-        } else if server.allowedToolNames.isEmpty {
-            names = server.tools.map(\.name)
-        } else {
-            names = server.allowedToolNames
-        }
-        names.removeAll { $0 == toolName }
-        if enabled { names.append(toolName) }
-        server.allowedToolNames = names.isEmpty && !enabled ? [MCPServer.noToolsSentinel] : names
-        server.tools = server.tools.map {
-            guard $0.name == toolName else { return $0 }
-            var updated = $0
-            updated.enabled = enabled
-            return updated
-        }
-        addOrUpdate(server)
-    }
-
-    func markTestFailed(_ message: String, for id: UUID) {
-        guard var server = servers.first(where: { $0.id == id }) else { return }
-        server.lastTestedAt = Date()
-        server.lastError = message
-        addOrUpdate(server)
-    }
-
-    private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else { return }
-        do { servers = try JSONDecoder().decode([MCPServer].self, from: data) }
-        catch { lastError = "MCP server settings could not be loaded." }
-    }
-
-    private func scheduleSave() {
-        guard persistsChanges else { return }
-        pendingSave?.cancel()
-        let snapshot = servers
-        let url = fileURL
-        let work = DispatchWorkItem { [weak self] in
-            do {
-                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.deletingLastPathComponent().path)
-                try JSONEncoder().encode(snapshot).write(to: url, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            } catch { DispatchQueue.main.async { self?.lastError = error.localizedDescription } }
-        }
-        pendingSave = work
-        queue.asyncAfter(deadline: .now() + 0.2, execute: work)
-    }
-}
-
-enum MCPCredentialStore {
-    private static var service: String {
-        LimaTestEnvironment.isEnabled ? "dev.liam.lima.mcp.test" : "dev.liam.lima.mcp"
-    }
-
-    static func save(serverID: UUID, value: String) throws {
-        let data = Data(value.trimmingCharacters(in: .whitespacesAndNewlines).utf8)
-        guard !data.isEmpty else { throw NSError(domain: "LimaMCP", code: 1, userInfo: [NSLocalizedDescriptionKey: "Enter a credential or token."]) }
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: serverID.uuidString]
-        let status = SecItemAdd(query.merging([kSecValueData as String: data, kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly]) { _, new in new } as CFDictionary, nil)
-        if status == errSecDuplicateItem {
-            guard SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary) == errSecSuccess else { throw keychainError() }
-        } else if status != errSecSuccess { throw keychainError(status) }
-    }
-
-    static func value(serverID: UUID) -> String? {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: serverID.uuidString, kSecReturnData as String: true, kSecMatchLimit as String: kSecMatchLimitOne]
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
-    static func authorizationHeaderValue(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.range(of: "^(bearer|basic)\\s", options: [.regularExpression, .caseInsensitive]) == nil
-            ? "Bearer \(trimmed)"
-            : trimmed
-    }
-
-    static func remove(serverID: UUID) {
-        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: serverID.uuidString]
-        SecItemDelete(query as CFDictionary)
-    }
-
-    private static func keychainError(_ status: OSStatus = errSecAuthFailed) -> NSError {
-        NSError(domain: NSOSStatusErrorDomain, code: Int(status), userInfo: [NSLocalizedDescriptionKey: "Lima could not access the MCP credential in Keychain."])
-    }
-}
-
-struct MCPHTTPClient {
-    enum ClientError: LocalizedError {
-        case invalidURL
-        case invalidResponse
-        case requestFailed(Int, String)
-        case invalidToolList
-        var errorDescription: String? {
-            switch self {
-            case .invalidURL: return "Enter a valid HTTP or HTTPS MCP URL."
-            case .invalidResponse: return "The MCP server returned an invalid response."
-            case .requestFailed(let status, let body): return "MCP request failed (\(status)): \(body)"
-            case .invalidToolList: return "The MCP server did not return a valid tools/list response."
-            }
-        }
-    }
-
-    private let protocolVersion = "2025-06-18"
-
-    func discoverTools(server: MCPServer) async throws -> [MCPToolDescriptor] {
-        guard let url = server.validHTTPURL else { throw ClientError.invalidURL }
-        let endpoint: URL
-        switch server.transport {
-        case .streamableHTTP:
-            endpoint = url
-        case .sse:
-            endpoint = try await discoverSSEEndpoint(from: url, server: server)
-        }
-
-        let initialize = try await post(
-            to: endpoint,
-            server: server,
-            method: "initialize",
-            params: [
-                "protocolVersion": protocolVersion,
-                "capabilities": [:],
-                "clientInfo": ["name": "Lima", "version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"]
-            ],
-            sessionID: nil
-        )
-        let initializeObject = try jsonObject(from: initialize.data)
-        guard initializeObject["result"] != nil else { throw ClientError.invalidToolList }
-
-        let sessionID = initialize.response.value(forHTTPHeaderField: "MCP-Session-Id")
-        _ = try await post(
-            to: endpoint,
-            server: server,
-            method: "notifications/initialized",
-            params: [:],
-            sessionID: sessionID,
-            requestID: nil
-        )
-
-        let listed = try await post(
-            to: endpoint,
-            server: server,
-            method: "tools/list",
-            params: [:],
-            sessionID: sessionID
-        )
-        let object = try jsonObject(from: listed.data)
-        let result = (object["result"] as? [String: Any]) ?? object
-        guard let tools = result["tools"] as? [[String: Any]] else { throw ClientError.invalidToolList }
-        return tools.compactMap { tool in
-            guard let name = tool["name"] as? String else { return nil }
-            let description = tool["description"] as? String
-            return MCPToolDescriptor(
-                serverID: server.id,
-                name: name,
-                title: tool["title"] as? String,
-                description: description,
-                risk: Self.risk(for: tool, name: name, description: description),
-                enabled: true,
-                declaredReadOnly: (tool["annotations"] as? [String: Any])?["readOnlyHint"] as? Bool == true
-            )
-        }
-    }
-
-    func test(server: MCPServer) async throws -> [MCPToolDescriptor] { try await discoverTools(server: server) }
-
-    private func post(
-        to url: URL,
-        server: MCPServer,
-        method: String,
-        params: [String: Any],
-        sessionID: String?,
-        requestID: String? = UUID().uuidString
-    ) async throws -> (data: Data, response: HTTPURLResponse) {
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("application/json, text/event-stream", forHTTPHeaderField: "Accept")
-        if let sessionID { request.setValue(sessionID, forHTTPHeaderField: "MCP-Session-Id") }
-        if sessionID != nil { request.setValue(protocolVersion, forHTTPHeaderField: "MCP-Protocol-Version") }
-        if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
-            request.setValue(MCPCredentialStore.authorizationHeaderValue(credential), forHTTPHeaderField: "Authorization")
-        }
-        var body: [String: Any] = ["jsonrpc": "2.0", "method": method, "params": params]
-        if let requestID { body["id"] = requestID }
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse else { throw ClientError.invalidResponse }
-        guard (200...299).contains(http.statusCode) else {
-            throw ClientError.requestFailed(http.statusCode, Self.safeResponseText(data))
-        }
-        return (data, http)
-    }
-
-    private func discoverSSEEndpoint(from url: URL, server: MCPServer) async throws -> URL {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        if let credential = MCPCredentialStore.value(serverID: server.id), !credential.isEmpty {
-            request.setValue(MCPCredentialStore.authorizationHeaderValue(credential), forHTTPHeaderField: "Authorization")
-        }
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            throw ClientError.invalidResponse
-        }
-        var framer = AIProviderSSEFramer(maximumLineBytes: 64_000, maximumEventBytes: 64_000,
-                                         maximumStreamBytes: 256_000, maximumDataLines: 256)
-        for try await byte in bytes {
-            try Task.checkCancellation()
-            if let frame = try framer.append(byte), frame.event == "endpoint" {
-                return try Self.validatedSSEEndpoint(frame.data, relativeTo: url)
-            }
-        }
-        if let frame = try framer.finish(), frame.event == "endpoint" {
-            return try Self.validatedSSEEndpoint(frame.data, relativeTo: url)
-        }
-        throw ClientError.invalidResponse
-    }
-
-    /// Discovery cannot redirect a saved MCP credential to a different origin.
-    static func validatedSSEEndpoint(_ raw: String, relativeTo base: URL) throws -> URL {
-        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.utf8.count <= 4_096,
-              !value.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }),
-              let url = URL(string: value, relativeTo: base)?.absoluteURL,
-              let candidate = URLComponents(url: url, resolvingAgainstBaseURL: true),
-              let original = URLComponents(url: base, resolvingAgainstBaseURL: true),
-              candidate.scheme?.lowercased() == original.scheme?.lowercased(),
-              ["http", "https"].contains(candidate.scheme?.lowercased() ?? ""),
-              candidate.host?.lowercased() == original.host?.lowercased(),
-              (candidate.port ?? (candidate.scheme == "https" ? 443 : 80)) ==
-                (original.port ?? (original.scheme == "https" ? 443 : 80)),
-              candidate.user == nil, candidate.password == nil, candidate.fragment == nil else {
-            throw ClientError.invalidResponse
-        }
-        return url
-    }
-
-    private func jsonObject(from data: Data) throws -> [String: Any] {
-        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] { return object }
-        let candidates = String(decoding: data, as: UTF8.self)
-            .components(separatedBy: .newlines)
-            .compactMap { line -> String? in
-                guard line.hasPrefix("data:") else { return nil }
-                return String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-            }
-            .reversed()
-        for candidate in candidates where candidate != "[DONE]" {
-            if let object = try? JSONSerialization.jsonObject(with: Data(candidate.utf8)) as? [String: Any] { return object }
-        }
-        throw ClientError.invalidToolList
-    }
-
-    /// Tool names and descriptions are not proof of safety. Require a server's
-    /// explicit read-only declaration, then reject obvious mutating behavior
-    /// even if the declaration is contradictory.
-    static func risk(for tool: [String: Any], name: String, description: String?) -> MCPToolRisk {
-        let annotations = tool["annotations"] as? [String: Any]
-        let lower = "\(name) \(description ?? "")".lowercased()
-        if annotations?["destructiveHint"] as? Bool == true ||
-            ["delete", "remove", "destroy", "drop", "purge", "purchase", "payment"].contains(where: lower.contains) {
-            return .destructive
-        }
-        if annotations?["readOnlyHint"] as? Bool != true ||
-            ["create", "update", "write", "send", "post", "submit", "close", "move", "rename",
-             "execute", "run", "open", "focus", "navigate", "click", "type", "save", "set_",
-             "install", "launch", "upload", "download", "archive", "publish", "transfer"].contains(where: lower.contains) {
-            return .write
-        }
-        return .read
-    }
-
-    private static func safeResponseText(_ data: Data) -> String {
-        AIProviderFailure.message(data: data)
     }
 }
 
@@ -1446,17 +1002,15 @@ struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     }
 }
 
-/// Immutable inputs captured for one provider turn. Keeping the local-tool,
-/// MCP, browser, and instruction routes together prevents approval continuation
+/// Immutable inputs captured for one provider turn. Keeping local tools,
+/// browser routing, and instructions together prevents approval continuation
 /// from mixing captured permissions with later mutable settings.
 struct AIApprovalContinuationContext: Sendable {
     let localTools: [LimaAIToolDefinition]
-    let mcpServers: [MCPServer]
     let browserRoutingContext: BrowserCapabilityTurnContext
     let systemInstructions: String
 
     var localToolIDs: [String] { localTools.map(\.id) }
-    var mcpServerIDs: [UUID] { mcpServers.map(\.id) }
 }
 
 struct AIToolSchemaValidationError: Error {
@@ -1903,12 +1457,9 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Remote MCP and extension tools are read-only. Subagents inherit only this turn’s routed Lima tools and declared read-only MCP tools. They may request computer actions only through the parent turn’s live grants and ordinary approval flow; they cannot bypass approvals or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Extension tools are read-only. Subagents inherit only this turn’s routed Lima tools. They may request computer actions only through the parent turn’s live grants and ordinary approval flow; they cannot bypass approvals or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
-    static func readableMCPTools(for server: MCPServer) -> [MCPToolDescriptor] {
-        server.enabledTools.filter { $0.risk == .read && $0.declaredReadOnly == true }
-    }
 }
 
 @MainActor
@@ -2086,6 +1637,7 @@ enum LimaAIToolRegistry {
             + AINotesTools.definitions
             + BrowserBridgeAITools.definitions
             + AILocalComputerActionTools.definitions
+            + AIWorkspaceActionTools.definitions
             + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
     }
 
@@ -2104,6 +1656,7 @@ enum LimaAIToolRegistry {
             .union(AIContextTools.ids)
             .union(AINotesTools.ids)
             .union(BrowserBridgeAITools.readToolIDs)
+            .union(AIWorkspaceActionTools.readIDs)
     }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
@@ -2186,6 +1739,9 @@ enum LimaAIToolRegistry {
         if AILocalComputerActionTools.ids.contains(definition.id) {
             return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted)
         }
+        if AIWorkspaceActionTools.ids.contains(definition.id) {
+            return AIWorkspaceActionTools.execute(call, approvalGranted: approvalGranted)
+        }
         switch definition.id {
         case "read_screen_context":
             return .json(LimaScreenContextStore.shared.read())
@@ -2258,7 +1814,6 @@ enum LimaAIToolRegistry {
             return .json([
                 "app_version": Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development",
                 "native_read_only_tools_enabled": enabledDefinitions(LimaAIToolStore.shared.effectiveEnabledToolIDs).filter { $0.risk == .read }.count,
-                "mcp_read_only_tools_enabled": MCPServerStore.shared.servers.filter(\.enabled).reduce(0) { $0 + AIReadOnlyPolicy.readableMCPTools(for: $1).count },
                 "computer_action_categories_enabled": AIComputerActionPolicy.shared.enabledCategories.map(\.rawValue).sorted()
             ])
         default:
@@ -3164,7 +2719,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     static let coreGroups: [LimaAIToolGroup] = [
         .init(id: "memory", title: "Memory", summary: "Read saved local context; add, edit, or forget entries in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
-        .init(id: "subagents", title: "Subagents", summary: "Up to three concurrent analyses per turn; inherits captured eligible tools and read-only MCP, API usage applies",
+        .init(id: "subagents", title: "Subagents", summary: "Delegated analyses use this run’s configured concurrent and total budgets; inherits captured routed tools, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
               symbol: "note.text", toolIDs: AINotesTools.ids),
@@ -3419,6 +2974,12 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: readMigrationKey)
         }
+        let workspaceTerminalMigrationKey = "lima.ai.workspace-terminal-v1"
+        if !defaults.bool(forKey: workspaceTerminalMigrationKey) {
+            enabledToolIDs.formUnion(AIWorkspaceActionTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceTerminalMigrationKey)
+        }
         let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
         if !defaults.bool(forKey: capabilityMigrationKey) {
             enabledToolIDs.insert("browser_capabilities")
@@ -3523,7 +3084,7 @@ enum AIResponsesEventDecoder {
             return outputItemEvents(value["item"] as? [String: Any], phase: .added, model: model, responseID: responseID, eventType: type)
         case "response.output_item.done":
             return outputItemEvents(value["item"] as? [String: Any], phase: .completed, model: model, responseID: responseID, eventType: type)
-        case "response.function_call_arguments.delta", "response.mcp_call.arguments.delta", "response.mcp_call_arguments.delta":
+        case "response.function_call_arguments.delta":
             return []
         case "response.function_call_arguments.done":
             let item = AIOutputItem(
@@ -3535,25 +3096,6 @@ enum AIResponsesEventDecoder {
                 arguments: value["arguments"] as? String
             )
             return [.outputItem(item)]
-        case "response.mcp_call.completed", "response.mcp_call.done":
-            if let item = value["item"] as? [String: Any] {
-                return outputItemEvents(item, phase: .completed, model: model, responseID: responseID, eventType: type)
-            }
-            return [.outputItem(AIOutputItem(
-                phase: .completed,
-                apiType: "mcp_call",
-                name: value["name"] as? String,
-                serverLabel: value["server_label"] as? String,
-                errorMessage: errorMessage(from: value["error"])
-            ))]
-        case "response.mcp_call.failed", "response.mcp_call.error":
-            return [.outputItem(AIOutputItem(
-                phase: .completed,
-                apiType: "mcp_call",
-                name: value["name"] as? String,
-                serverLabel: value["server_label"] as? String,
-                errorMessage: errorMessage(from: value["error"]) ?? "The MCP tool failed."
-            ))]
         case "response.completed":
             var result: [AIChatStreamEvent] = []
             if let usage = response?["usage"] as? [String: Any] { result.append(.usage(AIUsageMetrics.from(responseUsage: usage))) }
@@ -4323,9 +3865,27 @@ struct AIToolApprovalView: View {
         case "replace_text_file":
             return "Replace \(quoted(arguments["path"] as? String) ?? "the requested file") with \(characterCount(arguments["content"])) character\(characterCount(arguments["content"]) == 1 ? "" : "s")."
         case "run_terminal_command":
-            let command = quoted(arguments["command"] as? String) ?? "the requested command"
+            let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
             let directory = arguments["working_directory"] as? String
-            return directory.map { "Run \(command) in \(quoted($0) ?? $0)." } ?? "Run \(command)."
+            return directory.map { "Run \(command) in \(compactQuoted($0) ?? "the selected directory") and show output in Terminal. This compatibility command is not sandboxed." }
+                ?? "Run \(command) and show output in Terminal. This compatibility command is not sandboxed."
+        case "terminal_start":
+            if let name = compactQuoted(arguments["new_workspace"] as? String) {
+                return "Create AI Workspace project \(name) and start a visible sandboxed terminal session."
+            }
+            if let directory = compactQuoted(arguments["directory"] as? String) {
+                return "Start a visible sandboxed AI terminal session in \(directory)."
+            }
+            return "Start a visible sandboxed AI terminal session at the Lima Workspace root."
+        case "terminal_run":
+            let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
+            return "Run \(command) in the sandboxed AI Workspace. Review the full command before allowing."
+        case "terminal_set_directory":
+            return "Move the AI session to \(compactQuoted(arguments["directory"] as? String) ?? "the requested Workspace directory")."
+        case "terminal_interrupt":
+            return "Stop the running AI Workspace command; check its final status afterward."
+        case "terminal_close":
+            return "Close the idle AI terminal session. Workspace files are not deleted."
         default:
             return "Review the complete request before allowing this tool to run."
         }
@@ -4364,6 +3924,16 @@ struct AIToolApprovalView: View {
     private func quoted(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return "“\(value)”"
+    }
+
+    private func compactQuoted(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        let visible = value.replacingOccurrences(of: "\r\n", with: " ⏎ ")
+            .replacingOccurrences(of: "\n", with: " ⏎ ")
+            .replacingOccurrences(of: "\r", with: " ⏎ ")
+            .replacingOccurrences(of: "\t", with: " ⇥ ")
+        let excerpt = String(visible.prefix(120))
+        return "“\(excerpt)\(visible.count > 120 ? "…" : "")”"
     }
 
     private func characterCount(_ value: Any?) -> Int {

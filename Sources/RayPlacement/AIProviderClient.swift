@@ -79,7 +79,7 @@ enum AIProviderClientRegistry {
     }
 }
 
-// Byte framing is shared with Responses and MCP discovery in AIProviderSSEFramer.
+// Byte framing for provider streaming is implemented by AIProviderSSEFramer.
 
 enum AIProviderHTTP {
     static func request(
@@ -310,7 +310,6 @@ struct AnthropicAIProviderClient: AIProviderClient {
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -327,21 +326,6 @@ struct AnthropicAIProviderClient: AIProviderClient {
         }
     }
 
-    func streamApproval(
-        apiKey: String,
-        model: String,
-        previousResponseID: String,
-        requestID: String,
-        approve: Bool,
-        reason: String?,
-        reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition],
-        systemInstructions: String
-    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Self.failed("This provider does not support a pending remote tool approval continuation.")
-    }
-
     func streamToolOutputs(
         apiKey: String,
         model: String,
@@ -349,7 +333,6 @@ struct AnthropicAIProviderClient: AIProviderClient {
         history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -456,7 +439,6 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -472,21 +454,6 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         }
     }
 
-    func streamApproval(
-        apiKey: String,
-        model: String,
-        previousResponseID: String,
-        requestID: String,
-        approve: Bool,
-        reason: String?,
-        reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition],
-        systemInstructions: String
-    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Self.failed("This provider does not support a pending remote tool approval continuation.")
-    }
-
     func streamToolOutputs(
         apiKey: String,
         model: String,
@@ -494,7 +461,6 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
         history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -644,7 +610,6 @@ struct GeminiAIProviderClient: AIProviderClient {
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
@@ -660,21 +625,6 @@ struct GeminiAIProviderClient: AIProviderClient {
         }
     }
 
-    func streamApproval(
-        apiKey: String,
-        model: String,
-        previousResponseID: String,
-        requestID: String,
-        approve: Bool,
-        reason: String?,
-        reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition],
-        systemInstructions: String
-    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Self.failed("This provider does not support a pending remote tool approval continuation.")
-    }
-
     func streamToolOutputs(
         apiKey: String,
         model: String,
@@ -682,7 +632,6 @@ struct GeminiAIProviderClient: AIProviderClient {
         history: [AIProviderMessage],
         outputs: [[String: Any]],
         reasoningEffort: AIReasoningEffort,
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {

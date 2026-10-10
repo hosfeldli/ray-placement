@@ -170,9 +170,9 @@ import RayPlacementCore
 
 @Test @MainActor func developerTraceOmitsSampleDetails() {
     let secret = "private-prompt-\(UUID().uuidString)"
-    PerformanceMonitor.shared.record("Fixture request", duration: 0.012, detail: secret)
+    PerformanceMonitor.shared.record(.aiRequest, duration: 0.012, detail: secret)
     let trace = PerformanceMonitor.shared.redactedTrace()
-    #expect(trace.contains("Fixture request"))
+    #expect(trace.contains(LimaPerformanceMetric.aiRequest.title))
     #expect(!trace.contains(secret))
     #expect(PerformanceMonitor.shared.samples.count <= PerformanceMonitor.maximumSamples)
 }

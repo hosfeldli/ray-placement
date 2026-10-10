@@ -15,6 +15,7 @@ function event() {
 }
 function harness(storage = {}) {
   const ports = [], grants = new Set(["https://example.com/*"]), changes = [], injections = [], pageMessages = [], timers = new Map();
+  const scanSteps = [], snapshots = [], scanRestores = [];
   const tabs = new Map([[1, {id: 1, url: "https://example.com/case", title: "Case", windowId: 2, active: true}],
     [2, {id: 2, url: "https://private.example/no", title: "Secret", windowId: 2}],
     [3, {id: 3, url: "https://example.com/private", incognito: true, windowId: 3}]]);
@@ -38,7 +39,18 @@ function harness(storage = {}) {
       query: async q => [...tabs.values()].filter(t => !q.active || t.active).map(t => ({...t})),
       executeScript: async (id, options = {}) => {
         if (options.file === "interaction.js") { injections.push([id, options]); return []; }
-        return [{url: tabs.get(1).url, text: "Visible", links: [], untrustedPageContent: true}];
+        if (options.file === "scan_step.js") return [scanSteps.shift() || {initialized: true, moved: false, canAdvance: false}];
+        if (options.file === "scan_restore.js") return [scanRestores.shift() || {restored: true}];
+        if (options.file === "snapshot.js" && snapshots.length) return [snapshots.shift()];
+        if (options.file === "page_state.js") return [{url: tabs.get(id).url,
+          documentID: "fixture-document", pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0}];
+        return [{url: tabs.get(1).url, text: "Visible", links: [], status: "ready_with_content",
+          documentID: "fixture-document", pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0,
+          controls: [
+            {internalRef: "c_1", action: "click", label: "Continue", tag: "button"},
+            {internalRef: "c_2", action: "type", label: "Subject", tag: "input"},
+            {internalRef: "c_3", action: "submit", label: "Contact", tag: "form"}
+          ], untrustedPageContent: true}];
       },
       sendMessage: async (id, message) => {
         pageMessages.push([id, JSON.parse(JSON.stringify(message))]);
@@ -51,11 +63,12 @@ function harness(storage = {}) {
     browserAction: {setBadgeText() {}}
   };
   const context = {LimaBridgePolicy: P, browser, TextEncoder, crypto: {randomUUID}, console,
-    setTimeout(fn, ms) { const id = randomUUID(); timers.set(id, {fn, ms}); return id; },
+    setTimeout(fn, ms) { const id = randomUUID(); timers.set(id, {fn, ms}); if (ms === 180) setImmediate(fn); return id; },
     clearTimeout(id) { timers.delete(id); }};
   vm.runInNewContext(fs.readFileSync(path.join(root, "background.js"), "utf8"), context);
   const sender = {id: browser.runtime.id, url: browser.runtime.getURL("popup.html")};
   return {browser, ports, grants, changes, injections, pageMessages, timers, tabs, sender, storage,
+    scanSteps, snapshots, scanRestores,
     popup: (m, from = sender) => browser.runtime.onMessage.emit(m, from),
     send: m => ports.at(-1).onMessage.emit(m)};
 }
@@ -64,28 +77,32 @@ test("only exact HTTPS sites and typed command schemas are accepted", () => {
   for (const url of ["http://example.com", "https://u:p@example.com", "file:///tmp/x",
     "https://example.com:8443", "https://*.example.com", "https://example.com/\n", null, {}]) assert.equal(P.site(url), null);
   assert(P.validRequest(request("browser.open", {url: "https://example.com/a", active: false})));
+  assert(P.validRequest(request("browser.scan", {tabID: 1})));
+  assert(!P.validRequest(request("browser.scan", {tabID: 1, selector: "main"})));
   assert(P.validRequest(request("browser.open_tabs", {
     urls: ["https://example.com/a", "https://example.com/b"], background: true
   })));
+  const target = `t_${randomUUID()}`;
   assert(P.validRequest(request("browser.click", {
-    tabID: 1, expectedURL: "https://example.com/case", selector: "button#continue"
+    tabID: 1, expectedURL: "https://example.com/case", target
   })));
   assert(P.validRequest(request("browser.type", {
-    tabID: 1, expectedURL: "https://example.com/case", selector: "input[name=subject]", text: "Hello"
+    tabID: 1, expectedURL: "https://example.com/case", target, text: "Hello"
   })));
   assert(P.validRequest(request("browser.submit", {
-    tabID: 1, expectedURL: "https://example.com/case", selector: "form#contact"
+    tabID: 1, expectedURL: "https://example.com/case", target
   })));
   for (const m of [request("eval", {}), request("browser.tabs", {extra: true}),
     request("browser.read", {tabID: -1}), request("browser.read", {tabID: 1.1}),
+    request("browser.scan", {tabID: -1}),
     request("browser.open", {url: "https://example.com", active: "false"}),
     request("browser.open_tabs", {urls: [], background: true}),
     request("browser.open_tabs", {urls: Array(51).fill("https://example.com"), background: true}),
     request("browser.open_tabs", {urls: ["https://example.com"], background: "true"}),
     request("browser.open_tabs", {urls: ["https://example.com"], background: true, extra: true}),
-    request("browser.click", {tabID: 1, expectedURL: "https://example.com/case", selector: "button .unsafe"}),
-    request("browser.type", {tabID: 1, expectedURL: "https://example.com/case", selector: "input#name", text: "x".repeat(4001)}),
-    request("browser.submit", {tabID: 1, expectedURL: "https://example.com/case", selector: "#"}),
+    request("browser.click", {tabID: 1, expectedURL: "https://example.com/case", target: "button .unsafe"}),
+    request("browser.type", {tabID: 1, expectedURL: "https://example.com/case", target, text: "x".repeat(4001)}),
+    request("browser.submit", {tabID: 1, expectedURL: "https://example.com/case", target: "#"}),
     request("browser.close", {tabID: 1}), request("browser.tabs", {}, "a".repeat(36))]) assert(!P.validRequest(m));
 });
 test("tab listing and page reads are limited to explicitly granted non-private tabs", async () => {
@@ -100,6 +117,115 @@ test("tab listing and page reads are limited to explicitly granted non-private t
   assert.equal(h.ports[0].replies.at(-1).result.text, "Visible");
   assert.equal(h.changes.length, 0);
 });
+test("generic viewport scan deduplicates links, restores position, and never advertises full coverage or controls", async () => {
+  const h = harness();
+  const page = (text, links, rows) => ({
+    url: h.tabs.get(1).url, title: "Report", text, links, headings: ["Report"],
+    status: "ready_with_content", documentID: "fixture-document",
+    pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0,
+    diagnostics: {rows, truncated: false}, controls: [{internalRef: "c_1",
+      action: "click", label: "Continue", tag: "button"}]
+  });
+  const first = {href: "https://example.com/a", text: "A"};
+  const second = {href: "https://example.com/b", text: "B"};
+  h.snapshots.push(page("Visible row A", [first], 1),
+    page("Visible row B", [first, second], 2));
+  h.scanSteps.push({initialized: true, canAdvance: true},
+    {moved: true, canAdvance: false, position: 500, maximum: 500});
+  await h.send(request("browser.scan", {tabID: 1}));
+  const result = h.ports[0].replies.at(-1).result;
+  assert.equal(result.scope, "bounded_viewport_scan");
+  assert.equal(result.complete, false);
+  assert.equal(result.endReached, true);
+  assert.equal(result.restored, true);
+  assert.equal(result.scrollPasses, 1);
+  assert.equal(result.links.length, 2);
+  assert.equal(result.controls.length, 0);
+  assert.match(result.text, /Visible row A/);
+  assert.match(result.text, /Visible row B/);
+  await h.send(request("browser.scan", {tabID: 2}));
+  assert.equal(h.ports[0].replies.at(-1).error, "site_not_granted");
+});
+function holdFirstScanStep(h) {
+  const original = h.browser.tabs.executeScript;
+  let entered, resume;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  let restores = 0;
+  h.browser.tabs.executeScript = (id, options = {}) => {
+    if (options.file === "scan_step.js") {
+      entered();
+      return new Promise(resolve => { resume = value => resolve([value]); });
+    }
+    if (options.file === "scan_restore.js") restores += 1;
+    return original(id, options);
+  };
+  return {waiting, resume: value => resume(value), restores: () => restores};
+}
+test("cancelling a scan discards partial page data and attempts safe scroll restoration", async () => {
+  const h = harness(), paused = holdFirstScanStep(h);
+  const scan = request("browser.scan", {tabID: 1});
+  const pending = h.send(scan);
+  await paused.waiting;
+  await h.send({...scan, kind: "cancel"});
+  paused.resume({initialized: true, moved: false, canAdvance: true});
+  await pending;
+  const reply = h.ports[0].replies.at(-1);
+  assert.equal(reply.error, "cancelled");
+  assert.equal(reply.result, undefined);
+  assert.equal(paused.restores(), 1);
+});
+test("grant removal invalidates a scan even after regrant and never returns content", async () => {
+  const h = harness(), paused = holdFirstScanStep(h);
+  const pending = h.send(request("browser.scan", {tabID: 1}));
+  await paused.waiting;
+  h.grants.delete("https://example.com/*");
+  await h.browser.permissions.onRemoved.emit({origins: ["https://example.com/*"]});
+  h.grants.add("https://example.com/*");
+  paused.resume({initialized: true, moved: false, canAdvance: true});
+  await pending;
+  const reply = h.ports[0].replies.at(-1);
+  assert.equal(reply.error, "cancelled");
+  assert.equal(reply.result, undefined);
+  assert.equal(paused.restores(), 1);
+});
+test("navigation during a scan discards data and never restores the old route", async () => {
+  const h = harness();
+  h.scanSteps.push({initialized: true, moved: false, canAdvance: true});
+  const original = h.browser.tabs.executeScript;
+  let restores = 0;
+  let steps = 0;
+  h.browser.tabs.executeScript = (id, options = {}) => {
+    if (options.file === "scan_step.js" && ++steps === 2) {
+      h.tabs.get(id).url = "https://example.com/other";
+      return [{initialized: false, moved: true, canAdvance: false}];
+    }
+    if (options.file === "scan_restore.js") restores += 1;
+    return original(id, options);
+  };
+  await h.send(request("browser.scan", {tabID: 1}));
+  const reply = h.ports[0].replies.at(-1);
+  assert.equal(reply.error, "page_changed");
+  assert.equal(reply.result, undefined);
+  assert.equal(restores, 0);
+});
+test("same-URL page-generation change invalidates a scan before returning results", async () => {
+  const h = harness();
+  h.snapshots.push({
+    url: h.tabs.get(1).url, text: "old", links: [], status: "ready_with_content",
+    documentID: "fixture-document", pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0
+  }, {
+    url: h.tabs.get(1).url, text: "new", links: [], status: "ready_with_content",
+    documentID: "fixture-document", pageGeneration: 2, snapshotRevision: 1, mutationRevision: 0
+  });
+  h.scanSteps.push({initialized: true, moved: false, canAdvance: true},
+    {initialized: false, moved: true, canAdvance: false});
+  h.scanRestores.push({restored: false});
+  await h.send(request("browser.scan", {tabID: 1}));
+  const reply = h.ports[0].replies.at(-1);
+  assert.equal(reply.error, "page_changed");
+  assert.equal(reply.result, undefined);
+});
+
 test("mutations require exact popup consent and do not focus background tabs", async () => {
   const h = harness(), m = request("browser.open", {url: "https://example.com/new", active: false});
   const pending = h.send(m);
@@ -225,6 +351,12 @@ test("manifest has no automatic host grants or externally callable scripts", () 
 });
 
 const site = "https://example.com/*", key = "interactionOriginsV1";
+async function targetFor(h, action) {
+  await h.send(request("browser.read", {tabID: 1}));
+  const result = h.ports.at(-1).replies.at(-1).result;
+  assert(!JSON.stringify(result).includes("selector"));
+  return result.controls.find(control => control.action === action).target;
+}
 async function trust(h, origin = site) {
   const [result] = await h.popup({action: "set-interactions", origin, allow: true});
   assert(!result.error);
@@ -278,8 +410,9 @@ test("individual typed tab actions honor opt-in but private tabs and stale URLs 
 });
 test("page interaction actions require consent, exact current URLs, and use only the static adapter", async () => {
   const h = harness();
+  const typeTarget = await targetFor(h, "type");
   const typing = request("browser.type", {
-    tabID: 1, expectedURL: h.tabs.get(1).url, selector: "input[name=subject]", text: "Draft"
+    tabID: 1, expectedURL: h.tabs.get(1).url, target: typeTarget, text: "Draft"
   });
   const pending = h.send(typing);
   await flush();
@@ -290,14 +423,17 @@ test("page interaction actions require consent, exact current URLs, and use only
   assert.equal(h.injections.length, 1);
   assert.equal(h.injections[0][1].file, "interaction.js");
   assert.deepEqual(h.pageMessages[0], [1, {
-    type: "lima-browser-interaction", command: "browser.type", selector: "input[name=subject]", text: "Draft"
+    type: "lima-browser-interaction", command: "browser.type", internalRef: "c_2",
+    expected: {action: "type", label: "Subject", tag: "input",
+      documentID: "fixture-document", pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0}, text: "Draft"
   }]);
   assert.equal(h.ports[0].replies.at(-1).result.performed, "type");
 
   const trusted = harness();
   await trust(trusted);
+  const clickTarget = await targetFor(trusted, "click");
   const click = request("browser.click", {
-    tabID: 1, expectedURL: trusted.tabs.get(1).url, selector: "button#continue"
+    tabID: 1, expectedURL: trusted.tabs.get(1).url, target: clickTarget
   });
   await trusted.send(click);
   assert.equal(trusted.injections.length, 1);
@@ -305,21 +441,22 @@ test("page interaction actions require consent, exact current URLs, and use only
   assert.equal(trusted.changes.length, 0);
 
   await trusted.send(request("browser.submit", {
-    tabID: 1, expectedURL: "https://example.com/stale", selector: "form#contact"
+    tabID: 1, expectedURL: "https://example.com/stale", target: clickTarget
   }));
   assert.equal(trusted.pageMessages.length, 1);
   assert.equal(trusted.ports[0].replies.at(-1).error, "page_changed");
 
   await trusted.send(request("browser.click", {
-    tabID: 3, expectedURL: trusted.tabs.get(3).url, selector: "button#continue"
+    tabID: 3, expectedURL: trusted.tabs.get(3).url, target: clickTarget
   }));
   assert.equal(trusted.pageMessages.length, 1);
   assert.equal(trusted.ports[0].replies.at(-1).error, "site_not_granted");
 });
 test("late Stop after a completed page action reports the performed result", async () => {
   const h = harness(); await trust(h);
+  const clickTarget = await targetFor(h, "click");
   const click = request("browser.click", {
-    tabID: 1, expectedURL: h.tabs.get(1).url, selector: "button#continue"
+    tabID: 1, expectedURL: h.tabs.get(1).url, target: clickTarget
   });
   let performed = false;
   h.browser.tabs.sendMessage = async () => {
@@ -329,7 +466,34 @@ test("late Stop after a completed page action reports the performed result", asy
   };
   await h.send(click);
   assert(performed);
-  assert.equal(h.ports[0].replies.at(-1).result.performed, "click");
+  const result = h.ports[0].replies.at(-1).result;
+  assert.equal(result.performed, "click");
+  assert.equal(result.requested, true);
+  assert.equal(result.approved, true);
+  assert.equal(result.remoteOutcomeVerified, false);
+  assert.equal(result.verificationScope, "page_effect_only");
+});
+
+test("unknown, superseded, and mutated snapshot targets never reach the page adapter", async () => {
+  const h = harness(); await trust(h);
+  const unknown = request("browser.click", {tabID: 1, expectedURL: h.tabs.get(1).url,
+    target: `t_${randomUUID()}`});
+  await h.send(unknown);
+  assert.equal(h.ports[0].replies.at(-1).error, "target_stale");
+  const oldTarget = await targetFor(h, "click");
+  const latestTarget = await targetFor(h, "click");
+  assert.notEqual(oldTarget, latestTarget);
+  await h.send(request("browser.click", {tabID: 1, expectedURL: h.tabs.get(1).url, target: oldTarget}));
+  assert.equal(h.ports[0].replies.at(-1).error, "target_stale");
+  const execute = h.browser.tabs.executeScript;
+  h.browser.tabs.executeScript = (id, options) => options.file === "page_state.js"
+    ? Promise.resolve([{url: h.tabs.get(id).url, documentID: "fixture-document",
+        pageGeneration: 1, snapshotRevision: 1, mutationRevision: 1}])
+    : execute(id, options);
+  await h.send(request("browser.click", {tabID: 1, expectedURL: h.tabs.get(1).url, target: latestTarget}));
+  assert.equal(h.ports[0].replies.at(-1).error, "target_stale");
+  assert.equal(h.injections.length, 0);
+  assert.equal(h.pageMessages.length, 0);
 });
 
 test("cross-site navigation requires both source and destination interaction grants", async () => {

@@ -11,3 +11,4 @@ Packaging/Vendor/Whisper/model/ggml-small.en*.bin
 gha-creds-*.json
 Packaging/Vendor/BrowserBridge/*
 !Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.3.2-signed.xpi
+!Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi

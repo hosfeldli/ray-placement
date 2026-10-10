@@ -201,13 +201,154 @@ private final class BridgeServiceFixture {
         try await unsupported.value
         Issue.record("A companion without an interaction capability unexpectedly passed")
     } catch {
-        #expect(error.localizedDescription.contains("compatible signed update"))
+        #expect(error.localizedDescription.contains("compatible signed Browser Bridge page-session update"))
     }
 
     fixture.capabilities = [.string("browser_interaction_v1")]
-    let supported = Task { try await fixture.service.requireInteractionCapability() }
+    let legacy = Task { try await fixture.service.requireInteractionCapability() }
     try await fixture.wait { fixture.sent("bridge.status").count == 2 }
+    do {
+        try await legacy.value
+        Issue.record("A legacy interaction companion unexpectedly passed the snapshot-target capability gate")
+    } catch {
+        #expect(error.localizedDescription.contains("page-session update"))
+    }
+
+    fixture.capabilities = [.string("browser_interaction_v1"), .string("browser_targets_v2")]
+    let supported = Task { try await fixture.service.requireInteractionCapability() }
+    try await fixture.wait { fixture.sent("bridge.status").count == 3 }
     try await supported.value
+}
+
+@Test @MainActor func salesforceLookupRejectsUnreadyAndUnverifiedEmptySnapshots() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    try await fixture.connect()
+
+    func reply(_ index: Int, status: String?, links: [JSONValue]) throws {
+        let message = try #require(fixture.sent("browser.read").dropFirst(index).first)
+        var page: [String: JSONValue] = [
+            "url": .string("https://example.com/page"),
+            "links": .array(links)
+        ]
+        if let status { page["status"] = .string(status) }
+        fixture.channel?.send(.init(id: message.id, kind: "response", command: message.command,
+                                    result: .object(page)))
+    }
+
+    let timedOut = Task { try await fixture.service.readCaseLinks(tabID: 1) }
+    try await fixture.wait { fixture.sent("browser.read").count == 1 }
+    try reply(0, status: "timed_out", links: [])
+    do {
+        _ = try await timedOut.value
+        Issue.record("A timed-out report was treated as empty")
+    } catch {
+        #expect(error.localizedDescription.contains("not reached a verified ready state"))
+    }
+
+    let legacyEmpty = Task { try await fixture.service.readCaseLinks(tabID: 1) }
+    try await fixture.wait { fixture.sent("browser.read").count == 2 }
+    try reply(1, status: nil, links: [])
+    do {
+        _ = try await legacyEmpty.value
+        Issue.record("An unverified legacy empty snapshot was treated as an empty report")
+    } catch {
+        #expect(error.localizedDescription.contains("zero links alone is not an empty report"))
+    }
+
+    let visibleLink: JSONValue = .object([
+        "href": .string("https://example.com/lightning/r/Case/500000000000001/view"),
+        "text": .string("Case 00012345")
+    ])
+    let ready = Task { try await fixture.service.readCaseLinks(tabID: 1) }
+    try await fixture.wait { fixture.sent("browser.read").count == 3 }
+    try reply(2, status: "ready_with_content", links: [visibleLink])
+    guard case .object(let fields) = try await ready.value else {
+        Issue.record("The ready report did not return structured case links")
+        return
+    }
+    #expect(fields["scope"] == .string("visible_snapshot_only"))
+    #expect(fields["readiness"] == .string("ready_with_content"))
+    #expect(fields["complete"] == .bool(false))
+    guard case .array(let cases)? = fields["cases"] else {
+        Issue.record("The ready report did not return a cases array")
+        return
+    }
+    #expect(cases.count == 1)
+
+    let missing = Task { try await fixture.service.resolveCase(number: "99999999", tabID: 1) }
+    try await fixture.wait { fixture.sent("browser.read").count == 4 }
+    try reply(3, status: "ready_with_content", links: [visibleLink])
+    do {
+        _ = try await missing.value
+        Issue.record("A Case absent from visible links was treated as definitively not found")
+    } catch {
+        #expect(error.localizedDescription.contains("currently visible report links"))
+    }
+}
+
+@Test @MainActor func browserBridgeGenericScanRequiresCapabilityAndVerifiesBoundedGrantedResult() async throws {
+    let fixture = BridgeServiceFixture()
+    defer { fixture.close() }
+    try await fixture.connect()
+    let arguments: [String: JSONValue] = ["tabID": .number(1)]
+
+    do {
+        _ = try await fixture.service.request("browser.scan", arguments: arguments)
+        Issue.record("A companion without generic scan capability was allowed to scan")
+    } catch BrowserBridgeError.scanUnavailable {
+        // The older signed companion must not be treated as scan-capable.
+    }
+    #expect(fixture.sent("browser.scan").isEmpty)
+
+    fixture.capabilities = [.string("browser_scan_v1")]
+    let page: JSONValue = .object([
+        "url": .string("https://example.com/page"),
+        "status": .string("ready_with_content"),
+        "scope": .string("bounded_viewport_scan"),
+        "complete": .bool(false),
+        "text": .string("Visible virtualized rows"),
+        "links": .array([]),
+        "controls": .array([]),
+        "scrollPasses": .number(2),
+        "endReached": .bool(false),
+        "restored": .bool(true),
+        "truncated": .bool(true)
+    ])
+    let accepted = Task { try await fixture.service.request("browser.scan", arguments: arguments) }
+    try await fixture.wait { fixture.sent("browser.scan").count == 1 }
+    let first = try #require(fixture.sent("browser.scan").first)
+    fixture.channel?.send(.init(id: first.id, kind: "response", command: first.command, result: page))
+    #expect(try await accepted.value == page)
+    #expect(fixture.registry.activeTasks.isEmpty)
+
+    var falseComplete = page
+    if case .object(var fields) = falseComplete {
+        fields["complete"] = .bool(true)
+        falseComplete = .object(fields)
+    }
+    let malformed = Task { try await fixture.service.request("browser.scan", arguments: arguments) }
+    try await fixture.wait { fixture.sent("browser.scan").count == 2 }
+    let second = try #require(fixture.sent("browser.scan").last)
+    fixture.channel?.send(.init(id: second.id, kind: "response", command: second.command, result: falseComplete))
+    do {
+        _ = try await malformed.value
+        Issue.record("A falsely complete browser scan was accepted")
+    } catch BrowserBridgeError.invalidResponse {
+        // A scan can never claim complete site coverage.
+    }
+
+    let revoked = Task { try await fixture.service.request("browser.scan", arguments: arguments) }
+    try await fixture.wait { fixture.sent("browser.scan").count == 3 }
+    fixture.origins = []
+    let third = try #require(fixture.sent("browser.scan").last)
+    fixture.channel?.send(.init(id: third.id, kind: "response", command: third.command, result: page))
+    do {
+        _ = try await revoked.value
+        Issue.record("A scan result escaped after exact-site access was revoked")
+    } catch {
+        #expect(error.localizedDescription.contains("Site access is not granted"))
+    }
 }
 
 @Test @MainActor func browserBridgeActivityStopCancelsThePendingRequestAndSendsCancelFrame() async throws {

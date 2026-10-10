@@ -150,6 +150,14 @@ import Testing
     #expect(!HUDDockPosition.bottomRight.isTop)
 }
 
+@Test func activityShelfChoosesOnlyWidthsThatActuallyFit() {
+    let fitsDisplay: (CGFloat) -> Bool = { $0 <= 500 }
+    #expect(ActivityShelfWidthChoice.choose(preferredWidth: 400, miniWidth: 300, canPlace: fitsDisplay) == .preferred)
+    #expect(ActivityShelfWidthChoice.choose(preferredWidth: 600, miniWidth: 430, canPlace: fitsDisplay) == .mini)
+    #expect(ActivityShelfWidthChoice.choose(preferredWidth: 720, miniWidth: 580, canPlace: fitsDisplay) == .hidden)
+    #expect(ActivityShelfWidthChoice.choose(preferredWidth: 600, miniWidth: 600, canPlace: fitsDisplay) == .hidden)
+}
+
 @Test func emojiPhraseAliasesPrioritizeFaceWithTearsOfJoy() {
     for query in ["laugh crying", "crying laughing", "laugh tears", "tears laughing", "lol", "lmao"] {
         #expect(EmojiCatalog.search(query).first?.emoji == "😂")

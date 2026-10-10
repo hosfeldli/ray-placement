@@ -31,24 +31,39 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 }
 
 enum AppGlassStyle: String, CaseIterable, Identifiable {
-    case system, subtle, standard, clear
+    case system, subtle, standard, clear, prism, deepPrism
 
     var id: String { rawValue }
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .deepPrism: return "Deep Prism"
+        default: return rawValue.capitalized
+        }
+    }
     var baseOpacity: Double {
         switch self {
         case .system: return 0.62
         case .subtle: return 0.88
-        case .standard: return 0.58
+        case .standard, .prism: return 0.58
         case .clear: return 0.42
+        case .deepPrism: return 0.48
         }
     }
     var materialOpacity: Double {
         switch self {
         case .system: return 0.62
         case .subtle: return 0.36
-        case .standard: return 0.68
+        case .standard, .prism: return 0.68
         case .clear: return 0.84
+        case .deepPrism: return 0.78
+        }
+    }
+    /// Prismatic color is reserved for structural glass edges, not content.
+    var prismaticEdgeOpacity: Double {
+        switch self {
+        case .prism: return 0.10
+        case .deepPrism: return 0.20
+        case .system, .subtle, .standard, .clear: return 0
         }
     }
     /// A single behind-window material provides continuity without making
@@ -387,6 +402,9 @@ enum HUDDockPosition: String, Codable, CaseIterable, Identifiable {
 final class SettingsStore: ObservableObject {
     static let shared = SettingsStore()
 
+    /// Transient navigation intent; presentation remains owned by the Settings window.
+    @Published var requestedSettingsSection: SettingsSection? = nil
+
     @Published var aiEnabled: Bool {
         didSet {
             defaults.set(aiEnabled, forKey: AIRequestPolicy.preferenceKey)
@@ -394,7 +412,29 @@ final class SettingsStore: ObservableObject {
         }
     }
 
+    @Published var aiMaximumConcurrentSubagents: Int {
+        didSet {
+            aiMaximumConcurrentSubagents = min(
+                max(aiMaximumConcurrentSubagents, 1),
+                min(AIExecutionSubagentBudget.maximumConcurrentCeiling, aiMaximumSubagentsPerRun)
+            )
+            defaults.set(aiMaximumConcurrentSubagents, forKey: Key.aiMaximumConcurrentSubagents)
+        }
+    }
+
+    @Published var aiMaximumSubagentsPerRun: Int {
+        didSet {
+            aiMaximumSubagentsPerRun = min(max(aiMaximumSubagentsPerRun, 1), AIExecutionSubagentBudget.maximumPerRunCeiling)
+            if aiMaximumConcurrentSubagents > aiMaximumSubagentsPerRun {
+                aiMaximumConcurrentSubagents = aiMaximumSubagentsPerRun
+            }
+            defaults.set(aiMaximumSubagentsPerRun, forKey: Key.aiMaximumSubagentsPerRun)
+        }
+    }
+
     private enum Key {
+        static let aiMaximumConcurrentSubagents = "aiMaximumConcurrentSubagents"
+        static let aiMaximumSubagentsPerRun = "aiMaximumSubagentsPerRun"
         static let activationShortcut = "activationShortcut"
         static let activationHotkeyEnabled = "activationHotkeyEnabled"
         static let notesShortcut = "notesShortcut"
@@ -416,6 +456,7 @@ final class SettingsStore: ObservableObject {
         static let contrastMode = "contrastMode"
         static let appearance = "appearance"
         static let glassStyle = "glassStyle"
+        static let workspaceConfiguration = "workspaceConfiguration"
         static let interfaceDensity = "interfaceDensity"
         static let notesVisualTheme = "notesVisualTheme"
         static let notesFontStyle = "notesFontStyle"
@@ -631,8 +672,28 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(glassStyle.rawValue, forKey: Key.glassStyle) }
     }
 
+    @Published var workspaceConfiguration: WorkspaceConfiguration {
+        didSet {
+            if let data = try? JSONEncoder().encode(workspaceConfiguration) {
+                defaults.set(data, forKey: Key.workspaceConfiguration)
+            }
+        }
+    }
+
     @Published var interfaceDensity: AppInterfaceDensity {
         didSet { defaults.set(interfaceDensity.rawValue, forKey: Key.interfaceDensity) }
+    }
+
+    func setWorkspaceModule(_ module: LimaWorkspaceModule, in section: WorkspaceRailSection) {
+        var configuration = workspaceConfiguration
+        configuration.setSection(section, for: module)
+        workspaceConfiguration = configuration
+    }
+
+    func moveWorkspaceModule(_ module: LimaWorkspaceModule, in section: WorkspaceRailSection, by offset: Int) {
+        var configuration = workspaceConfiguration
+        configuration.move(module, in: section, by: offset)
+        workspaceConfiguration = configuration
     }
 
     @Published var notesVisualTheme: NotesVisualTheme {
@@ -1010,6 +1071,16 @@ final class SettingsStore: ObservableObject {
 
     private init() {
         aiEnabled = AIRequestPolicy.shared.isEnabled
+        let storedSubagentRunLimit = defaults.integer(forKey: Key.aiMaximumSubagentsPerRun)
+        let maximumSubagentsPerRun = storedSubagentRunLimit == 0
+            ? 12
+            : min(max(storedSubagentRunLimit, 1), AIExecutionSubagentBudget.maximumPerRunCeiling)
+        aiMaximumSubagentsPerRun = maximumSubagentsPerRun
+        let storedConcurrentSubagentLimit = defaults.integer(forKey: Key.aiMaximumConcurrentSubagents)
+        aiMaximumConcurrentSubagents = min(
+            storedConcurrentSubagentLimit == 0 ? 4 : max(storedConcurrentSubagentLimit, 1),
+            min(AIExecutionSubagentBudget.maximumConcurrentCeiling, maximumSubagentsPerRun)
+        )
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
         activationHotkeyEnabled = defaults.object(forKey: Key.activationHotkeyEnabled) as? Bool ?? true
         notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
@@ -1030,7 +1101,13 @@ final class SettingsStore: ObservableObject {
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
         contrastMode = AppContrastMode(rawValue: defaults.string(forKey: Key.contrastMode) ?? "") ?? .standard
         appearance = AppAppearance(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
-        glassStyle = AppGlassStyle(rawValue: defaults.string(forKey: Key.glassStyle) ?? "") ?? .system
+        glassStyle = AppGlassStyle(rawValue: defaults.string(forKey: Key.glassStyle) ?? "") ?? .prism
+        if let data = defaults.data(forKey: Key.workspaceConfiguration),
+           let saved = try? JSONDecoder().decode(WorkspaceConfiguration.self, from: data) {
+            workspaceConfiguration = saved.normalized
+        } else {
+            workspaceConfiguration = .defaultConfiguration
+        }
         interfaceDensity = AppInterfaceDensity(rawValue: defaults.string(forKey: Key.interfaceDensity) ?? "") ?? .balanced
         notesVisualTheme = NotesVisualTheme(rawValue: defaults.string(forKey: Key.notesVisualTheme) ?? "") ?? .prism
         notesFontStyle = NotesFontStyle(rawValue: defaults.string(forKey: Key.notesFontStyle) ?? "") ?? .system

@@ -16,10 +16,13 @@ for script in \
 done
 
 # Temporary OIDC credentials remain ignored. The small signed companion is
-# tracked by exact path so tagged hosted builds need no separate GCS upload;
-# prepare_build_assets.sh still verifies its pinned digest before packaging.
+# whitelisted and pinned by exact path so tagged builds need no separate GCS
+# upload once the artifact is committed. prepare_build_assets.sh rechecks its digest.
 git -C "$ROOT" check-ignore -q gha-creds-ci.json
-git -C "$ROOT" ls-files --error-unmatch -- Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.3.2-signed.xpi >/dev/null
+BRIDGE_XPI="$ROOT/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi"
+[[ -f "$BRIDGE_XPI" && ! -L "$BRIDGE_XPI" ]]
+! git -C "$ROOT" check-ignore -q -- "$BRIDGE_XPI"
+/usr/bin/python3 "$ROOT/scripts/verify_browser_bridge_package.py" "$BRIDGE_XPI" --require-signature
 
 /usr/bin/python3 - "$MANIFEST" "$ROOT" <<'PY'
 import hashlib
@@ -52,7 +55,7 @@ grep -Fq 'id-token: write' "$WORKFLOW"
 grep -Fq 'google-github-actions/auth@v3' "$WORKFLOW"
 grep -Fq 'google-github-actions/setup-gcloud@v3' "$WORKFLOW"
 grep -Fq './scripts/prepare_build_assets.sh' "$WORKFLOW"
-grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.3.2-signed.xpi' "$WORKFLOW"
+grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi' "$WORKFLOW"
 grep -Fq './scripts/ci_prepare_signing.sh' "$WORKFLOW"
 grep -Fq './scripts/archive_release_to_gcs.sh' "$WORKFLOW"
 grep -Fq './scripts/release_publish.sh --tag "$RELEASE_TAG" --yes' "$WORKFLOW"

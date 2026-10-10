@@ -12,13 +12,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // Keep Sparkle alive for production updates. UpdateService routes to the
     // legacy signed-custom updater only when explicitly requested.
     private let sparkleUpdateService = SparkleUpdateService.shared
-    private let accessService = LimaAccessService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
-    #if LIMA_QA
-    private var qaService: LimaQAService?
-    #endif
     private var registeredActivationShortcut: ShortcutSpec?
     private var registeredNotesShortcut: ShortcutSpec?
     private var registeredQuickNoteShortcut: ShortcutSpec?
@@ -39,6 +35,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DiagnosticsService.shared.markAppStarted()
         try? ApplicationPaths.prepare()
+        do {
+            try LegacyConnectionMigration.runAtLaunch()
+        } catch {
+            NSLog("Lima legacy connection cleanup failed: %@", error.localizedDescription)
+        }
         CrashRecoveryStore.shared.beginLaunch()
         let launchPath = Bundle.main.bundleURL.path
         if launchPath.hasPrefix("/Volumes/") || launchPath.contains("/AppTranslocation/") {
@@ -66,12 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registerExtensionHotkeys()
         installObservers()
         BrowserBridgeService.shared.start()
-        accessService.startIfEnabledAtLaunch()
-        #if LIMA_QA
-        qaService = LimaQAService.shared
-        qaService?.configure(launcher: launcher)
-        qaService?.startIfEnabledAtLaunch()
-        #endif
         NotificationCenter.default.addObserver(
             forName: .rayPlacementAppearanceChanged,
             object: nil,
@@ -83,12 +78,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         let pendingRecovery = CrashRecoveryStore.shared.pendingRestoration
-        #if LIMA_QA
         // QA artifacts never contact the public update channel.
-        let isShowingUpdateResult = false
-        #else
-        let isShowingUpdateResult = configureUpdates()
-        #endif
+        let isQABuild = Bundle.main.object(forInfoDictionaryKey: "LimaQABuild") as? Bool == true
+        let isShowingUpdateResult = isQABuild ? false : configureUpdates()
         if pendingRecovery?.workWasActive == true {
             TaskRegistry.shared.recordInterruptedWork()
         }
@@ -123,10 +115,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         BrowserBridgeService.shared.stop()
-        accessService.stopAll()
-        #if LIMA_QA
-        qaService?.stop()
-        #endif
         launcher?.shutdown()
         UsageMonitor.shared.flush()
         CrashRecoveryStore.shared.markCleanShutdown()

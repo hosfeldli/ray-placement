@@ -38,6 +38,22 @@ private final class ActivityHUDState: ObservableObject {
     }
 }
 
+enum ActivityShelfWidthChoice: Equatable {
+    case preferred
+    case mini
+    case hidden
+
+    static func choose(
+        preferredWidth: CGFloat,
+        miniWidth: CGFloat,
+        canPlace: (CGFloat) -> Bool
+    ) -> Self {
+        if canPlace(preferredWidth) { return .preferred }
+        if miniWidth < preferredWidth && canPlace(miniWidth) { return .mini }
+        return .hidden
+    }
+}
+
 @MainActor
 final class ActivityHUDController {
     private let panel: ActivityHUDPanel
@@ -114,32 +130,31 @@ final class ActivityHUDController {
         }
 
         let requestedMusicWidth = requestedMusicPresentation(dictationVisible: dictationVisible).hudWidth
-        let taskCount = min(2, tasks.activeTasks.count)
-        let taskWidth: CGFloat = taskVisible ? CGFloat(taskCount * 254 + max(0, taskCount - 1) * 8) : 0
+        // One compact task segment represents all active work; its popover lists every task.
+        let taskWidth: CGFloat = taskVisible ? 254 : 0
         let basePreferredWidth = dictationVisible && musicVisible
             ? 210 + 8 + requestedMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? requestedMusicWidth : 0))
         let preferredWidth = basePreferredWidth + (basePreferredWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
         let miniMusicWidth = MusicHUDPresentation.mini.hudWidth
+        let miniTaskWidth: CGFloat = taskVisible ? 180 : 0
         let baseMiniWidth = dictationVisible && musicVisible
             ? 210 + 8 + miniMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? miniMusicWidth : 0))
-        let miniWidth = baseMiniWidth + (baseMiniWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
+        let miniWidth = baseMiniWidth + (baseMiniWidth > 0 && miniTaskWidth > 0 ? CGFloat(8) : 0) + miniTaskWidth
 
-        if !hudState.collisionMini,
-           miniWidth < preferredWidth,
-           !canPlace(width: preferredWidth),
-           canPlace(width: miniWidth) {
-            hudState.collisionMini = true
-            show(width: miniWidth)
-            return
+        let choice = ActivityShelfWidthChoice.choose(
+            preferredWidth: preferredWidth,
+            miniWidth: miniWidth,
+            canPlace: { canPlace(width: $0) }
+        )
+        let useMini = choice == .mini
+        if hudState.collisionMini != useMini { hudState.collisionMini = useMini }
+        switch choice {
+        case .preferred: show(width: preferredWidth)
+        case .mini: show(width: miniWidth)
+        case .hidden: panel.orderOut(nil)
         }
-        if hudState.collisionMini, canPlace(width: preferredWidth) {
-            hudState.collisionMini = false
-            show(width: preferredWidth)
-            return
-        }
-        show(width: hudState.collisionMini ? miniWidth : preferredWidth)
     }
 
     /// The recording pill is intentionally phase-authoritative. Stopping and
@@ -173,15 +188,14 @@ final class ActivityHUDController {
             return
         }
 
-        let clampedWidth = min(width, max(1, visibleFrame.width - 16))
-        guard let origin = nonOverlappingOrigin(for: clampedWidth, visibleFrame: visibleFrame) else {
+        guard let origin = nonOverlappingOrigin(for: width, visibleFrame: visibleFrame) else {
             // There is no visible non-overlapping frame on this display. Hide
             // explicitly rather than retaining a stale frame that may now
             // overlap the launcher. A later layout pass retries placement.
             panel.orderOut(nil)
             return
         }
-        panel.setContentSize(NSSize(width: clampedWidth, height: 56))
+        panel.setContentSize(NSSize(width: width, height: 56))
         panel.setFrameOrigin(origin)
         // The shelf is informational and must not activate Lima or steal the
         // key window while its metadata is refreshed.
@@ -191,8 +205,7 @@ final class ActivityHUDController {
     private func canPlace(width: CGFloat) -> Bool {
         guard let screen = preferredScreen(),
               let visibleFrame = Optional(screen.visibleFrame) else { return true }
-        let clampedWidth = min(width, max(1, visibleFrame.width - 16))
-        return nonOverlappingOrigin(for: clampedWidth, visibleFrame: visibleFrame) != nil
+        return nonOverlappingOrigin(for: width, visibleFrame: visibleFrame) != nil
     }
 
     private func preferredScreen() -> NSScreen? {
@@ -429,6 +442,7 @@ private struct ActivityHUDView: View {
     @ObservedObject var tasks: TaskRegistry
     let openDictation: () -> Void
     @State private var volumePopoverVisible = false
+    @State private var tasksExpanded = false
 
     var body: some View {
         let dictationVisible = dictation.phase == .recording || dictation.phase == .paused
@@ -441,34 +455,82 @@ private struct ActivityHUDView: View {
                 musicPill(track, presentation: presentation)
                     .frame(width: presentation.hudWidth)
             }
-            ForEach(Array(tasks.activeTasks.prefix(2))) { task in
-                taskPill(task)
-                    .frame(width: 254)
+            if let task = tasks.activeTasks.last {
+                taskSegment(task)
+                    .frame(width: hudState.collisionMini ? 180 : 254)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .limaGlassContainer(region: .hud, cornerRadius: LimaRadius.searchField)
         .limaAnimation(LimaDesign.spring(0.24), value: dictation.phase)
         .limaAnimation(LimaDesign.spring(0.24), value: music.nowPlaying)
         .onDisappear { hudState.cancelCollapse() }
     }
 
-    private func taskPill(_ task: LimaTask) -> some View {
+    private func taskSegment(_ task: LimaTask) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: task.kind.symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(settings.accentTheme.primary)
-                .frame(width: 24, height: 24)
-                .background(settings.accentTheme.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.title)
-                    .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
-                    .lineLimit(1)
-                Text(task.detail ?? (task.state == .waiting ? "Needs attention" : "Working"))
-                    .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+            Button { tasksExpanded.toggle() } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: task.kind.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(settings.accentTheme.primary)
+                        .frame(width: 24, height: 24)
+                        .background(settings.accentTheme.primary.opacity(0.12), in: RoundedRectangle(cornerRadius: LimaRadius.compactControl, style: .continuous))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(task.title)
+                            .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                        Text(tasks.activeTasks.count > 1
+                             ? "\(tasks.activeTasks.count) active · \(task.detail ?? "Working")"
+                             : (task.detail ?? (task.state == .waiting ? "Needs attention" : "Working")))
+                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 8, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
+            .help("Show all active tasks")
+            .accessibilityLabel("Show \(tasks.activeTasks.count) active tasks")
+            .popover(isPresented: $tasksExpanded, arrowEdge: .bottom) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("ACTIVE TASKS")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(LimaTheme.textTertiary)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(tasks.activeTasks) { active in
+                                HStack(spacing: 8) {
+                                    Image(systemName: active.kind.symbol)
+                                        .foregroundStyle(settings.accentTheme.primary)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(active.title).font(.system(size: 12, weight: .semibold))
+                                        Text(active.detail ?? (active.state == .waiting ? "Needs attention" : "Working"))
+                                            .font(.system(size: 10)).foregroundStyle(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if active.isCancellable {
+                                        Button("Stop", systemImage: "stop.fill") {
+                                            tasks.cancel(active.id)
+                                            focus.restoreSoon()
+                                        }
+                                        .labelStyle(.iconOnly)
+                                        .help("Stop \(active.title)")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .frame(maxHeight: 300)
+                }
+                .padding(12)
+                .frame(width: 320)
+            }
             if task.isCancellable {
                 Button {
                     tasks.cancel(task.id)
@@ -487,7 +549,6 @@ private struct ActivityHUDView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: settings.accentTheme.primary.opacity(0.25), shadow: true)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(task.title): \(task.detail ?? "Working")")
     }
@@ -544,7 +605,6 @@ private struct ActivityHUDView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: LimaColors.danger.opacity(0.30), shadow: true)
         .overlay(alignment: .bottom) {
             AudioAccentRail(level: dictation.audioLevel, accent: .red, active: dictation.phase == .recording)
         }
@@ -591,7 +651,6 @@ private struct ActivityHUDView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.26), shadow: true)
         .overlay(alignment: .bottom) {
             if settings.musicShowProgress {
                 MusicSignalRibbon(progress: track.duration > 0 ? track.position / track.duration : 0, accent: track.source.accent)
@@ -629,7 +688,6 @@ private struct ActivityHUDView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.26), shadow: true)
         .overlay(alignment: .bottom) {
             AudioAccentRail(level: track.isPlaying ? music.outputAudioLevel : 0, accent: track.source.accent, active: track.isPlaying)
         }
@@ -667,7 +725,6 @@ private struct ActivityHUDView: View {
         }
         .padding(.horizontal, 8)
         .frame(height: 56)
-        .limaNativeSurface(fill: LimaColors.raisedSurface, radius: LimaRadius.searchField, border: track.source.accent.opacity(0.30), shadow: true)
         .onAppear { hudState.scheduleCollapse(after: settings.musicExpandedTimeout) }
     }
 

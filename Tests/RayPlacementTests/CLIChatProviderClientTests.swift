@@ -8,7 +8,7 @@ import Testing
     let stream = client.streamReply(
         apiKey: "", model: "default", input: "Reply with exactly: Lima adapter smoke passed.",
         history: [], previousResponseID: nil, reasoningEffort: .medium,
-        attachments: [], mcpServers: [], localTools: [], systemInstructions: ""
+        attachments: [], localTools: [], systemInstructions: ""
     )
     var reply = ""
     for try await event in stream {
@@ -25,7 +25,7 @@ import Testing
         apiKey: "", model: "default",
         input: "Call the available lima_fixture_lookup tool with key sample. Do not answer before requesting it.",
         history: [], previousResponseID: nil, reasoningEffort: .medium,
-        attachments: [], mcpServers: [], localTools: [tool], systemInstructions: ""
+        attachments: [], localTools: [tool], systemInstructions: ""
     )
     var call: AIOutputItem?
     var responseID: String?
@@ -45,7 +45,7 @@ import Testing
     let continuation = client.streamToolOutputs(
         apiKey: "", model: "default", previousResponseID: responseID,
         history: history, outputs: [["type": "function_call_output", "call_id": callID, "output": result]],
-        reasoningEffort: .medium, mcpServers: [], localTools: [tool], systemInstructions: ""
+        reasoningEffort: .medium, localTools: [tool], systemInstructions: ""
     )
     var answer = ""
     for try await event in continuation {
@@ -63,6 +63,11 @@ import Testing
     #expect(codex.contains("read-only"))
     #expect(codex.last == "-")
     #expect(!codex.contains("--model"))
+    let selectedCodex = CLIChatProviderClient.arguments(
+        for: .codexCLI, model: "gpt-6-sol", workingDirectory: directory
+    )
+    let codexModelFlag = selectedCodex.firstIndex(of: "--model")
+    #expect(codexModelFlag.map { selectedCodex.index(after: $0) }.flatMap { selectedCodex.indices.contains($0) ? selectedCodex[$0] : nil } == "gpt-6-sol")
     let claude = CLIChatProviderClient.arguments(for: .claudeCLI, model: "test-model", workingDirectory: directory)
     #expect(claude.contains("-p"))
     #expect(claude.contains("--tools"))
@@ -82,6 +87,18 @@ private func fixtureCLITool() -> LimaAIToolDefinition {
         ],
         risk: .read
     )
+}
+
+@Test func cliTimeoutHasSafeActionableMessage() {
+    #expect(CLIChatProviderClient.Failure.timedOut.errorDescription == AIProviderFailure.timeoutMessage)
+    #expect(AIProviderFailure.presentation(
+        provider: "Codex CLI",
+        model: "default",
+        status: nil,
+        code: nil,
+        parameter: nil,
+        fallback: AIProviderFailure.timeoutMessage
+    ).contains("Codex CLI request timed out"))
 }
 
 @Test func cliProviderToolEnvelopeAcceptsOnlyRoutedTools() throws {

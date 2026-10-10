@@ -81,13 +81,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var keyboardSelectionContext: KeyboardSelectionService.Capture?
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
+    private var grammarExecutionRun: GrammarExecutionRun?
     private var workflowTask: Task<Void, Never>?
     private var writingOperationToken: UUID?
     private var writingHoldToken: UUID?
     private var quickLookTimeoutHeld = false
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
-    private var aiMCPManagerObserver: NSObjectProtocol?
     private var modeSubscription: AnyCancellable?
     private var surfaceModeSubscription: AnyCancellable?
     private var queryInteractionSubscription: AnyCancellable?
@@ -101,7 +101,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var retainedSurfaceWindows: [NSWindowController] = []
     private let surfaceSessionController = LauncherSurfaceSessionController()
     private let updateService: UpdateService
-    private lazy var mcpManagerWindow = MCPManagerWindowController()
     private lazy var developerGrammarSettingsWindow = DeveloperGrammarSettingsWindowController(settings: .shared)
     private lazy var settingsWindow = SettingsWindowController(
         settings: .shared,
@@ -127,15 +126,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
-        aiMCPManagerObserver = NotificationCenter.default.addObserver(
-            forName: .limaOpenAIMCPManager,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in
-                self?.mcpManagerWindow.present()
-            }
-        }
         extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
         workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
 
@@ -258,9 +248,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         if let applicationActivationObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(applicationActivationObserver)
         }
-        if let aiMCPManagerObserver {
-            NotificationCenter.default.removeObserver(aiMCPManagerObserver)
-        }
     }
 
     func toggle(from sourceApplication: NSRunningApplication? = nil) {
@@ -269,7 +256,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func show(from sourceApplication: NSRunningApplication? = nil) {
         let startedAt = DispatchTime.now().uptimeNanoseconds
-        let measurementID = PerformanceMonitor.shared.begin("Launcher open to visible")
+        let measurementID = PerformanceMonitor.shared.begin(.launcherOpenToVisible)
         defer { LauncherPerformanceDiagnostics.shared.mark("hotkey-visible", startedAt: startedAt, budget: 80) }
         rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.setContextualSelection(selectedTextContext?.text)
@@ -294,7 +281,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func shutdown() {
         extensionExecutor.cancelAll()
         writingChecker.cancel()
-        cancelWritingOperation()
+        cancelWritingOperation(detail: "Lima closed")
         releaseQuickLookTimeoutHold()
         toast.dismiss()
         clipboard.flush()
@@ -337,85 +324,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.present(module: .ai)
     }
 
-    #if LIMA_QA
-    /// Narrow QA routes into the same production presentation controllers. These
-    /// methods do not exist in the normal production compilation.
-    func openQASurface(_ surface: String) -> Bool {
-        switch surface {
-        case "search": show()
-        case "notes": hide(); notesWindow.present(module: .notes)
-        case "ai": showAIChat()
-        case "context": hide(); notesWindow.present(module: .context)
-        case "settings": showSettings()
-        default: return false
-        }
-        return true
-    }
-
-    func closeQASurface(_ surface: String) -> Bool {
-        switch surface {
-        case "search":
-            guard panel.isVisible else { return false }
-            hide()
-        case "notes", "ai", "context":
-            let module = surface == "notes" ? LimaWorkspaceModule.notes :
-                (surface == "ai" ? LimaWorkspaceModule.ai : LimaWorkspaceModule.context)
-            let state = WorkspaceStateRegistry.shared.state
-            guard state.activeWorkspace == LimaSurfaceID.workspace.rawValue,
-                  state.activeModule == module.rawValue else { return false }
-            notesWindow.hideQuickNote()
-        case "settings":
-            guard let window = settingsWindow.window, window.isVisible else { return false }
-            window.performClose(nil)
-        default:
-            return false
-        }
-        return true
-    }
-
-    func qaAIStateSnapshot() -> [String: Any] {
-        let conversation = aiChatModel.selectedConversation
-        return [
-            "selectedConversationID": conversation?.id.uuidString as Any? ?? NSNull(),
-            "messageCount": conversation?.messages.count ?? 0,
-            "isStreaming": aiChatModel.isStreaming,
-            "awaitingApproval": aiChatModel.pendingApproval != nil
-        ]
-    }
-
-    func qaAIActivitySnapshot() -> [String: Any] {
-        guard let conversation = aiChatModel.selectedConversation,
-              let assistant = conversation.messages.last(where: { $0.role == .assistant }) else {
-            return ["available": false, "steps": []]
-        }
-        let steps = AIActivityStream.steps(
-            from: assistant.activities ?? [],
-            isActive: aiChatModel.isStreaming || aiChatModel.pendingApproval != nil
-        )
-        return [
-            "available": true,
-            "conversationID": conversation.id.uuidString,
-            "steps": steps.map { step in
-                [
-                    "id": step.id.uuidString,
-                    "title": step.title,
-                    "status": Self.qaStatus(for: step.status),
-                    "isToolAction": step.isToolAction
-                ] as [String: Any]
-            }
-        ]
-    }
-
-    private static func qaStatus(for status: AIActivityStreamStep.Status) -> String {
-        switch status {
-        case .running: "running"
-        case .waiting: "waiting"
-        case .completed: "completed"
-        case .failed: "failed"
-        case .interrupted: "interrupted"
-        }
-    }
-    #endif
 
     func showExtensionStore() {
         showSettings()
@@ -1158,7 +1066,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func beginWritingOperation() -> UUID {
         if writingOperationToken != nil || writingHoldToken != nil {
             writingChecker.cancel()
-            cancelWritingOperation()
+            cancelWritingOperation(detail: "Replaced by a newer operation")
         }
         let token = UUID()
         writingOperationToken = token
@@ -1177,19 +1085,82 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         surfaceSessionController.resumeTimeout(for: "writing")
     }
 
-    private func completeWritingOperation(_ token: UUID) {
+    private func completeWritingOperation(
+        _ token: UUID,
+        state: LimaTaskState = .completed,
+        detail: String? = nil
+    ) {
         guard writingOperationToken == token else { return }
+        finishGrammarRun(for: state)
+        if let writingTaskID {
+            TaskRegistry.shared.finish(writingTaskID, state: state, detail: detail)
+        }
         writingTaskID = nil
         releaseWritingHold(token: token)
         writingOperationToken = nil
     }
 
-    private func cancelWritingOperation() {
+    private func cancelWritingOperation(
+        finishTask: Bool = true,
+        detail: String = "Writing operation stopped"
+    ) {
+        finishGrammarRun(for: .cancelled)
+        if finishTask, let writingTaskID {
+            TaskRegistry.shared.finish(writingTaskID, state: .cancelled, detail: detail)
+        }
         writingTaskID = nil
         writingOperationToken = nil
         if let token = writingHoldToken {
             releaseWritingHold(token: token)
         }
+    }
+
+    private func beginGrammarTask(for operationToken: UUID, detail: String) -> UUID {
+        var run = GrammarExecutionRun()
+        precondition(run.transition(to: .checking), "A new Grammar run must enter checking")
+        grammarExecutionRun = run
+        let taskID = TaskRegistry.shared.begin(
+            kind: .grammar,
+            title: "Fixing writing",
+            detail: detail,
+            isCancellable: true,
+            onCancel: { [weak self] in
+                guard let self, self.isCurrentWritingOperation(operationToken) else { return }
+                self.writingChecker.cancel()
+                self.cancelWritingOperation(finishTask: false)
+                self.selectedTextContext = nil
+                self.keyboardSelectionContext = nil
+                self.focusedTextContext = nil
+                self.toast.dismiss()
+            }
+        )
+        writingTaskID = taskID
+        return taskID
+    }
+
+    private func updateGrammarTask(_ taskID: UUID, detail: String) {
+        TaskRegistry.shared.update(taskID, title: "Fixing writing", detail: detail)
+    }
+
+    private func transitionGrammarRun(to state: GrammarExecutionRunState) {
+        guard var run = grammarExecutionRun else { return }
+        guard run.transition(to: state) else {
+            assertionFailure("Invalid Grammar run transition: \(run.state.rawValue) → \(state.rawValue)")
+            return
+        }
+        grammarExecutionRun = run
+    }
+
+    private func finishGrammarRun(for taskState: LimaTaskState) {
+        let nextState: GrammarExecutionRunState
+        switch taskState {
+        case .completed: nextState = .completed
+        case .failed: nextState = .failed
+        case .cancelled: nextState = .cancelled
+        case .running, .waiting: return
+        }
+        guard grammarExecutionRun?.isActive == true else { return }
+        transitionGrammarRun(to: nextState)
     }
 
     private func sessionMode(_ session: ExtensionSurfaceSession) -> LauncherMode {
@@ -2036,8 +2007,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func runStealthCorrection(for text: String, operationToken: UUID) {
         guard isCurrentWritingOperation(operationToken) else { return }
-        let taskID = UUID()
-        writingTaskID = taskID
+        let taskID = beginGrammarTask(for: operationToken, detail: "Checking selected text")
         toast.showStealth("Editing…")
         // Explicit correction commands use the selected engine. Live Notes
         // underlining remains on the separate local-only path.
@@ -2045,23 +2015,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
+            self.updateGrammarTask(taskID, detail: message)
             self.toast.showStealth(message)
         }) { [weak self] result in
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
-            self.writingTaskID = nil
             switch result {
             case .success(let corrected) where corrected == text:
-                self.completeWritingOperation(operationToken)
+                self.completeWritingOperation(operationToken, detail: "No changes needed")
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
                 // A normal no-op correction needs no notification.
             case .success(let corrected):
+                self.transitionGrammarRun(to: .applying)
+                self.updateGrammarTask(taskID, detail: "Applying correction")
                 self.replaceStealthText(corrected, operationToken: operationToken)
             case .failure(let error):
-                self.completeWritingOperation(operationToken)
+                self.completeWritingOperation(operationToken, state: .failed, detail: "Correction failed")
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
                 self.focusedTextContext = nil
@@ -2151,8 +2123,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func showWritingReview(for text: String, operationToken: UUID) {
         guard isCurrentWritingOperation(operationToken) else { return }
-        let taskID = UUID()
-        writingTaskID = taskID
+        let taskID = beginGrammarTask(for: operationToken, detail: "Checking selected text")
         hide()
         let engineDescription: String
         switch SettingsStore.shared.grammarEngineMode {
@@ -2166,19 +2137,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
+            self.updateGrammarTask(taskID, detail: message)
             self.toast.show(message, style: .working, duration: 3_600)
         }) { [weak self] result in
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
-            self.writingTaskID = nil
             switch result {
             case .success(let review):
-                self.completeWritingOperation(operationToken)
+                self.completeWritingOperation(operationToken, detail: "Review ready")
                 self.viewModel.showWritingReview(review)
                 if !self.panel.isVisible { self.presentPanel() }
             case .failure(let error):
-                self.completeWritingOperation(operationToken)
+                self.completeWritingOperation(operationToken, state: .failed, detail: "Correction failed")
                 self.toast.dismiss()
                 self.presentError(title: "Check Spelling & Grammar", error: error)
             }
@@ -2509,7 +2480,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         completion: (() -> Void)? = nil
     ) {
         guard isCurrentWritingOperation(operationToken) else { return }
-        completeWritingOperation(operationToken)
+        let taskState: LimaTaskState
+        let taskDetail: String
+        switch outcome {
+        case .verified:
+            taskState = .completed
+            taskDetail = "Correction applied"
+        case .sentUnverified:
+            taskState = .completed
+            taskDetail = "Correction sent"
+        case .failedBeforeDelivery:
+            taskState = .failed
+            taskDetail = "Correction failed"
+        case .targetChanged:
+            taskState = .failed
+            taskDetail = "Selected text changed"
+        }
+        completeWritingOperation(operationToken, state: taskState, detail: taskDetail)
         selectedTextContext = nil
         keyboardSelectionContext = nil
         focusedTextContext = nil
@@ -2837,7 +2824,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             return
         }
         hide()
-        let measurementID = PerformanceMonitor.shared.begin("Workflow execution")
+        let measurementID = PerformanceMonitor.shared.begin(.workflowExecution)
         let taskID = TaskRegistry.shared.begin(
             kind: .workflow,
             title: workflow.name,

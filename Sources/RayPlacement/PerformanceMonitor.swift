@@ -1,6 +1,50 @@
 import Foundation
 import OSLog
 
+enum LimaPerformanceMetric: String, CaseIterable, Codable, Sendable {
+    case launcherOpenToVisible
+    case universalSearchQueryToResults
+    case workspaceOpenToVisible
+    case workspaceModuleSwitch
+    case aiSendMainActorPreparation
+    case aiRequest
+    case aiComposerToFirstToken
+    case aiHistoryConstruction
+    case aiToolDuration
+    case aiTerminalCommand
+    case dictationSpeechToFirstPartial
+    case dictationPartialToCommittedDelta
+    case whisperSegmentDuration
+    case formatterParse
+    case extensionExecution
+    case workflowExecution
+    case workflowStep
+    case mainThreadSchedulingDelay
+
+    var title: String {
+        switch self {
+        case .launcherOpenToVisible: return "Launcher open to visible"
+        case .universalSearchQueryToResults: return "Search query to results"
+        case .workspaceOpenToVisible: return "Workspace open to visible"
+        case .workspaceModuleSwitch: return "Workspace module switch"
+        case .aiSendMainActorPreparation: return "AI send main-actor preparation"
+        case .aiRequest: return "AI request"
+        case .aiComposerToFirstToken: return "AI composer to first token"
+        case .aiHistoryConstruction: return "AI history construction"
+        case .aiToolDuration: return "AI tool duration"
+        case .aiTerminalCommand: return "AI terminal command"
+        case .dictationSpeechToFirstPartial: return "Dictation speech to first partial"
+        case .dictationPartialToCommittedDelta: return "Dictation partial to committed delta"
+        case .whisperSegmentDuration: return "Whisper segment duration"
+        case .formatterParse: return "Formatter parse"
+        case .extensionExecution: return "Extension execution"
+        case .workflowExecution: return "Workflow execution"
+        case .workflowStep: return "Workflow step"
+        case .mainThreadSchedulingDelay: return "Main thread scheduling delay"
+        }
+    }
+}
+
 struct LimaPerformanceSample: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let operation: String
@@ -22,7 +66,7 @@ final class PerformanceMonitor: ObservableObject {
     @Published private(set) var samples: [LimaPerformanceSample] = []
 
     private struct ActiveOperation {
-        let operation: String
+        let metric: LimaPerformanceMetric
         let startedAt: Date
         let detail: String?
     }
@@ -36,22 +80,22 @@ final class PerformanceMonitor: ObservableObject {
     private init() {}
 
     @discardableResult
-    func begin(_ operation: String, detail: String? = nil) -> UUID {
+    func begin(_ metric: LimaPerformanceMetric, detail: String? = nil) -> UUID {
         let identifier = UUID()
         let value = ActiveOperation(
-            operation: Self.bounded(operation, limit: 80),
+            metric: metric,
             startedAt: Date(),
             detail: Self.optionalBounded(detail, limit: 160)
         )
         active[identifier] = value
-        logger.debug("Lima operation started: \(value.operation, privacy: .public)")
+        logger.debug("Lima operation started: \(metric.title, privacy: .public)")
         return identifier
     }
 
     func end(_ identifier: UUID, succeeded: Bool = true, detail: String? = nil) {
         guard let operation = active.removeValue(forKey: identifier) else { return }
         record(
-            operation.operation,
+            operation.metric,
             startedAt: operation.startedAt,
             duration: max(0, Date().timeIntervalSince(operation.startedAt)),
             succeeded: succeeded,
@@ -60,7 +104,7 @@ final class PerformanceMonitor: ObservableObject {
     }
 
     func record(
-        _ operation: String,
+        _ metric: LimaPerformanceMetric,
         startedAt: Date = Date(),
         duration: TimeInterval,
         succeeded: Bool = true,
@@ -68,7 +112,7 @@ final class PerformanceMonitor: ObservableObject {
     ) {
         let sample = LimaPerformanceSample(
             id: UUID(),
-            operation: Self.bounded(operation, limit: 80),
+            operation: metric.title,
             startedAt: startedAt,
             duration: max(0, duration),
             succeeded: succeeded,
@@ -95,7 +139,7 @@ final class PerformanceMonitor: ObservableObject {
                 guard let self, self.mainThreadProbeToken == token else { return }
                 let delay = Date().timeIntervalSince(queuedAt)
                 if delay >= 0.1 {
-                    self.record("Main thread scheduling delay", startedAt: queuedAt, duration: delay)
+                    self.record(.mainThreadSchedulingDelay, startedAt: queuedAt, duration: delay)
                 }
             }
         }

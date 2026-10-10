@@ -176,15 +176,36 @@ private struct TerminalSurface: NSViewRepresentable {
 
 struct DeveloperTerminalView: View {
     @ObservedObject var model: DeveloperTerminalModel
+    @ObservedObject private var aiSessions = AIWorkspaceTerminalCoordinator.shared
     @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
+    @State private var selectedSessionID: UUID?
+
+    private var selectedAISession: AIWorkspaceTerminalSnapshot? {
+        guard let selectedSessionID else { return nil }
+        return aiSessions.sessions.first(where: { $0.id == selectedSessionID })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: LimaSpacing.sm) {
                 Label("Terminal", systemImage: "terminal")
                     .limaFont(.caption.weight(.semibold))
+                if !aiSessions.sessions.isEmpty {
+                    Picker("Session", selection: $selectedSessionID) {
+                        Text("My Shell").tag(UUID?.none)
+                        ForEach(aiSessions.sessions) { session in
+                            Text(session.title).tag(Optional(session.id))
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220)
+                }
                 Button {
-                    model.captureOutputToShelf()
+                    if let session = selectedAISession {
+                        ContextShelfIntegration.addTerminalOutput(session.output, sessionName: session.title)
+                    } else {
+                        model.captureOutputToShelf()
+                    }
                 } label: {
                     Image(systemName: "tray.and.arrow.down")
                 }
@@ -192,13 +213,24 @@ struct DeveloperTerminalView: View {
                 .help("Add terminal output to Context Shelf")
                 Spacer()
                 Menu {
-                    Toggle("Wrap Lines", isOn: Binding(
-                        get: { model.wrapsLines },
-                        set: { model.setWrapLines($0) }
-                    ))
-                    Divider()
-                    Button("Clear Screen") { model.clearScreen() }
-                    Button("Restart Shell") { model.restartShell() }
+                    if let session = selectedAISession {
+                        if session.state == .running {
+                            Button("Stop AI Session") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                        } else {
+                            Button("Close AI Session") {
+                                _ = try? aiSessions.close(sessionID: session.id)
+                                selectedSessionID = nil
+                            }
+                        }
+                    } else {
+                        Toggle("Wrap Lines", isOn: Binding(
+                            get: { model.wrapsLines },
+                            set: { model.setWrapLines($0) }
+                        ))
+                        Divider()
+                        Button("Clear Screen") { model.clearScreen() }
+                        Button("Restart Shell") { model.restartShell() }
+                    }
                 } label: {
                     Image(systemName: "ellipsis")
                         .frame(width: 28, height: 28)
@@ -211,13 +243,68 @@ struct DeveloperTerminalView: View {
             .frame(height: LimaDesign.toolbarHeight)
             .background(LimaTheme.surfaceSecondary)
             GlassHairline()
-            TerminalSurface(model: model)
-                .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
-                .onTapGesture { model.focus() }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel("Terminal")
-                .onAppear { model.startIfNeeded() }
+            if let session = selectedAISession {
+                aiSessionView(session)
+            } else {
+                TerminalSurface(model: model)
+                    .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
+                    .onTapGesture { model.focus() }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel("Terminal")
+                    .onAppear { model.startIfNeeded() }
+            }
         }
+        .onAppear {
+            if selectedSessionID == nil,
+               let running = aiSessions.sessions.last(where: { $0.state == .running }) {
+                selectedSessionID = running.id
+            }
+        }
+        .onChange(of: aiSessions.sessions.count) { _ in
+            if let newest = aiSessions.sessions.last { selectedSessionID = newest.id }
+        }
+    }
+
+    @ViewBuilder
+    private func aiSessionView(_ session: AIWorkspaceTerminalSnapshot) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: LimaSpacing.sm) {
+                Image(systemName: session.state == .running ? "circle.dotted" :
+                    session.state == .completed ? "checkmark.circle" :
+                    session.state == .idle ? "terminal" : "xmark.circle")
+                Text(session.state.rawValue.capitalized)
+                Text(session.directory)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                Spacer()
+                if session.state == .running {
+                    Button("Stop") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                        .buttonStyle(.borderless)
+                }
+            }
+            .limaFont(.caption)
+            .padding(.horizontal, LimaSpacing.md)
+            .frame(height: LimaDesign.toolbarHeight)
+            .background(LimaTheme.surfaceSecondary)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    Text(session.output.isEmpty ? "AI Workspace session ready." : session.output)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(LimaTheme.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(LimaSpacing.md)
+                    Color.clear.frame(height: 1).id("bottom")
+                }
+                .onChange(of: session.nextOutputByte) { _ in
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+            }
+            .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityLabel("AI Workspace Terminal")
     }
 }

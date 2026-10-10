@@ -468,7 +468,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                         }
                     }
                 }
-                firstPartialPerformanceMeasurementID = PerformanceMonitor.shared.begin("Dictation speech to first partial")
+                firstPartialPerformanceMeasurementID = PerformanceMonitor.shared.begin(.dictationSpeechToFirstPartial)
                 do {
                     try liveAppleTranscriber.start()
                 } catch {
@@ -497,7 +497,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             let duration = max(0, Date().timeIntervalSince(partialToCommitStartedAt))
             if duration >= 0.01 {
                 PerformanceMonitor.shared.record(
-                    "Dictation partial to committed delta",
+                    .dictationPartialToCommittedDelta,
                     startedAt: partialToCommitStartedAt,
                     duration: duration
                 )
@@ -719,7 +719,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             let succeeded: Bool
             if case .success = result { succeeded = true } else { succeeded = false }
             PerformanceMonitor.shared.record(
-                "Whisper segment duration",
+                .whisperSegmentDuration,
                 startedAt: segmentStartedAt,
                 duration: max(0, Date().timeIntervalSince(segmentStartedAt)),
                 succeeded: succeeded
@@ -1088,7 +1088,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
 
     private func finishFirstPartialMeasurement(succeeded: Bool, detail: String? = nil) {
         guard let measurementID = firstPartialPerformanceMeasurementID else { return }
-        PerformanceMonitor.shared.end(measurementID, succeeded: succeeded, detail: detail)
+        PerformanceMonitor.shared.end(measurementID, succeeded: succeeded)
         firstPartialPerformanceMeasurementID = nil
     }
 

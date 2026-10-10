@@ -147,7 +147,7 @@ final class FormatterWorkspaceModel: ObservableObject {
     }
 
     func format() {
-        let measurementID = PerformanceMonitor.shared.begin("Formatter parse")
+        let measurementID = PerformanceMonitor.shared.begin(.formatterParse)
         var succeeded = false
         onProcessingStateChanged?(true)
         defer {

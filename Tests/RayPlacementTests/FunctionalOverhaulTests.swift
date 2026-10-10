@@ -14,7 +14,6 @@ private func functionalModel(workspace: AIWorkspaceStore? = nil,
                              projectID: UUID? = nil, tools: Set<String> = []) -> AIChatViewModel {
     AIChatViewModel(store: AIConversationStore(fixtures: [AIConversation(projectID: projectID)]),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: tools), transport: FixtureAITransport.standard,
         taskRegistry: TaskRegistry(), workspaceStore: workspace ?? AIWorkspaceStore(fixtures: []))
 }

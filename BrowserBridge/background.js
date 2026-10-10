@@ -5,6 +5,9 @@ const HOST = "com.lima.browser_bridge";
 let port = null, reconnectTimer = null, lastError = null;
 const active = new Map();
 const mutations = new Map();
+// One bounded snapshot/target registry per granted tab. References are opaque to
+// the AI and never survive a new snapshot, document, route, or grant change.
+const pageSessions = new Map();
 // Reading uses Firefox's persistent exact-site grants. Tab interactions are a
 // separate, local-only opt-in; never infer them from a read grant or page text.
 const INTERACTION_KEY = "interactionOriginsV1", MAX_INTERACTION_SITES = 256;
@@ -65,6 +68,7 @@ async function setInteractionPolicy(site, allow) {
   });
 }
 function removedSiteAccess(removed) {
+  pageSessions.clear();
   ++policyEpoch;
   for (const id of active.keys()) cancel(id);
   const origins = removed.origins || [];
@@ -115,20 +119,167 @@ function info(tab) {
   return {id: tab.id, title: (tab.title || "").slice(0, 256), url: tab.url,
     active: !!tab.active, windowID: tab.windowId};
 }
+async function pageState(tabID) {
+  const [value] = await browser.tabs.executeScript(tabID,
+    {file: "page_state.js", allFrames: false, runAt: "document_idle"});
+  return value;
+}
+async function readPage(tab, state) {
+  let snapshot, waitMs = 0;
+  // Only a semantically ready and quiet snapshot may advertise actions. Never
+  // infer an empty page solely from zero links during SPA hydration.
+  for (let pass = 0; pass < 13; pass++) {
+    check(state);
+    [snapshot] = await browser.tabs.executeScript(tab.id,
+      {file: "snapshot.js", allFrames: false, runAt: "document_idle"});
+    const current = await allowedTab(tab.id);
+    check(state);
+    if (!snapshot || snapshot.url !== tab.url || current.url !== tab.url) error("page_changed");
+    if (!["loading", "hydrating"].includes(snapshot.status)) break;
+    if (pass === 12) { snapshot.status = "timed_out"; break; }
+    await new Promise(resolve => setTimeout(resolve, 200));
+    waitMs += 200;
+  }
+  const targets = new Map(), controls = [];
+  if (snapshot.status !== "timed_out" && Array.isArray(snapshot.controls) &&
+      typeof snapshot.documentID === "string" && Number.isSafeInteger(snapshot.pageGeneration) &&
+      Number.isSafeInteger(snapshot.snapshotRevision) && Number.isSafeInteger(snapshot.mutationRevision)) {
+    for (const control of snapshot.controls.slice(0, 100)) {
+      if (!control || typeof control.internalRef !== "string" ||
+          !/^c_[1-9][0-9]{0,2}$/.test(control.internalRef) ||
+          !["click", "type", "submit"].includes(control.action) ||
+          typeof control.label !== "string" || !control.label || control.label.length > 128 ||
+          typeof control.tag !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(control.tag)) continue;
+      const target = `t_${crypto.randomUUID()}`;
+      targets.set(target, {internalRef: control.internalRef, action: control.action,
+        label: control.label, tag: control.tag});
+      controls.push({target, action: control.action, label: control.label, role: control.tag});
+    }
+  }
+  if (!pageSessions.has(tab.id) && pageSessions.size >= 64) pageSessions.delete(pageSessions.keys().next().value);
+  pageSessions.set(tab.id, {url: tab.url, documentID: snapshot.documentID,
+    pageGeneration: snapshot.pageGeneration, snapshotRevision: snapshot.snapshotRevision,
+    mutationRevision: snapshot.mutationRevision, targets});
+  return {...snapshot, controls, diagnostics: {...snapshot.diagnostics, readWaitMs: waitMs}};
+}
+async function scanPage(tab, state) {
+  // A generic, bounded scan of the visible scroll surface works for ordinary
+  // pages and virtualized lists. It never implies full report completeness.
+  pageSessions.delete(tab.id);
+  const initial = await readPage(tab, state);
+  const links = new Map(), texts = new Set(), headings = new Set();
+  let textLength = 0, passes = 0, rowObservations = 0;
+  let endReached = false, truncated = false, restored = false;
+  const add = snapshot => {
+    if (!["ready_with_content", "ready_empty"].includes(snapshot.status)) { truncated = true; return false; }
+    if (snapshot.truncated || snapshot.diagnostics?.truncated) truncated = true;
+    rowObservations += Math.max(0, Number(snapshot.diagnostics?.rows) || 0);
+    for (const link of snapshot.links || []) {
+      if (!link || typeof link.href !== "string" || typeof link.text !== "string") continue;
+      const key = link.href + "\n" + link.text;
+      if (!links.has(key)) {
+        if (links.size >= 250) { truncated = true; break; }
+        links.set(key, link);
+      }
+    }
+    if (typeof snapshot.text === "string" && snapshot.text && !texts.has(snapshot.text)) {
+      if (textLength + snapshot.text.length > 64000) truncated = true;
+      else { texts.add(snapshot.text); textLength += snapshot.text.length; }
+    }
+    for (const heading of snapshot.headings || []) {
+      if (typeof heading === "string" && headings.size < 80) headings.add(heading);
+    }
+    return true;
+  };
+  add(initial);
+  try {
+    if (["ready_with_content", "ready_empty"].includes(initial.status)) {
+      const [start] = await browser.tabs.executeScript(tab.id,
+        {file: "scan_step.js", allFrames: false, runAt: "document_idle"});
+      check(state);
+      if (!start || start.error) error(start?.error || "invalid_response");
+      endReached = !start.canAdvance;
+      while (!endReached && passes < 6) {
+        check(state);
+        const [step] = await browser.tabs.executeScript(tab.id,
+          {file: "scan_step.js", allFrames: false, runAt: "document_idle"});
+        if (!step || step.error) error(step?.error || "invalid_response");
+        if (!step.moved) { endReached = true; break; }
+        passes += 1;
+        await new Promise(resolve => setTimeout(resolve, 180));
+        check(state);
+        const current = await allowedTab(tab.id);
+        if (current.url !== tab.url) error("page_changed");
+        const snapshot = await readPage(current, state);
+        if (snapshot.documentID !== initial.documentID ||
+            snapshot.pageGeneration !== initial.pageGeneration) error("page_changed");
+        if (!add(snapshot)) break;
+        endReached = !step.canAdvance;
+      }
+    } else {
+      truncated = true;
+    }
+  } finally {
+    pageSessions.delete(tab.id);
+    try {
+      const current = await allowedTab(tab.id);
+      if (current.url === tab.url) {
+        const [result] = await browser.tabs.executeScript(tab.id,
+          {file: "scan_restore.js", allFrames: false, runAt: "document_idle"});
+        restored = !!result?.restored;
+      }
+    } catch {}
+  }
+  check(state);
+  return {url: initial.url, title: initial.title, status: initial.status,
+    text: [...texts].join("\n\n"), selection: initial.selection || "",
+    links: [...links.values()], headings: [...headings], controls: [],
+    pageGeneration: initial.pageGeneration, documentID: initial.documentID,
+    scope: "bounded_viewport_scan", complete: false, endReached,
+    scrollPasses: passes, restored, truncated: truncated || !endReached,
+    diagnostics: {...initial.diagnostics, links: links.size, rowObservations,
+      scrollPasses: passes, endReached, restored, truncated: truncated || !endReached},
+    untrustedPageContent: true};
+}
 async function performPageInteraction(tab, m, state) {
   check(state);
+  const session = pageSessions.get(tab.id);
+  const target = session?.targets.get(m.arguments.target);
+  if (!target || session.url !== tab.url || target.action !== m.command.slice(8)) error("target_stale");
+  const before = await pageState(tab.id);
+  check(state);
+  if (!before || before.url !== tab.url || before.documentID !== session.documentID ||
+      before.pageGeneration !== session.pageGeneration ||
+      before.snapshotRevision !== session.snapshotRevision ||
+      before.mutationRevision !== session.mutationRevision) error("target_stale");
   await browser.tabs.executeScript(tab.id, {file: "interaction.js", allFrames: false, runAt: "document_idle"});
   check(state);
   const current = await allowedTab(tab.id);
   if (current.url !== tab.url || current.url !== m.arguments.expectedURL) error("page_changed");
-  const message = {type: "lima-browser-interaction", command: m.command, selector: m.arguments.selector};
+  const message = {type: "lima-browser-interaction", command: m.command,
+    internalRef: target.internalRef, expected: {action: target.action, label: target.label, tag: target.tag,
+      documentID: session.documentID, pageGeneration: session.pageGeneration,
+      snapshotRevision: session.snapshotRevision, mutationRevision: session.mutationRevision}};
   if (m.command === "browser.type") message.text = m.arguments.text;
   const result = await browser.tabs.sendMessage(tab.id, message);
   // A reply means the page action may already have happened. Report its real
   // result rather than mislabeling a late Stop as proof of non-execution.
   if (result && typeof result.error === "string" && /^[a-z_]{1,64}$/.test(result.error)) error(result.error);
-  if (!result || typeof result !== "object" || typeof result.performed !== "string") error("invalid_response");
-  return result;
+  if (!result || typeof result !== "object" || result.performed !== target.action) error("invalid_response");
+  pageSessions.delete(tab.id); // Every action requires a fresh read before reuse.
+  let navigationDetected = false, pageEffectObserved = false;
+  try {
+    const afterTab = await browser.tabs.get(tab.id);
+    navigationDetected = afterTab.url !== tab.url;
+    if (!navigationDetected && await granted(afterTab.url)) {
+      const after = await pageState(tab.id);
+      pageEffectObserved = !!after && (after.mutationRevision !== before.mutationRevision ||
+        after.pageGeneration !== before.pageGeneration || after.documentID !== before.documentID);
+    }
+  } catch {} // The action still performed; a closed/navigating page is not proof of failure.
+  return {...result, requested: true, approved: true, navigationDetected,
+    postActionVerified: navigationDetected || pageEffectObserved,
+    verificationScope: "page_effect_only", remoteOutcomeVerified: false};
 }
 async function execute(m, state) {
   const a = m.arguments;
@@ -138,7 +289,7 @@ async function execute(m, state) {
       await policyQueue;
       return {connected: true, origins: (await browser.permissions.getAll()).origins || [],
         interactionOrigins: [...interactionOrigins], interactionPolicyAvailable: storageAvailable,
-        capabilities: ["browser_interaction_v1"]};
+        capabilities: ["browser_interaction_v1", "browser_page_session_v2", "browser_targets_v2", "browser_scan_v1"]};
     case "browser.tabs": {
       const result = [];
       for (const tab of (await browser.tabs.query({})).slice(0, 500)) {
@@ -155,12 +306,12 @@ async function execute(m, state) {
     case "browser.read": {
       const tab = await allowedTab(a.tabID);
       check(state);
-      const [snapshot] = await browser.tabs.executeScript(tab.id,
-        {file: "snapshot.js", allFrames: false, runAt: "document_idle"});
-      const current = await allowedTab(tab.id);
+      return await readPage(tab, state);
+    }
+    case "browser.scan": {
+      const tab = await allowedTab(a.tabID);
       check(state);
-      if (!snapshot || snapshot.url !== tab.url || current.url !== tab.url) error("page_changed");
-      return snapshot;
+      return await scanPage(tab, state);
     }
     default:
       if (await alwaysAllowsMutation(m, state)) return performMutation(m, state);
@@ -208,14 +359,20 @@ async function performMutation(m, state) {
   const tab = await allowedTab(a.tabID);
   if (tab.url !== a.expectedURL) error("page_changed");
   check(state);
-  if (m.command === "browser.navigate") return info(await browser.tabs.update(tab.id, {url: a.url}));
+  if (m.command === "browser.navigate") {
+    pageSessions.delete(tab.id);
+    return info(await browser.tabs.update(tab.id, {url: a.url}));
+  }
   if (m.command === "browser.focus") {
     await browser.tabs.update(tab.id, {active: true});
     check(state);
     await browser.windows.update(tab.windowId, {focused: true});
     return {focused: true};
   }
-  if (m.command === "browser.close") { await browser.tabs.remove(tab.id); return {closed: true}; }
+  if (m.command === "browser.close") {
+    pageSessions.delete(tab.id);
+    await browser.tabs.remove(tab.id); return {closed: true};
+  }
   error("unsupported_command");
 }
 function badge() { browser.browserAction.setBadgeText({text: mutations.size ? "!" : ""}); }
@@ -230,6 +387,7 @@ function cancel(id) {
 function disconnect(connection) {
   if (port !== connection) return;
   port = null;
+  pageSessions.clear();
   for (const id of active.keys()) cancel(id);
   active.clear();
   lastError = "Open Lima, enable Browser Bridge, and install its native helper in Settings.";
@@ -275,6 +433,10 @@ function connect() {
 }
 // Even remove-and-regrant must invalidate pending reads and approvals.
 browser.permissions.onRemoved.addListener(removedSiteAccess);
+browser.tabs.onUpdated?.addListener((tabID, changed) => {
+  if (changed.url || changed.status === "loading") pageSessions.delete(tabID);
+});
+browser.tabs.onRemoved?.addListener(tabID => pageSessions.delete(tabID));
 browser.runtime.onMessage.addListener(async (m, sender) => {
   // Exact popup identity: no content script, tab, or other extension can approve.
   if (!m || sender.id !== browser.runtime.id || sender.tab ||

@@ -33,7 +33,7 @@ final class ExtensionExecutor {
             UsageMonitor.shared.finish(usage, succeeded: false, detail: "Cancelled by user")
         }
         if let measurementID = performanceMeasurements.removeValue(forKey: identifier) {
-            PerformanceMonitor.shared.end(measurementID, succeeded: false, detail: "Cancelled by user")
+            PerformanceMonitor.shared.end(measurementID, succeeded: false)
         }
         if finishRegistryTask, let task = registryTasks.removeValue(forKey: identifier) {
             TaskRegistry.shared.finish(task, state: .cancelled, detail: "Stopped by user")
@@ -273,7 +273,7 @@ final class ExtensionExecutor {
         task.standardError = output
 
         let identifier = UUID()
-        let measurementID = PerformanceMonitor.shared.begin("Extension execution")
+        let measurementID = PerformanceMonitor.shared.begin(.extensionExecution)
         do {
             try task.run()
             activeProcesses[identifier] = task

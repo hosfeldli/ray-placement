@@ -27,10 +27,10 @@ private struct PendingShortcutAssignment: Identifiable {
 
 enum SettingsSection: String, CaseIterable, Identifiable {
     case general
+    case workspace
     case commands
     case writing
     case ai
-    case connections
     case browser
     case appearance
     case advanced
@@ -42,10 +42,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .general: return "General"
+        case .workspace: return "Workspace"
         case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
         case .ai: return "AI Chat"
-        case .connections: return "AI Connections"
         case .browser: return "Browser Bridge"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
@@ -55,10 +55,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .general: return "gearshape.fill"
+        case .workspace: return "square.stack.3d.up"
         case .commands: return "square.grid.2x2"
         case .writing: return "text.badge.checkmark"
         case .ai: return "sparkles"
-        case .connections: return "network.badge.shield.half.filled"
         case .browser: return "globe"
         case .appearance: return "paintbrush.fill"
         case .advanced: return "slider.horizontal.3"
@@ -68,10 +68,10 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: "App behavior and local preferences"
+        case .workspace: "Sections, modules, rail, and layouts"
         case .commands: "Commands, extensions, and shortcuts"
         case .writing: "Notes, grammar, and speech to text"
         case .ai: "Existing providers and chat behavior"
-        case .connections: "Pair and revoke trusted AI apps"
         case .browser: "Browser access and site grants"
         case .appearance: "Theme, colors, and readable layouts"
         case .advanced: "Performance, privacy, and diagnostics"
@@ -80,10 +80,9 @@ enum SettingsSection: String, CaseIterable, Identifiable {
 
     var tint: AppAccentTheme {
         switch self {
-        case .general, .commands: .blue
+        case .general, .workspace, .commands: .blue
         case .writing: .green
         case .ai, .appearance: .violet
-        case .connections: .blue
         case .browser: .cyan
         case .advanced: .graphite
         }
@@ -93,14 +92,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general:
             return ["startup", "launcher", "updates", "login", "behavior", "default"]
+        case .workspace:
+            return ["workspace", "layout", "rail", "section", "module", "startup", "profile", "visibility"]
         case .commands:
             return ["commands", "shortcuts", "hotkeys", "built-in", "extension", "tools", "skills", "agents", "conflict", "key", "store", "updates"]
         case .writing:
             return ["writing", "grammar", "spelling", "proofread", "AI", "Harper", "dictation", "microphone", "notes"]
         case .ai:
             return ["ai", "chat", "provider", "model", "anthropic", "claude", "openai", "gemini", "compatible", "endpoint", "api key", "reasoning"]
-        case .connections:
-            return ["AI connections", "MCP", "pair", "revoke", "local", "network", "trusted clients", "token"]
         case .browser:
             return ["zen", "firefox", "browser", "bridge", "site", "permissions", "native", "helper", "salesforce", "tabs"]
         case .appearance:
@@ -167,10 +166,6 @@ struct SettingsView: View {
     @State private var isTestingGrammarConnection = false
     @State private var grammarCompatibilityMessage: String?
     @State private var isTestingGrammarCompatibility = false
-    #if LIMA_QA
-    @ObservedObject private var qaMCPService = LimaQAService.shared
-    @State private var qaMCPCopied = false
-    #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let reloadExtensions: () -> Void
     let openGrammarDebugger: () -> Void
@@ -185,7 +180,8 @@ struct SettingsView: View {
                         LimaWorkspaceHeading(title: selectedSection.title, subtitle: selectedSection.subtitle,
                                              symbol: selectedSection.symbol, tint: selectedSection.tint)
                         LimaWindowDragRegion()
-                            .frame(minWidth: 44, maxWidth: .infinity, minHeight: 32)
+                            .frame(minWidth: 44, maxWidth: .infinity)
+                            .frame(height: 32)
                     }
                     .padding(.horizontal, LimaDesign.toolbarPadding)
                     .padding(.vertical, 20)
@@ -201,6 +197,9 @@ struct SettingsView: View {
         .frame(minWidth: 900, idealWidth: 1060, minHeight: 620, idealHeight: 760)
         .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
+        .onReceive(settings.$requestedSettingsSection) { requested in
+            if let requested { selectedSection = requested }
+        }
         .onChange(of: settingsSearchQuery) { query in
             if let first = filteredSections.first {
                 selectedSection = first
@@ -474,10 +473,10 @@ struct SettingsView: View {
     private var selectedContent: some View {
         switch selectedSection {
         case .general: generalTab
+        case .workspace: workspaceSettingsTab
         case .commands: commandCenterTab
         case .writing: writingSettingsTab
         case .ai: AIProviderSettingsView(model: aiChatModel)
-        case .connections: LimaAccessSettingsView()
         case .browser: BrowserBridgeSettingsView()
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
@@ -501,6 +500,40 @@ struct SettingsView: View {
                 }
             }
         }
+    }
+
+    private var workspaceSettingsTab: some View {
+        Form {
+            Section("Customize Workspace") {
+                WorkspaceConfigurationEditor(settings: settings)
+            }
+            Section("Home") {
+                HomeWorkspaceConfigurationEditor(settings: settings)
+            }
+            Section("Workspace profiles") {
+                Picker("Active profile", selection: Binding(
+                    get: { workspaceProfiles.activeProfileID ?? workspaceProfiles.profiles.first?.id },
+                    set: { id in if let id, let profile = workspaceProfiles.profiles.first(where: { $0.id == id }) { workspaceProfiles.activate(profile) } }
+                )) {
+                    ForEach(workspaceProfiles.profiles) { profile in
+                        Text(profile.favorite ? "★ \(profile.name)" : profile.name).tag(Optional(profile.id))
+                    }
+                }
+                HStack {
+                    TextField("New profile name", text: $workspaceProfileName)
+                    Button("Create") {
+                        _ = workspaceProfiles.create(name: workspaceProfileName.isEmpty ? "New Workspace" : workspaceProfileName)
+                        workspaceProfileName = ""
+                    }
+                    Button("Save Current") { workspaceProfiles.captureCurrentState() }
+                    Button("Restore") { workspaceProfiles.restoreActiveState() }
+                }
+                if let error = workspaceProfiles.lastError { Text(error).foregroundStyle(.orange) }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.small)
     }
 
     private var appearanceSettingsTab: some View {
@@ -542,9 +575,6 @@ struct SettingsView: View {
                 Text("Usage & Logs").tag(2)
                 Text("Developer").tag(3)
                 Text("Experimental").tag(4)
-                #if LIMA_QA
-                Text("QA MCP").tag(5)
-                #endif
             }
             .pickerStyle(.segmented)
             .padding(12)
@@ -554,68 +584,12 @@ struct SettingsView: View {
                 case 2: usageTab
                 case 3: secretsTab
                 case 4: experimentalTab
-                #if LIMA_QA
-                case 5: qaMCPSettings
-                #endif
                 default: advancedTab
                 }
             }
         }
     }
 
-    #if LIMA_QA
-    private var qaMCPSettings: some View {
-        Form {
-            Section("QA MCP Control") {
-                Toggle(isOn: Binding(
-                    get: { qaMCPService.isRunning },
-                    set: { qaMCPService.setEnabled($0) }
-                )) {
-                    Label("Enable Lima QA MCP", systemImage: "point.3.connected.trianglepath.dotted")
-                }
-                .disabled(!qaMCPService.runtimeAuthorized)
-                .accessibilityIdentifier("settings.qaMCP.enabled")
-
-                Text(qaMCPService.statusMessage
-                     ?? (qaMCPService.runtimeAuthorized
-                         ? "Off. Enable this only while running QA automation."
-                         : "Available only in a QA build launched with LIMA_TEST_MODE=1 and LIMA_ENABLE_QA_MCP=1."))
-                    .limaFont(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
-
-                LabeledContent("Transport", value: "MCP over stdio")
-                LabeledContent("App socket", value: qaMCPService.displaySocketPath)
-                Text("The stdio adapter connects to the running Lima QA app through a user-only Unix socket (mode 0600). This control is compiled out of production builds.")
-                    .limaFont(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
-
-                if let configuration = qaMCPService.clientConfiguration {
-                    Text("Client configuration")
-                        .limaFont(.caption.weight(.semibold))
-                    Text(configuration)
-                        .font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(9)
-                        .limaGlassField(cornerRadius: 8)
-                    Button(qaMCPCopied ? "Copied" : "Copy Client Configuration") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(configuration, forType: .string)
-                        qaMCPCopied = true
-                    }
-                    .disabled(!qaMCPService.isRunning)
-                } else {
-                    Text("Build the QA app package to generate a client configuration.")
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .controlSize(.small)
-    }
-    #endif
 
     private var experimentalTab: some View {
         Form {
@@ -1524,26 +1498,6 @@ struct SettingsView: View {
                     catch { SettingsStore.shared.lastError = error.localizedDescription }
                 }
                 if let error = backups.lastError { Text(error).foregroundStyle(.orange) }
-            }
-            Section("Workspace profiles") {
-                Picker("Active profile", selection: Binding(
-                    get: { workspaceProfiles.activeProfileID ?? workspaceProfiles.profiles.first?.id },
-                    set: { id in if let id, let profile = workspaceProfiles.profiles.first(where: { $0.id == id }) { workspaceProfiles.activate(profile) } }
-                )) {
-                    ForEach(workspaceProfiles.profiles) { profile in
-                        Text(profile.favorite ? "★ \(profile.name)" : profile.name).tag(Optional(profile.id))
-                    }
-                }
-                HStack {
-                    TextField("New profile name", text: $workspaceProfileName)
-                    Button("Create") {
-                        _ = workspaceProfiles.create(name: workspaceProfileName.isEmpty ? "New Workspace" : workspaceProfileName)
-                        workspaceProfileName = ""
-                    }
-                    Button("Save Current") { workspaceProfiles.captureCurrentState() }
-                    Button("Restore") { workspaceProfiles.restoreActiveState() }
-                }
-                if let error = workspaceProfiles.lastError { Text(error).foregroundStyle(.orange) }
             }
             Section("Persistence") {
                 if let error = settings.lastError { Text(error).foregroundStyle(.orange) }

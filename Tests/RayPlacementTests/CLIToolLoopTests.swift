@@ -8,8 +8,7 @@ import Testing
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: [conversation]),
             credentials: AIChatCredentialStore(configuration: .fixture),
-            mcpStore: MCPServerStore(fixtures: []),
-            nativeToolStore: LimaAIToolStore(fixtures: [
+                        nativeToolStore: LimaAIToolStore(fixtures: [
                 "browser_tabs", "browser_current", "browser_read", "search_notes", "read_note"
             ]),
             transport: FixtureAITransport.standard
@@ -27,35 +26,6 @@ import Testing
     let prompt = try CLIChatProviderClient.prompt(input: "Help with this task", history: [],
         attachments: [], systemInstructions: "", localTools: tools)
     #expect(prompt.count <= 140_000)
-}
-
-@Test @MainActor func cliConnectedDiscoveryContinuesThroughNormalToolLoop() async throws {
-    for provider in [AIProvider.codexCLI, .claudeCLI] {
-        let serverID = UUID()
-        let server = MCPServer(id: serverID, name: "Evidence service", url: "https://fixture.invalid",
-            tools: [MCPToolDescriptor(serverID: serverID, name: "lookup", risk: .read, enabled: true, declaredReadOnly: true)])
-        let tools = CLIConnectedTools.definitions(servers: [server])
-        let envelope: [String: Any] = ["kind": "tool_call", "text": "", "tool": CLIConnectedTools.listName,
-                                      "arguments": "{\"server_id\":\"\",\"offset\":0}"]
-        let events = try CLIChatProviderClient.events(
-            from: String(decoding: JSONSerialization.data(withJSONObject: envelope), as: UTF8.self), localTools: tools)
-        let capture = CLIOutputCapture()
-        var transport = FixtureAITransport(events: events)
-        transport.toolOutputEvents = [.responseCreated("continued"), .textDelta("Service discovered."), .completed("continued")]
-        transport.onToolOutputs = { outputs, history in capture.outputs = outputs; capture.history = history }
-        let conversation = AIConversation(provider: provider, model: "default")
-        let model = AIChatViewModel(store: AIConversationStore(fixtures: [conversation]),
-            credentials: AIChatCredentialStore(configuration: .fixture),
-            mcpStore: MCPServerStore(fixtures: [server]), nativeToolStore: LimaAIToolStore(fixtures: []), transport: transport)
-        model.draft = "Find available services"
-        model.send()
-        for _ in 0..<300 where model.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
-        #expect(!model.isStreaming)
-        #expect(model.streamError == nil)
-        #expect((capture.outputs.first?["output"] as? String)?.contains("Evidence service") == true)
-        #expect(model.selectedConversation?.messages.last?.text.contains("Service discovered.") == true)
-        #expect(model.selectedConversation?.messages.last?.activities?.contains { $0.kind == .toolCompleted } == true)
-    }
 }
 
 private final class CLIOutputCapture {
@@ -84,8 +54,7 @@ private final class CLIOutputCapture {
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
-        nativeToolStore: LimaAIToolStore(fixtures: ["get_lima_status"]),
+                nativeToolStore: LimaAIToolStore(fixtures: ["get_lima_status"]),
         transport: transport
     )
 

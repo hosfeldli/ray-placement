@@ -8,7 +8,7 @@ private struct InspectingChildTransport: AIChatTransport {
     func streamReply(apiKey: String, model: String, input: String,
                      history: [AIProviderMessage], previousResponseID: String?,
                      reasoningEffort: AIReasoningEffort, attachments: [AIAttachment],
-                     mcpServers: [MCPServer], localTools: [LimaAIToolDefinition],
+                     localTools: [LimaAIToolDefinition],
                      systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         #expect(apiKey == "fixture-only")
         #expect(model == "selected-analysis-model")
@@ -16,7 +16,6 @@ private struct InspectingChildTransport: AIChatTransport {
         #expect(history.isEmpty)
         #expect(previousResponseID == nil)
         #expect(attachments.isEmpty)
-        #expect(mcpServers.isEmpty)
         #expect(localTools.isEmpty)
         #expect(systemInstructions.contains("every Lima tool routed for the parent"))
         #expect(systemInstructions.contains("untrusted data"))
@@ -27,18 +26,9 @@ private struct InspectingChildTransport: AIChatTransport {
         }
     }
 
-    func streamApproval(apiKey: String, model: String, previousResponseID: String,
-                        requestID: String, approve: Bool, reason: String?,
-                        reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
-                        localTools: [LimaAIToolDefinition],
-                        systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Issue.record("A child must never request approval.")
-        return AsyncThrowingStream { $0.finish() }
-    }
-
     func streamToolOutputs(apiKey: String, model: String, previousResponseID: String,
                            history: [AIProviderMessage], outputs: [[String: Any]],
-                           reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
+                           reasoningEffort: AIReasoningEffort,
                            localTools: [LimaAIToolDefinition],
                            systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         Issue.record("A child must never start a tool loop.")
@@ -52,42 +42,31 @@ private struct ReadToolChildTransport: AIChatTransport {
     func streamReply(apiKey: String, model: String, input: String,
                      history: [AIProviderMessage], previousResponseID: String?,
                      reasoningEffort: AIReasoningEffort, attachments: [AIAttachment],
-                     mcpServers: [MCPServer], localTools: [LimaAIToolDefinition],
+                     localTools: [LimaAIToolDefinition],
                      systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         #expect(history.isEmpty)
         #expect(previousResponseID == nil)
-        #expect(localTools.map(\.name) == ["fixture_read", CLIConnectedTools.listName, CLIConnectedTools.callName])
-        #expect(mcpServers.isEmpty)
+        #expect(localTools.map(\.name) == ["fixture_read"])
         return AsyncThrowingStream { continuation in
             continuation.yield(.responseCreated("child-response-1"))
             continuation.yield(.outputItem(AIOutputItem(
                 phase: .completed, apiType: "function_call", callID: "read-call",
-                name: CLIConnectedTools.callName, arguments: "{}"
+                name: "fixture_read", arguments: "{}"
             )))
             continuation.yield(.completed("child-response-1"))
             continuation.finish()
         }
     }
 
-    func streamApproval(apiKey: String, model: String, previousResponseID: String,
-                        requestID: String, approve: Bool, reason: String?,
-                        reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
-                        localTools: [LimaAIToolDefinition],
-                        systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Issue.record("A child must never request approval.")
-        return AsyncThrowingStream { $0.finish() }
-    }
-
     func streamToolOutputs(apiKey: String, model: String, previousResponseID: String,
                            history: [AIProviderMessage], outputs: [[String: Any]],
-                           reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
+                           reasoningEffort: AIReasoningEffort,
                            localTools: [LimaAIToolDefinition],
                            systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         #expect(previousResponseID == "child-response-1")
         #expect(outputs.count == 1)
         #expect(outputs.first?["call_id"] as? String == "read-call")
-        #expect(outputs.first?["output"] as? String == "bounded MCP read result")
-        #expect(mcpServers.isEmpty)
+        #expect(outputs.first?["output"] as? String == "bounded native read result")
         #expect(history.count == 2)
         return AsyncThrowingStream { continuation in
             continuation.yield(.textDelta("Read-only analysis complete."))
@@ -103,7 +82,7 @@ private struct ApprovalToolChildTransport: AIChatTransport {
     func streamReply(apiKey: String, model: String, input: String,
                      history: [AIProviderMessage], previousResponseID: String?,
                      reasoningEffort: AIReasoningEffort, attachments: [AIAttachment],
-                     mcpServers: [MCPServer], localTools: [LimaAIToolDefinition],
+                     localTools: [LimaAIToolDefinition],
                      systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         #expect(localTools.contains { $0.name == "run_terminal_command" })
         return AsyncThrowingStream { continuation in
@@ -117,18 +96,9 @@ private struct ApprovalToolChildTransport: AIChatTransport {
         }
     }
 
-    func streamApproval(apiKey: String, model: String, previousResponseID: String,
-                        requestID: String, approve: Bool, reason: String?,
-                        reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
-                        localTools: [LimaAIToolDefinition],
-                        systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        Issue.record("Subagent tool approvals must go through the parent's Lima UI.")
-        return AsyncThrowingStream { $0.finish() }
-    }
-
     func streamToolOutputs(apiKey: String, model: String, previousResponseID: String,
                            history: [AIProviderMessage], outputs: [[String: Any]],
-                           reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
+                           reasoningEffort: AIReasoningEffort,
                            localTools: [LimaAIToolDefinition],
                            systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         #expect(outputs.first?["output"] as? String == "Terminal ran after approval")
@@ -189,33 +159,24 @@ private struct ApprovalToolChildTransport: AIChatTransport {
     #expect(result.output.contains("selected-analysis-model"))
 }
 
-@Test @MainActor func subagentUsesRoutedToolsAndLimaMediatedReadOnlyMCP() async {
-    let serverID = UUID()
-    let safeMCP = MCPToolDescriptor(serverID: serverID, name: "safe_lookup", title: nil,
-        description: nil, risk: .read, enabled: true, declaredReadOnly: true)
-    let unsafeMCP = MCPToolDescriptor(serverID: serverID, name: "write_record", title: nil,
-        description: nil, risk: .write, enabled: true, declaredReadOnly: true)
-    let server = MCPServer(id: serverID, name: "Fixture MCP", url: "https://example.invalid/mcp",
-        enabled: true, allowedToolNames: [], tools: [safeMCP, unsafeMCP])
+@Test @MainActor func subagentUsesRoutedNativeReadTool() async {
     let readTool = LimaAIToolDefinition(id: "fixture-read", name: "fixture_read",
         description: "Read fixture data.", parameters: [:], risk: .read)
-    let writeTool = LimaAIToolDefinition(id: "fixture-write", name: "fixture_write",
-        description: "Write fixture data.", parameters: [:], risk: .write)
 
     let result = await AISubagentRunner.run(
         client: ReadToolChildTransport(), apiKey: "fixture-only",
         model: AIModelOption(id: "selected-analysis-model"), task: "Read the allowed fixture.",
-        mcpServers: [server], localTools: [readTool, writeTool],
+        localTools: [readTool],
         executeTool: { call, approvalGranted in
-            #expect(call.name == CLIConnectedTools.callName)
+            #expect(call.name == "fixture_read")
             #expect(!approvalGranted)
-            return "bounded MCP read result"
+            return "bounded native read result"
         }
     )
 
     #expect(!result.isError)
     #expect(result.output.contains("Read-only analysis complete."))
-    #expect(result.output.contains(CLIConnectedTools.callName))
+    #expect(result.output.contains("fixture_read"))
 }
 
 @Test @MainActor func contextToolsRemainStrictAndRespectCapabilityOff() throws {

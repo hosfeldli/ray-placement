@@ -137,7 +137,24 @@ struct BrowserBridgeSettingsView: View {
                         Button("Read Page") {
                             run {
                                 let result = try await bridge.request("browser.read", arguments: ["tabID": .number(Double(tab.id))])
-                                if isPresented, case .object(let fields) = result, case .string(let text)? = fields["text"] { inspection = text }
+                                guard isPresented, case .object(let fields) = result,
+                                      case .string(let text)? = fields["text"] else { return }
+                                let readiness: String?
+                                if case .string(let value)? = fields["status"] { readiness = value }
+                                else { readiness = nil }
+                                switch readiness {
+                                case "ready_empty":
+                                    inspection = ""
+                                    message = "The page reported an explicit empty state. No page text was saved."
+                                case "loading", "hydrating", "timed_out", "blocked", "error":
+                                    inspection = ""
+                                    message = "The page snapshot is incomplete (\(readiness ?? "unknown")). Wait for it to load and read again; this is not evidence that the page is empty."
+                                default:
+                                    inspection = text
+                                    message = text.isEmpty
+                                        ? "No visible main text was captured. This does not prove the page or report is empty."
+                                        : nil
+                                }
                             }
                         }
                         Button("Focus Tab…") { mutate("browser.focus", tab: tab) }

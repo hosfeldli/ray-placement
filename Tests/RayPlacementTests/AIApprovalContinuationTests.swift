@@ -15,11 +15,6 @@ import Testing
         ],
         risk: .localAction
     )
-    let server = MCPServer(
-        name: "Docs",
-        url: "https://mcp.example.test",
-        allowedToolNames: ["search"]
-    )
     let browser = BrowserCapabilityTurnContext(
         selectedAgentID: "browser-agent",
         selectedAgentToolIDs: ["browser_read", "browser_click"],
@@ -31,13 +26,11 @@ import Testing
 
     let snapshot = AIApprovalContinuationContext(
         localTools: [localTool],
-        mcpServers: [server],
         browserRoutingContext: browser,
         systemInstructions: instructions
     )
 
     #expect(snapshot.localToolIDs == ["browser_click"])
-    #expect(snapshot.mcpServerIDs == [server.id])
     #expect(snapshot.browserRoutingContext == browser)
     #expect(snapshot.systemInstructions == instructions)
 }

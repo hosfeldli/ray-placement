@@ -14,24 +14,6 @@ let appDependencies: [Target.Dependency] = [
     .product(name: "Sparkle", package: "Sparkle")
 ]
 
-// QA transport and stdio MCP adapter are intentionally absent from the default
-// manifest. A QA package must opt in before these targets and the LIMA_QA app
-// compilation flag exist.
-let buildQAMCP = ProcessInfo.processInfo.environment["LIMA_BUILD_QA_MCP"] == "1"
-var qaAppDependencies = appDependencies
-if buildQAMCP { qaAppDependencies.append("LimaQAProtocol") }
-let qaProducts: [Product] = buildQAMCP
-    ? [.executable(name: "LimaQAMCPServer", targets: ["LimaQAMCPServer"])]
-    : []
-let qaTargets: [Target] = buildQAMCP
-    ? [
-        .target(name: "LimaQAProtocol"),
-        .executableTarget(name: "LimaQAMCPServer", dependencies: ["LimaQAProtocol"]),
-        .testTarget(name: "LimaQAProtocolTests", dependencies: ["LimaQAProtocol"])
-    ]
-    : []
-let qaAppSettings: [SwiftSetting] = buildQAMCP ? [.define("LIMA_QA")] : []
-
 let package = Package(
     name: "RayPlacement",
     platforms: [
@@ -42,7 +24,7 @@ let package = Package(
         .executable(name: "LimaBrowserBridgeHost", targets: ["LimaBrowserBridgeHost"]),
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
-    ] + qaProducts,
+    ],
     dependencies: packageDependencies,
     targets: [
         .target(name: "RayPlacementCore", resources: [.process("Fixtures")]),
@@ -53,8 +35,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "RayPlacement",
-            dependencies: qaAppDependencies,
-            swiftSettings: qaAppSettings
+            dependencies: appDependencies
         ),
         .testTarget(
             name: "RayPlacementCoreTests",
@@ -68,6 +49,6 @@ let package = Package(
             name: "RayPlacementTests",
             dependencies: ["RayPlacement"]
         )
-    ] + qaTargets,
+    ],
     swiftLanguageModes: [.v5]
 )

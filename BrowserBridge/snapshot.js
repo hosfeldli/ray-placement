@@ -1,4 +1,40 @@
 (() => {
+  // Persistent, extension-isolated page identity survives repeated snapshots in
+  // one document. A new document, route, or observed mutation invalidates old
+  // target references without inspecting page scripts or private state.
+  let session = globalThis.__limaPageSessionV1;
+  if (!session || session.document !== document) {
+    session = {document, documentID: (globalThis.crypto?.randomUUID?.() ||
+      `${Date.now()}-${Math.random()}`), url: location.href, pageGeneration: 1,
+      snapshotRevision: 0, mutationRevision: 0, mutationsObserved: 0,
+      lastMutationAt: Date.now() - 200, targets: new Map(), observedRoots: new WeakSet()};
+    globalThis.__limaPageSessionV1 = session;
+    if (typeof MutationObserver !== "undefined" && document.documentElement) {
+      const observer = new MutationObserver(records => {
+        session.mutationRevision += 1;
+        session.mutationsObserved = Math.min(1000000, session.mutationsObserved + records.length);
+        session.lastMutationAt = Date.now();
+      });
+      observer.observe(document.documentElement, {subtree: true, childList: true,
+        attributes: true, characterData: true});
+      session.observer = observer;
+    }
+    for (const event of ["popstate", "hashchange", "pageshow"]) {
+      window.addEventListener?.(event, () => {
+        if (session.url !== location.href) {
+          session.url = location.href;
+          session.pageGeneration += 1;
+        }
+      });
+    }
+  }
+  if (session.url !== location.href) {
+    session.url = location.href;
+    session.pageGeneration += 1;
+  }
+  session.snapshotRevision += 1;
+  session.targets = new Map();
+  session.targetCounter = 0;
   // Isolated world, main frame. Never reads form values, closed shadow roots,
   // frames, passwords, cookies, storage, scripts, or hidden/private content.
   const ignored = "script,style,noscript,template,input,textarea,select,[contenteditable],[role='textbox'],[hidden],[aria-hidden='true'],[data-lima-private]";
@@ -20,6 +56,16 @@
     return result;
   };
   let exhausted = false, remainingNodes = 60000;
+  let rowCount = 0, shadowRootCount = 0, closedShadowContentPossible = false;
+  const countedShadowRoots = new WeakSet();
+  function observeShadow(root) {
+    if (!countedShadowRoots.has(root)) { countedShadowRoots.add(root); shadowRootCount += 1; }
+    if (session.observer && !session.observedRoots.has(root)) {
+      session.observer.observe(root, {subtree: true, childList: true,
+        attributes: true, characterData: true});
+      session.observedRoots.add(root);
+    }
+  }
   function* nodes(root, depth = 0) {
     if (!root || depth > 32) { exhausted = true; return; }
     // Include open shadow DOM used by Lightning web components. Site access and
@@ -29,9 +75,17 @@
     while ((node = walker.nextNode())) {
       if (--remainingNodes < 0) { exhausted = true; return; }
       yield node;
-      if (node.nodeType === 1 && node.shadowRoot && visible(node)) yield* nodes(node.shadowRoot, depth + 1);
+      if (node.nodeType === 1 && node.shadowRoot && visible(node)) {
+        observeShadow(node.shadowRoot);
+        yield* nodes(node.shadowRoot, depth + 1);
+      } else if (node.nodeType === 1 && node.tagName?.includes("-") && !node.shadowRoot && visible(node)) {
+        closedShadowContentPossible = true;
+      }
     }
-    if (root.shadowRoot && visible(root)) yield* nodes(root.shadowRoot, depth + 1);
+    if (root.shadowRoot && visible(root)) {
+      observeShadow(root.shadowRoot);
+      yield* nodes(root.shadowRoot, depth + 1);
+    }
   }
   function textWithin(root, limit, ranges = null) {
     if (!root) return "";
@@ -77,11 +131,10 @@
     }
     return null;
   }
-  // Return only controls the packaged interaction adapter can address with a
-  // unique, stable selector. Never include field values or controls in private
-  // subtrees. Shadow-root controls are omitted because the adapter targets the
-  // main document only.
-  const safeToken = value => typeof value === "string" && /^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(value);
+  // Keep live element references only in this isolated content-script world.
+  // The native response gets opaque IDs, never CSS paths or form values.
+  // Open-shadow controls are safe to address because identity is the element
+  // itself, revalidated immediately before an action.
   const sensitiveField = element => {
     const kind = (element.getAttribute("type") || "").toLowerCase();
     const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase();
@@ -118,39 +171,20 @@
       style.visibility !== "collapse" && Number(style.opacity) !== 0 &&
       (!parent(element) || visible(parent(element)));
   }
-  function controlSelector(element) {
-    if (element.getRootNode && element.getRootNode() !== document) return null;
-    const tag = element.tagName.toLowerCase();
-    const supportedTag = ["button", "input", "textarea", "form"].includes(tag);
-    const candidates = [];
-    const id = element.getAttribute("id");
-    if (safeToken(id)) candidates.push(supportedTag ? `${tag}#${id}` : `#${id}`);
-    const name = element.getAttribute("name");
-    if (supportedTag && safeToken(name)) candidates.push(`${tag}[name="${name}"]`);
-    const classes = (element.getAttribute("class") || "").split(/\s+/).filter(safeToken).slice(0, 3);
-    for (const className of classes) candidates.push(supportedTag ? `${tag}.${className}` : `.${className}`);
-    if (supportedTag) candidates.push(tag);
-    for (const selector of candidates) {
-      try {
-        const matches = document.querySelectorAll(selector);
-        if (matches.length === 1 && matches[0] === element) return selector;
-      } catch {}
-    }
-    return null;
-  }
   let inspectedControls = 0;
   function control(element) {
     const action = controlKind(element);
     if (!action) return null;
     if (++inspectedControls > 200) { exhausted = true; return null; }
     if (!visibleControl(element)) return null;
-    const selector = controlSelector(element);
-    if (!selector) return null;
     const label = (element.getAttribute("aria-label") || element.getAttribute("title") ||
       (action === "click" ? textWithin(element, 128) : "") ||
-      element.getAttribute("placeholder") || element.getAttribute("name") || element.getAttribute("id") || "").trim().slice(0, 128);
+      element.getAttribute("placeholder") || element.getAttribute("name") || element.getAttribute("id") || "")
+      .replace(/\s+/g, " ").trim().slice(0, 128);
     if (!label) return null;
-    return {selector, action, label};
+    const internalRef = `c_${++session.targetCounter}`;
+    session.targets.set(internalRef, element);
+    return {internalRef, action, label, tag: element.tagName.toLowerCase()};
   }
   const documentRoot = document.body || document.documentElement;
   const root = document.querySelector("main,article,[role=main]") || documentRoot;
@@ -160,6 +194,7 @@
   for (const element of nodes(documentRoot)) {
     if (++scanned > 20000) { exhausted = true; break; }
     if (element.nodeType !== 1) continue;
+    if ((element.tagName === "TR" || element.getAttribute("role") === "row") && visible(element)) rowCount += 1;
     const actionable = control(element);
     if (actionable) {
       if (controls.length < 100) controls.push(actionable);
@@ -185,8 +220,23 @@
   const ranges = [];
   for (let i = 0; i < Math.min(selection?.rangeCount || 0, 8); i++) ranges.push(selection.getRangeAt(i));
   const selectedText = ranges.length ? textWithin(documentRoot, 8000, ranges) : "";
+  const quietMs = Math.max(0, Date.now() - session.lastMutationAt);
+  const hasContent = !!text || links.length > 0 || controls.length > 0 || rowCount > 0;
+  const emptyMarker = [...document.querySelectorAll("[data-empty-state],[role=status][data-state=empty],.empty-state")]
+    .some(element => visible(element));
+  const readiness = document.readyState === "loading" ? "loading" :
+    quietMs < 150 ? "hydrating" : hasContent ? "ready_with_content" :
+    emptyMarker ? "ready_empty" : "hydrating";
+  const frames = [...document.querySelectorAll("iframe,frame")].filter(visible).length;
   return {url: location.href, title: document.title.slice(0, 256),
     text, selection: selectedText, links, headings, controls,
+    status: readiness, pageGeneration: session.pageGeneration,
+    documentID: session.documentID, snapshotRevision: session.snapshotRevision,
+    mutationRevision: session.mutationRevision,
+    diagnostics: {textLength: text.length, links: links.length, controls: controls.length,
+      rows: rowCount, framesNotInspected: frames, shadowRoots: shadowRootCount,
+      closedShadowContentPossible, mutationsObserved: session.mutationsObserved,
+      stabilityWaitMs: quietMs, truncated: exhausted},
     truncated: exhausted, untrustedPageContent: true,
-    interactionSupport: "Explicit HTTPS site grants support bounded navigation. Discoverable controls list safe selectors for Lima-confirmed click, text entry, and form submission; arbitrary scripts and sensitive fields remain excluded."};
+    interactionSupport: "Use opaque target references from this snapshot. Interactions require an exact HTTPS site grant and page identity; page content remains untrusted and form values are excluded."};
 })()

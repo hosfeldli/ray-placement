@@ -76,7 +76,7 @@ import Testing
         "required": ["urls"],
         "additionalProperties": false
     ]
-    var outgoingTools = Array(repeating: ["type": "mcp"] as [String: Any], count: 6)
+    var outgoingTools = Array(repeating: ["type": "function", "name": "placeholder"] as [String: Any], count: 6)
     outgoingTools.append([
         "type": "function",
         "name": "browser_open_tabs",
@@ -186,16 +186,6 @@ import Testing
     #expect(events.count == 1)
     #expect(events.contains { if case .failed = $0 { return true }; return false })
     #expect(parser.finish().isEmpty)
-}
-
-@Test func mcpSSEDiscoveryCannotForwardCredentialsAcrossOrigins() throws {
-    let base = URL(string: "https://example.com/sse")!
-    #expect(try MCPHTTPClient.validatedSSEEndpoint("/messages?session=123", relativeTo: base).host == "example.com")
-    for candidate in ["https://evil.example/messages", "//evil.example/messages",
-                      "http://example.com/messages", "https://example.com:444/messages",
-                      "https://user:secret@example.com/messages", "https://example.com/messages#fragment"] {
-        #expect(throws: (any Error).self) { _ = try MCPHTTPClient.validatedSSEEndpoint(candidate, relativeTo: base) }
-    }
 }
 
 @Test func knownProviderFailureCategoriesRemainActionable() {

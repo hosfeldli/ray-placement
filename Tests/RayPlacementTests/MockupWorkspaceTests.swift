@@ -79,7 +79,6 @@ private func draftTestModel() -> AIChatViewModel {
     AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: []),
         taskRegistry: TaskRegistry(),

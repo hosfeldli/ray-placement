@@ -47,7 +47,6 @@ private func providerSettingsFixture(
     AIChatViewModel(
         store: AIConversationStore(fixtures: conversations),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: transport,
         taskRegistry: registry ?? TaskRegistry(),
@@ -187,6 +186,15 @@ private func providerSettingsFixture(
         "Verified gpt-6-luna with a basic response request"
     ) == true)
     #expect(model.store.conversation(id: conversation.id)?.messages.isEmpty == true)
+
+    guard let alternateEffort = model.selectedModelOption.supportedReasoningEfforts.first(where: {
+        $0 != model.reasoningEffort
+    }) else {
+        Issue.record("The fixture model should support multiple reasoning efforts.")
+        return
+    }
+    model.selectReasoningEffort(alternateEffort)
+    #expect(model.providerConnectionMessage == nil)
 }
 
 @Test func recentModelPolicyDropsOldAndPreviewFamilies() {
@@ -241,7 +249,8 @@ private func providerSettingsFixture(
     }
     #expect(model.providerConnectionMessage?.contains("Verified gpt-5.4") == true)
     #expect(model.selectedModelIsRecommended)
-    #expect(Set(model.pickerModels.map(\.id)) == ["default", "gpt-5.4"])
+    let pickerIDs = Set(model.pickerModels.map(\.id))
+    #expect(pickerIDs.isSuperset(of: ["default", "gpt-5.4"]))
     model.selectProvider(.openAI)
     model.selectProvider(.codexCLI)
     #expect(model.model == "gpt-5.4")
@@ -250,6 +259,41 @@ private func providerSettingsFixture(
     #expect(restored.verifiedCLIModelIDs(for: .codexCLI).contains("gpt-5.4"))
     let future = Date().addingTimeInterval(31 * 24 * 60 * 60)
     #expect(!restored.verifiedCLIModelIDs(for: .codexCLI, now: future).contains("gpt-5.4"))
+}
+
+@Test @MainActor func cliConnectionTestDoesNotRequireModelDiscovery() async throws {
+    struct ListingUnavailable: Error {}
+    var transport = FixtureAITransport.standard
+    transport.modelListOverride = { throw ListingUnavailable() }
+    let conversation = AIConversation(provider: .codexCLI, model: "gpt-5.4")
+    let model = providerSettingsFixture(conversations: [conversation], transport: transport)
+    model.testConnection()
+    for _ in 0..<100 where model.isLoadingModels {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(!model.isLoadingModels)
+    #expect(model.providerConnectionMessage?.contains("Verified gpt-5.4") == true)
+}
+
+@Test @MainActor func codexCatalogShowsListedModelsAndKeepsSelectionAcrossNewChats() {
+    let suite = "dev.liam.lima.tests.codex-catalog.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let catalog = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    let listed = AIModelOption(id: "gpt-6-sol", displayName: "GPT-6 Sol", supportsReasoning: true,
+                               supportedReasoningEfforts: [.low, .medium, .high])
+    catalog.replace([AIModelOption(id: "default", displayName: "Default"), listed], for: .codexCLI)
+    let conversation = AIConversation(provider: .codexCLI, model: "default")
+    let model = providerSettingsFixture(conversations: [conversation], modelCatalog: catalog)
+    #expect(Set(model.pickerModels.map(\.id)) == ["default", "gpt-6-sol"])
+    model.selectModel(listed)
+    #expect(model.model == "gpt-6-sol")
+    #expect(model.selectedModelIsRecommended)
+    model.newConversation()
+    #expect(model.selectedConversation?.model == "gpt-6-sol")
+    let restored = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    #expect(restored.lastSelectedModelID(for: .codexCLI) == "gpt-6-sol")
+    #expect(restored.models(for: .codexCLI, compatibleModelID: "").contains(listed))
 }
 
 @Test @MainActor func configurationCannotChangeDuringGeneration() {

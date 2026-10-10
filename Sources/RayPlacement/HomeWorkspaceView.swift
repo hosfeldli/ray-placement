@@ -53,6 +53,8 @@ struct HomeRecentItem: Identifiable {
 struct HomeWorkspaceView: View {
     @ObservedObject var store: NotesStore
     @ObservedObject var conversations: AIConversationStore
+    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var taskRegistry = TaskRegistry.shared
     let open: (LimaWorkspaceModule) -> Void
     let openConversation: (UUID) -> Void
     let startNoteDictation: () -> Void
@@ -66,6 +68,18 @@ struct HomeWorkspaceView: View {
         Array(store.notes.filter(\.isPinned).sorted { $0.modifiedAt > $1.modifiedAt }.prefix(3))
     }
 
+    private var home: HomeWorkspaceConfiguration { settings.workspaceConfiguration.home }
+    private var recentSectionItems: [HomeRecentItem] {
+        let eligible = recent.filter {
+            switch $0.destination {
+            case .note: home.showsRecentNotes
+            case .conversation: home.showsRecentAI
+            }
+        }
+        guard home.isVisible(.continueWork), let first = recent.first else { return eligible }
+        return eligible.filter { $0.id != first.id }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 22) {
@@ -76,58 +90,8 @@ struct HomeWorkspaceView: View {
                     tint: .blue
                 )
 
-                if let first = recent.first {
-                    sectionTitle("Continue")
-                    LimaWorkspaceCard {
-                        recentRow(first)
-                    }
-                } else {
-                    LimaWorkspaceCard {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Nothing to resume yet").limaFont(.headline)
-                                .foregroundStyle(LimaTheme.textPrimary)
-                            Text("Your recent notes and AI conversations will appear here as you work.")
-                                .limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
-                            Button("Create a note") { createNote() }
-                                .buttonStyle(.borderedProminent)
-                        }
-                    }
-                }
-
-                if recent.count > 1 {
-                    sectionTitle("Recent")
-                    LimaWorkspaceCard {
-                        VStack(spacing: 6) {
-                            ForEach(Array(recent.dropFirst().prefix(5))) { item in
-                                recentRow(item)
-                            }
-                        }
-                    }
-                }
-
-                sectionTitle("Quick actions")
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
-                    quickAction("New note", symbol: "plus", action: createNote)
-                    quickAction("Dictate a note", symbol: "waveform", action: startNoteDictation)
-                    quickAction("Ask Lima", symbol: "sparkles") { open(.ai) }
-                }
-
-                if !pinnedNotes.isEmpty {
-                    sectionTitle("Pinned")
-                    LimaWorkspaceCard {
-                        VStack(spacing: 6) {
-                            ForEach(pinnedNotes) { note in
-                                LimaWorkspaceActionRow(
-                                    title: note.displayTitle,
-                                    detail: note.preview,
-                                    symbol: "pin"
-                                ) {
-                                    store.selectNote(note.id)
-                                    open(.notes)
-                                }
-                            }
-                        }
-                    }
+                ForEach(home.sectionOrder.filter { home.isVisible($0) }) { section in
+                    homeSection(section)
                 }
 
                 if let error = store.lastError {
@@ -144,6 +108,89 @@ struct HomeWorkspaceView: View {
         }
         .background(Color.clear)
         .accessibilityIdentifier("lima-home-workspace")
+    }
+
+    @ViewBuilder
+    private func homeSection(_ section: HomeWorkspaceSection) -> some View {
+        switch section {
+        case .continueWork:
+            if let first = recent.first {
+                sectionTitle("Continue")
+                LimaWorkspaceCard { recentRow(first) }
+            } else {
+                LimaWorkspaceCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Nothing to resume yet").limaFont(.headline)
+                            .foregroundStyle(LimaTheme.textPrimary)
+                        Text("Your recent notes and AI conversations will appear here as you work.")
+                            .limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
+                        Button("Create a note") { createNote() }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        case .recent:
+            if !recentSectionItems.isEmpty {
+                sectionTitle("Recent")
+                LimaWorkspaceCard {
+                    VStack(spacing: 6) {
+                        ForEach(Array(recentSectionItems.prefix(5))) { item in recentRow(item) }
+                    }
+                }
+            }
+        case .quickActions:
+            sectionTitle("Quick actions")
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 170), spacing: 10)], spacing: 10) {
+                quickAction("New note", symbol: "plus", action: createNote)
+                quickAction("Dictate a note", symbol: "waveform", action: startNoteDictation)
+                quickAction("Ask Lima", symbol: "sparkles") { open(.ai) }
+            }
+        case .pinned:
+            if !pinnedNotes.isEmpty {
+                sectionTitle("Pinned")
+                LimaWorkspaceCard {
+                    VStack(spacing: 6) {
+                        ForEach(pinnedNotes) { note in
+                            LimaWorkspaceActionRow(
+                                title: note.displayTitle,
+                                detail: note.preview,
+                                symbol: "pin"
+                            ) {
+                                store.selectNote(note.id)
+                                open(.notes)
+                            }
+                        }
+                    }
+                }
+            }
+        case .activeTasks:
+            sectionTitle("Active tasks")
+            LimaWorkspaceCard {
+                if taskRegistry.activeTasks.isEmpty {
+                    Text("No active tasks").limaFont(.callout)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(Array(taskRegistry.activeTasks.prefix(5))) { task in
+                            HStack(spacing: 10) {
+                                Image(systemName: task.kind.symbol)
+                                    .foregroundStyle(LimaTheme.textSecondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(task.title).limaFont(.callout.weight(.medium))
+                                    Text(task.detail ?? task.kind.title).limaFont(.caption)
+                                        .foregroundStyle(LimaTheme.textSecondary)
+                                }
+                                Spacer(minLength: 8)
+                                if task.isCancellable {
+                                    Button("Stop") { taskRegistry.cancel(task.id) }
+                                        .buttonStyle(.borderless)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     private func sectionTitle(_ title: String) -> some View {

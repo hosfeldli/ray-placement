@@ -86,8 +86,10 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
-                for scenario: AIChatVisualScenario in [.streaming, .failure, .markdown] {
-                    for width: CGFloat in scenario == .failure ? [1040] : [420, 1040] {
+                for scenario: AIChatVisualScenario in [.streaming, .failure, .quota, .timeout, .markdown] {
+                    let widths: [CGFloat] = [.failure, .quota, .timeout].contains(scenario)
+                        ? [420, 600, 1040] : [420, 1040]
+                    for width in widths {
                         let ai = AIChatVisualPreview(scenario: scenario)
                             .environment(\.colorScheme, dark ? .dark : .light)
                         if !(await render(ai, size: NSSize(width: width, height: 700), appearance: appearance,
@@ -102,7 +104,6 @@ enum LimaVisualAudit {
                 ])
                 let memoryModel = AIChatViewModel(store: AIConversationStore(fixtures: []),
                     credentials: AIChatCredentialStore(configuration: .fixture),
-                    mcpStore: MCPServerStore(fixtures: []),
                     nativeToolStore: LimaAIToolStore(fixtures: AIContextTools.ids),
                     transport: FixtureAITransport.standard, workspaceStore: memoryStore)
                 let memory = AIMemoryInspector(model: memoryModel, store: memoryStore,

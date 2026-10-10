@@ -246,7 +246,7 @@ not bypass source identity, signing, asset digest, or draft-verification checks.
 
 ```sh
 # Create, build, stage, and verify the next patch as a GitHub draft locally.
-LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.3.2.xpi" \
+LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.4.0.xpi" \
     ./scripts/release.sh ship --bump patch
 
 # Inspect the next version without changing the working tree or GitHub.
@@ -386,8 +386,8 @@ It stages a verified draft by default. The manual dispatch has a default-off
 draft verification succeeds. Leaving it off keeps the draft for separate review.
 
 GitHub’s temporary `gha-creds-*.json` file remains ignored runner material.
-The small Mozilla-signed Browser Bridge 1.3.2 XPI is tracked at its exact
-manifest destination so this tagged release can use verified bytes without a
+The source-matching Browser Bridge 1.4.0 XPI is pinned at its exact
+manifest destination so a tagged release can use verified bytes without a
 separate GCS upload. The repository-tracked asset manifest pins its SHA-256,
 and `prepare_build_assets.sh` verifies it again before packaging.
 

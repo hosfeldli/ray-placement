@@ -166,7 +166,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [.responseCreated("slow-fixture"), .textDelta("partial"), .completed("slow-fixture")],

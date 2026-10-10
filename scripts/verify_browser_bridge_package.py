@@ -5,7 +5,7 @@ import json
 import pathlib
 import zipfile
 
-FILES = ("manifest.json", "policy.js", "background.js", "snapshot.js", "interaction.js", "popup.html", "popup.css", "popup.js")
+FILES = ("manifest.json", "policy.js", "background.js", "snapshot.js", "page_state.js", "scan_step.js", "scan_restore.js", "interaction.js", "popup.html", "popup.css", "popup.js")
 
 def verify(package, require_signature=False):
     source = pathlib.Path(__file__).resolve().parents[1] / "BrowserBridge"

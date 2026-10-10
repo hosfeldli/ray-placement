@@ -41,7 +41,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport.standard
     )
@@ -84,7 +83,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: [conversation]),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: AIContextTools.memoryIDs),
         transport: FixtureAITransport.standard,
         workspaceStore: workspace
@@ -123,7 +121,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: transport
     )

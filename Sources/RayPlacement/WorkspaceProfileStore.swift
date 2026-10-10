@@ -39,7 +39,8 @@ final class WorkspaceProfileStore: ObservableObject {
         captureCurrentState()
         let profile = WorkspaceProfile(
             name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "New Workspace" : name,
-            state: WorkspaceStateRegistry.shared.state
+            state: WorkspaceStateRegistry.shared.state,
+            workspaceConfigurationData: try? JSONEncoder().encode(SettingsStore.shared.workspaceConfiguration)
         )
         profiles.insert(profile, at: 0)
         activeProfileID = profile.id
@@ -86,12 +87,17 @@ final class WorkspaceProfileStore: ObservableObject {
         guard let activeProfileID,
               let index = profiles.firstIndex(where: { $0.id == activeProfileID }) else { return }
         profiles[index].state = WorkspaceStateRegistry.shared.state
+        profiles[index].workspaceConfigurationData = try? JSONEncoder().encode(SettingsStore.shared.workspaceConfiguration)
         profiles[index].updatedAt = Date()
         save()
     }
 
     func restoreActiveState() {
         guard let profile = activeProfile else { return }
+        if let data = profile.workspaceConfigurationData,
+           let layout = try? JSONDecoder().decode(WorkspaceConfiguration.self, from: data) {
+            SettingsStore.shared.workspaceConfiguration = layout.normalized
+        }
         // Legacy terminal session IDs remain in WorkspaceState for
         // backwards-compatible decoding, but the terminal is now one shell.
         WorkspaceStateRegistry.shared.update { state in state = profile.state }

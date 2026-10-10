@@ -247,7 +247,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func present() {
-        let measurementID = PerformanceMonitor.shared.begin("Workspace open to visible")
+        let measurementID = PerformanceMonitor.shared.begin(.workspaceOpenToVisible)
         restoreWorkspaceSelection()
         let window = ensureWindow()
         applyPresentationMode(presentation.mode, to: window, animated: false)
@@ -272,7 +272,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     func selectModule(_ module: LimaWorkspaceModule) {
         let measurementID = presentation.activeModule == module
             ? nil
-            : PerformanceMonitor.shared.begin("Workspace module switch")
+            : PerformanceMonitor.shared.begin(.workspaceModuleSwitch)
         presentation.activeModule = module
         WorkspaceStateRegistry.shared.update {
             $0.activeWorkspace = LimaSurfaceID.workspace.rawValue
@@ -307,6 +307,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if let focusMode = state.focusMode { presentation.notesFocusMode = focusMode }
         if let module = (state.activeModule ?? state.notesSection).flatMap(LimaWorkspaceModule.init(rawValue:)) {
             presentation.activeModule = module
+        } else {
+            presentation.activeModule = SettingsStore.shared.workspaceConfiguration.startupModule
         }
     }
 

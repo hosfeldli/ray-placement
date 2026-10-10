@@ -43,13 +43,8 @@ mkdir -p "$MODULE_CACHE_DIRECTORY"
 if [[ "$MODEL_FREE_UPDATE_BUILD" != "1" ]]; then
     "$WHISPER_ASSEMBLER"
 fi
-if [[ "$QA_BUILD" == "1" ]]; then
-    LIMA_BUILD_QA_MCP=1 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
-    BIN_DIRECTORY="$(LIMA_BUILD_QA_MCP=1 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
-else
-    LIMA_BUILD_QA_MCP=0 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
-    BIN_DIRECTORY="$(LIMA_BUILD_QA_MCP=0 swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
-fi
+swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY"
+BIN_DIRECTORY="$(swift build --package-path "$PROJECT_DIRECTORY" --configuration release --disable-sandbox --scratch-path "$SCRATCH_DIRECTORY" --show-bin-path)"
 if [[ -z "$SPARKLE_FRAMEWORK_SOURCE" ]]; then
     SPARKLE_FRAMEWORK_SOURCE="$BIN_DIRECTORY/Sparkle.framework"
 fi
@@ -66,11 +61,6 @@ mkdir -p "$CONTENTS_DIRECTORY/MacOS" "$CONTENTS_DIRECTORY/Resources" "$FRAMEWORK
 cp "$BIN_DIRECTORY/RayPlacement" "$CONTENTS_DIRECTORY/MacOS/Lima"
 cp "$BIN_DIRECTORY/LimaBrowserBridgeHost" "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
 chmod 755 "$CONTENTS_DIRECTORY/MacOS/LimaBrowserBridgeHost"
-if [[ "$QA_BUILD" == "1" ]]; then
-    [[ -x "$BIN_DIRECTORY/LimaQAMCPServer" ]] || { echo "The QA MCP executable is missing from the opt-in build." >&2; exit 1; }
-    cp "$BIN_DIRECTORY/LimaQAMCPServer" "$CONTENTS_DIRECTORY/MacOS/LimaQAMCPServer"
-    chmod 755 "$CONTENTS_DIRECTORY/MacOS/LimaQAMCPServer"
-fi
 ditto "$PROJECT_DIRECTORY/BrowserBridge" "$CONTENTS_DIRECTORY/Resources/BrowserBridge"
 cp "$PROJECT_DIRECTORY/docs/BROWSER_BRIDGE.md" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/README.md"
 python3 "$PROJECT_DIRECTORY/scripts/package_browser_bridge.py" "$CONTENTS_DIRECTORY/Resources/BrowserBridge/lima-browser-bridge-unsigned.xpi"
@@ -167,9 +157,6 @@ cp "$PROJECT_DIRECTORY/docs/EXTENSION_AUTHORING_FOR_AI.md" "$CONTENTS_DIRECTORY/
 cp "$PROJECT_DIRECTORY/docs/EXTENSIONS.md" "$CONTENTS_DIRECTORY/Resources/Documentation/EXTENSIONS.md"
 cp "$PROJECT_DIRECTORY/docs/extension-manifest.schema.json" "$CONTENTS_DIRECTORY/Resources/Documentation/extension-manifest.schema.json"
 cp "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
-if [[ "$QA_BUILD" == "1" ]]; then
-    cp "$PROJECT_DIRECTORY/docs/QA_MCP.md" "$CONTENTS_DIRECTORY/Resources/Documentation/QA_MCP.md"
-fi
 chmod 644 "$CONTENTS_DIRECTORY/Resources/Documentation/verify_browser_bridge_package.py"
 mkdir -p "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension"
 cp "$PROJECT_DIRECTORY/docs/starter-extension/manifest.json" "$CONTENTS_DIRECTORY/Resources/Documentation/starter-extension/manifest.json"

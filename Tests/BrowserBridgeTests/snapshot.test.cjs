@@ -8,6 +8,12 @@ const source = fs.readFileSync(path.join(__dirname, "../../BrowserBridge/snapsho
 function text(value) { return {nodeType: 3, textContent: value, parentElement: null}; }
 function descendants(root) { return root.children.flatMap(n => [n, ...(n.children ? descendants(n) : [])]); }
 function select(root, selector, includeRoot = false) {
+  if (selector === "[data-empty-state],[role=status][data-state=empty],.empty-state") {
+    return (includeRoot ? [root, ...descendants(root)] : descendants(root)).filter(node =>
+      node.nodeType === 1 && ("data-empty-state" in node.attributes ||
+        (node.attributes.role === "status" && node.attributes["data-state"] === "empty") ||
+        (node.attributes.class || "").split(/\s+/).includes("empty-state")));
+  }
   const match = /^(button|input|textarea|form)?(?:(#|\.)([A-Za-z_][A-Za-z0-9_-]*)|\[name="([A-Za-z_][A-Za-z0-9_-]*)"\])?$/.exec(selector);
   if (!match) return [];
   return (includeRoot ? [root, ...descendants(root)] : descendants(root)).filter(node => {
@@ -43,11 +49,12 @@ function element(tag, children = [], attributes = {}, style = {}) {
   if (attributes.href) e.href = attributes.href;
   return e;
 }
-function snapshot(body, ranges = []) {
+function snapshot(body, ranges = [], options = {}) {
   return vm.runInNewContext(source, {
     URL, NodeFilter: {SHOW_TEXT: 4, SHOW_ELEMENT: 1}, location: {href: "https://example.com/case"},
     getComputedStyle: node => node.style,
-    document: {body, documentElement: body, baseURI: "https://example.com/case", title: "Fixture", querySelector: () => body,
+    document: {body, documentElement: body, baseURI: "https://example.com/case", title: "Fixture",
+      readyState: options.readyState || "complete", querySelector: () => body,
       querySelectorAll: selector => select(body, selector, true),
       createTreeWalker(root, mask) {
         const nodes = descendants(root).filter(n => n.nodeType === 1 ? (mask & 1) : (mask & 4));
@@ -56,6 +63,22 @@ function snapshot(body, ranges = []) {
     window: {getSelection: () => ({rangeCount: ranges.length, getRangeAt: index => ranges[index]})}
   });
 }
+test("readiness distinguishes loading, unmarked hydration, and an explicit empty state", () => {
+  const populated = element("main", [element("p", [text("Report content")])]);
+  const loading = snapshot(populated, [], {readyState: "loading"});
+  assert.equal(loading.status, "loading");
+  assert.equal(loading.text, "Report content");
+
+  const empty = snapshot(element("main"));
+  assert.equal(empty.status, "hydrating");
+  assert.equal(empty.links.length, 0);
+
+  const explicitEmpty = snapshot(element("main", [
+    element("div", [], {"data-empty-state": ""})
+  ]));
+  assert.equal(explicitEmpty.status, "ready_empty");
+  assert.equal(explicitEmpty.links.length, 0);
+});
 test("link labels and spanning selections exclude hidden/editable descendants", () => {
   const first = text("Visible start"), last = text("Visible end");
   const anchor = element("a", [text("00012345"), element("span", [text("HIDDEN TOKEN")], {hidden: ""}),
@@ -110,6 +133,17 @@ test("Lightning-style shadow links retain real URLs and visible row context", ()
   assert.equal(result.links[0].href, "https://example.com/lightning/r/Case/500000000000001/view");
   assert(result.links[0].rowContext.includes("Open shipment"));
   assert(result.text.includes("00012345"));
+  assert.equal(result.diagnostics.shadowRoots, 1);
+});
+test("open-shadow controls receive direct references without revealing DOM paths", () => {
+  const button = element("button", [text("Run report")], {type: "button", "aria-label": "Run report"});
+  const component = shadow(element("lightning-button"), [button]);
+  const result = snapshot(element("main", [component]));
+  assert.equal(result.controls.length, 1);
+  assert.deepEqual(Array.from(result.controls, ({internalRef, action, label}) => [internalRef, action, label]),
+    [["c_1", "click", "Run report"]]);
+  assert.equal(result.diagnostics.shadowRoots, 1);
+  assert(!JSON.stringify(result).includes("selector"));
 });
 test("hidden and private shadow hosts cannot leak text or URLs", () => {
   for (const attributes of [{hidden: ""}, {"data-lima-private": ""}, {contenteditable: "true"}]) {
@@ -147,13 +181,14 @@ test("role-button links remain navigable links, not advertised click controls", 
   assert.equal(result.links[0].href, "https://example.com/next");
   assert.equal(result.controls.length, 0);
 });
-test("a sole unlabeled-selector button uses a verified unique tag selector", () => {
+test("a sole visible button receives a direct page-session target", () => {
   const result = snapshot(element("main", [element("button", [text("Continue")], {type: "button"})]));
   assert.equal(result.controls.length, 1);
-  assert.equal(result.controls[0].selector, "button");
+  assert.equal(result.controls[0].internalRef, "c_1");
   assert.equal(result.controls[0].label, "Continue");
+  assert.equal(result.status, "ready_with_content");
 });
-test("snapshot returns the exact IANA hyperlink and only uniquely selectable safe controls", () => {
+test("snapshot returns the exact IANA hyperlink and direct references for safe controls", () => {
   const body = element("main", [
     element("a", [text("Learn more")], {href: "https://iana.org/help/example-domains"}),
     element("button", [text("Inspect")], {id: "inspect", type: "button"}),
@@ -173,11 +208,15 @@ test("snapshot returns the exact IANA hyperlink and only uniquely selectable saf
   ]);
   const result = snapshot(body);
   assert(result.links.some(link => link.href === "https://iana.org/help/example-domains"));
-  assert.deepEqual(Array.from(result.controls, ({selector, action, label}) => [selector, action, label]), [
-    ["button#inspect", "click", "Inspect"],
-    ['input[name="query"]', "type", "Search"],
-    ["form#send", "submit", "Send message"]
+  assert.deepEqual(Array.from(result.controls, ({internalRef, action, label}) => [internalRef, action, label]), [
+    ["c_1", "click", "Inspect"],
+    ["c_2", "type", "Search"],
+    ["c_3", "submit", "Send message"],
+    ["c_4", "click", "Ambiguous"],
+    ["c_5", "click", "Ambiguous"]
   ]);
+  assert.equal(result.diagnostics.controls, 5);
+  assert(!JSON.stringify(result).includes("selector"));
   assert(!JSON.stringify(result).includes("PRIVATE QUERY"));
   assert(!JSON.stringify(result).includes("CSRF SECRET"));
   assert(!JSON.stringify(result).includes("SECRET"));

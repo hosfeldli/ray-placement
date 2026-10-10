@@ -186,13 +186,16 @@ public struct WorkspaceProfile: Codable, Equatable, Identifiable, Sendable {
     public var id: UUID
     public var name: String
     public var state: WorkspaceState
+    /// App-owned rail layout snapshot; optional so profiles saved before layout support still decode.
+    public var workspaceConfigurationData: Data?
     public var favorite: Bool
     public var updatedAt: Date
 
-    public init(id: UUID = UUID(), name: String, state: WorkspaceState = WorkspaceState(), favorite: Bool = false, updatedAt: Date = Date()) {
+    public init(id: UUID = UUID(), name: String, state: WorkspaceState = WorkspaceState(), workspaceConfigurationData: Data? = nil, favorite: Bool = false, updatedAt: Date = Date()) {
         self.id = id
         self.name = name
         self.state = state
+        self.workspaceConfigurationData = workspaceConfigurationData
         self.favorite = favorite
         self.updatedAt = updatedAt
     }

@@ -22,11 +22,8 @@ require "the Lima executable is missing" test -x "$BINARY"
 require "the browser native helper is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
 require "the browser helper signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
 if [[ "$QA_BUILD" == "1" ]]; then
-    require "the QA MCP executable is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer"
-    require "the QA MCP executable signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer"
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" == "true" ]] || { echo "Verification failed: the QA build marker is missing" >&2; exit 1; }
 else
-    [[ ! -e "$APP_DIRECTORY/Contents/MacOS/LimaQAMCPServer" ]] || { echo "Verification failed: the production app contains the QA MCP executable" >&2; exit 1; }
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" != "true" ]] || { echo "Verification failed: the production app is marked as a QA build" >&2; exit 1; }
 fi
 require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"

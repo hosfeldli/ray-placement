@@ -12,7 +12,7 @@ function element(tag, attributes = {}) {
     style: {display: "block", visibility: "visible", opacity: "1"},
     type: attributes.type || "", value: attributes.value || "",
     isContentEditable: attributes.contenteditable === "true",
-    getClientRects: () => [{}], getAttribute: key => attributes[key] ?? null,
+    getClientRects: () => [{}], getAttribute: key => attributes[key] ?? (key === "aria-label" ? "Fixture" : null),
     hasAttribute: key => key in attributes,
     focus() {}, click() { target.clicked = true; },
     dispatchEvent(event) { events.push(event.type); },
@@ -26,12 +26,27 @@ function adapter(targets) {
   let handler;
   const browser = {runtime: {id: "lima-browser-bridge@liamhosfeld.com",
     onMessage: {addListener(callback) { handler = callback; }}}};
-  const document = {querySelectorAll: selector => targets[selector] || []};
-  vm.runInNewContext(source, {browser, document, Event: class { constructor(type) { this.type = type; } },
-    getComputedStyle: node => node.style});
+  const document = {};
+  const refs = new Map(), liveTargets = new Map();
+  for (const [name, elements] of Object.entries(targets)) {
+    const ref = `c_${refs.size + 1}`;
+    refs.set(name, ref); liveTargets.set(ref, elements[0]);
+  }
+  const session = {document, url: "https://example.com/case", documentID: "fixture-document",
+    pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0, targets: liveTargets};
+  vm.runInNewContext(source, {browser, document, location: {href: "https://example.com/case"},
+    __limaPageSessionV1: session,
+    Event: class { constructor(type) { this.type = type; } }, getComputedStyle: node => node.style});
   const sender = {id: browser.runtime.id};
-  return (command, selector, text) => handler(
-    {type: "lima-browser-interaction", command, selector, text}, sender);
+  const run = (command, name, text) => {
+    const target = targets[name]?.[0];
+    return handler({type: "lima-browser-interaction", command,
+      internalRef: refs.get(name) || "c_999", text,
+      expected: {action: command.slice(8), tag: target?.tagName.toLowerCase() || "button", label: "Fixture",
+        documentID: "fixture-document", pageGeneration: 1, snapshotRevision: 1, mutationRevision: 0}}, sender);
+  };
+  run.session = session;
+  return run;
 }
 
 test("discovered non-submit button and nonsensitive input actions execute", () => {
@@ -45,7 +60,7 @@ test("discovered non-submit button and nonsensitive input actions execute", () =
   assert.deepEqual(input.events, ["input", "change"]);
 });
 
-test("page actions reject links, ambiguous controls, and credential fields", () => {
+test("page actions reject links and credential fields while direct references disambiguate controls", () => {
   const link = element("a");
   const password = element("input", {type: "password"});
   const card = element("input", {type: "text", autocomplete: "cc-number"});
@@ -54,7 +69,9 @@ test("page actions reject links, ambiguous controls, and credential fields", () 
   const run = adapter({"#link": [link], "#password": [password], "#card": [card], "#code": [code],
     "button#duplicate": duplicate});
   assert.equal(run("browser.click", "#link").error, "unsupported_target");
-  assert.equal(run("browser.click", "button#duplicate").error, "target_ambiguous");
+  assert.equal(run("browser.click", "button#duplicate").performed, "click");
+  assert.equal(duplicate[0].clicked, true);
+  assert.equal(duplicate[1].clicked, undefined);
   assert.equal(run("browser.type", "#password", "secret").error, "sensitive_or_unsupported_target");
   assert.equal(run("browser.type", "#card", "4111111111111111").error, "sensitive_or_unsupported_target");
   assert.equal(run("browser.type", "#code", "123456").error, "sensitive_or_unsupported_target");
@@ -97,4 +114,28 @@ test("form submission excludes credentials but accepts a nonsensitive form", () 
   assert.equal(payment.submitted, undefined);
   assert.equal(run("browser.submit", "form#safe").performed, "submit");
   assert.equal(safe.submitted, true);
+});
+
+test("a revised, mutated, or rerouted page rejects a captured target", () => {
+  for (const change of [
+    session => { session.snapshotRevision += 1; },
+    session => { session.mutationRevision += 1; },
+    session => { session.pageGeneration += 1; },
+    session => { session.url = "https://example.com/other"; }
+  ]) {
+    const button = element("button", {type: "button"});
+    const run = adapter({button: [button]});
+    change(run.session);
+    assert.equal(run("browser.click", "button").error, "target_stale");
+    assert.equal(button.clicked, undefined);
+  }
+});
+
+test("private open-shadow hosts block an otherwise valid direct target", () => {
+  const host = element("x-private", {"data-lima-private": ""});
+  const button = element("button", {type: "button"});
+  button.getRootNode = () => ({host});
+  const run = adapter({shadowButton: [button]});
+  assert.equal(run("browser.click", "shadowButton").error, "target_not_visible");
+  assert.equal(button.clicked, undefined);
 });

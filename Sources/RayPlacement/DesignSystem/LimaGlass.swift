@@ -52,8 +52,24 @@ struct LimaGlassContainer<Content: View>: View {
             }
             .clipShape(shape)
             .overlay {
-                shape.strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
-                    .allowsHitTesting(false)
+                ZStack {
+                    shape.strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
+                    if !reduceTransparency, settings.glassStyle.prismaticEdgeOpacity > 0 {
+                        shape.strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(settings.glassStyle.prismaticEdgeOpacity),
+                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(settings.glassStyle.prismaticEdgeOpacity),
+                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(settings.glassStyle.prismaticEdgeOpacity * 0.72)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: LimaDesign.borderWidth + 0.3
+                        )
+                    }
+                }
+                .allowsHitTesting(false)
             }
     }
 }

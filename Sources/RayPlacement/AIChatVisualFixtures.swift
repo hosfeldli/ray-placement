@@ -8,6 +8,8 @@ enum AIChatVisualScenario: String, CaseIterable {
     case streaming = "ai-streaming"
     case approval = "ai-approval"
     case failure = "ai-failure"
+    case quota = "ai-quota"
+    case timeout = "ai-timeout"
     case manyChats = "ai-many-chats"
 
     var title: String {
@@ -18,6 +20,8 @@ enum AIChatVisualScenario: String, CaseIterable {
         case .streaming: return "AI Chat — Streaming + Reasoning"
         case .approval: return "AI Chat — Tool Approval"
         case .failure: return "AI Chat — Request Failure"
+        case .quota: return "AI Chat — Credits Exhausted"
+        case .timeout: return "AI Chat — Timeout"
         case .manyChats: return "AI Chat — Many Conversations"
         }
     }
@@ -168,11 +172,9 @@ enum AIChatVisualFixtures {
                 projectID: project.id
             )
         ])
-        let mcpServer = fixtureMCPServer()
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: conversations),
             credentials: AIChatCredentialStore(configuration: .fixture),
-            mcpStore: MCPServerStore(fixtures: [mcpServer]),
             nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "get_lima_status"]),
             transport: FixtureAITransport.standard,
             workspaceStore: workspaceStore
@@ -203,7 +205,7 @@ enum AIChatVisualFixtures {
                     errorParameter: "reasoning.effort",
                     message: "Invalid reasoning effort: minimal"
                 )],
-                showsDiagnostics: true
+                showsDiagnostics: false
             )
         default:
             break
@@ -224,6 +226,10 @@ enum AIChatVisualFixtures {
             conversations = [approvalConversation]
         case .failure:
             conversations = [failureConversation]
+        case .quota:
+            conversations = [quotaConversation]
+        case .timeout:
+            conversations = [timeoutConversation]
         case .manyChats:
             conversations = manyConversations
         case .conversation:
@@ -253,8 +259,8 @@ enum AIChatVisualFixtures {
                 ),
                 AIChatMessage(
                     role: .assistant,
-                    text: "The request can fail before visible text arrives when a model receives an unsupported reasoning level or an authenticated MCP tool uses the wrong field. Lima now keeps the failed turn in the transcript and shows a safe failure summary.",
-                    reasoningSummary: "Checked the request capability profile and the remote MCP payload.",
+                    text: "The request can fail before visible text arrives when a model receives an unsupported reasoning level or an invalid native-tool schema. Lima now keeps the failed turn in the transcript and shows a safe failure summary.",
+                    reasoningSummary: "Checked the request capability profile and native-tool payload.",
                     activities: completedActivities
                 )
             ]
@@ -348,10 +354,73 @@ enum AIChatVisualFixtures {
                 AIChatMessage(role: .user, text: "Reply with exactly: Lima works"),
                 AIChatMessage(
                     role: .assistant,
-                    text: "⚠️ Couldn’t complete this response\n\nThe provider rejected the request. Invalid reasoning effort: minimal\n\nRetry after selecting a supported reasoning level.",
+                    text: "",
                     activities: [
                         AIAgentActivity(kind: .error, title: "Request failed", detail: "Invalid reasoning effort: minimal", completed: true)
-                    ]
+                    ],
+                    failure: AIExecutionRunFailure(
+                        category: .invalidConfiguration,
+                        originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+                            providerID: AIProvider.openAI.rawValue,
+                            modelID: "gpt-5.4",
+                            reasoningEffort: "minimal"
+                        ),
+                        httpStatus: 400,
+                        safeMessage: "The selected reasoning option was rejected.",
+                        invalidParameter: "reasoning.effort",
+                        retryability: .configurationChange
+                    )
+                )
+            ]
+        )
+    }
+
+    private static var quotaConversation: AIConversation {
+        AIConversation(
+            title: "Credits exhausted",
+            updatedAt: Date(),
+            model: "gpt-5.4",
+            messages: [
+                AIChatMessage(role: .user, text: "Finish the release checklist."),
+                AIChatMessage(
+                    role: .assistant,
+                    text: "",
+                    failure: AIExecutionRunFailure(
+                        category: .quotaExhausted,
+                        originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+                            providerID: AIProvider.openAI.rawValue,
+                            modelID: "gpt-5.4",
+                            reasoningEffort: "medium"
+                        ),
+                        httpStatus: 429,
+                        safeMessage: AIProviderFailure.message(error: ["code": "insufficient_quota"], status: 429),
+                        retryability: .manual
+                    )
+                )
+            ]
+        )
+    }
+
+    private static var timeoutConversation: AIConversation {
+        AIConversation(
+            title: "Request timed out",
+            updatedAt: Date(),
+            model: "gpt-5.4",
+            messages: [
+                AIChatMessage(role: .user, text: "Inspect the package and summarize the blockers."),
+                AIChatMessage(
+                    role: .assistant,
+                    text: "",
+                    failure: AIExecutionRunFailure(
+                        category: .timedOut,
+                        originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+                            providerID: AIProvider.openAI.rawValue,
+                            modelID: "gpt-5.4",
+                            reasoningEffort: "medium"
+                        ),
+                        safeMessage: AIProviderFailure.timeoutMessage,
+                        retryability: .safe
+                    )
                 )
             ]
         )
@@ -359,10 +428,10 @@ enum AIChatVisualFixtures {
 
     private static var earlierConversation: AIConversation {
         AIConversation(
-            title: "MCP request design",
+            title: "Tool request design",
             updatedAt: fixtureNow.addingTimeInterval(-86_400),
             model: "gpt-5.4",
-            messages: [AIChatMessage(role: .user, text: "How should remote MCP authorization be sent?")]
+            messages: [AIChatMessage(role: .user, text: "How should native tool approvals be shown?")]
         )
     }
 
@@ -389,10 +458,5 @@ enum AIChatVisualFixtures {
         Date(timeIntervalSinceReferenceDate: 780_000_000)
     }
 
-    private static func fixtureMCPServer() -> MCPServer {
-        let id = UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000001")!
-        let tool = MCPToolDescriptor(serverID: id, name: "search_docs", title: "Search documentation", description: "Fixture MCP search", risk: .read, enabled: true, declaredReadOnly: true)
-        return MCPServer(id: id, name: "Fixture Docs", url: "https://example.invalid/mcp", allowedToolNames: [tool.name], tools: [tool])
-    }
 }
 #endif

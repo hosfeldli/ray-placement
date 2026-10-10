@@ -4,11 +4,12 @@ import Network
 import RayPlacementCore
 
 enum BrowserBridgeError: LocalizedError {
-    case unavailable, interactionUnavailable, broadGrantDisabled, unsupportedGrant, timeout, invalidResponse, rejected(String)
+    case unavailable, interactionUnavailable, scanUnavailable, broadGrantDisabled, unsupportedGrant, timeout, invalidResponse, rejected(String)
     var errorDescription: String? {
         switch self {
         case .unavailable: return "Enable the bridge in Settings and connect the companion extension in Zen or Firefox."
-        case .interactionUnavailable: return "The connected Browser Bridge companion needs a compatible signed update before it can click, type, or submit."
+        case .interactionUnavailable: return "Install a compatible signed Browser Bridge page-session update before using snapshot targets, then reconnect the companion."
+        case .scanUnavailable: return "Install a compatible signed Browser Bridge scan update before scanning virtualized pages, then reconnect the companion."
         case .broadGrantDisabled: return "The browser has an all-HTTPS grant. Enable Broad HTTPS browser grants in AI Settings → Experimental browser access, or revoke the broad grant in the companion."
         case .unsupportedGrant: return "The browser reported an unsupported host grant. Revoke it in the companion before using browser tools."
         case .timeout: return "The browser did not respond. Reconnect the companion extension and try again."
@@ -23,6 +24,10 @@ enum BrowserBridgeError: LocalizedError {
                 return "The browser action was denied in the companion popup."
             case "page_changed":
                 return "The page changed since Lima inspected it. Refresh the granted tabs and try again."
+            case "page_not_ready":
+                return "The browser page has not reached a verified ready state. Wait for the report to load, then read it again; zero links alone is not an empty report."
+            case "case_not_visible":
+                return "The Case was not found among the currently visible report links. This does not prove the Case is absent from a virtualized report."
             case "no_active_tab", "invalid_tab":
                 return "The requested browser tab is no longer available. Refresh the granted tabs and try again."
             case "cancelled":
@@ -31,7 +36,7 @@ enum BrowserBridgeError: LocalizedError {
                 return "The installed signed Browser Bridge companion does not support this interaction yet. Install a compatible signed companion release, then reconnect."
             case "site_policy_unavailable", "site_policy_update_failed":
                 return "Browser site access could not be updated. Reconnect the companion and try again."
-            case "target_not_found", "target_not_visible", "target_ambiguous", "invalid_selector", "unsupported_target", "sensitive_or_unsupported_target":
+            case "target_not_found", "target_not_visible", "target_ambiguous", "target_stale", "invalid_target", "invalid_selector", "unsupported_target", "sensitive_or_unsupported_target":
                 return "The requested page control is unavailable or unsafe to use. Inspect the page again and choose a specific visible control."
             default:
                 return "The browser could not complete this request. Check site access and the companion popup, then try again."
@@ -307,7 +312,7 @@ final class BrowserBridgeService: ObservableObject {
             try latest.require(url, broadEnabled: defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
             return result
 
-        case "browser.read":
+        case "browser.read", "browser.scan":
             guard case .number(let tabID)? = arguments["tabID"] else { throw BrowserBridgeError.invalidResponse }
             let listed = try await rawRequest("browser.tabs", expectedSession: session, recordActivity: false)
             guard case .object(let fields) = listed, case .array(let tabs)? = fields["tabs"],
@@ -320,12 +325,21 @@ final class BrowserBridgeService: ObservableObject {
                 throw BrowserBridgeError.rejected("site_not_granted")
             }
             try policy.require(expectedURL, broadEnabled: broadEnabled)
+            if command == "browser.scan" {
+                let status = try await rawRequest("bridge.status", expectedSession: session, recordActivity: false)
+                guard case .object(let statusFields) = status,
+                      case .array(let capabilities)? = statusFields["capabilities"],
+                      capabilities.contains(.string("browser_scan_v1")) else { throw BrowserBridgeError.scanUnavailable }
+            }
             let result = try await rawRequest(command, arguments: arguments, expectedSession: session)
             let latest = try await currentGrantPolicy(session: session)
             guard selectedSession == session, case .object(let page) = result,
                   case .string(let actualURL)? = page["url"],
                   actualURL == expectedURL, page["incognito"] != .bool(true) else { throw BrowserBridgeError.invalidResponse }
             try latest.require(actualURL, broadEnabled: defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
+            if command == "browser.scan", !Self.validScanResponse(page) {
+                throw BrowserBridgeError.invalidResponse
+            }
             return result
 
         case "browser.open", "browser.open_tabs", "browser.focus", "browser.close",
@@ -356,6 +370,22 @@ final class BrowserBridgeService: ObservableObject {
         }
     }
 
+    private static func validScanResponse(_ page: [String: JSONValue]) -> Bool {
+        guard page["scope"] == .string("bounded_viewport_scan"),
+              page["complete"] == .bool(false),
+              case .string(let status)? = page["status"],
+              ["ready_with_content", "ready_empty", "blocked", "timed_out", "error"].contains(status),
+              case .string? = page["text"],
+              case .array(let links)? = page["links"], links.count <= 250,
+              case .array(let controls)? = page["controls"], controls.isEmpty,
+              case .number(let passes)? = page["scrollPasses"],
+              passes.isFinite, passes.rounded() == passes, (0...6).contains(passes),
+              case .bool? = page["endReached"],
+              case .bool? = page["restored"],
+              case .bool? = page["truncated"] else { return false }
+        return true
+    }
+
     private func currentGrantPolicy(session: UUID) async throws -> BrowserBridgeGrantPolicy {
         let status = try await rawRequest("bridge.status", expectedSession: session, recordActivity: false)
         guard case .object(let fields) = status,
@@ -379,7 +409,7 @@ final class BrowserBridgeService: ObservableObject {
                 try Task.checkCancellation()
                 return try await withCheckedThrowingContinuation { continuation in
                     let timeout = Task { [weak self] in
-                        let seconds: UInt64 = Self.mutationCommands.contains(command) ? 75 : 15
+                        let seconds: UInt64 = Self.mutationCommands.contains(command) ? 75 : (command == "browser.scan" ? 30 : 15)
                         try? await Task.sleep(nanoseconds: seconds * 1_000_000_000)
                         guard !Task.isCancelled else { return }
                         self?.cancel(message, session: session, error: BrowserBridgeError.timeout)
@@ -410,7 +440,7 @@ final class BrowserBridgeService: ObservableObject {
         let status = try await request("bridge.status")
         guard case .object(let fields) = status,
               case .array(let capabilities)? = fields["capabilities"],
-              capabilities.contains(.string("browser_interaction_v1")) else {
+              capabilities.contains(.string("browser_targets_v2")) else {
             throw BrowserBridgeError.interactionUnavailable
         }
     }
@@ -451,7 +481,7 @@ final class BrowserBridgeService: ObservableObject {
                 exactInteractionOrigins = interactionPolicy.exactHosts.sorted().map { "https://\($0)" }
                 broadGrantInstalled = readPolicy.hasBroadHTTPS
                 if case .array(let capabilities)? = fields["capabilities"] {
-                    supportsInteraction = capabilities.contains(.string("browser_interaction_v1"))
+                    supportsInteraction = capabilities.contains(.string("browser_targets_v2"))
                 }
                 interactionPolicyAvailable = fields["interactionPolicyAvailable"] == .bool(true)
                 companionConnected = fields["connected"] == .bool(true)
@@ -758,7 +788,7 @@ final class BrowserBridgeService: ObservableObject {
 
     func resolveCase(number: String, tabID: Int) async throws -> JSONValue {
         let page = try await salesforcePage(tabID: tabID)
-        return try resolveCase(number, in: page)
+        return try resolveCase(number, in: (url: page.url, links: page.links))
     }
 
     /// Extract only unambiguous, same-origin Case links from one granted
@@ -774,7 +804,14 @@ final class BrowserBridgeService: ObservableObject {
             "cases": .array(cases.map {
                 .object(["case_number": .string($0.caseNumber), "url": .string($0.url.absoluteString)])
             }),
-            "limit": .number(50)
+            "limit": .number(50),
+            "scope": .string(page.scope),
+            "readiness": .string(page.status ?? "legacy_unverified"),
+            "scroll_passes": .number(Double(page.scrollPasses)),
+            "end_reached": .bool(page.endReached),
+            "scroll_restored": .bool(page.restored),
+            "truncated": .bool(page.truncated),
+            "complete": .bool(false)
         ])
     }
 
@@ -783,15 +820,42 @@ final class BrowserBridgeService: ObservableObject {
     func resolveCases(numbers: [String], tabID: Int) async throws -> JSONValue {
         guard (1...30).contains(numbers.count) else { throw BrowserBridgeError.invalidResponse }
         let page = try await salesforcePage(tabID: tabID)
-        return .array(try numbers.map { try resolveCase($0, in: page) })
+        return .array(try numbers.map { try resolveCase($0, in: (url: page.url, links: page.links)) })
     }
 
-    private func salesforcePage(tabID: Int) async throws -> (url: String, links: [LimaBrowserBridgeLink]) {
-        let snapshot = try await request("browser.read", arguments: ["tabID": .number(Double(tabID))])
+    private func salesforcePage(tabID: Int) async throws -> (url: String, links: [LimaBrowserBridgeLink], status: String?, scope: String, scrollPasses: Int, endReached: Bool, restored: Bool, truncated: Bool) {
+        let snapshot: JSONValue
+        do {
+            snapshot = try await request("browser.scan", arguments: ["tabID": .number(Double(tabID))])
+        } catch BrowserBridgeError.scanUnavailable {
+            // Keep older signed companions useful without claiming that one
+            // viewport covers a virtualized report.
+            snapshot = try await request("browser.read", arguments: ["tabID": .number(Double(tabID))])
+        }
         let data = try JSONEncoder().encode(snapshot)
-        struct Snapshot: Decodable { var url: String; var links: [LimaBrowserBridgeLink] }
+        struct Snapshot: Decodable {
+            var url: String
+            var links: [LimaBrowserBridgeLink]
+            var status: String?
+            var scope: String?
+            var scrollPasses: Int?
+            var endReached: Bool?
+            var restored: Bool?
+            var truncated: Bool?
+        }
         let page = try JSONDecoder().decode(Snapshot.self, from: data)
-        return (page.url, page.links)
+        if let status = page.status {
+            guard status == "ready_with_content" || status == "ready_empty" else {
+                throw BrowserBridgeError.rejected("page_not_ready")
+            }
+        } else if page.links.isEmpty {
+            // Older signed companions have no readiness field. Positive links
+            // remain usable, but an unverified empty snapshot is not a result.
+            throw BrowserBridgeError.rejected("page_not_ready")
+        }
+        return (page.url, page.links, page.status, page.scope ?? "visible_snapshot_only",
+                page.scrollPasses ?? 0, page.endReached ?? false, page.restored ?? true,
+                page.truncated ?? false)
     }
 
     private func resolveCase(
@@ -805,6 +869,9 @@ final class BrowserBridgeService: ObservableObject {
             pageURL: page.url,
             links: page.links
         ))
+        if response.status == "not_found" {
+            throw BrowserBridgeError.rejected("case_not_visible")
+        }
         return try JSONDecoder().decode(JSONValue.self, from: JSONEncoder().encode(response))
     }
 }

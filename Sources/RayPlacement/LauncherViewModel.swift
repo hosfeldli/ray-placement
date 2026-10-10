@@ -756,11 +756,10 @@ final class LauncherViewModel: ObservableObject {
             let wasCancelled = Task.isCancelled
             await MainActor.run {
                 PerformanceMonitor.shared.record(
-                    "Search query to results",
+                    .universalSearchQueryToResults,
                     startedAt: searchStartedAt,
                     duration: max(0, Date().timeIntervalSince(searchStartedAt)),
                     succeeded: !wasCancelled,
-                    detail: wasCancelled ? "Superseded or cancelled" : nil
                 )
             }
             guard !wasCancelled else { return }

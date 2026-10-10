@@ -36,7 +36,7 @@ struct BrowserCapabilityTurnContext: Equatable, Sendable {
     let pendingApproval: Bool
 
     static let readToolIDs: Set<String> = [
-        "browser_tabs", "browser_current", "browser_read",
+        "browser_tabs", "browser_current", "browser_read", "browser_scan",
         "browser_capabilities", "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
     ]
     static let navigationToolIDs: Set<String> = ["browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]

@@ -70,7 +70,7 @@ struct WorkflowExecutor {
                 results.append(.init(commandID: step.commandID, succeeded: false, message: "Cancelled"))
                 break
             }
-            let measurementID = PerformanceMonitor.shared.begin("Workflow step", detail: step.commandID)
+            let measurementID = PerformanceMonitor.shared.begin(.workflowStep, detail: step.commandID)
             do {
                 if !confirm { throw ConfirmationRequired() }
                 try await run(step.commandID)

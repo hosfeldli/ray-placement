@@ -136,7 +136,6 @@ private struct PreviewAISettings: View {
     @StateObject private var model = AIChatViewModel(
         store: AIConversationStore(fixtures: [AIConversation(provider: .openAICompatible, model: "local-model")]),
         credentials: AIChatCredentialStore(configuration: .missingFixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport.standard,
         taskRegistry: TaskRegistry(),

@@ -77,8 +77,7 @@ private func compatibleFrame(_ object: [String: Any]) throws -> AIProviderSSEFra
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: []),
             credentials: AIChatCredentialStore(configuration: .fixture),
-            mcpStore: MCPServerStore(fixtures: []),
-            nativeToolStore: LimaAIToolStore(fixtures: ["get_lima_status"]),
+                nativeToolStore: LimaAIToolStore(fixtures: ["get_lima_status"]),
             transport: FixtureAITransport(events: events),
             taskRegistry: registry
         )

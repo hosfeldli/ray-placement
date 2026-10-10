@@ -28,13 +28,14 @@ import Testing
 
     let store = LimaAIToolStore(defaults: defaults)
     #expect(store.accessMode == .custom)
-    #expect(store.enabledToolIDs == ["read_file", "lima_capabilities"])
+    #expect(store.enabledToolIDs.isSuperset(of: ["read_file", "lima_capabilities"]))
+    #expect(store.enabledToolIDs.isSuperset(of: AIWorkspaceActionTools.ids))
     #expect(!store.effectiveEnabledToolIDs.contains("read_web"))
     #expect(AIComputerActionPolicy(defaults: defaults).enabledCategories.isEmpty)
 
     store.setAccessMode(.fullControl)
     #expect(store.effectiveEnabledToolIDs.contains("read_web"))
-    #expect(store.enabledToolIDs == ["read_file", "lima_capabilities"])
+    #expect(store.enabledToolIDs.isSuperset(of: ["read_file", "lima_capabilities"]))
 
     store.setAccessMode(.custom)
     #expect(!store.effectiveEnabledToolIDs.contains("read_web"))
@@ -64,7 +65,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: [AIConversation(agentID: "agent.writing")]),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: ["read_file"]),
         transport: FixtureAITransport.standard
     )
@@ -78,8 +78,7 @@ import Testing
         let model = AIChatViewModel(
             store: AIConversationStore(fixtures: [AIConversation()]),
             credentials: AIChatCredentialStore(configuration: .fixture),
-            mcpStore: MCPServerStore(fixtures: []),
-            nativeToolStore: LimaAIToolStore(fixtures: [], accessMode: mode),
+                nativeToolStore: LimaAIToolStore(fixtures: [], accessMode: mode),
             transport: FixtureAITransport.standard
         )
         let routed = Set(model.routedNativeTools(for: "Explain this query").map(\.id))
@@ -90,11 +89,42 @@ import Testing
     }
 }
 
+@Test @MainActor func capabilityInspectorReportsActualRoutedRuntimeNotModePromises() throws {
+    let call = AIOutputItem(
+        phase: .completed, apiType: "function_call", callID: "capabilities",
+        name: "lima_capabilities", arguments: "{}"
+    )
+    let tools = ["read_file", "read_note", "browser_read"].compactMap {
+        LimaAIToolRegistry.definition(for: $0)
+    }
+    #expect(tools.count == 3)
+    let result = AIContextTools.capabilities(call, routedTools: tools, accessMode: .fullControl)
+    #expect(!result.isError)
+    let data = try #require(result.output.data(using: .utf8))
+    let output = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let files = try #require(output["files"] as? [String: Any])
+    let terminal = try #require(output["terminal"] as? [String: Any])
+    let browser = try #require(output["browser"] as? [String: Any])
+    let workspace = try #require(output["workspace"] as? [String: Any])
+    #expect(files["read"] as? Bool == true)
+    #expect(files["create_text"] as? Bool == false)
+    #expect(terminal["available"] as? Bool == false)
+    #expect(terminal["mode"] as? String == "unavailable")
+    #expect(terminal["shared_workspace_session"] as? Bool == false)
+    #expect(terminal["bounded_external_command"] as? Bool == false)
+    #expect(terminal["visible_in_terminal"] as? Bool == false)
+    #expect(terminal["bounded_external_network_policy"] as? String == "unavailable")
+    #expect(browser["read"] as? Bool == true)
+    #expect(browser["navigate"] as? Bool == false)
+    #expect(browser["site_grant"] as? String == "not_checked")
+    #expect(browser["bridge_connection"] as? String == "not_checked")
+    #expect(workspace["ai_operable"] as? Bool == false)
+}
+
 @Test @MainActor func fullControlExposesEligibleToolsWithoutPerToolSelections() {
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: [AIConversation()]),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: [], accessMode: .fullControl),
         transport: FixtureAITransport.standard
     )

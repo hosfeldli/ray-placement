@@ -2,7 +2,7 @@
 
 ## AI UI Lab
 
-The debug UI Lab renders the **production AI workspace** with in-memory conversations, inert MCP/native-tool stores, and `FixtureAITransport`. It does not access Keychain or make network requests.
+The debug UI Lab renders the **production AI workspace** with in-memory conversations, an inert native-tool store, and `FixtureAITransport`. It does not access Keychain or make network requests.
 
 ```sh
 make visual-lab
@@ -33,8 +33,7 @@ Normal Lima credentials remain in their production Keychain namespaces. When `LI
 | Data | Production | Test mode |
 | --- | --- | --- |
 | OpenAI API key | `dev.liam.lima.ai` | `dev.liam.lima.ai.test` |
-| MCP credentials | `dev.liam.lima.mcp` | `dev.liam.lima.mcp.test` |
-| AI conversations and MCP configuration | Application Support | Per-run test data root, or `LIMA_TEST_DATA_DIRECTORY` |
+| AI conversations | Application Support | Per-run test data root, or `LIMA_TEST_DATA_DIRECTORY` |
 | Native tool preferences | Standard defaults | Per-process test defaults suite |
 
 For a persistent local test key, add it only to the test Keychain service:

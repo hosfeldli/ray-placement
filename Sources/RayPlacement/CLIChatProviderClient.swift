@@ -9,10 +9,10 @@ struct CLIChatProviderClient: AIChatTransport {
         case unsupportedAttachment
         case emptyResponse
         case commandFailed(String)
+        case timedOut
         case invalidToolResponse
         case unavailableTool(String)
         case toolCatalogTooLarge
-        case unexpectedRemoteApproval
 
         var errorDescription: String? {
             switch self {
@@ -26,15 +26,32 @@ struct CLIChatProviderClient: AIChatTransport {
                 return "The CLI finished without a readable reply. Check its local sign-in and model settings."
             case .commandFailed(let name):
                 return "\(name) could not complete the request. Check that its CLI is installed, signed in, and supports the selected model."
+            case .timedOut:
+                return AIProviderFailure.timeoutMessage
             case .invalidToolResponse:
                 return "The CLI returned an invalid Lima tool response. Retry the request or choose another model."
             case .unavailableTool(let name):
                 return "The CLI requested \(name), which was not enabled for this request. Enable the tool in Lima and try again."
             case .toolCatalogTooLarge:
                 return "The supplied context is too large for this CLI request. Reduce the attachments or instructions and try again."
-            case .unexpectedRemoteApproval:
-                return "CLI tool decisions must be handled in Lima, not in a provider response session."
             }
+        }
+    }
+
+    private final class TimeoutState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+
+        func mark() {
+            lock.lock()
+            value = true
+            lock.unlock()
+        }
+
+        var didTimeOut: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
         }
     }
 
@@ -60,9 +77,12 @@ struct CLIChatProviderClient: AIChatTransport {
     }
 
     func listModels(apiKey: String) async throws -> [AIModelOption] {
-        guard Self.executableURL(for: provider) != nil else { throw Failure.missingCLI(provider.title) }
-        // Neither CLI exposes a stable, cheap model-catalog command. The CLI
-        // default is always available as a selection; users may enter a model ID.
+        let executable = Self.executableURL(for: provider)
+        guard executable != nil else { throw Failure.missingCLI(provider.title) }
+        if provider == .codexCLI {
+            return try await CodexModelDiscoveryService.listModels(executableURL: executable)
+        }
+        // Claude CLI has no equivalent catalog endpoint in this adapter.
         return provider.chatModels
     }
 
@@ -74,46 +94,36 @@ struct CLIChatProviderClient: AIChatTransport {
         previousResponseID: String?,
         reasoningEffort: AIReasoningEffort,
         attachments: [AIAttachment],
-        mcpServers: [MCPServer],
         localTools: [LimaAIToolDefinition],
         systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         stream(
             model: model, input: input, history: history, attachments: attachments,
-            mcpServers: mcpServers, localTools: localTools, systemInstructions: systemInstructions
+            localTools: localTools, systemInstructions: systemInstructions
         )
-    }
-
-    func streamApproval(
-        apiKey: String, model: String, previousResponseID: String,
-        requestID: String, approve: Bool, reason: String?,
-        reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
-        localTools: [LimaAIToolDefinition], systemInstructions: String
-    ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
-        AsyncThrowingStream { $0.finish(throwing: Failure.unexpectedRemoteApproval) }
     }
 
     func streamToolOutputs(
         apiKey: String, model: String, previousResponseID: String,
         history: [AIProviderMessage], outputs: [[String: Any]],
-        reasoningEffort: AIReasoningEffort, mcpServers: [MCPServer],
+        reasoningEffort: AIReasoningEffort,
         localTools: [LimaAIToolDefinition], systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         stream(
             model: model, input: "", history: history, attachments: [],
-            mcpServers: mcpServers, localTools: localTools, systemInstructions: systemInstructions
+            localTools: localTools, systemInstructions: systemInstructions
         )
     }
 
     private func stream(
         model: String, input: String, history: [AIProviderMessage],
-        attachments: [AIAttachment], mcpServers: [MCPServer],
+        attachments: [AIAttachment],
         localTools: [LimaAIToolDefinition], systemInstructions: String
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
                 do {
-                    let bridgedTools = Self.requestTools(localTools: localTools, mcpServers: mcpServers)
+                    let bridgedTools = Self.requestTools(localTools: localTools)
                     let prompt = try Self.prompt(
                         input: input, history: history, attachments: attachments,
                         systemInstructions: systemInstructions, localTools: bridgedTools,
@@ -135,7 +145,14 @@ struct CLIChatProviderClient: AIChatTransport {
                     }
                     continuation.finish()
                 } catch {
-                    if !Task.isCancelled { continuation.yield(.failed(error.localizedDescription)) }
+                    if !Task.isCancelled {
+                        if let cliFailure = error as? Failure, case .timedOut = cliFailure {
+                            continuation.yield(.diagnostic(AIChatDiagnostic(
+                                stage: .transport, message: AIProviderFailure.timeoutMessage
+                            )))
+                        }
+                        continuation.yield(.failed(error.localizedDescription))
+                    }
                     continuation.finish(throwing: error)
                 }
             }
@@ -143,9 +160,9 @@ struct CLIChatProviderClient: AIChatTransport {
         }
     }
 
-    static func requestTools(localTools: [LimaAIToolDefinition], mcpServers: [MCPServer]) -> [LimaAIToolDefinition] {
+    static func requestTools(localTools: [LimaAIToolDefinition]) -> [LimaAIToolDefinition] {
         var seen = Set<String>()
-        let tools = localTools + CLIConnectedTools.definitions(servers: mcpServers)
+        let tools = localTools
         guard !tools.isEmpty else { return [] }
         return (tools + [CLIToolDiscovery.definition]).filter { seen.insert($0.name).inserted }
     }
@@ -422,8 +439,12 @@ struct CLIChatProviderClient: AIChatTransport {
             try process.run()
             onStarted()
             if Task.isCancelled && process.isRunning { process.terminate() }
+            let timeoutState = TimeoutState()
             let timeout = DispatchWorkItem {
-                if process.isRunning { process.terminate() }
+                if process.isRunning {
+                    timeoutState.mark()
+                    process.terminate()
+                }
             }
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180, execute: timeout)
             defer { timeout.cancel() }
@@ -445,7 +466,10 @@ struct CLIChatProviderClient: AIChatTransport {
             let output = await stdoutReader.value
             _ = await stderrReader.value // Never surface stderr: it can contain prompt content.
             try Task.checkCancellation()
-            guard status == 0 else { throw Failure.commandFailed(provider.title) }
+            guard status == 0 else {
+                if timeoutState.didTimeOut { throw Failure.timedOut }
+                throw Failure.commandFailed(provider.title)
+            }
             return output
         } onCancel: {
             if process.isRunning { process.terminate() }

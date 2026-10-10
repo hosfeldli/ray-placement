@@ -14,9 +14,9 @@
       "mode": "0755"
     },
     "browserBridgeSignedXPI": {
-      "object": "browser-bridge/lima-browser-bridge-1.3.2-signed.xpi",
-      "destination": "Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.3.2-signed.xpi",
-      "sha256": "7ae061e1642fa72ab002e1a8316a93e8f76a78b88b8e925020e3b5ea10f0b069",
+      "object": "browser-bridge/lima-browser-bridge-1.4.0-signed.xpi",
+      "destination": "Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi",
+      "sha256": "918ffaeb1f738e1a3d0f65d9a7d2da9d62d610f8507832eb4d20b64511e0a378",
       "mode": "0644"
     }
   }

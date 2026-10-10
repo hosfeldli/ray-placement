@@ -7,7 +7,6 @@ import Testing
     #expect(bundle.contains("every Lima tool routed for the parent"))
     #expect(bundle.contains("including tools that can require user approval"))
     #expect(bundle.contains("pause for the parent user’s normal Lima approval"))
-    #expect(bundle.contains("freshly verifies as enabled and declared read-only"))
     #expect(bundle.contains("Recursive subagent delegation is unavailable"))
     #expect(!bundle.contains("Available tools: none"))
 
@@ -98,7 +97,7 @@ import Testing
     #expect(Set(AIContextTools.inheritedAgentTools(from: tools, actionPolicy: policy).map(\.id)) == Set(["browser_navigate_tab", "browser_click", "browser_type", "browser_submit"]))
 }
 
-@Test @MainActor func subagentToolBundleInheritsAllParentEnabledToolsAndReadOnlyMCP() {
+@Test @MainActor func subagentToolBundleInheritsAllParentEnabledNativeTools() {
     let suite = "SubagentToolBundle.\\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -120,50 +119,13 @@ import Testing
     policy.setAccess(.askEveryTime, for: .browserInteraction)
     policy.setAccess(.askEveryTime, for: .terminal)
 
-    let serverID = UUID()
-    let readable = MCPToolDescriptor(serverID: serverID, name: "safe_read", title: nil, description: nil,
-                                     risk: .read, enabled: true, declaredReadOnly: true)
-    let unsafe = MCPToolDescriptor(serverID: serverID, name: "write", title: nil, description: nil,
-                                   risk: .write, enabled: true, declaredReadOnly: true)
-    let server = MCPServer(id: serverID, name: "Fixture MCP", url: "https://example.invalid/mcp",
-                           enabled: true, allowedToolNames: [], tools: [readable, unsafe])
-
     let bundle = AIContextTools.subagentToolBundle(
-        aiEnabled: true, enabledTools: candidateTools, enabledMCPServers: [server], actionPolicy: policy
+        aiEnabled: true, enabledTools: candidateTools, actionPolicy: policy
     )
     #expect(Set(bundle.localTools.map { $0.id }) == Set(["search_web", "read_web", "browser_open_tabs", "browser_submit", "run_terminal_command"]))
-    #expect(bundle.mcpServers.count == 1)
-    #expect(bundle.mcpServers[0].allowedToolNames == ["safe_read"])
 
     let disabled = AIContextTools.subagentToolBundle(
-        aiEnabled: false, enabledTools: candidateTools, enabledMCPServers: [server], actionPolicy: policy
+        aiEnabled: false, enabledTools: candidateTools, actionPolicy: policy
     )
     #expect(disabled.localTools.isEmpty)
-    #expect(disabled.mcpServers.isEmpty)
-}
-
-@Test func subagentMCPInheritanceRequiresEnabledFreshReadOnlyTools() {
-    let serverID = UUID()
-    func descriptor(_ name: String, risk: MCPToolRisk, declaredReadOnly: Bool?) -> MCPToolDescriptor {
-        MCPToolDescriptor(serverID: serverID, name: name, title: nil, description: nil,
-                          risk: risk, enabled: true, declaredReadOnly: declaredReadOnly)
-    }
-    let server = MCPServer(
-        id: serverID, name: "Fixture MCP", url: "https://example.invalid/mcp",
-        enabled: true, allowedToolNames: [],
-        tools: [
-            descriptor("safe_read", risk: .read, declaredReadOnly: true),
-            descriptor("legacy", risk: .read, declaredReadOnly: nil),
-            descriptor("write", risk: .write, declaredReadOnly: true)
-        ]
-    )
-
-    let inherited = AIContextTools.inheritedReadOnlyMCPServers(from: [server])
-    #expect(inherited.count == 1)
-    #expect(inherited[0].enabledTools.map(\.name) == ["safe_read"])
-    #expect(inherited[0].allowedToolNames == ["safe_read"])
-
-    var disabled = server
-    disabled.enabled = false
-    #expect(AIContextTools.inheritedReadOnlyMCPServers(from: [disabled]).isEmpty)
 }

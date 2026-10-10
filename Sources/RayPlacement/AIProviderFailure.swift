@@ -3,6 +3,8 @@ import Foundation
 /// Provider errors may echo prompts, document text, URLs, or keys. Only known
 /// categorical codes are retained; free-form response bodies never become logs.
 enum AIProviderFailure {
+    static let timeoutMessage = "The provider request timed out. Try again."
+
     struct ToolSchemaPath: Equatable, Sendable {
         let index: Int
         let components: [String]
@@ -68,7 +70,7 @@ enum AIProviderFailure {
         guard let value = raw as? String, value.utf8.count <= 256 else { return nil }
         let exact = [
             "input", "model", "tools", "messages", "temperature", "max_tokens",
-            "reasoning", "reasoning.effort", "reasoning.summary", "stream", "store",
+            "reasoning", "reasoning.effort", "reasoning_effort", "reasoning.summary", "stream", "store",
             "instructions", "previous_response_id", "system", "system_instruction",
             "contents", "generationConfig"
         ]
@@ -272,7 +274,17 @@ enum AIProviderFailure {
         toolName: String? = nil
     ) -> String {
         let safeModel = safeModelIdentifier(model)
-        var lines = ["\(provider) rejected this request"]
+        let headline: String
+        if code == "insufficient_quota" {
+            headline = "\(provider) quota exhausted"
+        } else if fallback == timeoutMessage {
+            headline = "\(provider) request timed out"
+        } else if status == 429 {
+            headline = "\(provider) rate limited this request"
+        } else {
+            headline = "\(provider) rejected this request"
+        }
+        var lines = [headline]
         var facts: [String] = []
         if let status, (100...599).contains(status) { facts.append("HTTP \(status)") }
         if let safeModel { facts.append(safeModel) }
@@ -318,7 +330,7 @@ enum AIProviderFailure {
         if failure.domain == NSURLErrorDomain {
             switch failure.code {
             case NSURLErrorCancelled: return "The request was cancelled."
-            case NSURLErrorTimedOut: return "The provider request timed out. Try again."
+            case NSURLErrorTimedOut: return timeoutMessage
             case NSURLErrorNotConnectedToInternet: return "No internet connection is available."
             case NSURLErrorCannotFindHost, NSURLErrorCannotConnectToHost, NSURLErrorDNSLookupFailed:
                 return "The provider could not be reached. Check the endpoint and connection."
@@ -349,14 +361,12 @@ enum AIProviderFailure {
             "Ignored an unsupported Responses output item.",
             "The function call omitted call_id.",
             "delegation.capabilities: tools=none, browserRead=false, publicSearch=false, writes=false.",
-            "delegation.capabilities: turn-routed read/navigation/memory Lima tools and declared read-only MCP; writes=false; approval-gated actions=false; nested delegation=false.",
-            "delegation.capabilities: turn-routed read/navigation/memory and journal-authorized browser click/type; freshly declared read-only MCP via Lima; formSubmit=false; localWrites=false; terminal=false; approvalGated=false; nestedDelegation=false.",
             AIContextTools.delegationCapabilityTrace,
             "The provider stream exceeded Lima's safety limit.",
             "The request was cancelled.",
             "The provider returned no chat-capable models.",
             "The provider returned an unreadable response.",
-            "The provider request timed out. Try again.",
+            timeoutMessage,
             "No internet connection is available.",
             "The provider could not be reached. Check the endpoint and connection.",
             "The provider's secure connection could not be verified.",
@@ -375,18 +385,15 @@ enum AIProviderFailure {
             "response.reasoning_summary_part.added", "response.reasoning_summary_text.done",
             "response.reasoning_summary_part.done", "response.content_part.added", "response.content_part.done",
             "response.output_item.added", "response.output_item.done",
-            "response.function_call_arguments.delta", "response.function_call_arguments.done",
-            "response.mcp_call.arguments.delta", "response.mcp_call_arguments.delta",
-            "response.mcp_call.completed", "response.mcp_call.done", "response.mcp_call.failed", "response.mcp_call.error"
+            "response.function_call_arguments.delta", "response.function_call_arguments.done"
         ]
         return known.contains(raw) ? raw : "unknown"
     }
 
     static func toolMessage(_ value: Any?) -> String? {
         guard let value, !(value is NSNull) else { return nil }
-        guard let object = value as? [String: Any] else { return "The MCP tool failed." }
-        // Legacy servers sometimes return no category; accept only this exact
-        // fixed phrase, never substrings or arbitrary free-form messages.
+        guard let object = value as? [String: Any] else { return "The tool failed." }
+        // Accept only this exact fixed phrase, never arbitrary provider messages.
         if object["message"] as? String == "Permission denied" { return "Permission denied" }
         return message(error: object)
     }

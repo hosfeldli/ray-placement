@@ -36,7 +36,7 @@ enum AILocalComputerActionTools {
         ),
         tool(
             "run_terminal_command",
-            "Run one bounded, approved local developer command without a shell. Supports Swift build/test/run, Xcode build/test, read-only Git, or an existing local Python or Node script. Set working_directory to the project for builds and tests; omit it only to use your home folder. Timeout defaults to 180 seconds (maximum 300); output is limited and every run requires user approval.",
+            "Run one bounded, approved local developer command without a shell. Supports Swift build/test/run, Xcode build/test, read-only Git, or an existing local Python or Node script. Set working_directory to the project for builds and tests; omit it only to use your home folder. The command and streaming output appear in a one-shot AI session in Terminal. Unlike dedicated AI Workspace sessions, this compatibility path runs as your macOS user outside the sandbox; every run requires approval. Timeout defaults to 180 seconds (maximum 300).",
             [
                 "command": ["type": "string", "description": "One supported local developer command of at most 4096 characters, such as swift test or python3 script.py. Lima does not interpret shell syntax."],
                 "working_directory": ["type": "string", "description": "Absolute existing non-sensitive project directory under your home folder; omit only to run in your home folder."],
@@ -405,10 +405,17 @@ final class AILocalCommandRunner {
             return .json(["error": "That command exceeds Lima’s local developer-command limits."], isError: true)
         }
 
-        isRunning = true
-        defer { isRunning = false }
         let label = specification.journalLabel
         let box = ProcessBox()
+        let coordinator = AIWorkspaceTerminalCoordinator.shared
+        let visibleSession: AIWorkspaceTerminalSnapshot
+        do {
+            visibleSession = try coordinator.startBoundedExternal(directory: workingDirectory, onCancel: { box.cancel() })
+        } catch {
+            return .json(["error": error.localizedDescription], isError: true)
+        }
+        isRunning = true
+        defer { isRunning = false }
         let taskID = TaskRegistry.shared.begin(
             kind: .aiTool,
             title: "AI terminal command",
@@ -416,12 +423,26 @@ final class AILocalCommandRunner {
             isCancellable: true,
             onCancel: { box.cancel() }
         )
-        let measurementID = PerformanceMonitor.shared.begin("AI terminal command", detail: label)
+        let measurementID = PerformanceMonitor.shared.begin(.aiTerminalCommand)
         let result = await Self.execute(
             specification: specification,
             workingDirectory: workingDirectory,
             timeoutSeconds: timeoutSeconds,
-            box: box
+            box: box,
+            onChunk: { chunk in
+                DispatchQueue.main.sync {
+                    MainActor.assumeIsolated {
+                        coordinator.appendBoundedExternal(chunk, sessionID: visibleSession.id)
+                    }
+                }
+            }
+        )
+        coordinator.finishBoundedExternal(
+            sessionID: visibleSession.id,
+            exitStatus: result.exitStatus.map(Int.init),
+            cancelled: result.cancelled,
+            timedOut: result.timedOut,
+            outputTruncated: false
         )
 
         let success = !result.cancelled && !result.timedOut && !result.launchFailed && result.exitStatus == 0
@@ -434,6 +455,8 @@ final class AILocalCommandRunner {
         return .json([
             "command": label,
             "working_directory": workingDirectory.path,
+            "session_id": visibleSession.id.uuidString,
+            "visible_in_terminal": true,
             "exit_status": result.exitStatus.map { Int($0) as Any } ?? NSNull(),
             "succeeded": success,
             "timed_out": result.timedOut,
@@ -447,7 +470,8 @@ final class AILocalCommandRunner {
         specification: CommandSpec,
         workingDirectory: URL,
         timeoutSeconds: Int,
-        box: ProcessBox
+        box: ProcessBox,
+        onChunk: @escaping @Sendable (Data) -> Void
     ) async -> CommandResult {
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
@@ -494,6 +518,7 @@ final class AILocalCommandRunner {
                     var captured = Data()
                     var truncated = false
                     while let chunk = try? handle.read(upToCount: 8_192), !chunk.isEmpty {
+                        onChunk(chunk)
                         let remaining = 64 * 1_024 - captured.count
                         if remaining > 0 {
                             captured.append(chunk.prefix(remaining))

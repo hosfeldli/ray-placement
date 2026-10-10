@@ -85,7 +85,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport.standard
     )
@@ -153,7 +152,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .responseCreated("fixture-response"),
@@ -168,8 +166,12 @@ import Testing
         try? await Task.sleep(for: .milliseconds(10))
     }
 
-    let assistantText = store.conversations.first?.messages.last(where: { $0.role == .assistant })?.text
-    #expect(assistantText == "Lima works")
+    let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
+    #expect(assistant?.text == "Lima works")
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.executionRun?.assistantMessageID == assistant?.id)
+    #expect(model.executionRun?.completedAt != nil)
+    #expect(!model.canEndTask)
 }
 
 @Test @MainActor func endingStreamingTaskKeepsVisiblePartialAnswerAndStoppedState() async {
@@ -177,7 +179,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [
@@ -209,6 +210,8 @@ import Testing
     #expect(!model.canEndTask)
     #expect(assistant?.text == "Partial answer")
     #expect(assistant?.activities?.contains(where: { $0.title == "Stopped" }) == true)
+    #expect(model.executionRun?.state == .cancelled)
+    #expect(model.executionRun?.assistantMessageID == assistant?.id)
     #expect(model.currentTaskState.title == "Stopped")
 }
 
@@ -217,7 +220,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [
@@ -258,7 +260,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .responseCreated("fixture-approval"),
@@ -293,7 +294,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .responseCreated("fixture-approval"),
@@ -315,7 +315,6 @@ import Testing
     #expect(model.pendingApproval != nil)
     #expect(continuation != nil)
     #expect(continuation?.localTools.isEmpty == true)
-    #expect(continuation?.mcpServers.isEmpty == true)
     #expect(continuation?.browserRoutingContext.turnToolIDs.isEmpty == true)
     #expect(continuation?.systemInstructions.contains("Browser routing for this turn") == true)
 
@@ -323,11 +322,10 @@ import Testing
     #expect(model.approvalContinuationContextForTesting == nil)
 }
 
-@Test @MainActor func missingApprovalContinuationContextFailsClosedInViewModel() async {
+@Test @MainActor func approvalWithoutLocalResponseSessionFailsClosedInViewModel() async {
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .responseCreated("fixture-approval"),
@@ -351,7 +349,11 @@ import Testing
 
     #expect(model.pendingApproval == nil)
     #expect(!model.isStreaming)
-    #expect(model.streamError == "AI Chat couldn’t continue this approval because the original tool routing is unavailable. Retry the request.")
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError == "AI Chat couldn’t continue this tool request because its response session is unavailable.")
+    #expect(model.executionRun?.failure?.safeMessage == model.streamError)
+    #expect(model.selectedConversation?.messages.last?.failure?.safeMessage == model.streamError)
 }
 
 /// Intentionally inert unless all three live-test variables are set by the
@@ -370,7 +372,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .current(environment: environment)),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: AIChatResponsesClient()
     )
@@ -408,7 +409,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .current(environment: environment)),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: AIChatResponsesClient()
     )
@@ -483,7 +483,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: toolStore,
         transport: FixtureAITransport.standard
     )
@@ -514,7 +513,6 @@ import Testing
     let model = AIChatViewModel(
         store: AIConversationStore(fixtures: []),
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: Set(BrowserBridgeAITools.definitions.map { $0.id })),
         transport: FixtureAITransport.standard
     )
@@ -801,7 +799,6 @@ import Testing
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [
             .diagnostic(AIChatDiagnostic(
@@ -826,6 +823,216 @@ import Testing
     #expect(text.contains("HTTP 400 · gpt-6-luna"))
     #expect(text.contains("Unsupported request option: reasoning.summary."))
     #expect(!text.contains("ignored provider response body"))
+}
+
+@Test @MainActor func exhaustedProviderQuotaPreservesPromptWithoutOfferingSameRequestRetry() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 429,
+                errorCode: "insufficient_quota",
+                message: AIProviderFailure.message(error: ["code": "insufficient_quota"], status: 429)
+            )),
+            .failed("provider body must not appear")
+        ])
+    )
+    model.draft = "Keep this prompt"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let conversation = try #require(model.selectedConversation)
+    let assistant = try #require(conversation.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .quotaExhausted)
+    #expect(assistant.failure?.retryability == .manual)
+    #expect(assistant.failure?.httpStatus == 429)
+    #expect(assistant.failure?.safeMessage.contains("quota exhausted") == true)
+    #expect(!assistant.text.contains("provider body must not appear"))
+    #expect(!model.canRetryLastRequest)
+    model.retryLastRequest()
+    #expect(model.selectedConversationID == conversation.id)
+    #expect(model.prepareEditedRetry(assistantMessageID: assistant.id))
+    #expect(model.draft == "Keep this prompt")
+    #expect(store.conversation(id: conversation.id)?.messages == conversation.messages)
+}
+
+@Test @MainActor func providerTimeoutCreatesRestartableDurableFailure() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(stage: .transport, message: AIProviderFailure.timeoutMessage)),
+            .failed(AIProviderFailure.timeoutMessage)
+        ])
+    )
+    model.draft = "Resume after timeout"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(model.selectedConversation?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .timedOut)
+    #expect(assistant.failure?.retryability == .safe)
+    #expect(assistant.failure?.safeMessage.contains("request timed out") == true)
+    #expect(model.canRetryLastRequest)
+}
+
+@Test @MainActor func rateLimitRemainsRetryableAfterDelay() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .diagnostic(AIChatDiagnostic(
+                stage: .transport,
+                httpStatus: 429,
+                errorCode: "rate_limit_exceeded",
+                message: AIProviderFailure.message(error: ["code": "rate_limit_exceeded"], status: 429)
+            )),
+            .failed("provider body must not appear")
+        ])
+    )
+    model.draft = "Retry later"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(model.selectedConversation?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.failure?.category == .rateLimited)
+    #expect(assistant.failure?.retryability == .afterDelay)
+    #expect(assistant.failure?.safeMessage.contains("rate limited") == true)
+    #expect(model.canRetryLastRequest)
+}
+
+@Test @MainActor func aiRecoveryVisualFixturesUsePersistedFailures() {
+    let fixtures: [(AIChatVisualScenario, AIExecutionRunFailure.Category)] = [
+        (.failure, .invalidConfiguration),
+        (.quota, .quotaExhausted),
+        (.timeout, .timedOut)
+    ]
+    for (scenario, category) in fixtures {
+        let model = AIChatVisualFixtures.model(for: scenario)
+        let assistant = model.selectedConversation?.messages.last(where: { $0.role == .assistant })
+        #expect(assistant?.failure?.category == category)
+        #expect(assistant?.text.isEmpty == true)
+    }
+}
+
+@Test @MainActor func editedRetryCreatesBranchAndPreservesOriginalPromptContext() {
+    let previousAnswer = AIChatMessage(role: .assistant, text: "Earlier answer", responseID: "resp_previous")
+    let attachment = AIAttachment(kind: .selection, displayName: "Selection", text: "Original context")
+    let userMessage = AIChatMessage(role: .user, text: "Original request", attachments: [attachment])
+    let assistantMessage = AIChatMessage(
+        role: .assistant,
+        text: "Request failed",
+        failure: AIExecutionRunFailure(
+            category: .providerRejected,
+            originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+                providerID: AIProvider.openAI.rawValue,
+                modelID: "gpt-5.6-luna",
+                reasoningEffort: "medium"
+            ),
+            httpStatus: 400,
+            safeMessage: "The selected configuration was rejected.",
+            invalidParameter: "reasoning.summary",
+            retryability: .configurationChange
+        )
+    )
+    let original = AIConversation(
+        title: "Failed request",
+        model: "gpt-5.6-luna",
+        messages: [previousAnswer, userMessage, assistantMessage]
+    )
+    let store = AIConversationStore(fixtures: [original])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    let prepared = model.prepareEditedRetry(assistantMessageID: assistantMessage.id)
+
+    #expect(prepared)
+    #expect(model.selectedConversationID != original.id)
+    #expect(model.selectedConversation?.messages == [previousAnswer])
+    #expect(model.selectedConversation?.lastResponseID == "resp_previous")
+    #expect(model.draft == "Original request")
+    #expect(model.attachments == [attachment])
+    #expect(store.conversation(id: original.id)?.messages == [previousAnswer, userMessage, assistantMessage])
+}
+
+@Test @MainActor func editingUserPromptPreservesSourceAndRestoresAttachments() {
+    let earlierAnswer = AIChatMessage(role: .assistant, text: "Earlier answer", responseID: "resp_before_edit")
+    let attachment = AIAttachment(kind: .clipboard, displayName: "Clipboard", text: "Original clipboard")
+    let userMessage = AIChatMessage(role: .user, text: "Original prompt", attachments: [attachment])
+    let answer = AIChatMessage(role: .assistant, text: "Original answer")
+    let source = AIConversation(title: "Prompt history", messages: [earlierAnswer, userMessage, answer])
+    let store = AIConversationStore(fixtures: [source])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    let prepared = model.prepareMessageEdit(userMessageID: userMessage.id)
+
+    #expect(prepared)
+    #expect(model.selectedConversationID != source.id)
+    #expect(model.selectedConversation?.messages == [earlierAnswer])
+    #expect(model.selectedConversation?.lastResponseID == "resp_before_edit")
+    #expect(model.draft == "Original prompt")
+    #expect(model.attachments == [attachment])
+    #expect(store.conversation(id: source.id)?.messages == [earlierAnswer, userMessage, answer])
+}
+
+@Test @MainActor func rerunWithAnotherModelCreatesIndependentBranch() async {
+    let userMessage = AIChatMessage(role: .user, text: "Rerun this prompt")
+    let originalAnswer = AIChatMessage(role: .assistant, text: "Original answer", responseID: "resp_original")
+    let source = AIConversation(title: "Rerun history", model: "gpt-5.6-luna", messages: [userMessage, originalAnswer])
+    let store = AIConversationStore(fixtures: [source])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Branch answer"), .completed("resp_branch")])
+    )
+
+    model.rerunMessage(userMessageID: userMessage.id, using: AIModelOption(id: "gpt-5.4"))
+    for _ in 0..<300 where model.isStreaming {
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+
+    let branch = model.selectedConversation
+    #expect(branch?.id != source.id)
+    #expect(branch?.model == "gpt-5.4")
+    #expect(branch?.lastResponseID == "resp_branch")
+    #expect(branch?.messages.first(where: { $0.role == .user })?.text == "Rerun this prompt")
+    #expect(branch?.messages.last(where: { $0.role == .assistant })?.text == "Branch answer")
+    #expect(store.conversation(id: source.id)?.messages == [userMessage, originalAnswer])
+}
+
+@Test func responsesPayloadOmitsProviderDefaultReasoning() {
+    let body = AIChatResponsesClient.replyBody(
+        model: "gpt-5.6-luna",
+        input: [],
+        previousResponseID: nil,
+        reasoningEffort: .none,
+        tools: []
+    )
+    #expect(body["reasoning"] == nil)
 }
 
 @Test func gpt54ReasoningProfileRejectsLegacyMinimalAndMax() {
@@ -880,57 +1087,6 @@ import Testing
     #expect(body["previous_response_id"] as? String == "resp_previous")
     #expect(body["reasoning"] == nil)
     #expect(body["stream"] as? Bool == true)
-}
-
-@Test func responsePayloadUsesMCPApprovalPolicyWithoutEmbeddingCredential() throws {
-    let serverID = UUID()
-    let tools = [
-        MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true, declaredReadOnly: true),
-        MCPToolDescriptor(serverID: serverID, name: "delete_repo", risk: .destructive, enabled: true)
-    ]
-    let body = AIChatResponsesClient.replyBody(
-        model: "gpt-5",
-        input: [["role": "user", "content": [["type": "input_text", "text": "Inspect"]]]],
-        previousResponseID: nil,
-        reasoningEffort: .medium,
-        tools: [[
-            "type": "mcp",
-            "server_label": "GitHub",
-            "server_url": "https://example.com/mcp",
-            "allowed_tools": tools.map(\.name),
-            "require_approval": ["never": ["tool_names": ["search"]]]
-        ]]
-    )
-    let payload = try #require(body["tools"] as? [[String: Any]])
-    #expect(payload.first?["authorization"] == nil)
-    #expect(payload.first?["headers"] == nil)
-}
-
-@Test func responsesMCPPayloadUsesAuthorizationFieldForStoredCredential() throws {
-    let serverID = UUID()
-    let server = MCPServer(
-        name: "Docs",
-        url: "https://example.com/mcp",
-        allowedToolNames: ["search"],
-        tools: [MCPToolDescriptor(serverID: serverID, name: "search", risk: .read, enabled: true, declaredReadOnly: true)]
-    )
-    let payload = try #require(
-        AIChatResponsesClient.remoteMCPToolPayload(server: server, credential: "token")
-    )
-
-    #expect(payload["authorization"] as? String == "Bearer token")
-    #expect(payload["headers"] == nil)
-}
-
-@Test func mcpHTTPURLsRejectMissingHostsAndSanitizeLabels() {
-    let server = MCPServer(name: "123 GitHub / Docs", url: "https://")
-    #expect(server.validHTTPURL == nil)
-    #expect(server.apiLabel == "mcp_123_GitHub___Docs")
-}
-
-@Test func mcpAuthorizationHeaderPreservesExplicitScheme() {
-    #expect(MCPCredentialStore.authorizationHeaderValue("token") == "Bearer token")
-    #expect(MCPCredentialStore.authorizationHeaderValue("Basic abc") == "Basic abc")
 }
 
 @Test func aiConversationRoundTripsNewPhaseTwoMetadata() throws {
@@ -1031,63 +1187,6 @@ import Testing
     #expect(restored.attachments.isEmpty)
     #expect(restored.agentID == nil)
     #expect(restored.skillIDs.isEmpty)
-}
-
-@Test func mcpRiskClassificationRequiresApprovalForWritesAndDestructiveTools() {
-    #expect(MCPToolRisk.read.requiresApproval == false)
-    #expect(MCPToolRisk.write.requiresApproval == true)
-    #expect(MCPToolRisk.destructive.requiresApproval == true)
-}
-
-@Test func mcpServerAllowlistDefaultsToDiscoveredTools() {
-    let serverID = UUID()
-    let tools = [
-        MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true),
-        MCPToolDescriptor(serverID: serverID, name: "delete_file", risk: .destructive, enabled: true)
-    ]
-    let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: tools.map(\.name), tools: tools)
-    #expect(server.enabledTools.map(\.name) == ["read_file", "delete_file"])
-    #expect(server.apiLabel == "Files")
-}
-
-@Test func mcpServerCanRepresentAllToolsDisabled() {
-    let serverID = UUID()
-    let tool = MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true)
-    let server = MCPServer(name: "Files", url: "https://example.com/mcp", allowedToolNames: [MCPServer.noToolsSentinel], tools: [tool])
-    #expect(server.enabledTools.isEmpty)
-}
-
-@Test func mcpReadOnlyEligibilityRequiresExplicitDeclarationAndRejectsLegacyGuesses() throws {
-    #expect(MCPHTTPClient.risk(for: ["name": "search"], name: "search", description: nil) == .write)
-    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true]], name: "search", description: nil) == .read)
-    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true]], name: "open_tab", description: nil) == .write)
-    #expect(MCPHTTPClient.risk(for: ["annotations": ["readOnlyHint": true, "destructiveHint": true]], name: "delete_file", description: nil) == .destructive)
-
-    let id = UUID()
-    let verified = MCPToolDescriptor(serverID: id, name: "search", risk: .read, enabled: true, declaredReadOnly: true)
-    let legacy = MCPToolDescriptor(serverID: id, name: "list", risk: .read, enabled: true)
-    let encodedLegacy = try JSONEncoder().encode(legacy)
-    let restoredLegacy = try JSONDecoder().decode(MCPToolDescriptor.self, from: encodedLegacy)
-    #expect(restoredLegacy.declaredReadOnly == nil)
-    let server = MCPServer(name: "Docs", url: "https://example.com/mcp", tools: [verified, restoredLegacy])
-    #expect(AIReadOnlyPolicy.readableMCPTools(for: server).map(\.name) == ["search"])
-}
-
-@Test func remoteMCPPayloadOmitsWriteAndDestructiveTools() throws {
-    let serverID = UUID()
-    let server = MCPServer(
-        name: "Files",
-        url: "https://example.com/mcp",
-        tools: [
-            MCPToolDescriptor(serverID: serverID, name: "read_file", risk: .read, enabled: true, declaredReadOnly: true),
-            MCPToolDescriptor(serverID: serverID, name: "write_file", risk: .write, enabled: true),
-            MCPToolDescriptor(serverID: serverID, name: "delete_file", risk: .destructive, enabled: true)
-        ]
-    )
-    let payload = try #require(AIChatResponsesClient.remoteMCPToolPayload(server: server, credential: nil))
-    #expect(payload["allowed_tools"] as? [String] == ["read_file"])
-    let approval = try #require(payload["require_approval"] as? [String: [String: [String]]])
-    #expect(approval["never"]?["tool_names"] == ["read_file"])
 }
 
 @Test func markdownRendererSeparatesFencedCodeBlocks() {
@@ -1217,16 +1316,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(body["previous_response_id"] as? String == "resp_tools")
 }
 
-@Test func responsesDecoderAcceptsMCPToolCall() {
-    let events = outputItemEvent("response.output_item.done", item: [
-        "type": "mcp_call",
-        "id": "mcp_1",
-        "name": "search",
-        "server_label": "Docs MCP"
-    ])
-    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .mcpCall && item.serverLabel == "Docs MCP" }; return false })
-}
-
 @Test func responsesDecoderReportsUnknownOutputItemWithoutFailing() {
     let events = outputItemEvent("response.output_item.done", item: [
         "type": "future_output_item",
@@ -1284,15 +1373,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
         ]
     ])
     #expect(events.contains { if case .usage(let usage) = $0 { return usage.totalKnownTokens == 10 }; return false })
-}
-
-@Test func responsesDecoderAcceptsMCPFailureAsActivity() {
-    let events = responseEvent("response.mcp_call.failed", [
-        "name": "write_file",
-        "server_label": "Files",
-        "error": ["message": "Permission denied"]
-    ])
-    #expect(events.contains { if case .outputItem(let item) = $0 { return item.kind == .mcpCall && item.errorMessage == "Permission denied" }; return false })
 }
 
 @Test @MainActor func advertisedNativeToolsAreReadOnly() {
@@ -1465,7 +1545,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: []),
         taskRegistry: registry
@@ -1483,7 +1562,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(events: [.textDelta("Done"), .completed("context-test")])
     )
@@ -1522,7 +1600,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport.standard,
         taskRegistry: registry
@@ -1547,13 +1624,59 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     print("Fixture long-chat composer send: 8 turns, longest synchronous call \(longest) ms; no live provider or UI rendering")
 }
 
+@Test @MainActor func deletedConversationCannotCompleteAnUnpersistedAIRun() async throws {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Answer"), .completed("removed-chat")]),
+        taskRegistry: registry
+    )
+    model.draft = "Answer this"
+    model.send()
+    let id = try #require(store.conversations.first?.id)
+    store.delete(id: id)
+
+    for _ in 0..<1000 where model.executionRun?.isActive == true { await Task.yield() }
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError?.contains("removed before") == true)
+    #expect(registry.activeTasks.isEmpty)
+    #expect(registry.recentTasks.first?.state == .failed)
+    #expect(!model.isStreaming)
+}
+
+@Test @MainActor func deletedAssistantMessageCannotCompleteAnUnpersistedAIRun() async throws {
+    let registry = TaskRegistry()
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [.textDelta("Answer"), .completed("removed-message")]),
+        taskRegistry: registry
+    )
+    model.draft = "Answer this"
+    model.send()
+    var conversation = try #require(store.conversations.first)
+    conversation.messages.removeAll { $0.role == .assistant }
+    store.update(conversation)
+
+    for _ in 0..<1000 where model.executionRun?.isActive == true { await Task.yield() }
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.streamError?.contains("removed before") == true)
+    #expect(registry.activeTasks.isEmpty)
+    #expect(registry.recentTasks.first?.state == .failed)
+    #expect(!model.isStreaming)
+}
+
 @Test @MainActor func returnDuringActiveTaskCannotStartAnotherAIRequest() async {
     let registry = TaskRegistry()
     let store = AIConversationStore(fixtures: [])
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [.textDelta("partial"), .completed("active-task")],
@@ -1578,7 +1701,6 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     let model = AIChatViewModel(
         store: store,
         credentials: AIChatCredentialStore(configuration: .fixture),
-        mcpStore: MCPServerStore(fixtures: []),
         nativeToolStore: LimaAIToolStore(fixtures: []),
         transport: FixtureAITransport(
             events: [.textDelta("partial"), .completed("escape-task")],

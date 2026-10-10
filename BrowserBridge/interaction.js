@@ -5,21 +5,34 @@
   globalThis.__limaBrowserInteractionV1 = true;
 
   const code = value => ({error: value});
-  const safeSelector = value => typeof value === "string" && value.length >= 1 && value.length <= 256 &&
-    !/[\u0000-\u0020\u007f]/.test(value) && /^[A-Za-z0-9_.#\[\]="'-]+$/.test(value);
+  const safeRef = value => typeof value === "string" && /^c_[1-9][0-9]{0,2}$/.test(value);
   const safeText = value => typeof value === "string" && value.length <= 4000 &&
     !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
 
-  function target(selector) {
-    if (!safeSelector(selector)) throw new Error("invalid_selector");
-    const matches = document.querySelectorAll(selector);
-    if (!matches.length) throw new Error("target_not_found");
-    if (matches.length !== 1) throw new Error("target_ambiguous");
-    const element = matches[0];
+  function target(ref, expected) {
+    if (!safeRef(ref)) throw new Error("invalid_target");
+    const session = globalThis.__limaPageSessionV1;
+    if (!session || session.document !== document || session.url !== location.href ||
+        session.documentID !== expected.documentID ||
+        session.pageGeneration !== expected.pageGeneration ||
+        session.snapshotRevision !== expected.snapshotRevision ||
+        session.mutationRevision !== expected.mutationRevision) throw new Error("target_stale");
+    const element = session.targets?.get(ref);
+    if (!element) throw new Error("target_stale");
+    if (expected) {
+      const label = (element.getAttribute("aria-label") || element.getAttribute("title") ||
+        (expected.action === "click" ? element.textContent : "") ||
+        element.getAttribute("placeholder") || element.getAttribute("name") ||
+        element.getAttribute("id") || "").replace(/\s+/g, " ").trim().slice(0, 128);
+      if (element.tagName.toLowerCase() !== expected.tag || label !== expected.label) {
+        throw new Error("target_stale");
+      }
+    }
     if (!element.isConnected || !element.getClientRects().length) throw new Error("target_not_visible");
     if (element.disabled || element.hasAttribute("disabled") ||
         element.getAttribute("aria-disabled") === "true") throw new Error("target_not_interactable");
-    for (let node = element, depth = 0; node && depth++ < 128; node = node.parentElement) {
+    for (let node = element, depth = 0; node && depth++ < 128;
+         node = node.parentElement || node.getRootNode?.()?.host || null) {
       const style = getComputedStyle(node);
       if (node.hasAttribute("hidden") || node.hasAttribute("data-lima-private") ||
           node.getAttribute("aria-hidden") === "true" || style.display === "none" ||
@@ -102,9 +115,18 @@
 
   browser.runtime.onMessage.addListener((message, sender) => {
     if (!message || message.type !== "lima-browser-interaction" ||
-        sender.id !== browser.runtime.id || !safeSelector(message.selector)) return undefined;
+        sender.id !== browser.runtime.id || !safeRef(message.internalRef)) return undefined;
     try {
-      const element = target(message.selector);
+      const expected = message.expected;
+      if (!expected || typeof expected !== "object" ||
+          !["click", "type", "submit"].includes(expected.action) ||
+          typeof expected.tag !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(expected.tag) ||
+          typeof expected.label !== "string" || !expected.label || expected.label.length > 128 ||
+          typeof expected.documentID !== "string" || expected.documentID.length > 128 ||
+          !Number.isSafeInteger(expected.pageGeneration) || !Number.isSafeInteger(expected.snapshotRevision) ||
+          !Number.isSafeInteger(expected.mutationRevision) ||
+          message.command !== `browser.${expected.action}`) throw new Error("invalid_target");
+      const element = target(message.internalRef, expected);
       switch (message.command) {
         case "browser.click": return click(element);
         case "browser.type": return type(element, message.text);

@@ -9,7 +9,6 @@ struct AIProviderSettingsView: View {
     @ObservedObject private var toolStore = LimaAIToolStore.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @ObservedObject private var webSearchCredentials = PublicWebSearchCredentialStore.shared
-    @ObservedObject private var mcpServers = MCPServerStore.shared
     @State private var apiKey = ""
     @State private var webSearchAPIKey = ""
     @State private var webSearchMessage: String?
@@ -52,6 +51,20 @@ struct AIProviderSettingsView: View {
                 Text("Changing modes does not erase existing tool selections or enable a disabled computer-action category. Browser site grants and required approvals remain in effect.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            Section("Agent execution") {
+                Picker("Maximum simultaneous agents", selection: $settings.aiMaximumConcurrentSubagents) {
+                    ForEach(1...min(AIExecutionSubagentBudget.maximumConcurrentCeiling, settings.aiMaximumSubagentsPerRun), id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                Picker("Maximum agents per request", selection: $settings.aiMaximumSubagentsPerRun) {
+                    ForEach(1...AIExecutionSubagentBudget.maximumPerRunCeiling, id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
+                Text("Applies to new AI runs; the run keeps its captured limits. Defaults are 4 simultaneous agents and 12 total children. Recursive delegation stays disabled, with an internal maximum of 32 children per run.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
             Section("General web search") {
                 Text("Configure Brave Search for public web queries. Search terms are sent to Brave when the AI web-search tool runs. This key is stored separately in macOS Keychain and is never shown in Lima.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -89,21 +102,6 @@ struct AIProviderSettingsView: View {
                 Text("Available when Tool Access permits web research. If no valid provider key is configured, Lima reports the provider as unavailable rather than claiming there were zero results. Alternatively, Browser Search can open a Google results tab if Browser navigation is enabled and that site has a Browser Bridge grant.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
-            Section("Connected tools (MCP)") {
-                let enabledServers = mcpServers.servers.filter(\.enabled)
-                let enabledToolCount = enabledServers.reduce(0) { $0 + $1.enabledTools.count }
-                Text("Connect Lima to a local or network MCP server using its reachable HTTP endpoint. Enable individual tools in the MCP manager; only tools freshly declared read-only are available to AI Chat. Server credentials stay in Keychain.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                HStack {
-                    Text("\(enabledServers.count) enabled MCP servers · \(enabledToolCount) read-only tools")
-                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                    Spacer()
-                    Button("Manage MCP Servers") { model.openMCPManager() }
-                        .accessibilityIdentifier(LimaQAIdentifiers.Settings.mcpServers)
-                }
-                Text("Use an HTTPS endpoint for bearer authentication. Plain HTTP is unencrypted; use it only on a trusted isolated test network without sending reusable credentials. The QA control service remains a local Unix socket and is not a LAN listener.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-            }
             Section("Experimental browser access") {
                 Toggle("Allow broad HTTPS browser grants", isOn: Binding(
                     get: { actionPolicy.broadBrowserGrantsExperimentalEnabled },
@@ -122,7 +120,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Computer actions") {
-                Text("Off by default. To let AI run builds and tests, set Terminal and code to Ask every time; Automatic Tool Access will then expose the command tool without an extra tool toggle. Browser Search requires Browser navigation plus a grant for the search site. Path safeguards, timeouts, output limits, approvals, and the Activity journal still apply.")
+                Text("Off by default. Set Terminal and code to Ask every time to expose approved AI Workspace sessions and the older bounded command tool. AI Workspace commands run under ~/Desktop/Lima Workspace with no network access and no unrelated home reads. Browser Search still needs Browser navigation and a site grant. Timeouts, output limits, approvals, and Activity journaling apply.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
                     Picker(category.title, selection: Binding(
@@ -154,7 +152,7 @@ struct AIProviderSettingsView: View {
                     } message: {
                         Text("On sites where you separately enabled Always allow interactions in Zen or Firefox, Lima may click or type requested content without another prompt. Each action is recorded in Activity. Form submission still asks in Lima, and you can return to Ask every time or Off here.")
                     }
-                Text("Approved build, test, or script commands run project code as your macOS user, not in a security sandbox. Review the full command and project before allowing it; a timeout may not stop child processes started by that code.")
+                Text("All AI terminal commands now appear in Terminal. AI Workspace sessions use a default-deny macOS sandbox: writes stay in ~/Desktop/Lima Workspace, unrelated home reads and network access are denied. The older Run Terminal Command compatibility tool also streams to a visible one-shot session, but can run approved project code outside that workspace as your macOS user without sandboxing. Review every command; a timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Conversation configuration") {
@@ -170,13 +168,15 @@ struct AIProviderSettingsView: View {
                     ForEach(model.pickerModels) { Text($0.displayName).tag($0.id) }
                 }
                 .disabled(busy)
-                Text(model.provider.isCLI
-                    ? "Shows the CLI default and model IDs that passed a connection test in the last 30 days. The current model stays visible even if it has not been tested."
-                    : "Shows recent models from the provider’s model list. The current custom or older model stays visible until you change it.")
+                Text(model.provider == .codexCLI
+                    ? "Models come from your installed Codex app-server catalog. Listed models are not guaranteed to be available for your account; a successful request verifies access. Your selection stays visible and is never silently reset."
+                    : model.provider.isCLI
+                        ? "Shows the CLI default and model IDs that passed a connection test in the last 30 days. The current model stays visible even if it has not been tested."
+                        : "Shows recent models from the provider’s model list. The current custom or older model stays visible until you change it.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Enabled read-only connected-service MCP tools are discovered and executed by Lima; service credentials are never passed to the CLI. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
+                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {
@@ -233,7 +233,7 @@ struct AIProviderSettingsView: View {
                 HStack {
                     Button("Test Connection") { message = nil; model.testConnection() }
                         .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
-                    if !model.provider.isCLI {
+                    if !model.provider.isCLI || model.provider == .codexCLI {
                         Button("Refresh Models") { message = nil; model.refreshModels() }
                             .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)
                     }
@@ -242,9 +242,11 @@ struct AIProviderSettingsView: View {
                         Button("Stop") { model.cancelModelDiscovery() }
                     }
                 }
-                Text(model.provider.isCLI
-                    ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in and selected model. It does not test Lima tools. CLI model discovery is unavailable; use CLI default or enter a model ID. Successfully tested IDs stay in the picker for 30 days."
-                    : "Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
+                Text(model.provider == .codexCLI
+                    ? "Codex models load from the installed app-server and refresh automatically when the catalog is older than 24 hours. Refresh Models only updates the catalog; Test Connection sends a short request to verify your sign-in and selected model."
+                    : model.provider.isCLI
+                        ? "Test Connection sends a short text prompt through the installed CLI and verifies its local sign-in and selected model. It does not test Lima tools. Use CLI default or enter a model ID."
+                        : "Test Connection checks model discovery, a basic response, and one known-valid function schema. Model discovery runs automatically after saving a key or changing a provider; Refresh Models is for manual retry.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if let status = message ?? model.providerConnectionMessage {
                     Text(status).font(.caption).foregroundStyle(LimaTheme.textSecondary).textSelection(.enabled)

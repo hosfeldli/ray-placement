@@ -42,7 +42,6 @@ enum LimaQAIdentifiers {
 
     enum Settings {
         static let browserBridge = "settings.browserBridge"
-        static let mcpServers = "settings.mcpServers"
     }
 
     static var knownIdentifiers: Set<String> {
@@ -52,7 +51,7 @@ enum LimaQAIdentifiers {
             Notes.list, Notes.search, Notes.editor, Notes.new,
             AI.composer, AI.send, AI.stop, AI.activity, AI.subagentActivity,
             Context.search, Context.list,
-            Settings.browserBridge, Settings.mcpServers
+            Settings.browserBridge
         ]
         values.formUnion(LimaWorkspaceModule.allCases.map(Workspace.module))
         return values

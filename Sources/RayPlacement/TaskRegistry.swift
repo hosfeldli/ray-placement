@@ -11,6 +11,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
     case workflow
     case update
     case formatter
+    case grammar
     case interrupted
 
     var title: String {
@@ -22,6 +23,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
         case .workflow: return "Workflow"
         case .update: return "Update"
         case .formatter: return "Formatter"
+        case .grammar: return "Writing correction"
         case .interrupted: return "Work interrupted"
         }
     }
@@ -35,6 +37,7 @@ enum LimaTaskKind: String, Codable, CaseIterable, Sendable {
         case .workflow: return "point.3.connected.trianglepath.dotted"
         case .update: return "arrow.down.circle.fill"
         case .formatter: return "doc.text.magnifyingglass"
+        case .grammar: return "text.badge.checkmark"
         case .interrupted: return "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90"
         }
     }

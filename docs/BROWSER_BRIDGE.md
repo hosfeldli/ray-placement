@@ -1,5 +1,10 @@
 # Lima Browser Bridge (Zen / Firefox)
 
+**Release gate:** A 1.4.0 XPI now matches the current companion source and
+contains Mozilla signature metadata. The browser must still verify the signature
+during installation, and live Zen/Firefox acceptance must pass before shipping
+the new page-session, opaque-target, and bounded-scan features.
+
 ## Install from Lima (recommended)
 
 1. Put **Lima.app** in Applications (or its final location), launch it, and leave
@@ -10,8 +15,11 @@
    companion; obtain an official release, not the unsigned development package.
 3. In the intended browser/profile, open **about:addons**, choose the gear menu
    → **Install Add-on From File…**, and select the saved XPI. Review the browser's
-   permission/data-consent prompts. Verify **Lima Browser Bridge 1.3.2** is enabled.
-   Repeat separately for other browsers/profiles. Never disable signature checks.
+   permission/data-consent prompts. Verify that the installed companion version
+   matches the source-matching signed XPI bundled with that Lima build. The
+   versioned 1.4.0 XPI has passed offline source and signature-metadata checks;
+   only the browser can establish signature trust. Repeat separately for other
+   browsers/profiles. Never disable signature checks.
 4. In Lima, enable **Enable browser bridge**, choose **Install Native Helper…**,
    and confirm. Open the companion popup and choose **Reconnect to Lima**.
 5. Choose **Test Connection & Refresh Sites** in Lima. Expect **End-to-end
@@ -94,6 +102,19 @@ fields. Browser text is untrusted data, not instructions.
 AI context is sent to the selected conversation provider; revoking a site does
 not erase text already included in a conversation.
 
+`browser_scan` is a generic, bounded read for any granted HTTPS tab, not a
+Salesforce-only adapter. It selects one visible scroll surface from the document
+or an open shadow root, visits at most six additional viewports, deduplicates
+observed links, and restores the original position only while the same page and
+scan-owned scroll position remain current. The response always says
+`complete: false`: reaching the end of that one surface does not prove that
+all rows, other scroll containers, frames, closed shadow roots, or unloaded
+records were inspected. Scans never return action targets. Stop, site-grant
+revocation, route changes, and user/page scroll changes invalidate a scan rather
+than returning partial content or overriding the user's position. Live acceptance
+on representative virtualized sites is still required; fixture tests alone do
+not certify every website.
+
 ## Experimental broad HTTPS access in Lima
 
 Exact-site grants remain the default. If the browser has separately approved
@@ -148,6 +169,11 @@ Zen or Firefox must still verify its signature during installation. Version
 page snapshots, rejects read-only or disabled action targets, and hardens
 sensitive-field handling. Earlier live navigation and hyperlink reads do not
 certify 1.3.2 installation or live click, type, and submit interactions.
+Version 1.4.0 adds revisioned page sessions, readiness polling, opaque
+snapshot targets, post-action effect reporting, and the generic bounded viewport
+scan. Its source-matching XPI contains Mozilla signature metadata. Offline checks
+do not certify browser signature trust, a successful 1.4.0 install, or live
+browser behavior.
 
 ## Development setup
 
@@ -242,8 +268,9 @@ make bridge-signing-prepare
 make bridge-test
 ```
 
-Preparation lints with warnings treated as errors, stages only the seven reviewed
-companion files, builds an unsigned package and verifies its source contents.
+Preparation lints with warnings treated as errors, stages only the eleven reviewed
+companion files (including `page_state.js` and the scan scripts), builds an unsigned package and
+verifies its source contents.
 It does not contact AMO. Signing is a distinct upload:
 
 ```sh
