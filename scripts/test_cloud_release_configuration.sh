@@ -21,7 +21,10 @@ done
 git -C "$ROOT" check-ignore -q gha-creds-ci.json
 BRIDGE_XPI="$ROOT/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi"
 [[ -f "$BRIDGE_XPI" && ! -L "$BRIDGE_XPI" ]]
-! git -C "$ROOT" check-ignore -q -- "$BRIDGE_XPI"
+if git -C "$ROOT" check-ignore -q -- "$BRIDGE_XPI"; then
+    print -u2 'The pinned Browser Bridge XPI must not be ignored.'
+    exit 1
+fi
 /usr/bin/python3 "$ROOT/scripts/verify_browser_bridge_package.py" "$BRIDGE_XPI" --require-signature
 
 /usr/bin/python3 - "$MANIFEST" "$ROOT" <<'PY'
