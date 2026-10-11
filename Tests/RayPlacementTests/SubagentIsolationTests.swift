@@ -188,7 +188,9 @@ private struct ApprovalToolChildTransport: AIChatTransport {
     let result = await AISubagentRunner.run(
         client: transport, apiKey: "fixture-only",
         model: AIModelOption(id: "selected-analysis-model"), task: "Review the supplied evidence.",
-        timeout: .seconds(2), streamIdleDeadline: .milliseconds(75)
+        // Keep the hard cap beyond the idle watchdog so scheduler contention
+        // cannot make both deadlines race in favor of the hard cap.
+        timeout: .seconds(10), streamIdleDeadline: .milliseconds(75)
     )
     #expect(result.isError)
     #expect(result.output.contains("became idle before completion"))
