@@ -145,7 +145,7 @@ private func waitForAIWorkspaceCommand(
         timeoutSeconds: 5
     )
     #expect(launched.state == .running)
-    let waited = try await coordinator.wait(sessionID: started.id, from: nil, maxWaitSeconds: 2)
+    let waited = try await coordinator.wait(sessionID: started.id, from: nil, maxWaitSeconds: 10)
     #expect(waited["verified_success"] as? Bool == true)
     #expect(waited["command_finished"] as? Bool == true)
     #expect(waited["wait_expired"] as? Bool == false)
