@@ -159,6 +159,41 @@ private struct ApprovalToolChildTransport: AIChatTransport {
     #expect(result.output.contains("selected-analysis-model"))
 }
 
+@Test @MainActor func subagentFinishesWhenProviderLeavesCompletedStreamOpen() async {
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Verified child findings"))
+            continuation.yield(.completed("child-open-stream"))
+            // Deliberately keep the provider connection open after completion.
+        }
+    }
+    let result = await AISubagentRunner.run(
+        client: transport, apiKey: "fixture-only",
+        model: AIModelOption(id: "selected-analysis-model"), task: "Review the supplied evidence.",
+        timeout: .seconds(2), streamIdleDeadline: .milliseconds(75)
+    )
+    #expect(!result.isError)
+    #expect(result.output.contains("Verified child findings"))
+}
+
+@Test @MainActor func silentSubagentProviderStreamReturnsSpecificFailure() async {
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Partial child findings"))
+            // No completion and no close: the idle watchdog must end the child.
+        }
+    }
+    let result = await AISubagentRunner.run(
+        client: transport, apiKey: "fixture-only",
+        model: AIModelOption(id: "selected-analysis-model"), task: "Review the supplied evidence.",
+        timeout: .seconds(2), streamIdleDeadline: .milliseconds(75)
+    )
+    #expect(result.isError)
+    #expect(result.output.contains("became idle before completion"))
+}
+
 @Test @MainActor func subagentUsesRoutedNativeReadTool() async {
     let readTool = LimaAIToolDefinition(id: "fixture-read", name: "fixture_read",
         description: "Read fixture data.", parameters: [:], risk: .read)
@@ -184,7 +219,7 @@ private struct ApprovalToolChildTransport: AIChatTransport {
         #expect(definition.responsePayload != nil)
     }
     let store = LimaAIToolStore(fixtures: AIContextTools.ids)
-    for id in ["memory", "subagents"] {
+    for id in ["memory", "memory-changes", "subagents"] {
         let group = try #require(LimaAIToolGroup.coreGroups.first { $0.id == id })
         #expect(store.isEnabled(group))
         store.setEnabled(group, enabled: false)

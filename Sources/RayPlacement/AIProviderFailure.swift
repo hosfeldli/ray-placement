@@ -49,9 +49,9 @@ enum AIProviderFailure {
 
     private static let safeLimaToolNames: Set<String> = [
         "read_screen_context", "search_files", "find_files", "list_directory",
-        "file_metadata", "read_file", "search_web", "read_web", "list_extensions",
-        "get_lima_status", "lima_connection_test", "browser_tabs", "browser_current",
-        "browser_read", "salesforce_read_case_links", "salesforce_resolve_case",
+        "file_metadata", "read_file", "list_extensions", "get_lima_status",
+        "lima_connection_test", "browser_capabilities", "browser_tabs", "browser_current",
+        "browser_read", "browser_scan", "salesforce_read_case_links", "salesforce_resolve_case",
         "salesforce_resolve_cases", "browser_search_web", "browser_open_tabs", "browser_focus_tab",
         "browser_navigate_tab"
     ]

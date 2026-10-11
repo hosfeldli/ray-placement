@@ -86,8 +86,9 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
-                for scenario: AIChatVisualScenario in [.streaming, .failure, .quota, .timeout, .markdown] {
-                    let widths: [CGFloat] = [.failure, .quota, .timeout].contains(scenario)
+                for scenario: AIChatVisualScenario in [.streaming, .memoryApproval, .terminalDirectoryApproval, .terminalRunning,
+                                                       .terminalMinimized, .failure, .quota, .timeout, .markdown] {
+                    let widths: [CGFloat] = [.memoryApproval, .terminalDirectoryApproval, .failure, .quota, .timeout].contains(scenario)
                         ? [420, 600, 1040] : [420, 1040]
                     for width in widths {
                         let ai = AIChatVisualPreview(scenario: scenario)
@@ -96,6 +97,15 @@ enum LimaVisualAudit {
                                           url: directory.appendingPathComponent("functional-\(scenario.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) {
                             failures += 1
                         }
+                    }
+                }
+                for scenario: AIChatVisualScenario in [.memoryApproval, .terminalDirectoryApproval, .terminalRunning] {
+                    let opaque = AIChatVisualPreview(scenario: scenario)
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                        .environment(\.limaTestReduceTransparency, true)
+                    if !(await render(opaque, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("functional-\(scenario.rawValue)-reduce-transparency-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
                     }
                 }
                 let memoryStore = AIWorkspaceStore(fixtures: [], memories: [

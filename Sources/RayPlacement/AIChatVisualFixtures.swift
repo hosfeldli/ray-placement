@@ -7,6 +7,10 @@ enum AIChatVisualScenario: String, CaseIterable {
     case markdown = "ai-markdown"
     case streaming = "ai-streaming"
     case approval = "ai-approval"
+    case memoryApproval = "ai-memory-approval"
+    case terminalDirectoryApproval = "ai-terminal-directory-approval"
+    case terminalRunning = "ai-terminal-running"
+    case terminalMinimized = "ai-terminal-minimized"
     case failure = "ai-failure"
     case quota = "ai-quota"
     case timeout = "ai-timeout"
@@ -19,6 +23,10 @@ enum AIChatVisualScenario: String, CaseIterable {
         case .markdown: return "AI Chat — Markdown"
         case .streaming: return "AI Chat — Streaming + Reasoning"
         case .approval: return "AI Chat — Tool Approval"
+        case .memoryApproval: return "AI Chat — Memory Approval"
+        case .terminalDirectoryApproval: return "AI Chat — Terminal Directory Approval"
+        case .terminalRunning: return "AI Chat — AI Terminal Running"
+        case .terminalMinimized: return "AI Chat — AI Terminal Minimized"
         case .failure: return "AI Chat — Request Failure"
         case .quota: return "AI Chat — Credits Exhausted"
         case .timeout: return "AI Chat — Timeout"
@@ -39,7 +47,9 @@ struct AIChatVisualPreview: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            AIChatWorkspaceView(model: model, isEmbedded: true)
+            AIChatWorkspaceView(model: model, isEmbedded: true,
+                terminalVisualSessions: AIChatVisualFixtures.terminalSessions(for: scenario),
+                terminalInitiallyMinimized: scenario == .terminalMinimized)
                 .overlay(alignment: .topTrailing) {
                     Label("TEST DATA", systemImage: "testtube.2")
                         .limaFont(.caption2.weight(.bold))
@@ -161,6 +171,24 @@ enum AIChatVisualFixtures {
         )
     }
 
+    static func terminalSessions(for scenario: AIChatVisualScenario) -> [AIWorkspaceTerminalSnapshot]? {
+        guard scenario == .terminalRunning || scenario == .terminalMinimized else { return nil }
+        let output = "Lima Workspace ready.\n$ swift test\nBuilding for debugging...\n✔ Tests passed\n"
+        return [AIWorkspaceTerminalSnapshot(
+            id: UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000004")!,
+            conversationID: nil,
+            directory: "/Users/fixture/Desktop/Lima Workspace/Prism Demo",
+            isBoundedExternal: false,
+            state: scenario == .terminalRunning ? .running : .completed,
+            output: output,
+            firstOutputByte: 0,
+            nextOutputByte: output.utf8.count,
+            exitStatus: scenario == .terminalRunning ? nil : 0,
+            outputTruncated: false,
+            directoryGrantActive: scenario == .terminalRunning
+        )]
+    }
+
     static func model(for scenario: AIChatVisualScenario) -> AIChatViewModel {
         let project = fixtureProject
         let conversations = fixtureConversations(for: scenario, projectID: project.id)
@@ -191,6 +219,27 @@ enum AIChatVisualFixtures {
                     serverLabel: "Lima",
                     toolName: "open_lima_settings",
                     arguments: "{}"
+                )
+            )
+        case .terminalDirectoryApproval:
+            model.applyVisualFixture(
+                pendingApproval: AIToolApprovalRequest(
+                    localCallID: "fixture-directory-approval",
+                    localToolID: "terminal_run",
+                    serverLabel: "Lima",
+                    toolName: "terminal_run",
+                    arguments: #"{"session_id":"C0FFEE00-0000-4000-8000-000000000004","command":"swift test"}"#,
+                    directoryGrantPath: "/Users/fixture/Desktop/Lima Workspace/Prism Demo"
+                )
+            )
+        case .memoryApproval:
+            model.applyVisualFixture(
+                pendingApproval: AIToolApprovalRequest(
+                    localCallID: "fixture-memory-approval",
+                    localToolID: "memory_save",
+                    serverLabel: "Lima",
+                    toolName: "memory_save",
+                    arguments: #"{"title":"Writing preference","content":"Prefer concise release updates while preserving the exact technical details and validation limits.","scope":"project"}"#
                 )
             )
         case .failure:
@@ -224,6 +273,12 @@ enum AIChatVisualFixtures {
             conversations = [streamingConversation]
         case .approval:
             conversations = [approvalConversation]
+        case .memoryApproval:
+            conversations = [memoryApprovalConversation]
+        case .terminalDirectoryApproval:
+            conversations = [approvalConversation]
+        case .terminalRunning, .terminalMinimized:
+            conversations = [normalConversation]
         case .failure:
             conversations = [failureConversation]
         case .quota:
@@ -339,6 +394,24 @@ enum AIChatVisualFixtures {
                     text: "I need approval before opening a Lima window.",
                     activities: [
                         AIAgentActivity(kind: .toolApproval, title: "Approval needed", detail: "Lima · open_lima_settings", requiresApproval: true)
+                    ]
+                )
+            ]
+        )
+    }
+
+    private static var memoryApprovalConversation: AIConversation {
+        AIConversation(
+            title: "Save writing preference",
+            updatedAt: Date(),
+            model: "gpt-5.4",
+            messages: [
+                AIChatMessage(role: .user, text: "Remember my preference for concise release updates."),
+                AIChatMessage(
+                    role: .assistant,
+                    text: "I can save that preference to this project after you review it.",
+                    activities: [
+                        AIAgentActivity(kind: .toolApproval, title: "Approval needed", detail: "Lima · memory_save", requiresApproval: true)
                     ]
                 )
             ]

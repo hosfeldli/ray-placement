@@ -32,6 +32,7 @@ enum LimaQAIdentifiers {
         static let send = "ai.send"
         static let stop = "ai.stop"
         static let activity = "ai.activity"
+        static let terminalMonitor = "ai.terminal.monitor"
         static let subagentActivity = "ai.activity.subagent"
     }
 
@@ -49,7 +50,7 @@ enum LimaQAIdentifiers {
             Launcher.searchField, Launcher.results, Launcher.result, Launcher.selectedResult,
             Workspace.sidebar, Workspace.searchField,
             Notes.list, Notes.search, Notes.editor, Notes.new,
-            AI.composer, AI.send, AI.stop, AI.activity, AI.subagentActivity,
+            AI.composer, AI.send, AI.stop, AI.activity, AI.terminalMonitor, AI.subagentActivity,
             Context.search, Context.list,
             Settings.browserBridge
         ]

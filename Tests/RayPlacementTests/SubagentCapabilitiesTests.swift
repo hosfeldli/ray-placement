@@ -24,6 +24,7 @@ import Testing
     policy.setBrowserInteractionExperimentalEnabled(true)
     policy.setAccess(.askEveryTime, for: .browserInteraction)
     policy.setAccess(.askEveryTime, for: .localFiles)
+    policy.setAccess(.askEveryTime, for: .savedMemory)
     policy.setAccess(.askEveryTime, for: .terminal)
 
     func definition(_ id: String, _ risk: AILocalToolRisk, category: AIComputerActionCategory? = nil) -> LimaAIToolDefinition {
@@ -35,12 +36,13 @@ import Testing
         definition("click", .write, category: .browserInteraction),
         definition("submit", .write, category: .browserInteraction),
         definition("local", .localAction, category: .localFiles),
+        definition("memory_save", .write, category: .savedMemory),
         definition("terminal", .localAction, category: .terminal),
         definition("agent_delegate", .delegation)
     ]
 
     #expect(Set(AIContextTools.inheritedAgentTools(from: tools, actionPolicy: policy).map(\.id)) ==
-            Set(["read", "memory", "navigation", "click", "submit", "local", "terminal"]))
+            Set(["read", "memory", "navigation", "click", "submit", "local", "memory_save", "terminal"]))
 }
 
 @Test @MainActor func subagentNavigationRequiresTheParentNoApprovalMode() {
@@ -107,8 +109,8 @@ import Testing
         LimaAIToolDefinition(id: id, name: id, description: "fixture", parameters: [:], risk: risk, actionCategory: category)
     }
     let candidateTools = [
-        tool("search_web", .read),
-        tool("read_web", .read),
+        tool("browser_read", .read),
+        tool("browser_scan", .read),
         tool("browser_open_tabs", .navigation, category: .browserNavigation),
         tool("browser_submit", .write, category: .browserInteraction),
         tool("run_terminal_command", .localAction, category: .terminal),
@@ -122,7 +124,7 @@ import Testing
     let bundle = AIContextTools.subagentToolBundle(
         aiEnabled: true, enabledTools: candidateTools, actionPolicy: policy
     )
-    #expect(Set(bundle.localTools.map { $0.id }) == Set(["search_web", "read_web", "browser_open_tabs", "browser_submit", "run_terminal_command"]))
+    #expect(Set(bundle.localTools.map { $0.id }) == Set(["browser_read", "browser_scan", "browser_open_tabs", "browser_submit", "run_terminal_command"]))
 
     let disabled = AIContextTools.subagentToolBundle(
         aiEnabled: false, enabledTools: candidateTools, actionPolicy: policy

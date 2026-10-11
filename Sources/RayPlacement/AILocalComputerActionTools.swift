@@ -8,9 +8,9 @@ import RayPlacementCore
 /// cannot bypass the UI decision.
 @MainActor
 enum AILocalComputerActionTools {
-    static let fileToolIDs: Set<String> = ["create_text_file", "replace_text_file"]
-    static let terminalToolIDs: Set<String> = ["run_terminal_command"]
-    static let ids = fileToolIDs.union(terminalToolIDs)
+    nonisolated static let fileToolIDs: Set<String> = ["create_text_file", "replace_text_file", "edit_text_file"]
+    nonisolated static let terminalToolIDs: Set<String> = ["run_terminal_command"]
+    nonisolated static let ids = fileToolIDs.union(terminalToolIDs)
 
     static let definitions: [LimaAIToolDefinition] = [
         tool(
@@ -30,6 +30,18 @@ enum AILocalComputerActionTools {
                 "path": ["type": "string", "description": "Absolute path for an existing text or source file under the current user’s home folder."],
                 "content": ["type": "string", "description": "Complete replacement UTF-8 content, limited to 96 KB."],
                 "expected_modified_at": ["type": "string", "description": "The exact modified_at value returned by file_metadata immediately before this replacement."]
+            ],
+            risk: .write,
+            actionCategory: .localFiles
+        ),
+        tool(
+            "edit_text_file",
+            "Replace exactly one literal text span in an existing bounded UTF-8 text or source file after approval. Requires the exact modified_at from file_metadata and an old_text span observed in read_file. Rejects missing or repeated spans, stale files, symlinks, hidden or sensitive paths, and output over 96 KB.",
+            [
+                "path": ["type": "string", "description": "Absolute path for an existing text or source file under the current user’s home folder."],
+                "old_text": ["type": "string", "description": "A nonempty, exact, unique UTF-8 span from the current file, limited to 32 KB."],
+                "new_text": ["type": "string", "description": "Replacement UTF-8 text, limited to 32 KB; may be empty."],
+                "expected_modified_at": ["type": "string", "description": "The exact modified_at value returned by file_metadata immediately before editing."]
             ],
             risk: .write,
             actionCategory: .localFiles
@@ -71,7 +83,8 @@ enum AILocalComputerActionTools {
         )
     }
 
-    static func execute(_ call: AIOutputItem, approvalGranted: Bool) async -> LimaAIToolExecution {
+    static func execute(_ call: AIOutputItem, approvalGranted: Bool,
+                        conversationID: UUID? = nil) async -> LimaAIToolExecution {
         guard let definition = definitions.first(where: { $0.name == call.name }),
               AIComputerActionPolicy.shared.permits(definition, approvalGranted: approvalGranted) else {
             return .json(["error": "This local computer action is disabled or still needs your approval in Lima Settings."], isError: true)
@@ -107,6 +120,26 @@ enum AILocalComputerActionTools {
                 try writeTextData(data, to: url, operation: "Replaced", options: .atomic)
                 return .json(["replaced": true, "path": url.path, "bytes_written": data.count])
 
+            case "edit_text_file":
+                guard case .string(let path)? = arguments["path"],
+                      case .string(let oldText)? = arguments["old_text"],
+                      case .string(let newText)? = arguments["new_text"],
+                      case .string(let expected)? = arguments["expected_modified_at"], !expected.isEmpty else {
+                    return .json(["error": "Edit File needs a path, unique old_text, new_text, and modified_at from file_metadata."], isError: true)
+                }
+                let url = try writableTextURL(path: path, mustExist: true)
+                try verifyExpectedModification(expected, at: url)
+                let originalData = try Data(contentsOf: url)
+                guard originalData.count <= 96 * 1_024,
+                      let original = String(data: originalData, encoding: .utf8) else {
+                    throw LocalActionError.unsupportedFile
+                }
+                let replacement = try uniqueTextReplacement(in: original, oldText: oldText, newText: newText)
+                let data = try safeTextData(replacement)
+                try verifyExpectedModification(expected, at: url)
+                try writeTextData(data, to: url, operation: "Edited", options: .atomic)
+                return .json(["edited": true, "path": url.path, "bytes_written": data.count])
+
             case "run_terminal_command":
                 guard case .string(let command)? = arguments["command"] else {
                     return .json(["error": "Run Terminal Command needs one supported command."], isError: true)
@@ -133,7 +166,8 @@ enum AILocalComputerActionTools {
                 return await AILocalCommandRunner.shared.run(
                     command: command,
                     workingDirectory: workingDirectory,
-                    timeoutSeconds: timeout
+                    timeoutSeconds: timeout,
+                    conversationID: conversationID
                 )
 
             default:
@@ -153,6 +187,7 @@ enum AILocalComputerActionTools {
         case unsupportedFile
         case notRegularFile
         case changedSinceInspection
+        case missingOrRepeatedText
         case oversizedContent
         case unsafeText
         case unsafeCommand
@@ -166,7 +201,8 @@ enum AILocalComputerActionTools {
             case .missingParent: return "The target directory must already exist."
             case .unsupportedFile: return "Lima local actions support text and source-code files only."
             case .notRegularFile: return "The target must be a regular file."
-            case .changedSinceInspection: return "That file changed after it was inspected. Read its metadata again before replacing it."
+            case .changedSinceInspection: return "That file changed after it was inspected. Read its metadata again before editing it."
+            case .missingOrRepeatedText: return "The exact old_text span must appear once. Read the current file and choose a longer unique span."
             case .oversizedContent: return "Local file content is limited to 96 KB."
             case .unsafeText: return "Lima local actions require safe UTF-8 text without binary control characters."
             case .unsafeCommand: return "That command exceeds Lima’s local developer-command limits. Use the dedicated file tools for edits and a simple build, test, lint, or existing-script command."
@@ -288,6 +324,24 @@ enum AILocalComputerActionTools {
         return data
     }
 
+    /// Pure replacement logic used by the on-disk action and fixture tests.
+    static func uniqueTextReplacement(in original: String, oldText: String, newText: String) throws -> String {
+        guard !oldText.isEmpty, Data(oldText.utf8).count <= 32 * 1_024,
+              Data(newText.utf8).count <= 32 * 1_024 else {
+            throw LocalActionError.oversizedContent
+        }
+        _ = try safeTextData(oldText)
+        _ = try safeTextData(newText)
+        guard let range = original.range(of: oldText, options: .literal),
+              original.range(of: oldText, options: .literal,
+                             range: original.index(after: range.lowerBound)..<original.endIndex) == nil else {
+            throw LocalActionError.missingOrRepeatedText
+        }
+        let replacement = original.replacingCharacters(in: range, with: newText)
+        _ = try safeTextData(replacement)
+        return replacement
+    }
+
     private static func writeTextData(
         _ data: Data,
         to url: URL,
@@ -311,6 +365,63 @@ enum AILocalComputerActionTools {
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let actual = values.contentModificationDate.map { formatter.string(from: $0) }
         guard actual == expected else { throw LocalActionError.changedSinceInspection }
+    }
+}
+
+/// Coalesce utility-thread pipe reads before touching the visible Terminal model.
+/// A final main-actor drain runs before the session is marked complete.
+private final class AILocalOutputBatcher: @unchecked Sendable {
+    private let lock = NSLock()
+    private let capacity = 256 * 1_024
+    private let onFlush: @MainActor @Sendable (Data) -> Void
+    private var pending = Data()
+    private var scheduled = false
+    private var finished = false
+    private var truncated = false
+
+    init(onFlush: @escaping @MainActor @Sendable (Data) -> Void) {
+        self.onFlush = onFlush
+    }
+
+    func append(_ chunk: Data) {
+        guard !chunk.isEmpty else { return }
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        pending.append(chunk)
+        if pending.count > capacity {
+            pending.removeFirst(pending.count - capacity)
+            truncated = true
+        }
+        let needsSchedule = !scheduled
+        scheduled = true
+        lock.unlock()
+        if needsSchedule {
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
+                self?.drainScheduled()
+            }
+        }
+    }
+
+    private func drainScheduled() {
+        lock.lock()
+        let data = pending
+        pending.removeAll(keepingCapacity: true)
+        scheduled = false
+        lock.unlock()
+        guard !data.isEmpty else { return }
+        MainActor.assumeIsolated { onFlush(data) }
+    }
+
+    @MainActor
+    func finish() -> Bool {
+        lock.lock()
+        finished = true
+        let data = pending
+        pending.removeAll(keepingCapacity: false)
+        let wasTruncated = truncated
+        lock.unlock()
+        if !data.isEmpty { onFlush(data) }
+        return wasTruncated
     }
 }
 
@@ -397,7 +508,8 @@ final class AILocalCommandRunner {
         let launchFailed: Bool
     }
 
-    func run(command rawCommand: String, workingDirectory: URL, timeoutSeconds: Int) async -> LimaAIToolExecution {
+    func run(command rawCommand: String, workingDirectory: URL, timeoutSeconds: Int,
+             conversationID: UUID? = nil) async -> LimaAIToolExecution {
         guard !isRunning else {
             return .json(["error": "Lima runs one approved local developer command at a time."], isError: true)
         }
@@ -410,7 +522,9 @@ final class AILocalCommandRunner {
         let coordinator = AIWorkspaceTerminalCoordinator.shared
         let visibleSession: AIWorkspaceTerminalSnapshot
         do {
-            visibleSession = try coordinator.startBoundedExternal(directory: workingDirectory, onCancel: { box.cancel() })
+            visibleSession = try coordinator.startBoundedExternal(directory: workingDirectory,
+                                                                  conversationID: conversationID,
+                                                                  onCancel: { box.cancel() })
         } catch {
             return .json(["error": error.localizedDescription], isError: true)
         }
@@ -424,25 +538,23 @@ final class AILocalCommandRunner {
             onCancel: { box.cancel() }
         )
         let measurementID = PerformanceMonitor.shared.begin(.aiTerminalCommand)
+        let outputBatcher = AILocalOutputBatcher { chunk in
+            coordinator.appendBoundedExternal(chunk, sessionID: visibleSession.id)
+        }
         let result = await Self.execute(
             specification: specification,
             workingDirectory: workingDirectory,
             timeoutSeconds: timeoutSeconds,
             box: box,
-            onChunk: { chunk in
-                DispatchQueue.main.sync {
-                    MainActor.assumeIsolated {
-                        coordinator.appendBoundedExternal(chunk, sessionID: visibleSession.id)
-                    }
-                }
-            }
+            onChunk: { chunk in outputBatcher.append(chunk) }
         )
+        let visibleOutputTruncated = outputBatcher.finish()
         coordinator.finishBoundedExternal(
             sessionID: visibleSession.id,
             exitStatus: result.exitStatus.map(Int.init),
             cancelled: result.cancelled,
             timedOut: result.timedOut,
-            outputTruncated: false
+            outputTruncated: visibleOutputTruncated
         )
 
         let success = !result.cancelled && !result.timedOut && !result.launchFailed && result.exitStatus == 0

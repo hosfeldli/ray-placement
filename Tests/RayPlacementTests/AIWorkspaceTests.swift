@@ -104,9 +104,21 @@ import Testing
     let store = LimaAIToolStore(fixtures: LimaAIToolRegistry.defaultEnabledToolIDs)
     let groups = LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)
     let browser = try #require(groups.first { $0.id == "browser" })
-    let webResearch = try #require(groups.first { $0.id == "web-research" })
+    let limaWorkspace = try #require(groups.first { $0.id == "lima-workspace" })
+    #expect(groups.first { $0.id == "browser-navigation" } == nil) // Navigation is off by default.
 
-    #expect(store.isEnabled(webResearch))
+    #expect(groups.first { $0.id == "web-research" } == nil)
+    #expect(browser.toolIDs.contains("browser_scan"))
+    #expect(groups.first { $0.id == "ai-workspace-terminal" } == nil) // Terminal reads and actions start off.
+    #expect(LimaAIToolGroup.coreGroups.first { $0.id == "ai-workspace-terminal" }?.toolIDs == AIWorkspaceActionTools.ids)
+    let eligibleWorkspace = LimaAIToolGroup.visibleGroups(for: AIWorkspaceActionTools.definitions)
+    #expect(eligibleWorkspace.first { $0.id == "ai-workspace-terminal" }?.toolIDs == AIWorkspaceActionTools.ids)
+    #expect(limaWorkspace.toolIDs.contains("lima_capabilities"))
+    let wait = try #require(LimaAIToolRegistry.definition(for: "terminal_wait"))
+    let external = try #require(LimaAIToolRegistry.definition(for: "run_terminal_command"))
+    #expect(wait.displayName == "Wait for command")
+    #expect(wait.userSummary.contains("verified completion"))
+    #expect(external.userSummary.contains("outside the sandbox"))
     #expect(store.isEnabled(browser))
     store.setEnabled(browser, enabled: false)
     #expect(!store.isEnabled(browser))

@@ -16,6 +16,25 @@ import Testing
     #expect(reloaded.accessMode == .automatic)
 }
 
+@Test @MainActor func retiredWebChoicesMigrateToBrowserBridgeWithoutGrantingNavigation() throws {
+    let suite = "ToolAccessLegacyWeb.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(["search_web", "read_web"], forKey: "lima.ai.enabled-native-tools")
+    defaults.set(LimaAIToolAccessMode.custom.rawValue, forKey: "lima.ai.tool-access-mode")
+
+    let store = LimaAIToolStore(defaults: defaults)
+    #expect(!store.enabledToolIDs.contains("search_web"))
+    #expect(!store.enabledToolIDs.contains("read_web"))
+    #expect(store.enabledToolIDs.isSuperset(of: [
+        "browser_capabilities", "browser_tabs", "browser_read", "browser_scan",
+        "browser_search_web", "browser_open_tabs", "browser_navigate_tab"
+    ]))
+    #expect(!AIComputerActionPolicy(defaults: defaults).enabledCategories.contains(.browserNavigation))
+    let persisted = Set(defaults.stringArray(forKey: "lima.ai.enabled-native-tools") ?? [])
+    #expect(!persisted.contains("search_web") && !persisted.contains("read_web"))
+}
+
 @Test @MainActor func existingToolChoicesStayCustomAndSurviveModeChanges() throws {
     let suite = "ToolAccessExisting.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
@@ -30,16 +49,88 @@ import Testing
     #expect(store.accessMode == .custom)
     #expect(store.enabledToolIDs.isSuperset(of: ["read_file", "lima_capabilities"]))
     #expect(store.enabledToolIDs.isSuperset(of: AIWorkspaceActionTools.ids))
-    #expect(!store.effectiveEnabledToolIDs.contains("read_web"))
-    #expect(AIComputerActionPolicy(defaults: defaults).enabledCategories.isEmpty)
+    #expect(!store.effectiveEnabledToolIDs.contains("browser_read"))
+    #expect(AIComputerActionPolicy(defaults: defaults).enabledCategories == [.savedMemory])
 
     store.setAccessMode(.fullControl)
-    #expect(store.effectiveEnabledToolIDs.contains("read_web"))
+    #expect(store.effectiveEnabledToolIDs.contains("browser_read"))
     #expect(store.enabledToolIDs.isSuperset(of: ["read_file", "lima_capabilities"]))
 
     store.setAccessMode(.custom)
-    #expect(!store.effectiveEnabledToolIDs.contains("read_web"))
+    #expect(!store.effectiveEnabledToolIDs.contains("browser_read"))
     #expect(LimaAIToolStore(defaults: defaults).accessMode == .custom)
+}
+
+@Test @MainActor func existingCustomWorkspaceToolsGainWaitOnceWithoutCommandGrant() throws {
+    let suite = "ToolAccessWorkspaceWait.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(["terminal_status", "terminal_read"], forKey: "lima.ai.enabled-native-tools")
+    defaults.set(LimaAIToolAccessMode.custom.rawValue, forKey: "lima.ai.tool-access-mode")
+    for key in ["lima.ai.context-tools-v1", "lima.ai.computer-actions-v1",
+                "lima.ai.browser-notes-read-v1", "lima.ai.workspace-terminal-v1",
+                "lima.ai.browser-capabilities-v1", "lima.ai.tool-capabilities-v1"] {
+        defaults.set(true, forKey: key)
+    }
+
+    let store = LimaAIToolStore(defaults: defaults)
+    #expect(store.enabledToolIDs.contains("terminal_wait"))
+    #expect(!store.enabledToolIDs.contains("terminal_run"))
+    #expect(!AIComputerActionPolicy(defaults: defaults).enabledCategories.contains(.terminal))
+
+    let wait = try #require(LimaAIToolRegistry.definition(for: "terminal_wait"))
+    store.setEnabled(wait, enabled: false)
+    #expect(!LimaAIToolStore(defaults: defaults).enabledToolIDs.contains("terminal_wait"))
+}
+
+@Test @MainActor func existingCustomToolsGainReviewableMemoryWritesOnce() throws {
+    let suite = "ToolAccessMemoryWrites.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(["memory_search"], forKey: "lima.ai.enabled-native-tools")
+    defaults.set(LimaAIToolAccessMode.custom.rawValue, forKey: "lima.ai.tool-access-mode")
+    for key in ["lima.ai.context-tools-v1", "lima.ai.computer-actions-v1",
+                "lima.ai.browser-notes-read-v1", "lima.ai.workspace-terminal-v1",
+                "lima.ai.workspace-terminal-wait-v1", "lima.ai.browser-capabilities-v1",
+                "lima.ai.tool-capabilities-v1"] {
+        defaults.set(true, forKey: key)
+    }
+
+    let store = LimaAIToolStore(defaults: defaults)
+    #expect(store.enabledToolIDs.isSuperset(of: AIContextTools.memoryWriteIDs))
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    #expect(policy.access(for: .savedMemory) == .askEveryTime)
+    let save = try #require(LimaAIToolRegistry.definition(for: "memory_save"))
+    #expect(policy.requiresApproval(for: save))
+    #expect(!policy.permits(save, approvalGranted: false))
+    store.setEnabled(save, enabled: false)
+    let reloaded = LimaAIToolStore(defaults: defaults)
+    #expect(!reloaded.enabledToolIDs.contains("memory_save"))
+    #expect(reloaded.enabledToolIDs.contains("memory_update"))
+    #expect(LimaAIToolGroup.coreGroups.first { $0.id == "memory-changes" }?.toolIDs
+            == AIContextTools.memoryWriteIDs)
+}
+
+@Test @MainActor func preciseFileEditMigratesWithoutEnablingLocalWrites() throws {
+    let suite = "ToolAccessExactEdit.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(["read_file"], forKey: "lima.ai.enabled-native-tools")
+    defaults.set(LimaAIToolAccessMode.custom.rawValue, forKey: "lima.ai.tool-access-mode")
+    for key in ["lima.ai.context-tools-v1", "lima.ai.computer-actions-v1",
+                "lima.ai.browser-notes-read-v1", "lima.ai.workspace-terminal-v1",
+                "lima.ai.workspace-terminal-wait-v1", "lima.ai.browser-capabilities-v1",
+                "lima.ai.tool-capabilities-v1", "lima.ai.memory-writes-v1"] {
+        defaults.set(true, forKey: key)
+    }
+
+    let store = LimaAIToolStore(defaults: defaults)
+    #expect(store.enabledToolIDs.contains("edit_text_file"))
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    let edit = try #require(LimaAIToolRegistry.definition(for: "edit_text_file"))
+    #expect(!policy.allows(edit))
+    store.setEnabled(edit, enabled: false)
+    #expect(!LimaAIToolStore(defaults: defaults).enabledToolIDs.contains("edit_text_file"))
 }
 
 @Test @MainActor func askForActionsOverridesJournalButNotDisabledCategories() throws {
@@ -103,14 +194,19 @@ import Testing
     let data = try #require(result.output.data(using: .utf8))
     let output = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     let files = try #require(output["files"] as? [String: Any])
+    let memory = try #require(output["memory"] as? [String: Any])
     let terminal = try #require(output["terminal"] as? [String: Any])
     let browser = try #require(output["browser"] as? [String: Any])
     let workspace = try #require(output["workspace"] as? [String: Any])
+    #expect(memory["read"] as? Bool == false)
+    #expect(memory["save"] as? Bool == false)
+    #expect(memory["write_requires_approval"] as? Bool == true)
     #expect(files["read"] as? Bool == true)
     #expect(files["create_text"] as? Bool == false)
     #expect(terminal["available"] as? Bool == false)
     #expect(terminal["mode"] as? String == "unavailable")
     #expect(terminal["shared_workspace_session"] as? Bool == false)
+    #expect(terminal["wait_for_verified_exit"] as? Bool == false)
     #expect(terminal["bounded_external_command"] as? Bool == false)
     #expect(terminal["visible_in_terminal"] as? Bool == false)
     #expect(terminal["bounded_external_network_policy"] as? String == "unavailable")

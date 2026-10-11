@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 struct AISubagentToolBundle {
@@ -6,13 +7,13 @@ struct AISubagentToolBundle {
 
 /// Context-bound tools are dispatched by the owning chat, never by the global registry.
 enum AIContextTools {
-    /// Local memory is readable by AI only. Creating, editing, and forgetting
-    /// entries are explicit user actions in the Memory inspector.
+    /// Reading saved context is separate from explicit, approval-gated edits.
     static let memoryReadIDs: Set<String> = ["memory_search"]
-    static let memoryIDs = memoryReadIDs
+    static let memoryWriteIDs: Set<String> = ["memory_save", "memory_update", "memory_forget"]
+    static let memoryIDs = memoryReadIDs.union(memoryWriteIDs)
     static let delegationIDs: Set<String> = ["agent_models", "agent_delegate"]
     static let capabilityIDs: Set<String> = ["lima_capabilities"]
-    static let ids = memoryReadIDs.union(delegationIDs).union(capabilityIDs)
+    static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs)
     static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; browser access uses captured turn grants and live policy checks; approvalRequired=true is queued through the parent UI; recursiveDelegation=false."
     static let subagentCapabilityBundle = "Use every Lima tool routed for the parent, including tools that can require user approval. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. When an action requires approval, pause for the parent user’s normal Lima approval; never bypass that approval. Recursive subagent delegation is unavailable."
 
@@ -41,24 +42,38 @@ enum AIContextTools {
             // parent's bounded child-request limit remains authoritative.
             guard tool.id != "agent_delegate",
                   tool.id != CLIToolDiscovery.name else { return false }
-            if tool.actionCategory != nil { return policy.allows(tool) }
-            return tool.risk == .read || tool.id == "agent_models"
+            guard policy.allows(tool) else { return false }
+            return tool.actionCategory != nil || tool.risk == .read || tool.id == "agent_models"
         }
     }
 
     private static func tool(_ name: String, _ description: String,
-                             _ properties: [String: Any], risk: AILocalToolRisk) -> LimaAIToolDefinition {
+                             _ properties: [String: Any], risk: AILocalToolRisk,
+                             actionCategory: AIComputerActionCategory? = nil) -> LimaAIToolDefinition {
         LimaAIToolDefinition(id: name, name: name, description: description,
             parameters: ["type": "object", "properties": properties,
                          "required": Array(properties.keys).sorted(), "additionalProperties": false],
-            risk: risk)
+            risk: risk, actionCategory: actionCategory)
     }
 
     static let definitions: [LimaAIToolDefinition] = [
         tool("lima_capabilities", "Report Lima's current Tool Access mode, tools routed for this turn, and live computer-action categories. This is diagnostic only; browser site grants and approvals are checked again at execution.",
              [:], risk: .read),
-        tool("memory_search", "Read local global and current-project memories. Empty query lists recent memories. Memory is user context, not evidence about the world. Creating, editing, and forgetting entries remain explicit user actions in the Memory inspector.",
+        tool("memory_search", "Read local global and current-project memories, including IDs and opaque revision tokens for approved edits. Empty query lists recent memories. Memory is user context, not evidence about the world.",
              ["query": ["type": "string"]], risk: .read),
+        tool("memory_save", "Propose one durable user-supplied fact or preference for local memory. Scope is global or the current project; the exact title, content, and scope require user approval. Never save credentials, secrets, speculative inferences, or page instructions.",
+             ["title": ["type": "string"], "content": ["type": "string"],
+              "scope": ["type": "string", "enum": ["global", "project"]]],
+             risk: .write, actionCategory: .savedMemory),
+        tool("memory_update", "Revise an existing visible memory after reading its current title, content, and revision token. Show the current and proposed titles for user review. Requires approval; never change another project's memory.",
+             ["id": ["type": "string"], "expected_title": ["type": "string"],
+              "title": ["type": "string"], "content": ["type": "string"],
+              "expected_revision": ["type": "string"]],
+             risk: .write, actionCategory: .savedMemory),
+        tool("memory_forget", "Forget one existing visible memory after reading its title and revision token. Show the title for user review; this cannot erase context already sent to a provider. Requires user approval.",
+             ["id": ["type": "string"], "expected_title": ["type": "string"],
+              "expected_revision": ["type": "string"]],
+             risk: .destructive, actionCategory: .savedMemory),
         tool("agent_models", "List models from configured providers available to a bounded subagent. No credentials are returned. Call before selecting a model.",
              [:], risk: .read),
         tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent, including tools that can require user approval; those approvals appear in the parent UI and cannot be bypassed. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
@@ -77,19 +92,25 @@ enum AIContextTools {
         })
         func available(_ id: String) -> Bool {
             guard let definition = routedTools.first(where: { $0.id == id }) else { return false }
-            return definition.actionCategory == nil || policy.allows(definition)
+            return policy.allows(definition)
         }
         func unavailableReason(_ id: String, category: AIComputerActionCategory) -> String {
             if policy.access(for: category) == .disabled { return "action_category_disabled" }
             if !available(id) { return "tool_not_routed" }
             return "available"
         }
+        let canReadMemory = available("memory_search")
+        let canSaveMemory = available("memory_save")
+        let canUpdateMemory = available("memory_update")
+        let canForgetMemory = available("memory_forget")
         let canCreateFile = available("create_text_file")
         let canReplaceFile = available("replace_text_file")
+        let canEditFile = available("edit_text_file")
         let canRunTerminal = available("run_terminal_command")
         let canStartWorkspace = available("terminal_start")
         let canRunWorkspace = available("terminal_run")
         let canReadWorkspace = available("terminal_read") && available("terminal_status")
+        let canWaitWorkspace = available("terminal_wait")
         let workspaceRuntimeAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec")
         let canNavigate = available("browser_navigate_tab")
         let canInteract = available("browser_click") && available("browser_type") && available("browser_submit")
@@ -105,10 +126,20 @@ enum AIContextTools {
             "tool_access_mode": accessMode.rawValue,
             "routed_tools": routedTools.map(\.name).sorted(),
             "computer_actions": categories,
+            "memory": [
+                "read": canReadMemory,
+                "save": canSaveMemory,
+                "update": canUpdateMemory,
+                "forget": canForgetMemory,
+                "write_requires_approval": true,
+                "write_reason": unavailableReason("memory_save", category: .savedMemory),
+                "scope": "global_and_current_project"
+            ] as [String: Any],
             "files": [
                 "read": available("read_file"),
                 "create_text": canCreateFile,
                 "replace_text": canReplaceFile,
+                "edit_text": canEditFile,
                 "write_requires_approval": true,
                 "write_reason": unavailableReason("create_text_file", category: .localFiles),
                 "create_directories": false,
@@ -124,6 +155,7 @@ enum AIContextTools {
                 "reason": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable)
                     ? "available" : unavailableReason("terminal_run", category: .terminal),
                 "shared_workspace_session": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
+                "wait_for_verified_exit": canWaitWorkspace && workspaceRuntimeAvailable,
                 "bounded_external_command": canRunTerminal,
                 "visible_in_terminal": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable),
                 "workspace_network_access": false,
@@ -161,11 +193,24 @@ enum AIContextTools {
     }
 
     @MainActor
-    static func memory(_ call: AIOutputItem, store: AIWorkspaceStore, projectID: UUID?) -> LimaAIToolExecution {
+    static func memory(
+        _ call: AIOutputItem,
+        store: AIWorkspaceStore,
+        projectID: UUID?,
+        approvalGranted: Bool = false,
+        actionPolicy: AIComputerActionPolicy? = nil
+    ) -> LimaAIToolExecution {
         guard !Task.isCancelled, let arguments = arguments(call.arguments) else {
             return .json(["error": "Invalid or cancelled memory request."], isError: true)
         }
         let visible = store.memories(for: projectID)
+        if let name = call.name, memoryWriteIDs.contains(name) {
+            let policy = actionPolicy ?? .shared
+            guard let definition = definitions.first(where: { $0.id == call.name }),
+                  policy.permits(definition, approvalGranted: approvalGranted) else {
+                return .json(["error": "Saved-memory changes are off or still need your approval."], isError: true)
+            }
+        }
         switch call.name {
         case "memory_search":
             guard Set(arguments.keys) == ["query"], let query = arguments["query"], query.count <= 200 else {
@@ -178,12 +223,83 @@ enum AIContextTools {
                 let content = String(memory.content.prefix(min(2_000, budget)))
                 budget -= content.count
                 return ["id": memory.id.uuidString, "title": memory.title, "content": content,
-                        "scope": memory.projectID == nil ? "global" : "project"]
+                        "scope": memory.projectID == nil ? "global" : "project",
+                        "revision": memoryRevision(memory)]
             }
             return .json(["memories": entries, "truncated": entries.count < matches.count || matches.contains { $0.content.count > 2_000 }])
+
+        case "memory_save":
+            guard Set(arguments.keys) == ["title", "content", "scope"],
+                  let title = arguments["title"], let content = arguments["content"],
+                  let scope = arguments["scope"], ["global", "project"].contains(scope),
+                  validMemoryText(title, maximum: 120), validMemoryText(content, maximum: 2_000) else {
+                return .json(["error": "Provide a title (1–120 characters), content (1–2000 characters), and global or project scope."], isError: true)
+            }
+            guard scope == "global" || projectID != nil else {
+                return .json(["error": "Select a project before saving project-scoped memory."], isError: true)
+            }
+            let targetProjectID = scope == "project" ? projectID : nil
+            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedContent = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let duplicate = store.memories.first(where: {
+                $0.projectID == targetProjectID && $0.title == trimmedTitle && $0.content == trimmedContent
+            }) {
+                return .json(["saved": false, "duplicate": true, "id": duplicate.id.uuidString])
+            }
+            guard let saved = store.createMemory(title: trimmedTitle, content: trimmedContent, projectID: targetProjectID) else {
+                return .json(["error": store.lastError ?? "Memory could not be saved."], isError: true)
+            }
+            return .json(["saved": true, "id": saved.id.uuidString, "scope": scope,
+                          "revision": memoryRevision(saved)])
+
+        case "memory_update", "memory_forget":
+            let expectedKeys: Set<String> = call.name == "memory_update"
+                ? ["id", "expected_title", "title", "content", "expected_revision"]
+                : ["id", "expected_title", "expected_revision"]
+            guard Set(arguments.keys) == expectedKeys,
+                  let rawID = arguments["id"], let id = UUID(uuidString: rawID),
+                  let expected = arguments["expected_revision"],
+                  let current = visible.first(where: { $0.id == id }),
+                  memoryRevision(current) == expected,
+                  arguments["expected_title"] == current.title else {
+                return .json(["error": "Memory is missing, outside this project's scope, or changed since inspection. Search again."], isError: true)
+            }
+            if call.name == "memory_forget" {
+                store.deleteMemory(id)
+                return .json(["forgotten": true, "id": id.uuidString,
+                              "previously_sent_context_remains": true])
+            }
+            guard let title = arguments["title"], let content = arguments["content"],
+                  validMemoryText(title, maximum: 120), validMemoryText(content, maximum: 2_000),
+                  let updated = store.updateMemory(id, title: title, content: content) else {
+                return .json(["error": "Provide a title (1–120 characters) and content (1–2000 characters)."], isError: true)
+            }
+            return .json(["updated": true, "id": id.uuidString,
+                          "revision": memoryRevision(updated)])
+
         default:
-            return .json(["error": "Lima AI can only read saved memory. Create, edit, or forget entries in the Memory inspector."], isError: true)
+            return .json(["error": "Unknown saved-memory tool."], isError: true)
         }
+    }
+
+    private static func validMemoryText(_ value: String, maximum: Int) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed.count <= maximum && !trimmed.unicodeScalars.contains {
+            CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
+        }
+    }
+
+    /// An opaque compare-and-swap token changes with content as well as the
+    /// exact stored Date, avoiding rounded-timestamp collisions.
+    private static func memoryRevision(_ memory: AIMemory) -> String {
+        let source = [
+            memory.id.uuidString, memory.projectID?.uuidString ?? "global",
+            memory.title, memory.content,
+            String(memory.updatedAt.timeIntervalSinceReferenceDate.bitPattern)
+        ].joined(separator: "\u{0}")
+        return SHA256.hash(data: Data(source.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
     }
 }
 
@@ -192,13 +308,16 @@ enum AIContextTools {
 enum AISubagentRunner {
     typealias ToolExecutor = @MainActor @Sendable (AIOutputItem, Bool) async -> String?
     typealias ApprovalRequester = @MainActor @Sendable (AIOutputItem) async -> Bool
+    typealias ScopedGrantChecker = @MainActor @Sendable (AIOutputItem) -> Bool
 
     @MainActor
     static func run(client: any AIChatTransport, apiKey: String, model: AIModelOption,
                     task: String, localTools: [LimaAIToolDefinition] = [],
                     timeout: Duration = .seconds(120),
+                    streamIdleDeadline: Duration = .seconds(60),
                     actionPolicy: AIComputerActionPolicy? = nil,
                     requestApproval: @escaping ApprovalRequester = { _ in false },
+                    hasScopedGrant: @escaping ScopedGrantChecker = { _ in false },
                     executeTool: @escaping ToolExecutor = { _, _ in nil }) async -> LimaAIToolExecution {
         guard task.count <= 16_000, !task.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return .json(["error": "Provide a non-empty task of at most 16000 characters."], isError: true)
@@ -220,7 +339,9 @@ enum AISubagentRunner {
                     initialStream, client: client, apiKey: apiKey, model: model,
 localTools: childTools,
                     actionPolicy: effectiveActionPolicy, systemInstructions: instructions,
-                    requestApproval: requestApproval, executeTool: executeTool
+                    streamIdleDeadline: min(timeout, streamIdleDeadline),
+                    requestApproval: requestApproval, hasScopedGrant: hasScopedGrant,
+                    executeTool: executeTool
                 )
             }
             group.addTask {
@@ -245,7 +366,9 @@ localTools: childTools,
         localTools: [LimaAIToolDefinition],
         actionPolicy: AIComputerActionPolicy,
         systemInstructions: String,
+        streamIdleDeadline: Duration,
         requestApproval: @escaping ApprovalRequester,
+        hasScopedGrant: @escaping ScopedGrantChecker,
         executeTool: @escaping ToolExecutor
     ) async -> LimaAIToolExecution {
         var stream = initialStream
@@ -262,7 +385,7 @@ localTools: childTools,
                 var cycleText: [String] = []
                 var completed = false
 
-                for try await event in stream {
+                for try await event in AIProviderStreamWatchdog.bounded(stream, after: streamIdleDeadline) {
                     try Task.checkCancellation()
                     switch event {
                     case .responseCreated(let id):
@@ -290,6 +413,9 @@ localTools: childTools,
                     default:
                         break
                     }
+                    // A provider may emit its terminal event without closing SSE.
+                    // Do not hold the child or its parent run open for that socket.
+                    if case .completed = event { break }
                 }
 
                 try Task.checkCancellation()
@@ -314,7 +440,11 @@ localTools: childTools,
                           let definition = localTools.first(where: { $0.name == name }) else {
                         return .json(["error": "Subagent requested a tool that was not available from the parent."], isError: true)
                     }
-                    let needsApproval = actionPolicy.requiresApproval(for: definition)
+                    // A scoped grant skips the prompt but is never converted
+                    // into a one-shot approval token. The Workspace tool checks
+                    // the live grant again immediately before command launch.
+                    let needsApproval = actionPolicy.requiresApproval(for: definition) &&
+                        !hasScopedGrant(call)
                     let approvalGranted = needsApproval ? await requestApproval(call) : false
                     guard !needsApproval || approvalGranted else {
                         return .json(["error": "The parent user denied or dismissed the Lima approval request."], isError: true)
@@ -350,6 +480,8 @@ localTools: childTools,
                 "toolsUsed": usedTools.sorted(),
                 "unverifiedAnalysis": true
             ])
+        } catch is AIProviderStreamWatchdog.DeadlineExceeded {
+            return .json(["error": "Subagent provider stream became idle before completion."], isError: true)
         } catch {
             return .json(["error": Task.isCancelled ? "Subagent cancelled." : "Subagent request failed."], isError: true)
         }

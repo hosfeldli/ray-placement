@@ -78,6 +78,29 @@ import Testing
     #expect(AIProviderClientRegistry.client(for: .claudeCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
 }
 
+@Test @MainActor func everyChatProviderExcludesRetiredWebToolsFromRequests() {
+    let conversations = AIProvider.chatProviders.map {
+        AIConversation(provider: $0, model: $0.defaultChatModel)
+    }
+    let store = AIConversationStore(fixtures: conversations)
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: [
+            "search_web", "read_web", "browser_capabilities", "browser_read", "browser_scan"
+        ]),
+        transport: FixtureAITransport.standard
+    )
+    let retired: Set<String> = ["search_web", "read_web"]
+
+    for conversation in conversations {
+        model.select(conversation.id)
+        let routed = Set(model.requestLocalTools(for: "Research this topic").map(\.id))
+        #expect(routed.isDisjoint(with: retired))
+        #expect(routed.contains("browser_read"))
+    }
+}
+
 @Test @MainActor func aiProviderSelectionPersistsPerConversation() {
     let openAIConversation = AIConversation(provider: .openAI, model: "gpt-5.4")
     let geminiConversation = AIConversation(provider: .gemini, model: "gemini-2.5-flash")
@@ -105,46 +128,6 @@ import Testing
     #expect(connected.hasAPIKey)
     #expect(!missing.hasAPIKey)
     #expect(missing.apiKey() == nil)
-}
-
-@Test @MainActor func publicWebReaderBlocksPrivateHostsAndExtractsReadableContent() {
-    #expect(LimaAIToolRegistry.publicWebURL("https://example.com/docs") != nil)
-    #expect(LimaAIToolRegistry.publicWebURL("http://127.0.0.1:8080") == nil)
-    #expect(LimaAIToolRegistry.publicWebURL("https://192.168.1.1") == nil)
-    #expect(LimaAIToolRegistry.publicWebURL("https://localhost") == nil)
-    #expect(LimaAIToolRegistry.publicWebURL("https://user:pass@example.com") == nil)
-
-    let extracted = LimaAIToolRegistry.readableWebContent(
-        fromHTML: """
-        <html lang="en"><head><title>Example &amp; Guide</title>
-        <meta name="description" content="Readable &amp; safe">
-        <meta property="og:description" content="Literal &amp;lt;code&amp;gt;">
-        <style>body { color: red; }</style><script>ignoreThis(); <p>hidden script text</p></script></head>
-        <body><nav>Ignore navigation</nav><p>Outside the main article</p>
-        <main><h1>Useful guide &mdash; start</h1><p>Read this public text.</p>
-        <form><p>Hidden form text</p></form><svg><text>Hidden SVG text</text></svg>
-        <a href="/next" data-label="reader > safe">Next &amp; beyond</a>
-        <a href="http://127.0.0.1/private">Private</a></main></body></html>
-        """,
-        baseURL: URL(string: "https://example.com/docs")!
-    )
-    #expect(extracted.title == "Example & Guide")
-    #expect(extracted.content.contains("Useful guide — start"))
-    #expect(extracted.content.contains("Read this public text."))
-    #expect(!extracted.content.contains("Ignore navigation"))
-    #expect(!extracted.content.contains("Outside the main article"))
-    #expect(!extracted.content.contains("hidden script text"))
-    #expect(!extracted.content.contains("Hidden form text"))
-    #expect(!extracted.content.contains("Hidden SVG text"))
-    #expect(extracted.headings == ["Useful guide — start"])
-    #expect(extracted.metadata["description"] == "Readable & safe")
-    #expect(extracted.metadata["og:description"] == "Literal &lt;code&gt;")
-    #expect(extracted.metadata["language"] == "en")
-    #expect(extracted.links == ["https://example.com/next"])
-    #expect(extracted.linkDetails == [[
-        "text": "Next & beyond",
-        "url": "https://example.com/next"
-    ]])
 }
 
 @Test @MainActor func fixtureTransportCarriesPromptToVisibleAssistantTurn() async {
@@ -476,8 +459,8 @@ import Testing
 @Test @MainActor func enabledToolsRemainVisibleRegardlessOfPromptWording() {
     let toolStore = LimaAIToolStore(fixtures: [
         "search_files", "find_files", "list_directory", "file_metadata", "read_file",
-        "search_web", "read_web", "read_screen_context", "list_extensions", "get_lima_status",
-        "browser_tabs", "browser_current", "browser_read",
+        "read_screen_context", "list_extensions", "get_lima_status",
+        "browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_scan",
         "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"
     ])
     let model = AIChatViewModel(
@@ -491,7 +474,8 @@ import Testing
     #expect(routed == Set(model.routedNativeTools(for: "Read the current website in my browser").map(\.id)))
     #expect(routed == Set(model.routedNativeTools(for: "Find and read the Swift source file").map(\.id)))
     #expect(routed.contains("read_file"))
-    #expect(routed.contains("search_web"))
+    #expect(!routed.contains("search_web"))
+    #expect(!routed.contains("read_web"))
     #expect(routed.contains("browser_read"))
     #expect(!routed.contains("browser_open_tabs")) // Its live action category is Off.
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
@@ -560,6 +544,7 @@ import Testing
     let click = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_click" })
     let submit = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_submit" })
     let localFile = try #require(AILocalComputerActionTools.definitions.first { $0.id == "create_text_file" })
+    let savedMemory = try #require(AIContextTools.definitions.first { $0.id == "memory_save" })
     let terminal = try #require(AILocalComputerActionTools.definitions.first { $0.id == "run_terminal_command" })
 
     #expect(policy.access(for: .browserNavigation) == .disabled)
@@ -567,6 +552,8 @@ import Testing
     #expect(!policy.browserInteractionExperimentalEnabled)
     #expect(!policy.broadBrowserGrantsExperimentalEnabled)
     #expect(policy.access(for: .localFiles) == .disabled)
+    #expect(policy.access(for: .savedMemory) == .askEveryTime)
+    #expect(policy.requiresApproval(for: savedMemory))
     #expect(policy.access(for: .terminal) == .disabled)
 
     policy.setAccess(.allowWithJournal, for: .browserNavigation)
@@ -586,11 +573,13 @@ import Testing
     policy.setAccess(.askEveryTime, for: .browserInteraction)
     #expect(policy.access(for: .browserInteraction) == .askEveryTime)
     policy.setAccess(.askEveryTime, for: .localFiles)
+    policy.setAccess(.askEveryTime, for: .savedMemory)
     policy.setAccess(.askEveryTime, for: .terminal)
     #expect(policy.requiresApproval(for: interaction))
     #expect(policy.requiresApproval(for: click))
     #expect(policy.requiresApproval(for: submit))
     #expect(policy.requiresApproval(for: localFile))
+    #expect(policy.requiresApproval(for: savedMemory))
     #expect(policy.requiresApproval(for: terminal))
     policy.setAccess(.allowWithJournal, for: .browserInteraction)
     #expect(policy.access(for: .browserInteraction) == .allowWithJournal)
@@ -598,12 +587,16 @@ import Testing
     #expect(!policy.requiresApproval(for: click))
     #expect(policy.requiresApproval(for: submit))
     #expect(policy.requiresApproval(for: localFile))
+    #expect(policy.requiresApproval(for: savedMemory))
     #expect(policy.requiresApproval(for: terminal))
     #expect(AIComputerActionPolicy(defaults: defaults).access(for: .browserInteraction) == .allowWithJournal)
     policy.setBrowserInteractionExperimentalEnabled(false)
     #expect(policy.access(for: .browserInteraction) == .disabled)
     #expect(defaults.string(forKey: "lima.ai.computer-action.browserInteraction") == AIComputerActionAccess.disabled.rawValue)
     #expect(defaults.string(forKey: "lima.ai.computer-action.browserNavigation") == AIComputerActionAccess.allowWithJournal.rawValue)
+    policy.setAccess(.disabled, for: .savedMemory)
+    #expect(AIComputerActionPolicy(defaults: defaults).access(for: .savedMemory) == .disabled)
+    #expect(!policy.allows(savedMemory))
 }
 
 @Test func localCommandRunnerRejectsGitWritesAndEscapingOperands() {
@@ -862,6 +855,120 @@ import Testing
     #expect(store.conversation(id: conversation.id)?.messages == conversation.messages)
 }
 
+@Test @MainActor func terminalProviderEventFinishesRunEvenWhenConnectionStaysOpen() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Finished answer"))
+            continuation.yield(.completed("fixture-open-connection"))
+            // Deliberately leave the transport stream open after completion.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .seconds(2)
+    )
+    model.draft = "Finish despite an open connection"
+    model.send()
+    for _ in 0..<600 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.selectedConversation?.messages.last?.text == "Finished answer")
+    #expect(model.streamError == nil)
+}
+
+@Test @MainActor func failedProviderEventFinishesRunEvenWhenConnectionStaysOpen() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Partial answer"))
+            continuation.yield(.failed("Request failed"))
+            // Deliberately leave the transport stream open after failure.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .seconds(2)
+    )
+    model.draft = "Preserve the partial answer on failure"
+    model.send()
+    for _ in 0..<600 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.selectedConversation?.messages.last?.text == "Partial answer")
+    #expect(model.selectedConversation?.messages.last?.failure != nil)
+}
+
+@Test func activeProviderStreamCanOutliveItsIdleDeadline() async throws {
+    let upstream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+        Task {
+            for _ in 0..<6 {
+                continuation.yield(.textDelta("x"))
+                try? await Task.sleep(for: .milliseconds(150))
+            }
+            continuation.yield(.completed("active-stream"))
+            continuation.finish()
+        }
+    }
+
+    var textEvents = 0
+    var completed = false
+    for try await event in AIProviderStreamWatchdog.bounded(upstream, after: .milliseconds(500)) {
+        if case .textDelta = event { textEvents += 1 }
+        if case .completed = event { completed = true }
+    }
+
+    #expect(textEvents == 6)
+    #expect(completed)
+}
+
+@Test @MainActor func silentProviderStreamTimesOutAndPreservesPartialAnswer() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("Partial answer"))
+            // Deliberately never emit completion or close the stream.
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        providerStreamDeadline: .milliseconds(80)
+    )
+    model.draft = "Do not lose my prompt or partial answer"
+    model.send()
+    for _ in 0..<1000 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let conversation = try #require(model.selectedConversation)
+    let assistant = try #require(conversation.messages.last(where: { $0.role == .assistant }))
+    #expect(!model.canEndTask)
+    #expect(model.executionRun?.state == .failed)
+    #expect(assistant.text == "Partial answer")
+    #expect(assistant.failure?.category == .timedOut)
+    #expect(assistant.failure?.retryability == .safe)
+    #expect(conversation.messages.contains { $0.role == .user && $0.text == "Do not lose my prompt or partial answer" })
+    #expect(model.canRetryLastRequest)
+}
+
 @Test @MainActor func providerTimeoutCreatesRestartableDurableFailure() async throws {
     let store = AIConversationStore(fixtures: [])
     let model = AIChatViewModel(
@@ -1115,7 +1222,7 @@ import Testing
     let store = AIConversationStore(fixtures: [])
     let model = AIChatViewModel(
         store: store,
-        nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "read_file", "search_web", "read_web"]),
+        nativeToolStore: LimaAIToolStore(fixtures: ["search_files", "read_file", "browser_capabilities", "browser_read"]),
         transport: FixtureAITransport.standard
     )
 
@@ -1379,7 +1486,15 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(LimaAIToolRegistry.definitions.allSatisfy { !$0.risk.requiresApproval })
     #expect(LimaAIToolRegistry.definition(for: "open_lima_settings") == nil)
     #expect(LimaAIToolRegistry.definition(for: "read_screen_context")?.displayName == "Screen context")
-    #expect(LimaAIToolRegistry.definition(for: "search_web")?.displayName == "Search the web")
+    #expect(LimaAIToolRegistry.definition(for: "search_web") == nil)
+    #expect(LimaAIToolRegistry.definition(for: "read_web") == nil)
+    #expect(ExtensionToolHostAdapterRegistry.adapter(for: "read_public_web") == nil)
+    #expect(AIChatConfigurationCatalog.builtInSkills.allSatisfy {
+        $0.preferredToolIDs.allSatisfy { $0 != "search_web" && $0 != "read_web" }
+    })
+    #expect(AIChatConfigurationCatalog.builtInAgents.allSatisfy {
+        $0.toolIDs.allSatisfy { $0 != "search_web" && $0 != "read_web" }
+    })
     #expect(["list_directory", "find_files", "search_files", "read_file", "file_metadata"]
         .allSatisfy { LimaAIToolRegistry.definition(for: $0) != nil })
 }

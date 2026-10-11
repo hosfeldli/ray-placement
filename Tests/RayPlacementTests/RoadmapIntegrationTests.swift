@@ -168,6 +168,15 @@ import RayPlacementCore
     #expect(report.steps.first?.message == "Cancelled")
 }
 
+@Test func mainThreadProbeQueuesOnlyOneCallbackAtATime() {
+    let gate = MainThreadProbeGate()
+    #expect(gate.claim())
+    #expect(!gate.claim())
+    gate.release()
+    #expect(gate.claim())
+    gate.release()
+}
+
 @Test @MainActor func developerTraceOmitsSampleDetails() {
     let secret = "private-prompt-\(UUID().uuidString)"
     PerformanceMonitor.shared.record(.aiRequest, duration: 0.012, detail: secret)

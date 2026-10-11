@@ -214,6 +214,12 @@ struct DeveloperTerminalView: View {
                 Spacer()
                 Menu {
                     if let session = selectedAISession {
+                        if session.directoryGrantActive {
+                            Button("Revoke AI Directory Access") {
+                                aiSessions.revokeDirectoryGrant(sessionID: session.id)
+                            }
+                            Divider()
+                        }
                         if session.state == .running {
                             Button("Stop AI Session") { _ = try? aiSessions.interrupt(sessionID: session.id) }
                         } else {
@@ -279,6 +285,11 @@ struct DeveloperTerminalView: View {
                     .truncationMode(.middle)
                     .foregroundStyle(LimaTheme.textSecondary)
                 Spacer()
+                if session.directoryGrantActive {
+                    Label("Directory allowed", systemImage: "checkmark.shield.fill")
+                        .foregroundStyle(LimaColors.success)
+                        .help("AI may run more commands in this session's current directory; revoke from Terminal options")
+                }
                 if session.state == .running {
                     Button("Stop") { _ = try? aiSessions.interrupt(sessionID: session.id) }
                         .buttonStyle(.borderless)

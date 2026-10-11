@@ -58,6 +58,24 @@ struct LimaPerformanceSample: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+/// Prevents a stalled main actor from accumulating one probe callback per tick.
+final class MainThreadProbeGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pending = false
+
+    func claim() -> Bool {
+        lock.withLock {
+            guard !pending else { return false }
+            pending = true
+            return true
+        }
+    }
+
+    func release() {
+        lock.withLock { pending = false }
+    }
+}
+
 @MainActor
 final class PerformanceMonitor: ObservableObject {
     static let shared = PerformanceMonitor()
@@ -132,12 +150,17 @@ final class PerformanceMonitor: ObservableObject {
         let token = UUID()
         mainThreadProbeToken = token
         let timer = DispatchSource.makeTimerSource(queue: probeQueue)
+        let gate = MainThreadProbeGate()
         timer.schedule(deadline: .now(), repeating: .milliseconds(250))
         timer.setEventHandler { [weak self] in
+            guard gate.claim() else { return }
             let queuedAt = Date()
+            let queuedUptime = DispatchTime.now().uptimeNanoseconds
             DispatchQueue.main.async { [weak self] in
+                defer { gate.release() }
                 guard let self, self.mainThreadProbeToken == token else { return }
-                let delay = Date().timeIntervalSince(queuedAt)
+                let elapsed = DispatchTime.now().uptimeNanoseconds - queuedUptime
+                let delay = Double(elapsed) / 1_000_000_000
                 if delay >= 0.1 {
                     self.record(.mainThreadSchedulingDelay, startedAt: queuedAt, duration: delay)
                 }

@@ -35,7 +35,7 @@ import Testing
     #expect(finished[0].status == .failed)
     #expect(AIActivityStream.completedActionCount(finished) == 0)
 
-    let unfinished = AIActivityStream.steps(from: [request, AIAgentActivity(kind: .toolStarted, title: "read_web")], isActive: false)
+    let unfinished = AIActivityStream.steps(from: [request, AIAgentActivity(kind: .toolStarted, title: "browser_read")], isActive: false)
     #expect(unfinished[0].status == .interrupted)
     #expect(AIActivityStream.terminalState(from: [request], steps: unfinished) == .stopped)
     #expect(AIActivityStream.terminalState(from: [request, approval, denied], steps: finished) == .needsAttention)

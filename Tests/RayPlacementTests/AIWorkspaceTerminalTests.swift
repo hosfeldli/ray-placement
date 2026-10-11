@@ -82,7 +82,7 @@ import Testing
 
 @Test @MainActor func aiWorkspaceToolDefinitionsKeepReadsSeparateFromActions() {
     #expect(AIWorkspaceActionTools.actionIDs.count == 5)
-    #expect(AIWorkspaceActionTools.readIDs == ["terminal_status", "terminal_read"])
+    #expect(AIWorkspaceActionTools.readIDs == ["terminal_status", "terminal_read", "terminal_wait"])
     for definition in AIWorkspaceActionTools.definitions {
         if AIWorkspaceActionTools.actionIDs.contains(definition.id) {
             #expect(definition.actionCategory == .terminal)
@@ -145,7 +145,12 @@ private func waitForAIWorkspaceCommand(
         timeoutSeconds: 5
     )
     #expect(launched.state == .running)
-    let completed = try await waitForAIWorkspaceCommand(coordinator, sessionID: started.id)
+    let waited = try await coordinator.wait(sessionID: started.id, from: nil, maxWaitSeconds: 2)
+    #expect(waited["verified_success"] as? Bool == true)
+    #expect(waited["command_finished"] as? Bool == true)
+    #expect(waited["wait_expired"] as? Bool == false)
+    #expect((waited["output"] as? String)?.contains("visible-output") == true)
+    let completed = try coordinator.status(sessionID: started.id)
     #expect(completed.state == .completed)
     #expect(completed.exitStatus == 0)
     #expect(completed.output.contains("visible-output"))
@@ -192,8 +197,10 @@ private func waitForAIWorkspaceCommand(
     #expect(initialize.terminationStatus == 0)
     try Data("visible fixture\n".utf8).write(to: root.appendingPathComponent("marker.txt"))
 
+    let conversationID = UUID()
     let result = await AILocalCommandRunner.shared.run(
-        command: "git status --short", workingDirectory: root, timeoutSeconds: 5
+        command: "git status --short", workingDirectory: root, timeoutSeconds: 5,
+        conversationID: conversationID
     )
     #expect(!result.isError)
     let data = try #require(result.output.data(using: .utf8))
@@ -207,22 +214,219 @@ private func waitForAIWorkspaceCommand(
     let coordinator = AIWorkspaceTerminalCoordinator.shared
     let visible = try coordinator.status(sessionID: id)
     #expect(visible.isBoundedExternal)
+    #expect(visible.belongs(to: conversationID))
+    #expect(coordinator.sessions(for: conversationID).contains { $0.id == id })
     #expect(visible.title.contains("External"))
     #expect(visible.state == .completed)
     #expect(visible.exitStatus == 0)
     #expect(visible.output.contains("Approved bounded developer command"))
     #expect(visible.output.contains("?? marker.txt"))
     #expect(coordinator.sessions.contains { $0.id == id })
+    let suite = "AIWorkspaceExternalPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    let readDefinition = try #require(AIWorkspaceActionTools.definitions.first { $0.id == "terminal_read" })
+    #expect(!policy.allows(readDefinition))
+    policy.setAccess(.askEveryTime, for: .terminal)
+    #expect(policy.allows(readDefinition))
+    #expect(!policy.requiresApproval(for: readDefinition))
     let readCall = AIOutputItem(
         phase: .completed, apiType: "function_call", callID: "bounded-external-read",
         name: "terminal_read", arguments: "{\"session_id\":\"\(rawID)\"}"
     )
-    let blockedRead = AIWorkspaceActionTools.execute(readCall, approvalGranted: false)
+    let blockedRead = await AIWorkspaceActionTools.execute(
+        readCall, approvalGranted: false, actionPolicy: policy, conversationID: conversationID
+    )
     #expect(blockedRead.isError)
     #expect(blockedRead.output.contains("not an AI Workspace session"))
     #expect(!blockedRead.output.contains("marker.txt"))
+    let waitCall = AIOutputItem(
+        phase: .completed, apiType: "function_call", callID: "bounded-external-wait",
+        name: "terminal_wait", arguments: "{\"session_id\":\"\(rawID)\"}"
+    )
+    let blockedWait = await AIWorkspaceActionTools.execute(
+        waitCall, approvalGranted: false, actionPolicy: policy, conversationID: conversationID
+    )
+    #expect(blockedWait.isError)
+    #expect(blockedWait.output.contains("not an AI Workspace session"))
+    #expect(!blockedWait.output.contains("marker.txt"))
+    policy.setAccess(.disabled, for: .terminal)
+    let revokedRead = await AIWorkspaceActionTools.execute(
+        readCall, approvalGranted: false, actionPolicy: policy, conversationID: conversationID
+    )
+    #expect(revokedRead.isError)
+    #expect(revokedRead.output.contains("disabled or still needs your approval"))
+    #expect(!revokedRead.output.contains("marker.txt"))
     #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
         try coordinator.run(sessionID: id, command: "echo should-not-run", timeoutSeconds: 5)
     }
     try coordinator.close(sessionID: id)
+}
+
+@Test @MainActor func aiTerminalSessionsStayInTheirOriginatingConversation() async throws {
+    let manager = FileManager.default
+    let root = manager.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaConversationTerminalTests-\(UUID().uuidString)", isDirectory: true)
+    try manager.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? manager.removeItem(at: root) }
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
+    let suite = "AIConversationTerminalPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    let conversationA = UUID()
+    let conversationB = UUID()
+    let start = AIOutputItem(phase: .completed, apiType: "function_call", callID: "start-a",
+                             name: "terminal_start", arguments: "{}")
+    let anonymous = await AIWorkspaceActionTools.execute(start, approvalGranted: true,
+        actionPolicy: policy, runtime: coordinator)
+    #expect(anonymous.isError)
+    #expect(anonymous.output.contains("originating conversation"))
+    #expect(coordinator.sessions.isEmpty)
+    let startedA = await AIWorkspaceActionTools.execute(start, approvalGranted: true,
+        actionPolicy: policy, conversationID: conversationA, runtime: coordinator)
+    #expect(!startedA.isError)
+    let startData = try #require(startedA.output.data(using: .utf8))
+    let fields = try #require(JSONSerialization.jsonObject(with: startData) as? [String: Any])
+    let idA = try #require(UUID(uuidString: fields["session_id"] as? String ?? ""))
+    let snapshotA = try coordinator.status(sessionID: idA)
+    #expect(snapshotA.belongs(to: conversationA))
+    #expect(!snapshotA.belongs(to: conversationB))
+    #expect(coordinator.sessions(for: conversationA).map { $0.id } == [idA])
+    #expect(coordinator.sessions(for: conversationB).isEmpty)
+    #expect(coordinator.sessions(for: nil).isEmpty)
+
+    let status = AIOutputItem(phase: .completed, apiType: "function_call", callID: "status-a",
+                              name: "terminal_status", arguments: "{\"session_id\":\"\(idA.uuidString)\"}")
+    let denied = await AIWorkspaceActionTools.execute(status, approvalGranted: false,
+        actionPolicy: policy, conversationID: conversationB, runtime: coordinator)
+    #expect(denied.isError)
+    #expect(denied.output.contains("another conversation"))
+    let allowed = await AIWorkspaceActionTools.execute(status, approvalGranted: false,
+        actionPolicy: policy, conversationID: conversationA, runtime: coordinator)
+    #expect(!allowed.isError)
+
+    let close = AIOutputItem(phase: .completed, apiType: "function_call", callID: "close-a",
+                             name: "terminal_close", arguments: "{\"session_id\":\"\(idA.uuidString)\"}")
+    let deniedClose = await AIWorkspaceActionTools.execute(close, approvalGranted: true,
+        actionPolicy: policy, conversationID: conversationB, runtime: coordinator)
+    #expect(deniedClose.isError)
+    #expect(coordinator.sessions(for: conversationA).map { $0.id } == [idA])
+    let allowedClose = await AIWorkspaceActionTools.execute(close, approvalGranted: true,
+        actionPolicy: policy, conversationID: conversationA, runtime: coordinator)
+    #expect(!allowedClose.isError)
+    #expect(coordinator.sessions(for: conversationA).isEmpty)
+}
+
+@Test @MainActor func aiWorkspaceDirectoryGrantIsOwnedRevocableAndWriteConfined() async throws {
+    let manager = FileManager.default
+    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    let desktop = manager.homeDirectoryForCurrentUser.standardizedFileURL
+        .resolvingSymlinksInPath().appendingPathComponent("Desktop", isDirectory: true)
+    guard manager.fileExists(atPath: desktop.path) else { return }
+    let root = desktop.appendingPathComponent("LimaDirectoryGrantTests-\(UUID().uuidString)", isDirectory: true)
+    let project = root.appendingPathComponent("project", isDirectory: true)
+    let sibling = root.appendingPathComponent("sibling", isDirectory: true)
+    try manager.createDirectory(at: project, withIntermediateDirectories: true)
+    try manager.createDirectory(at: sibling, withIntermediateDirectories: true)
+    defer { try? manager.removeItem(at: root) }
+
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
+    let suite = "AIDirectoryGrantPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    let owner = UUID()
+    let other = UUID()
+    let session = try coordinator.start(directory: "project", conversationID: owner)
+    let command = "printf inside > inside.txt; if printf escape > ../sibling/escaped.txt 2>/dev/null; then echo escape-allowed; else echo escape-denied; fi"
+    let call = AIOutputItem(phase: .completed, apiType: "function_call", callID: "directory-run",
+                            name: "terminal_run", arguments: """
+                            {"session_id":"\(session.id.uuidString)","command":"\(command)"}
+                            """)
+    #expect(AIWorkspaceActionTools.directoryGrantPath(
+        for: call, conversationID: owner, actionPolicy: policy, runtime: coordinator
+    ) == project.path)
+    #expect(AIWorkspaceActionTools.directoryGrantPath(
+        for: call, conversationID: other, actionPolicy: policy, runtime: coordinator
+    ) == nil)
+    let unapproved = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(unapproved.isError)
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+
+    let granted = try AIWorkspaceActionTools.grantDirectory(
+        for: call, conversationID: owner, expectedDirectory: project.path,
+        actionPolicy: policy, runtime: coordinator
+    )
+    #expect(granted.directoryGrantActive)
+    #expect(coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: other))
+    #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
+        try AIWorkspaceActionTools.grantDirectory(
+            for: call, conversationID: other, expectedDirectory: project.path,
+            actionPolicy: policy, runtime: coordinator
+        )
+    }
+    let launched = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(!launched.isError)
+    let finished = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
+    #expect(finished.state == .completed)
+    #expect(finished.output.contains("escape-denied"))
+    #expect(manager.fileExists(atPath: project.appendingPathComponent("inside.txt").path),
+            "Command output: \(finished.output)")
+    #expect(!manager.fileExists(atPath: sibling.appendingPathComponent("escaped.txt").path))
+
+    let startAgain = AIOutputItem(phase: .completed, apiType: "function_call", callID: "start-again",
+                                  name: "terminal_start", arguments: "{}")
+    let blockedStart = await AIWorkspaceActionTools.execute(
+        startAgain, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(blockedStart.isError)
+    let changeCall = AIOutputItem(phase: .completed, apiType: "function_call", callID: "change-dir",
+                                  name: "terminal_set_directory",
+                                  arguments: "{\"session_id\":\"\(session.id.uuidString)\",\"directory\":\"sibling\"}")
+    let blockedChange = await AIWorkspaceActionTools.execute(
+        changeCall, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(blockedChange.isError)
+
+    coordinator.revokeDirectoryGrants(for: other)
+    #expect(coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+    coordinator.revokeDirectoryGrants(for: owner)
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+    _ = try coordinator.grantDirectory(
+        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
+    )
+    coordinator.revokeDirectoryGrant(sessionID: session.id)
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+    let revoked = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(revoked.isError)
+    _ = try coordinator.grantDirectory(
+        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
+    )
+    _ = try coordinator.setDirectory(sessionID: session.id, relativeDirectory: "sibling")
+    _ = try coordinator.setDirectory(sessionID: session.id, relativeDirectory: "project")
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
+    _ = try coordinator.grantDirectory(
+        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
+    )
+    policy.setAccess(.disabled, for: .terminal)
+    #expect(!AIWorkspaceActionTools.hasApplicableDirectoryGrant(
+        for: call, conversationID: owner, actionPolicy: policy, runtime: coordinator
+    ))
+    let disabled = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(disabled.isError)
+    try coordinator.close(sessionID: session.id)
+    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
 }

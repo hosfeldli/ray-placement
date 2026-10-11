@@ -18,61 +18,160 @@ private func functionalModel(workspace: AIWorkspaceStore? = nil,
         taskRegistry: TaskRegistry(), workspaceStore: workspace ?? AIWorkspaceStore(fixtures: []))
 }
 
-@Test @MainActor func memoryToolsAreReadOnlyAndUserControlsRemainScoped() throws {
+private func contextJSON(_ result: LimaAIToolExecution) throws -> [String: Any] {
+    let data = try #require(result.output.data(using: .utf8))
+    return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+}
+
+@Test @MainActor func memoryChangesRequireSeparateApprovalAndRemainScoped() throws {
+    let suite = "MemoryChanges.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
     let store = AIWorkspaceStore(fixtures: [])
     let project = try #require(store.createProject(name: "Current"))
     let other = try #require(store.createProject(name: "Other"))
     let hidden = try #require(store.createMemory(title: "Hidden", content: "Other project only", projectID: other.id))
-    let model = functionalModel(
-        workspace: store,
-        projectID: project.id,
-        tools: ["memory_search", "memory_save", "memory_forget"]
-    )
+    let saveDefinition = try #require(LimaAIToolRegistry.definition(for: "memory_save"))
+    let forgetDefinition = try #require(LimaAIToolRegistry.definition(for: "memory_forget"))
+    let save = try contextCall("memory_save", [
+        "title": "Preference", "content": "Use concise summaries", "scope": "project"
+    ])
 
-    #expect(LimaAIToolRegistry.definition(for: "memory_save") == nil)
-    #expect(LimaAIToolRegistry.definition(for: "memory_forget") == nil)
-    #expect(LimaAIToolRegistry.enabledDefinitions(["memory_search", "memory_save", "memory_forget"]).map(\.id) == ["memory_search"])
-
-    let deniedSave = AIContextTools.memory(
-        try contextCall("memory_save", ["id": "", "title": "Preference", "content": "Use concise summaries", "scope": "project"]),
-        store: store,
-        projectID: project.id
-    )
-    #expect(deniedSave.isError)
+    #expect(policy.access(for: .savedMemory) == .askEveryTime)
+    #expect(policy.requiresApproval(for: saveDefinition))
+    policy.setAccess(.disabled, for: .savedMemory)
+    #expect(!policy.allows(saveDefinition))
+    #expect(!policy.permits(saveDefinition, approvalGranted: true))
+    #expect(AIContextTools.memory(save, store: store, projectID: project.id,
+                                  approvalGranted: true, actionPolicy: policy).isError)
     #expect(store.memories(for: project.id).isEmpty)
 
-    let memory = try #require(model.saveMemory(title: "Preference", content: "Use concise summaries"))
-    #expect(memory.projectID == project.id)
-    #expect(model.updateMemory(memory.id, title: "Preference", content: "Use detailed summaries"))
+    policy.setAccess(.askEveryTime, for: .savedMemory)
+    #expect(policy.requiresApproval(for: saveDefinition))
+    #expect(policy.requiresApproval(for: forgetDefinition))
+    #expect(AIContextTools.memory(save, store: store, projectID: project.id,
+                                  actionPolicy: policy).isError)
+    let saved = AIContextTools.memory(save, store: store, projectID: project.id,
+                                      approvalGranted: true, actionPolicy: policy)
+    #expect(!saved.isError)
+    let savedJSON = try contextJSON(saved)
+    let id = try #require(UUID(uuidString: savedJSON["id"] as? String ?? ""))
+    let initialRevision = try #require(savedJSON["revision"] as? String)
+    #expect(store.memories(for: project.id).first { $0.id == id }?.projectID == project.id)
+
+    let duplicate = AIContextTools.memory(save, store: store, projectID: project.id,
+                                           approvalGranted: true, actionPolicy: policy)
+    #expect(!duplicate.isError)
+    #expect(try contextJSON(duplicate)["duplicate"] as? Bool == true)
+    #expect(store.memories.count == 2)
+
     let searched = AIContextTools.memory(
         try contextCall("memory_search", ["query": "summaries"]),
-        store: store,
-        projectID: project.id
+        store: store, projectID: project.id
     )
-    #expect(searched.output.contains(memory.id.uuidString))
+    #expect(searched.output.contains(id.uuidString))
+    #expect(searched.output.contains(initialRevision))
     #expect(!searched.output.contains(hidden.id.uuidString))
+
+    let stale = AIContextTools.memory(
+        try contextCall("memory_update", ["id": id.uuidString, "expected_title": "Preference", "title": "Preference",
+                                          "content": "Use detailed summaries", "expected_revision": "stale"]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    )
+    #expect(stale.isError)
     #expect(AIContextTools.memory(
-        try contextCall("memory_forget", ["id": memory.id.uuidString]),
-        store: store,
-        projectID: project.id
+        try contextCall("memory_update", ["id": id.uuidString, "expected_title": "Wrong title", "title": "Preference",
+                                          "content": "Use detailed summaries", "expected_revision": initialRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
     ).isError)
-    #expect(!model.forgetMemory(hidden.id))
-    #expect(model.forgetMemory(memory.id))
-    #expect(store.memories.count == 1)
+    let updated = AIContextTools.memory(
+        try contextCall("memory_update", ["id": id.uuidString, "expected_title": "Preference", "title": "Preference",
+                                          "content": "Use detailed summaries", "expected_revision": initialRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    )
+    #expect(!updated.isError)
+    let updatedRevision = try #require(contextJSON(updated)["revision"] as? String)
+    #expect(updatedRevision != initialRevision)
+    #expect(store.memories.first { $0.id == id }?.content == "Use detailed summaries")
+
+    #expect(AIContextTools.memory(
+        try contextCall("memory_forget", ["id": id.uuidString, "expected_title": "Preference", "expected_revision": initialRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    ).isError)
+    #expect(AIContextTools.memory(
+        try contextCall("memory_forget", ["id": hidden.id.uuidString, "expected_title": "Hidden", "expected_revision": updatedRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    ).isError)
+    #expect(AIContextTools.memory(
+        try contextCall("memory_forget", ["id": id.uuidString, "expected_title": "Wrong title", "expected_revision": updatedRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    ).isError)
+    let forgotten = AIContextTools.memory(
+        try contextCall("memory_forget", ["id": id.uuidString, "expected_title": "Preference", "expected_revision": updatedRevision]),
+        store: store, projectID: project.id, approvalGranted: true, actionPolicy: policy
+    )
+    #expect(!forgotten.isError)
+    #expect(try contextJSON(forgotten)["previously_sent_context_remains"] as? Bool == true)
+    #expect(store.memories.map(\.id) == [hidden.id])
+
+    policy.setAccess(.disabled, for: .savedMemory)
+    #expect(AIContextTools.memory(save, store: store, projectID: project.id,
+                                  approvalGranted: true, actionPolicy: policy).isError)
 }
 
-@Test @MainActor func memoryReadRejectsMalformedAndMutationRequests() throws {
+@Test @MainActor func memoryRequestsRejectMalformedContentAndScope() throws {
+    let suite = "MemoryValidation.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .savedMemory)
     let store = AIWorkspaceStore(fixtures: [])
     #expect(AIContextTools.arguments(String(repeating: "x", count: 32_001)) == nil)
     #expect(AIContextTools.arguments("{\"query\":12}") == nil)
     for (name, args) in [
         ("memory_save", ["id": "", "title": "Bad", "content": "Valid", "scope": "global"]),
+        ("memory_save", ["title": "Empty", "content": " ", "scope": "global"]),
+        ("memory_save", ["title": "Project", "content": "Valid", "scope": "project"]),
+        ("memory_save", ["title": "Oversized", "content": String(repeating: "x", count: 2_001), "scope": "global"]),
+        ("memory_update", ["id": UUID().uuidString, "title": "Bad", "content": "Valid", "expected_revision": "wrong"]),
         ("memory_forget", ["id": UUID().uuidString])
     ] {
-        #expect(AIContextTools.memory(try contextCall(name, args), store: store, projectID: nil).isError)
+        #expect(AIContextTools.memory(try contextCall(name, args), store: store, projectID: nil,
+                                      approvalGranted: true, actionPolicy: policy).isError)
     }
-    #expect(AIContextTools.memory(try contextCall("memory_search", ["query": "", "extra": "no"]), store: store, projectID: nil).isError)
+    #expect(AIContextTools.memory(try contextCall("memory_search", ["query": "", "extra": "no"]),
+                                  store: store, projectID: nil).isError)
     #expect(store.memories.isEmpty)
+}
+
+@Test @MainActor func exactSpanFileEditRejectsAmbiguousUnsafeAndOversizedChanges() throws {
+    let definition = try #require(LimaAIToolRegistry.definition(for: "edit_text_file"))
+    #expect(definition.responsePayload != nil)
+    #expect(definition.actionCategory == .localFiles)
+    #expect(definition.risk.requiresApproval)
+    #expect(try AILocalComputerActionTools.uniqueTextReplacement(
+        in: "let title = \"Old\"\nlet count = 2\n",
+        oldText: "let title = \"Old\"", newText: "let title = \"New\""
+    ) == "let title = \"New\"\nlet count = 2\n")
+    #expect(try AILocalComputerActionTools.uniqueTextReplacement(
+        in: "prefix 🟦 suffix", oldText: "🟦", newText: ""
+    ) == "prefix  suffix")
+    #expect((try? AILocalComputerActionTools.uniqueTextReplacement(
+        in: "aaaa", oldText: "aa", newText: "b"
+    )) == nil) // overlapping repeated spans are ambiguous
+    #expect((try? AILocalComputerActionTools.uniqueTextReplacement(
+        in: "alpha", oldText: "missing", newText: "present"
+    )) == nil)
+    #expect((try? AILocalComputerActionTools.uniqueTextReplacement(
+        in: "alpha", oldText: "", newText: "present"
+    )) == nil)
+    #expect((try? AILocalComputerActionTools.uniqueTextReplacement(
+        in: "alpha", oldText: "alpha", newText: String(repeating: "x", count: 32 * 1_024 + 1)
+    )) == nil)
+    #expect((try? AILocalComputerActionTools.uniqueTextReplacement(
+        in: "alpha", oldText: "alpha", newText: "bad\u{0000}text"
+    )) == nil)
 }
 
 @Test @MainActor func memoryOffOmitsContextAndReviewActionsRemainScoped() throws {

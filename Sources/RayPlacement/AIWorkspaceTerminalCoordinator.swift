@@ -12,6 +12,7 @@ enum AIWorkspaceTerminalState: String, Equatable {
 
 struct AIWorkspaceTerminalSnapshot: Identifiable, Equatable {
     let id: UUID
+    let conversationID: UUID?
     let directory: String
     let isBoundedExternal: Bool
     let state: AIWorkspaceTerminalState
@@ -20,6 +21,9 @@ struct AIWorkspaceTerminalSnapshot: Identifiable, Equatable {
     let nextOutputByte: Int
     let exitStatus: Int?
     let outputTruncated: Bool
+    let directoryGrantActive: Bool
+
+    func belongs(to conversationID: UUID) -> Bool { self.conversationID == conversationID }
 
     var title: String {
         let prefix = isBoundedExternal ? "AI · External · " : "AI · "
@@ -106,6 +110,11 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
 
     @Published private(set) var sessions: [AIWorkspaceTerminalSnapshot] = []
 
+    func sessions(for conversationID: UUID?) -> [AIWorkspaceTerminalSnapshot] {
+        guard let conversationID else { return [] }
+        return sessions.filter { $0.belongs(to: conversationID) }
+    }
+
     // Tests supply an isolated, preexisting physical root. Production always
     // resolves the fixed Desktop workspace through workspaceRoot(create:).
     private let testRoot: URL?
@@ -125,9 +134,11 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
 
     private final class Session {
         let id: UUID
+        let conversationID: UUID?
         let root: URL
         let isBoundedExternal: Bool
         var directory: URL
+        var directoryGrantPath: String?
         var state: AIWorkspaceTerminalState = .idle
         var output = Data()
         var firstOutputByte = 0
@@ -139,8 +150,9 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         var taskID: UUID?
         var lastPublishedAt = 0.0
 
-        init(root: URL, directory: URL, isBoundedExternal: Bool = false) {
+        init(root: URL, directory: URL, isBoundedExternal: Bool = false, conversationID: UUID? = nil) {
             id = UUID()
+            self.conversationID = conversationID
             self.root = root
             self.directory = directory
             self.isBoundedExternal = isBoundedExternal
@@ -149,6 +161,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         var snapshot: AIWorkspaceTerminalSnapshot {
             AIWorkspaceTerminalSnapshot(
                 id: id,
+                conversationID: conversationID,
                 directory: directory.path,
                 isBoundedExternal: isBoundedExternal,
                 state: state,
@@ -156,7 +169,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                 firstOutputByte: firstOutputByte,
                 nextOutputByte: nextOutputByte,
                 exitStatus: exitStatus,
-                outputTruncated: outputTruncated
+                outputTruncated: outputTruncated,
+                directoryGrantActive: directoryGrantPath == directory.path
             )
         }
     }
@@ -178,6 +192,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         case notRunning
         case notWorkspaceSession
         case invalidCommand
+        case invalidWait
 
         var errorDescription: String? {
             switch self {
@@ -194,6 +209,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             case .notRunning: return "This session has no running command to interrupt."
             case .notWorkspaceSession: return "This visible bounded command session is not an AI Workspace session."
             case .invalidCommand: return "Provide one bounded UTF-8 command without binary control characters."
+            case .invalidWait: return "Wait between 1 and 20 seconds for a launched AI Workspace command."
             }
         }
     }
@@ -218,7 +234,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     }
 
     @discardableResult
-    func start(directory relativeDirectory: String? = nil, newWorkspace: String? = nil) throws -> AIWorkspaceTerminalSnapshot {
+    func start(directory relativeDirectory: String? = nil, newWorkspace: String? = nil,
+               conversationID: UUID? = nil) throws -> AIWorkspaceTerminalSnapshot {
         guard sessionOrder.count < Self.maximumSessions else { throw WorkspaceError.tooManySessions }
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
             throw WorkspaceError.unavailable
@@ -239,7 +256,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         } else {
             directory = try Self.validDirectory(relativeDirectory ?? ".", root: root)
         }
-        let session = Session(root: root, directory: directory)
+        let session = Session(root: root, directory: directory, conversationID: conversationID)
         sessionByID[session.id] = session
         sessionOrder.append(session.id)
         publish()
@@ -249,13 +266,15 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     /// The older, narrowly allowlisted command path remains available outside
     /// the sandboxed Workspace, but uses this same visible session/read model.
     /// Only AILocalCommandRunner may create or feed these one-shot sessions.
-    func startBoundedExternal(directory: URL, onCancel: @escaping () -> Void) throws -> AIWorkspaceTerminalSnapshot {
+    func startBoundedExternal(directory: URL, conversationID: UUID? = nil,
+                              onCancel: @escaping () -> Void) throws -> AIWorkspaceTerminalSnapshot {
         guard sessionOrder.count < Self.maximumSessions else { throw WorkspaceError.tooManySessions }
         guard sessionByID.values.filter({ $0.state == .running }).count < Self.maximumConcurrentCommands else {
             throw WorkspaceError.tooManyCommands
         }
         guard try Self.directoryExistsWithoutSymlink(directory) else { throw WorkspaceError.invalidDirectory }
-        let session = Session(root: directory, directory: directory, isBoundedExternal: true)
+        let session = Session(root: directory, directory: directory, isBoundedExternal: true,
+                              conversationID: conversationID)
         session.state = .running
         session.externalCancel = onCancel
         append(Data("\nLima AI · Approved bounded developer command\n".utf8), to: session)
@@ -289,11 +308,69 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         publish(session)
     }
 
+    /// A grant is ephemeral, bound to one conversation, one session, and the
+    /// exact physical working directory reviewed by the user. It is never
+    /// persisted or inherited by another session.
+    @discardableResult
+    func grantDirectory(sessionID: UUID, conversationID: UUID,
+                        expectedDirectory: String) throws -> AIWorkspaceTerminalSnapshot {
+        let session = try find(sessionID)
+        guard !session.isBoundedExternal, session.conversationID == conversationID else {
+            throw WorkspaceError.notWorkspaceSession
+        }
+        guard session.state != .running else { throw WorkspaceError.alreadyRunning }
+        guard try sessionRoot(create: false).path == session.root.path,
+              session.directory.path == expectedDirectory else { throw WorkspaceError.invalidDirectory }
+        let relative = session.directory.path == session.root.path
+            ? "." : String(session.directory.path.dropFirst(session.root.path.count + 1))
+        session.directory = try Self.validDirectory(relative, root: session.root)
+        guard session.directory.path == expectedDirectory else { throw WorkspaceError.invalidDirectory }
+        session.directoryGrantPath = expectedDirectory
+        publish(session)
+        return session.snapshot
+    }
+
+    func hasDirectoryGrant(sessionID: UUID, conversationID: UUID) -> Bool {
+        guard let session = sessionByID[sessionID], !session.isBoundedExternal,
+              session.conversationID == conversationID,
+              session.directoryGrantPath == session.directory.path,
+              (try? sessionRoot(create: false).path) == session.root.path else { return false }
+        let relative = session.directory.path == session.root.path
+            ? "." : String(session.directory.path.dropFirst(session.root.path.count + 1))
+        return (try? Self.validDirectory(relative, root: session.root).path) == session.directory.path
+    }
+
+    func revokeDirectoryGrant(sessionID: UUID) {
+        guard let session = sessionByID[sessionID], session.directoryGrantPath != nil else { return }
+        session.directoryGrantPath = nil
+        publish(session)
+    }
+
+    func revokeDirectoryGrants(for conversationID: UUID) {
+        var changed = false
+        for session in sessionByID.values where session.conversationID == conversationID && session.directoryGrantPath != nil {
+            session.directoryGrantPath = nil
+            changed = true
+        }
+        if changed { publish() }
+    }
+
+    func revokeAllDirectoryGrants() {
+        var changed = false
+        for session in sessionByID.values where session.directoryGrantPath != nil {
+            session.directoryGrantPath = nil
+            changed = true
+        }
+        if changed { publish() }
+    }
+
     func setDirectory(sessionID: UUID, relativeDirectory: String) throws -> AIWorkspaceTerminalSnapshot {
         let session = try find(sessionID)
         guard !session.isBoundedExternal else { throw WorkspaceError.notWorkspaceSession }
         guard session.state != .running else { throw WorkspaceError.alreadyRunning }
-        session.directory = try Self.validDirectory(relativeDirectory, root: session.root)
+        let directory = try Self.validDirectory(relativeDirectory, root: session.root)
+        if directory.path != session.directory.path { session.directoryGrantPath = nil }
+        session.directory = directory
         publish()
         return session.snapshot
     }
@@ -328,6 +405,29 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         ]
     }
 
+    /// Wait for the command's terminal state without blocking the main actor.
+    /// This is an observation only: it neither launches nor extends a command.
+    func wait(sessionID: UUID, from requestedByte: Int?, maxWaitSeconds: Int) async throws -> [String: Any] {
+        guard (1...20).contains(maxWaitSeconds) else { throw WorkspaceError.invalidWait }
+        let initial = try find(sessionID)
+        guard !initial.isBoundedExternal else { throw WorkspaceError.notWorkspaceSession }
+        guard initial.state != .idle else { throw WorkspaceError.notRunning }
+
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(maxWaitSeconds))
+        while try status(sessionID: sessionID).state == .running && clock.now < deadline {
+            try Task.checkCancellation()
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        try Task.checkCancellation()
+        let snapshot = try status(sessionID: sessionID)
+        var result = try read(sessionID: sessionID, from: requestedByte)
+        result["verified_success"] = snapshot.state == .completed && snapshot.exitStatus == 0
+        result["command_finished"] = snapshot.state != .running
+        result["wait_expired"] = snapshot.state == .running
+        return result
+    }
+
     @discardableResult
     func run(sessionID: UUID, command: String, timeoutSeconds: Int) throws -> AIWorkspaceTerminalSnapshot {
         let session = try find(sessionID)
@@ -350,7 +450,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             ? "."
             : String(session.directory.path.dropFirst(session.root.path.count + 1))
         session.directory = try Self.validDirectory(relativeDirectory, root: session.root)
-        let profile = Self.sandboxProfile(root: session.root)
+        // Each command, including Allow Once, can write only in the current
+        // directory. A parent Workspace root must not silently enlarge a
+        // project-directory grant.
+        let profile = Self.sandboxProfile(root: session.directory)
         let box = AIWorkspaceProcessBox()
         session.box = box
         session.state = .running
@@ -368,7 +471,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         publish()
 
         let directory = session.directory
-        let root = session.root
+        let root = session.directory
         Task { [weak self] in
             let result = await Self.execute(
                 command: command,

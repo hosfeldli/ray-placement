@@ -44,25 +44,27 @@ enum AppGlassStyle: String, CaseIterable, Identifiable {
         switch self {
         case .system: return 0.62
         case .subtle: return 0.88
-        case .standard, .prism: return 0.58
+        case .standard: return 0.58
+        case .prism: return 0.48
         case .clear: return 0.42
-        case .deepPrism: return 0.48
+        case .deepPrism: return 0.43
         }
     }
     var materialOpacity: Double {
         switch self {
         case .system: return 0.62
         case .subtle: return 0.36
-        case .standard, .prism: return 0.68
+        case .standard: return 0.68
+        case .prism: return 0.72
         case .clear: return 0.84
-        case .deepPrism: return 0.78
+        case .deepPrism: return 0.80
         }
     }
-    /// Prismatic color is reserved for structural glass edges, not content.
+    /// Prismatic color is reserved for structural glass, never content rows.
     var prismaticEdgeOpacity: Double {
         switch self {
-        case .prism: return 0.10
-        case .deepPrism: return 0.20
+        case .prism: return 0.28
+        case .deepPrism: return 0.40
         case .system, .subtle, .standard, .clear: return 0
         }
     }

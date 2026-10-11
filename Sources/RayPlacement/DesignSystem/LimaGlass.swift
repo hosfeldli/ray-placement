@@ -1,6 +1,19 @@
 import AppKit
 import SwiftUI
 
+/// Test-only injection lets the offscreen audit inspect the opaque fallback
+/// without changing the macOS accessibility setting for the user's session.
+private struct LimaTestReduceTransparencyKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    var limaTestReduceTransparency: Bool {
+        get { self[LimaTestReduceTransparencyKey.self] }
+        set { self[LimaTestReduceTransparencyKey.self] = newValue }
+    }
+}
+
 /// Glass belongs to structural navigation and controls, never repeated content rows.
 enum LimaGlassRegion {
     case toolbar
@@ -16,6 +29,17 @@ enum LimaGlassRegion {
         case .hud: return .hudWindow
         }
     }
+
+    /// Distinct structural depths use the same single material layer. The
+    /// composer and HUD lead, while the toolbar remains deliberately quieter.
+    var prismStrength: Double {
+        switch self {
+        case .toolbar: return 0.72
+        case .sidebar: return 0.94
+        case .composer: return 1.36
+        case .hud: return 1.20
+        }
+    }
 }
 
 /// One material view per structural region. The current toolchain's macOS 15 SDK
@@ -24,6 +48,7 @@ enum LimaGlassRegion {
 struct LimaGlassContainer<Content: View>: View {
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
     let region: LimaGlassRegion
     let cornerRadius: CGFloat
@@ -38,14 +63,30 @@ struct LimaGlassContainer<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+        let prismOpacity = min(0.65, settings.glassStyle.prismaticEdgeOpacity * region.prismStrength)
+        let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
         content
             .background {
                 ZStack {
                     LimaTheme.surfacePrimary
-                        .opacity(reduceTransparency ? 1 : settings.glassStyle.baseOpacity)
-                    if !reduceTransparency {
+                        .opacity(opaque ? 1 : settings.glassStyle.baseOpacity)
+                    if !opaque {
                         VisualEffectView(material: region.fallbackMaterial, blendingMode: .withinWindow)
                             .opacity(settings.glassStyle.materialOpacity)
+                        // A static spectral wash makes the structural material legible
+                        // even against a plain desktop, without another blur layer.
+                        if prismOpacity > 0 {
+                            LinearGradient(
+                                colors: [
+                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(prismOpacity * 0.50),
+                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(prismOpacity * 0.24),
+                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(prismOpacity * 0.42)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                            .allowsHitTesting(false)
+                        }
                     }
                 }
                 .clipShape(shape)
@@ -54,13 +95,13 @@ struct LimaGlassContainer<Content: View>: View {
             .overlay {
                 ZStack {
                     shape.strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
-                    if !reduceTransparency, settings.glassStyle.prismaticEdgeOpacity > 0 {
+                    if !opaque, prismOpacity > 0 {
                         shape.strokeBorder(
                             LinearGradient(
                                 colors: [
-                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(settings.glassStyle.prismaticEdgeOpacity),
-                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(settings.glassStyle.prismaticEdgeOpacity),
-                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(settings.glassStyle.prismaticEdgeOpacity * 0.72)
+                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(prismOpacity),
+                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(prismOpacity),
+                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(prismOpacity * 0.72)
                                 ],
                                 startPoint: .topLeading,
                                 endPoint: .bottomTrailing

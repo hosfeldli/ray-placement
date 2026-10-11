@@ -3,20 +3,21 @@ import RayPlacementCore
 
 /// Opaque AI-owned command sessions are visible in the Terminal workspace.
 /// Starting, running, changing directory, and interrupting use the existing
-/// Terminal action category and Lima approval flow. Reading an existing
+/// Terminal action category and Lima approval flow. A user may additionally
+/// grant repeated runs in one session's current sandboxed directory. Reading an existing
 /// session only returns output from that AI-owned session.
 @MainActor
 enum AIWorkspaceActionTools {
-    static let actionIDs: Set<String> = [
+    nonisolated static let actionIDs: Set<String> = [
         "terminal_start", "terminal_run", "terminal_set_directory", "terminal_interrupt", "terminal_close"
     ]
-    static let readIDs: Set<String> = ["terminal_status", "terminal_read"]
-    static let ids = actionIDs.union(readIDs)
+    nonisolated static let readIDs: Set<String> = ["terminal_status", "terminal_read", "terminal_wait"]
+    nonisolated static let ids = actionIDs.union(readIDs)
 
     static let definitions: [LimaAIToolDefinition] = [
         definition(
             "terminal_start",
-            "Start an AI-owned terminal session in the dedicated Lima Workspace. Optionally create a new named project workspace and operate in it immediately, or select an existing relative directory. Commands cannot write outside the workspace root or read unrelated home files, and network access is not granted. The session is visible in Lima's Terminal workspace.",
+            "Start an AI-owned terminal session in the dedicated Lima Workspace. Optionally create a new named project workspace and operate in it immediately, or select an existing relative directory. Commands cannot write outside the session's current directory or read unrelated home files, and network access is not granted. The session is visible in Lima's Terminal workspace.",
             properties: [
                 "directory": ["type": "string", "description": "Optional existing relative directory inside the Lima Workspace. Omit for the root. Do not combine with new_workspace."],
                 "new_workspace": ["type": "string", "description": "Optional new, visible project folder name to create under the Lima Workspace. Do not combine with directory."]
@@ -26,7 +27,7 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_run",
-            "Start one approved command in an AI Workspace session. The command runs under the workspace sandbox with no network access; output streams to the visible Terminal workspace. This tool returns immediately; poll terminal_read or terminal_status for completion and exit status. Do not put credentials in commands.",
+            "Start a command in an AI Workspace session after Allow Once or under a live, revocable grant for this session's unchanged working directory. The command runs under a no-network sandbox with writes confined to that directory; output streams to the visible Terminal workspace. This tool returns immediately; use terminal_wait to observe completion and verified exit status without repeated polling. Do not put credentials in commands.",
             properties: [
                 "session_id": ["type": "string", "description": "Opaque ID returned by terminal_start."],
                 "command": ["type": "string", "description": "One command, at most 4096 UTF-8 bytes."],
@@ -48,6 +49,17 @@ enum AIWorkspaceActionTools {
             properties: [
                 "session_id": ["type": "string"],
                 "from_byte": ["type": "integer", "minimum": 0]
+            ],
+            required: ["session_id"],
+            action: false
+        ),
+        definition(
+            "terminal_wait",
+            "Wait up to 20 seconds for an already launched AI Workspace command, then read up to 32 KB of its output and return verified exit status. This does not execute a command or extend its runtime; if still running, call again with next_byte. Only AI Workspace sessions are readable.",
+            properties: [
+                "session_id": ["type": "string"],
+                "from_byte": ["type": "integer", "minimum": 0],
+                "max_wait_seconds": ["type": "integer", "minimum": 1, "maximum": 20]
             ],
             required: ["session_id"],
             action: false
@@ -100,10 +112,80 @@ enum AIWorkspaceActionTools {
         )
     }
 
-    static func execute(_ call: AIOutputItem, approvalGranted: Bool) -> LimaAIToolExecution {
-        guard let definition = definitions.first(where: { $0.name == call.name }),
-              AIComputerActionPolicy.shared.permits(definition, approvalGranted: approvalGranted) else {
-            return .json(["error": "This AI Workspace action is disabled or still needs your approval."], isError: true)
+    /// Only a well-formed run against an owned, sandboxed session can offer or
+    /// consume a directory grant. The grant never applies to the older external
+    /// command tool, session creation, directory changes, or another conversation.
+    private static func runSessionID(_ call: AIOutputItem) -> UUID? {
+        guard call.name == "terminal_run", let raw = call.arguments,
+              raw.utf8.count <= 8_192, let data = raw.data(using: .utf8),
+              let arguments = try? JSONDecoder().decode([String: JSONValue].self, from: data),
+              Set(arguments.keys).isSubset(of: ["session_id", "command", "timeout_seconds"]),
+              case .string(let rawID)? = arguments["session_id"],
+              case .string(let command)? = arguments["command"],
+              !command.isEmpty, command.utf8.count <= 4_096,
+              !command.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
+              }) else { return nil }
+        switch arguments["timeout_seconds"] {
+        case .none, .some(.null): break
+        case .some(.number(let seconds)) where seconds.isFinite &&
+            seconds.rounded() == seconds && (1...900).contains(seconds): break
+        default: return nil
+        }
+        return UUID(uuidString: rawID)
+    }
+
+    static func directoryGrantPath(for call: AIOutputItem, conversationID: UUID,
+                                   actionPolicy: AIComputerActionPolicy? = nil,
+                                   runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) -> String? {
+        let policy = actionPolicy ?? .shared
+        let runtime = suppliedRuntime ?? .shared
+        guard let definition = definitions.first(where: { $0.id == "terminal_run" }),
+              policy.allows(definition), let id = runSessionID(call),
+              let snapshot = try? runtime.status(sessionID: id),
+              !snapshot.isBoundedExternal, snapshot.belongs(to: conversationID) else { return nil }
+        return snapshot.directory
+    }
+
+    static func hasApplicableDirectoryGrant(for call: AIOutputItem, conversationID: UUID,
+                                            actionPolicy: AIComputerActionPolicy? = nil,
+                                            runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) -> Bool {
+        let runtime = suppliedRuntime ?? .shared
+        guard directoryGrantPath(for: call, conversationID: conversationID,
+                                 actionPolicy: actionPolicy, runtime: runtime) != nil,
+              let id = runSessionID(call) else { return false }
+        return runtime.hasDirectoryGrant(sessionID: id, conversationID: conversationID)
+    }
+
+    @discardableResult
+    static func grantDirectory(for call: AIOutputItem, conversationID: UUID,
+                               expectedDirectory: String,
+                               actionPolicy: AIComputerActionPolicy? = nil,
+                               runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) throws -> AIWorkspaceTerminalSnapshot {
+        let runtime = suppliedRuntime ?? .shared
+        guard directoryGrantPath(for: call, conversationID: conversationID,
+                                 actionPolicy: actionPolicy, runtime: runtime) == expectedDirectory,
+              let id = runSessionID(call) else {
+            throw AIWorkspaceTerminalCoordinator.WorkspaceError.invalidDirectory
+        }
+        return try runtime.grantDirectory(sessionID: id, conversationID: conversationID,
+                                          expectedDirectory: expectedDirectory)
+    }
+
+    static func execute(
+        _ call: AIOutputItem,
+        approvalGranted: Bool,
+        actionPolicy: AIComputerActionPolicy? = nil,
+        conversationID: UUID? = nil,
+        runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil
+    ) async -> LimaAIToolExecution {
+        let policy = actionPolicy ?? .shared
+        let runtime = suppliedRuntime ?? .shared
+        guard let definition = definitions.first(where: { $0.name == call.name }) else {
+            return .json(["error": "Unknown AI Workspace action."], isError: true)
+        }
+        guard let conversationID else {
+            return .json(["error": "This AI Workspace action needs an originating conversation."], isError: true)
         }
         guard let raw = call.arguments, raw.utf8.count <= 8_192,
               let data = raw.data(using: .utf8),
@@ -111,15 +193,24 @@ enum AIWorkspaceActionTools {
               Set(arguments.keys).isSubset(of: Set((definition.parameters["properties"] as? [String: Any] ?? [:]).keys)) else {
             return .json(["error": "Invalid AI Workspace arguments."], isError: true)
         }
-        let runtime = AIWorkspaceTerminalCoordinator.shared
+        let directoryGranted = hasApplicableDirectoryGrant(
+            for: call, conversationID: conversationID, actionPolicy: policy, runtime: runtime
+        )
+        guard policy.permits(definition, approvalGranted: approvalGranted || directoryGranted) else {
+            return .json(["error": "This AI Workspace action is disabled or still needs your approval."], isError: true)
+        }
         do {
             // The compatibility command already returned its bounded, sanitized
             // result. Its visible output is for the user, not a second AI read
             // channel that could bypass the older 64 KB result limit.
             if definition.id != "terminal_start" {
                 let id = try sessionID(arguments)
-                guard try !runtime.status(sessionID: id).isBoundedExternal else {
+                let existing = try runtime.status(sessionID: id)
+                guard !existing.isBoundedExternal else {
                     throw AIWorkspaceTerminalCoordinator.WorkspaceError.notWorkspaceSession
+                }
+                if !existing.belongs(to: conversationID) {
+                    return .json(["error": "This AI Workspace session belongs to another conversation."], isError: true)
                 }
             }
             switch definition.id {
@@ -136,7 +227,8 @@ enum AIWorkspaceActionTools {
                 case .none, .some(.null): newWorkspace = nil
                 default: return .json(["error": "new_workspace must be a new project folder name."], isError: true)
                 }
-                let snapshot = try runtime.start(directory: directory, newWorkspace: newWorkspace)
+                let snapshot = try runtime.start(directory: directory, newWorkspace: newWorkspace,
+                                                 conversationID: conversationID)
                 return .json(payload(snapshot, root: true))
 
             case "terminal_run":
@@ -156,7 +248,7 @@ enum AIWorkspaceActionTools {
                 return .json(payload(snapshot).merging([
                     "launched": true,
                     "verified_success": false,
-                    "next_step": "Poll terminal_read or terminal_status until the command finishes."
+                    "next_step": "Use terminal_wait to read output and verify the command's exit status."
                 ] as [String: Any], uniquingKeysWith: { _, new in new }))
 
             case "terminal_status":
@@ -172,6 +264,27 @@ enum AIWorkspaceActionTools {
                     return .json(["error": "from_byte must be a nonnegative integer."], isError: true)
                 }
                 return .json(try runtime.read(sessionID: sessionID(arguments), from: offset))
+
+            case "terminal_wait":
+                let offset: Int?
+                switch arguments["from_byte"] {
+                case .none, .some(.null): offset = nil
+                case .some(.number(let value)) where value.isFinite && value.rounded() == value && value >= 0 && value <= Double(Int.max):
+                    offset = Int(value)
+                default:
+                    return .json(["error": "from_byte must be a nonnegative integer."], isError: true)
+                }
+                let maxWait: Int
+                switch arguments["max_wait_seconds"] {
+                case .none, .some(.null): maxWait = 20
+                case .some(.number(let value)) where value.isFinite && value.rounded() == value && (1...20).contains(value):
+                    maxWait = Int(value)
+                default:
+                    return .json(["error": "max_wait_seconds must be an integer from 1 to 20."], isError: true)
+                }
+                return .json(try await runtime.wait(
+                    sessionID: sessionID(arguments), from: offset, maxWaitSeconds: maxWait
+                ))
 
             case "terminal_interrupt":
                 let snapshot = try runtime.interrupt(sessionID: sessionID(arguments))
@@ -197,6 +310,8 @@ enum AIWorkspaceActionTools {
             default:
                 return .json(["error": "Unknown AI Workspace tool."], isError: true)
             }
+        } catch is CancellationError {
+            return .json(["error": "AI Workspace observation was cancelled."], isError: true)
         } catch {
             return .json(["error": error.localizedDescription], isError: true)
         }

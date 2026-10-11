@@ -8,13 +8,12 @@ struct AIProviderSettingsView: View {
     @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @ObservedObject private var toolStore = LimaAIToolStore.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
-    @ObservedObject private var webSearchCredentials = PublicWebSearchCredentialStore.shared
+    @ObservedObject private var legacyWebSearchCredentials = LegacyWebSearchCredentialStore.shared
     @State private var apiKey = ""
-    @State private var webSearchAPIKey = ""
-    @State private var webSearchMessage: String?
     @State private var customModel = ""
     @State private var endpoint = ""
     @State private var message: String?
+    @State private var webSearchRemovalMessage: String?
     @State private var confirmRemove = false
     @State private var confirmBroadBrowserGrants = false
     @State private var confirmInteractionJournal = false
@@ -65,42 +64,24 @@ struct AIProviderSettingsView: View {
                 Text("Applies to new AI runs; the run keeps its captured limits. Defaults are 4 simultaneous agents and 12 total children. Recursive delegation stays disabled, with an internal maximum of 32 children per run.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
-            Section("General web search") {
-                Text("Configure Brave Search for public web queries. Search terms are sent to Brave when the AI web-search tool runs. This key is stored separately in macOS Keychain and is never shown in Lima.")
+            Section("Browser research") {
+                Text("AI research uses Browser Bridge tabs only. Search and source pages must be available in a supported browser with the relevant site grants. Browser navigation follows its separate action setting; Lima does not use a background web-search provider or fetch pages outside the browser.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                SecureField(webSearchCredentials.isConfigured ? "Replacement Brave Search API key" : "Brave Search API key",
-                            text: $webSearchAPIKey)
-                HStack {
-                    Button("Save Key") {
-                        do {
-                            try webSearchCredentials.save(webSearchAPIKey)
-                            webSearchAPIKey = ""
-                            webSearchMessage = nil
-                        } catch {
-                            webSearchMessage = error.localizedDescription
-                        }
-                    }
-                    .disabled(webSearchAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Remove Key", role: .destructive) {
-                        do {
-                            try webSearchCredentials.remove()
-                            webSearchAPIKey = ""
-                            webSearchMessage = nil
-                        } catch {
-                            webSearchMessage = error.localizedDescription
-                        }
-                    }
-                    .disabled(!webSearchCredentials.isConfigured)
-                    Spacer()
-                    Label(webSearchCredentials.isConfigured ? "Stored in Keychain" : "Not configured",
-                          systemImage: webSearchCredentials.isConfigured ? "checkmark.circle.fill" : "magnifyingglass")
+                if legacyWebSearchCredentials.isConfigured {
+                    Text("A Brave Search key saved for the retired tool remains in Keychain. Lima no longer uses it.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    Button("Remove Saved Brave Key", role: .destructive) {
+                        do {
+                            try legacyWebSearchCredentials.remove()
+                            webSearchRemovalMessage = nil
+                        } catch {
+                            webSearchRemovalMessage = error.localizedDescription
+                        }
+                    }
                 }
-                if let webSearchMessage {
-                    Text(webSearchMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                if let webSearchRemovalMessage {
+                    Text(webSearchRemovalMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Available when Tool Access permits web research. If no valid provider key is configured, Lima reports the provider as unavailable rather than claiming there were zero results. Alternatively, Browser Search can open a Google results tab if Browser navigation is enabled and that site has a Browser Bridge grant.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Experimental browser access") {
                 Toggle("Allow broad HTTPS browser grants", isOn: Binding(
@@ -120,8 +101,13 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Computer actions") {
-                Text("Off by default. Set Terminal and code to Ask every time to expose approved AI Workspace sessions and the older bounded command tool. AI Workspace commands run under ~/Desktop/Lima Workspace with no network access and no unrelated home reads. Browser Search still needs Browser navigation and a site grant. Timeouts, output limits, approvals, and Activity journaling apply.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                VStack(alignment: .leading, spacing: 8) {
+                    Label("Terminal and code start Off. Supervised AI Workspace sessions run in ~/Desktop/Lima Workspace, sandboxed without network or unrelated home access.", systemImage: "terminal")
+                    Label("Saved memory starts at Ask every time. AI may propose stable, user-supplied context, but each save, revision, or deletion needs your approval.", systemImage: "brain.head.profile")
+                    Label("Browser Search still needs Browser navigation and a site grant. Timeouts, output limits, and Activity journaling apply.", systemImage: "globe")
+                }
+                .font(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
                 ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
                     Picker(category.title, selection: Binding(
                         get: { actionPolicy.access(for: category) },
@@ -144,7 +130,7 @@ struct AIProviderSettingsView: View {
                     Text("Browser click, type, and submit are hidden until you enable Browser AI interaction in Advanced → Experimental Features.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Browser navigation, click, and type can run without repeated Lima prompts only when their category is set to Allow with journal. Click and type still need an exact-site interaction grant in the companion. Form submission, local file writes, and terminal or code commands always ask. Browser interaction requires a compatible signed companion.")
+                Text("Browser navigation, click, and type can run without repeated Lima prompts only when their category is set to Allow with journal. Click and type still need an exact-site interaction grant in the companion. Form submission, saved-memory changes, local file writes, and the older unsandboxed code command always ask. AI Workspace commands ask unless you explicitly allow repeated runs in one session's current directory; changing directories or closing the session ends that grant. Browser interaction requires a compatible signed companion.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     .alert("Allow browser clicks and typing without repeated Lima prompts?", isPresented: $confirmInteractionJournal) {
                         Button("Cancel", role: .cancel) {}
@@ -152,7 +138,7 @@ struct AIProviderSettingsView: View {
                     } message: {
                         Text("On sites where you separately enabled Always allow interactions in Zen or Firefox, Lima may click or type requested content without another prompt. Each action is recorded in Activity. Form submission still asks in Lima, and you can return to Ask every time or Off here.")
                     }
-                Text("All AI terminal commands now appear in Terminal. AI Workspace sessions use a default-deny macOS sandbox: writes stay in ~/Desktop/Lima Workspace, unrelated home reads and network access are denied. The older Run Terminal Command compatibility tool also streams to a visible one-shot session, but can run approved project code outside that workspace as your macOS user without sandboxing. Review every command; a timeout may not stop child processes started by code.")
+                Text("All AI terminal commands appear in Terminal. AI Workspace commands use a no-network macOS sandbox with writes confined to the session's current working directory and unrelated home reads denied. You may choose Allow in Directory for one session, then revoke it from AI Terminal; switching directories, closing the session, or turning Terminal Off also ends it. The older Run Terminal Command compatibility tool remains unsandboxed and always asks per command. A timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Conversation configuration") {
@@ -260,7 +246,7 @@ struct AIProviderSettingsView: View {
         .onChange(of: model.provider) { _ in apiKey = ""; message = nil; loadConfiguration() }
         .onChange(of: model.model) { _ in loadConfiguration() }
         .onChange(of: model.selectedConversationID) { _ in apiKey = ""; message = nil; loadConfiguration() }
-        .onDisappear { apiKey = ""; webSearchAPIKey = "" } // Navigation never cancels provider checks.
+        .onDisappear { apiKey = "" } // Navigation never cancels provider checks.
         .alert("Remove shared provider key?", isPresented: $confirmRemove) {
             Button("Cancel", role: .cancel) {}
             Button("Remove", role: .destructive) {

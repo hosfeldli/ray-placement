@@ -424,6 +424,10 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
     var displayTitle: String {
         switch title {
         case "memory_search": return "Recall memory"
+        case "memory_save": return "Save memory"
+        case "memory_update": return "Revise memory"
+        case "memory_forget": return "Forget memory"
+        case "edit_text_file": return "Edit a file"
         case "agent_models": return "Choose a subagent model"
         case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
@@ -431,10 +435,17 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "read_note": return "Read Note"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
-        case "search_web": return "Search the web"
-        case "read_web": return "Read a web page"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
+        case "lima_capabilities": return "Check tool capabilities"
+        case "terminal_start": return "Start AI Workspace"
+        case "terminal_run": return "Run Workspace command"
+        case "terminal_status": return "Check Workspace status"
+        case "terminal_read": return "Read Workspace output"
+        case "terminal_wait": return "Wait for Workspace command"
+        case "terminal_interrupt": return "Interrupt Workspace command"
+        case "terminal_set_directory": return "Change Workspace directory"
+        case "terminal_close": return "Close AI Workspace session"
         default: return title.replacingOccurrences(of: "_", with: " ")
         }
     }
@@ -453,6 +464,8 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     var serverLabel: String
     var toolName: String
     var arguments: String?
+    /// Set only for a reviewed, owned AI Workspace terminal_run request.
+    var directoryGrantPath: String?
     var decision: AIToolApprovalDecision
     var createdAt: Date
 
@@ -463,6 +476,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         serverLabel: String,
         toolName: String,
         arguments: String? = nil,
+        directoryGrantPath: String? = nil,
         decision: AIToolApprovalDecision = .pending,
         createdAt: Date = Date()
     ) {
@@ -472,6 +486,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         self.serverLabel = serverLabel
         self.toolName = toolName
         self.arguments = arguments
+        self.directoryGrantPath = directoryGrantPath
         self.decision = decision
         self.createdAt = createdAt
     }
@@ -734,8 +749,8 @@ private struct BuiltinReadOnlyExtensionToolAdapter: ExtensionToolHostAdapter {
             guard let path = string("path"), !path.isEmpty else { throw ExtensionToolAdapterError.invalidArguments }
             return LimaAIToolRegistry.jsonValue(from: LimaAIToolRegistry.readTextFile(at: path))
         case .readPublicWeb:
-            guard let url = string("url"), !url.isEmpty else { throw ExtensionToolAdapterError.invalidArguments }
-            return LimaAIToolRegistry.jsonValue(from: await LimaAIToolRegistry.readPublicWebPage(url))
+            // Retained only to decode older manifests. Direct network reads are retired.
+            throw ExtensionToolAdapterError.unavailable
         case .transformText:
             guard let text = string("text"), text.count <= 100_000,
                   let operation = string("operation") else { throw ExtensionToolAdapterError.invalidArguments }
@@ -802,8 +817,8 @@ enum AIChatConfigurationCatalog {
         AIChatSkillConfiguration(
             id: "skill.research",
             name: "Research",
-            instructions: "Use available public read-only sources, distinguish evidence from uncertainty, and provide source URLs when available.",
-            preferredToolIDs: ["search_web", "read_web"],
+            instructions: "Research through granted Browser Bridge tabs only. Check browser capabilities and readiness, inspect actual page content, distinguish snippets from opened sources, and cite URLs actually returned. Report unavailable grants or login walls without bypassing them.",
+            preferredToolIDs: ["browser_capabilities", "browser_search_web", "browser_read", "browser_scan"],
             recommendedProviderID: nil,
             recommendedModelID: nil
         )
@@ -835,12 +850,12 @@ enum AIChatConfigurationCatalog {
         AIChatAgentConfiguration(
             id: "agent.research",
             name: "Research",
-            instructions: "Answer with evidence from public, read-only sources and state uncertainty plainly.",
+            instructions: "Answer from granted Browser Bridge pages and state uncertainty or access limits plainly.",
             providerID: nil,
             modelID: nil,
             reasoningEffort: .medium,
             skillIDs: ["skill.research"],
-            toolIDs: ["search_web", "read_web"],
+            toolIDs: ["browser_capabilities", "browser_search_web", "browser_read", "browser_scan"],
             contextDefaults: []
         )
     ]
@@ -913,7 +928,9 @@ enum ExtensionToolHostAdapterRegistry {
     }()
 
     static func adapter(for id: String?) -> (any ExtensionToolHostAdapter)? {
-        guard let id, ExtensionToolHostAdapterID(rawValue: id) != nil else { return nil }
+        guard let id,
+              id != ExtensionToolHostAdapterID.readPublicWeb.rawValue,
+              ExtensionToolHostAdapterID(rawValue: id) != nil else { return nil }
         return adapters[id]
     }
 
@@ -1514,7 +1531,6 @@ final class LimaScreenContextStore {
 enum LimaAIToolRegistry {
     private static let fileSearch = FileSearchService()
     private static let maximumTextFileBytes = 96 * 1_024
-    private static let maximumWebPageBytes = 1 * 1_024 * 1_024
 
     static let definitions: [LimaAIToolDefinition] = [
         LimaAIToolDefinition(
@@ -1592,30 +1608,6 @@ enum LimaAIToolRegistry {
             risk: .read
         ),
         LimaAIToolDefinition(
-            id: "search_web",
-            name: "search_web",
-            description: "Search through an explicitly configured general web-search provider and return title, URL, snippet, source, and status. Distinguishes no_results from provider_unavailable, request_failed, and unsupported_response; never treats an empty Instant Answer as comprehensive web search.",
-            parameters: [
-                "type": "object",
-                "properties": ["query": ["type": "string", "description": "A concise public-web search query."]],
-                "required": ["query"],
-                "additionalProperties": false
-            ],
-            risk: .read
-        ),
-        LimaAIToolDefinition(
-            id: "read_web",
-            name: "read_web",
-            description: "Read extracted headings, main text, metadata, and public links from a public web page. Links are references only; use a separate read_web call to read a selected link. It blocks local and private hosts, sends no cookies or credentials, does not follow redirects, and never submits or changes web content.",
-            parameters: [
-                "type": "object",
-                "properties": ["url": ["type": "string", "description": "A public HTTP or HTTPS URL returned by Search Web or supplied by the user."]],
-                "required": ["url"],
-                "additionalProperties": false
-            ],
-            risk: .read
-        ),
-        LimaAIToolDefinition(
             id: "list_extensions",
             name: "list_extensions",
             description: "List installed Lima extension commands, declared read-only tools, skills, agents, and capabilities. It only reads manifests; it never runs, installs, modifies, or approves extensions.",
@@ -1644,7 +1636,7 @@ enum LimaAIToolRegistry {
     static var availableDefinitions: [LimaAIToolDefinition] {
         candidateDefinitions
             .filter { $0.responsePayload != nil }
-            .filter { $0.actionCategory == nil || AIComputerActionPolicy.shared.allows($0) }
+            .filter { AIComputerActionPolicy.shared.allows($0) }
     }
 
     static func schemaValidationMessage(for id: String) -> String? {
@@ -1696,7 +1688,8 @@ enum LimaAIToolRegistry {
     static func execute(
         _ call: AIOutputItem,
         approvalGranted: Bool = false,
-        browserRoutingContext: BrowserCapabilityTurnContext? = nil
+        browserRoutingContext: BrowserCapabilityTurnContext? = nil,
+        conversationID: UUID? = nil
     ) async -> LimaAIToolExecution {
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
             return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
@@ -1705,7 +1698,9 @@ enum LimaAIToolRegistry {
               definition.risk == .read || definition.actionCategory != nil else {
             return .json(["error": "Lima AI Chat only permits registered tools enabled by the current action policy."], isError: true)
         }
-        guard definition.actionCategory == nil
+        // terminal_run has an additional live, session-scoped grant gate in
+        // AIWorkspaceActionTools; no other action may bypass this policy check.
+        guard definition.id == "terminal_run" || definition.actionCategory == nil
                 || AIComputerActionPolicy.shared.permits(definition, approvalGranted: approvalGranted) else {
             return .json(["error": "This computer action is disabled or still needs your approval in Lima Settings."], isError: true)
         }
@@ -1737,10 +1732,12 @@ enum LimaAIToolRegistry {
             )
         }
         if AILocalComputerActionTools.ids.contains(definition.id) {
-            return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted)
+            return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted,
+                                                            conversationID: conversationID)
         }
         if AIWorkspaceActionTools.ids.contains(definition.id) {
-            return AIWorkspaceActionTools.execute(call, approvalGranted: approvalGranted)
+            return await AIWorkspaceActionTools.execute(call, approvalGranted: approvalGranted,
+                                                       conversationID: conversationID)
         }
         switch definition.id {
         case "read_screen_context":
@@ -1798,16 +1795,6 @@ enum LimaAIToolRegistry {
                 return .json(["error": "Read File accepts a positive start_line and a length from 1 to 400."], isError: true)
             }
             return readTextFile(at: path, startLine: startLine, length: length)
-        case "search_web":
-            guard let query = stringArgument(named: "query", from: call.arguments), !query.isEmpty else {
-                return .json(["error": "Search Web needs a non-empty query."], isError: true)
-            }
-            return await searchWeb(query: String(query.prefix(200)))
-        case "read_web":
-            guard let rawURL = stringArgument(named: "url", from: call.arguments), !rawURL.isEmpty else {
-                return .json(["error": "Read Web needs a public URL."], isError: true)
-            }
-            return await readPublicWebPage(rawURL)
         case "list_extensions":
             return extensionCatalog()
         case "get_lima_status":
@@ -2052,607 +2039,6 @@ enum LimaAIToolRegistry {
         return extensions.contains(url.pathExtension.lowercased())
     }
 
-    static func searchWeb(query: String) async -> LimaAIToolExecution {
-        let response = await PublicWebSearchService.configuredForCurrentUser().search(query: query)
-        let isError = [
-            PublicWebSearchStatus.providerUnavailable,
-            .requestFailed,
-            .unsupportedResponse
-        ].contains(response.status)
-        return .json(response.json, isError: isError)
-    }
-
-    private final class NoRedirectWebReaderDelegate: NSObject, URLSessionTaskDelegate {
-        func urlSession(
-            _ session: URLSession,
-            task: URLSessionTask,
-            willPerformHTTPRedirection response: HTTPURLResponse,
-            newRequest request: URLRequest,
-            completionHandler: @escaping (URLRequest?) -> Void
-        ) {
-            completionHandler(nil)
-        }
-    }
-
-    static func readPublicWebPage(_ rawURL: String) async -> LimaAIToolExecution {
-        guard let url = publicWebURL(rawURL) else {
-            return .json(["error": "Read Web only accepts a public HTTP or HTTPS URL without credentials."], isError: true)
-        }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.httpCookieStorage = nil
-        configuration.urlCredentialStorage = nil
-        configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: configuration, delegate: NoRedirectWebReaderDelegate(), delegateQueue: nil)
-        defer { session.invalidateAndCancel() }
-
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        request.timeoutInterval = 15
-        request.setValue("Lima/1.0 (read-only web reader)", forHTTPHeaderField: "User-Agent")
-        request.setValue("text/html, text/plain, application/xhtml+xml, application/json;q=0.8", forHTTPHeaderField: "Accept")
-
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-                return .json(["error": "The public web page could not be read."], isError: true)
-            }
-            guard publicWebURL(http.url?.absoluteString ?? "") != nil else {
-                return .json(["error": "The page resolved to a non-public URL."], isError: true)
-            }
-            guard http.expectedContentLength < 0 || http.expectedContentLength <= Int64(maximumWebPageBytes),
-                  data.count <= maximumWebPageBytes else {
-                return .json(["error": "The page is larger than Lima’s 1 MB read-only limit."], isError: true)
-            }
-            let contentType = (http.value(forHTTPHeaderField: "Content-Type") ?? "").lowercased()
-            guard contentType.isEmpty
-                    || contentType.contains("text/html")
-                    || contentType.contains("text/plain")
-                    || contentType.contains("application/xhtml+xml")
-                    || contentType.contains("application/json") else {
-                return .json(["error": "Read Web supports public HTML, plain-text, and JSON pages only."], isError: true)
-            }
-
-            let rawText = String(data: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
-            let result: (
-                title: String?,
-                content: String,
-                links: [String],
-                headings: [String],
-                metadata: [String: String],
-                linkDetails: [[String: String]]
-            )
-            if contentType.contains("html") || rawText.range(of: "<html", options: .caseInsensitive) != nil {
-                result = readableWebContent(fromHTML: rawText, baseURL: url)
-            } else {
-                result = (nil, normalizedWebText(rawText), [], [], [:], [])
-            }
-            guard !result.content.isEmpty else {
-                return .json(["error": "The page did not contain readable public text."], isError: true)
-            }
-            let limitedContent = String(result.content.prefix(32_000))
-            return .json([
-                "url": url.absoluteString,
-                "title": result.title ?? "",
-                "headings": Array(result.headings.prefix(24)),
-                "metadata": result.metadata,
-                "content": limitedContent,
-                "links": Array(result.links.prefix(20)),
-                "link_details": Array(result.linkDetails.prefix(20)),
-                "truncated": result.content.count > limitedContent.count,
-                "source": "Public page read without cookies, credentials, redirects, or form submission"
-            ])
-        } catch {
-            return .json(["error": "The public web page could not be reached."], isError: true)
-        }
-    }
-
-    static func publicWebURL(_ rawValue: String) -> URL? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count <= 2_048,
-              let components = URLComponents(string: trimmed),
-              let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
-              components.user == nil, components.password == nil,
-              let host = components.host?.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: ".")),
-              !host.isEmpty,
-              host != "localhost",
-              !host.hasSuffix(".localhost"),
-              !host.hasSuffix(".local"),
-              !host.hasSuffix(".internal"),
-              !isPrivateIPAddress(host),
-              let url = components.url else { return nil }
-        return url
-    }
-
-    private static func isPrivateIPAddress(_ host: String) -> Bool {
-        // Reject literal IPv6 addresses rather than risk exposing local network
-        // services. Public DNS names remain supported.
-        if host.contains(":") { return true }
-        let parts = host.split(separator: ".")
-        let octets = parts.compactMap { Int($0) }
-        guard parts.count == 4, octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else {
-            return false
-        }
-        switch octets[0] {
-        case 0, 10, 127:
-            return true
-        case 169:
-            return octets[1] == 254
-        case 172:
-            return (16...31).contains(octets[1])
-        case 192:
-            return octets[1] == 168
-        default:
-            return false
-        }
-    }
-
-    static func readableWebContent(
-        fromHTML html: String,
-        baseURL: URL
-    ) -> (
-        title: String?,
-        content: String,
-        links: [String],
-        headings: [String],
-        metadata: [String: String],
-        linkDetails: [[String: String]]
-    ) {
-        let document = parseWebHTML(html)
-        let contentRoot = firstWebElement(named: "main", in: document)
-            ?? firstWebElement(named: "article", in: document)
-            ?? firstWebElement(named: "body", in: document)
-            ?? document
-
-        var metadata: [String: String] = [:]
-        visitWebElements(in: document) { element in
-            guard element.name == "meta",
-                  let content = element.attributes["content"] else { return }
-            let key = (element.attributes["name"] ?? element.attributes["property"] ?? "").lowercased()
-            switch key {
-            case "description", "author", "og:title", "og:description":
-                let value = String(normalizedWebText(content).prefix(500))
-                if !value.isEmpty { metadata[key] = value }
-            default:
-                break
-            }
-        }
-        if let htmlElement = firstWebElement(named: "html", in: document),
-           let language = htmlElement.attributes["lang"] {
-            metadata["language"] = String(decodeWebHTMLEntities(language).prefix(40))
-        }
-        visitWebElements(in: document) { element in
-            guard element.name == "link",
-                  decodeWebHTMLEntities(element.attributes["rel"] ?? "")
-                    .lowercased().split(whereSeparator: \.isWhitespace).contains("canonical"),
-                  let rawHref = element.attributes["href"],
-                  let canonicalURL = URL(string: decodeWebHTMLEntities(rawHref), relativeTo: baseURL)?.absoluteURL,
-                  publicWebURL(canonicalURL.absoluteString) != nil else { return }
-            metadata["canonical_url"] = canonicalURL.absoluteString
-        }
-
-        let documentTitle = firstWebElement(named: "title", in: document).map {
-            normalizedWebText(rawWebText(in: $0))
-        }
-        let title = documentTitle.flatMap { $0.isEmpty ? nil : $0 } ?? metadata["og:title"]
-
-        var contentBuffer = ""
-        appendReadableWebText(from: contentRoot, to: &contentBuffer)
-        let content = normalizedWebText(contentBuffer)
-
-        var headings: [String] = []
-        collectReadableHeadings(in: contentRoot, into: &headings)
-        var linkDetails: [[String: String]] = []
-        var seenLinks = Set<String>()
-        collectReadableLinks(in: contentRoot, baseURL: baseURL, into: &linkDetails, seen: &seenLinks)
-
-        return (
-            title,
-            content,
-            linkDetails.compactMap { $0["url"] },
-            headings,
-            metadata,
-            linkDetails
-        )
-    }
-
-    private final class WebHTMLNode {
-        let name: String?
-        let attributes: [String: String]
-        let text: String?
-        var children: [WebHTMLNode] = []
-
-        init(name: String? = nil, attributes: [String: String] = [:], text: String? = nil) {
-            self.name = name
-            self.attributes = attributes
-            self.text = text
-        }
-    }
-
-    private static let voidWebHTMLTags: Set<String> = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-        "meta", "param", "source", "track", "wbr"
-    ]
-
-    private static let ignoredWebContentTags: Set<String> = [
-        "aside", "canvas", "footer", "form", "head", "header", "iframe", "link",
-        "meta", "nav", "noscript", "object", "script", "style", "svg", "template",
-        "title"
-    ]
-
-    private static let blockWebContentTags: Set<String> = [
-        "address", "article", "blockquote", "br", "dd", "div", "dl", "dt",
-        "figcaption", "figure", "h1", "h2", "h3", "h4", "h5", "h6", "hr",
-        "li", "ol", "p", "pre", "section", "table", "tbody", "td", "th",
-        "thead", "tr", "ul"
-    ]
-
-    private static func parseWebHTML(_ html: String) -> WebHTMLNode {
-        let document = WebHTMLNode()
-        var stack = [document]
-        var overflowTags: [String] = []
-        var cursor = html.startIndex
-        let maximumTreeDepth = 256
-
-        while cursor < html.endIndex {
-            guard html[cursor] == "<" else {
-                let textEnd = html[cursor...].firstIndex(of: "<") ?? html.endIndex
-                if overflowTags.isEmpty, textEnd > cursor {
-                    stack[stack.count - 1].children.append(
-                        WebHTMLNode(text: String(html[cursor..<textEnd]))
-                    )
-                }
-                cursor = textEnd
-                continue
-            }
-
-            if html[cursor...].hasPrefix("<!--") {
-                if let commentEnd = html.range(of: "-->", range: cursor..<html.endIndex) {
-                    cursor = commentEnd.upperBound
-                } else {
-                    break
-                }
-                continue
-            }
-
-            let afterOpen = html.index(after: cursor)
-            guard afterOpen < html.endIndex else {
-                if overflowTags.isEmpty {
-                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
-                }
-                break
-            }
-            var tagStart = afterOpen
-            if html[tagStart] == "/" {
-                tagStart = html.index(after: tagStart)
-            }
-            guard tagStart < html.endIndex,
-                  html[tagStart].isLetter || html[tagStart] == "!" || html[tagStart] == "?" else {
-                if overflowTags.isEmpty {
-                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
-                }
-                cursor = afterOpen
-                continue
-            }
-
-            guard let tokenEnd = webHTMLTagEnd(in: html, startingAt: cursor) else {
-                if overflowTags.isEmpty {
-                    stack[stack.count - 1].children.append(WebHTMLNode(text: "<"))
-                }
-                cursor = afterOpen
-                continue
-            }
-            let bodyStart = html.index(after: cursor)
-            let bodyEnd = html.index(before: tokenEnd)
-            let tokenBody = String(html[bodyStart..<bodyEnd])
-            cursor = tokenEnd
-
-            guard let tag = parseWebHTMLTag(tokenBody) else { continue }
-            if tag.name.hasPrefix("!") || tag.name.hasPrefix("?") { continue }
-
-            if !overflowTags.isEmpty {
-                if tag.isClosing {
-                    if let matching = overflowTags.lastIndex(of: tag.name) {
-                        overflowTags.removeSubrange(matching..<overflowTags.count)
-                    }
-                } else if !tag.isSelfClosing && !voidWebHTMLTags.contains(tag.name) {
-                    overflowTags.append(tag.name)
-                }
-                continue
-            }
-
-            if tag.isClosing {
-                if let matching = stack.lastIndex(where: { $0.name == tag.name }), matching > 0 {
-                    stack.removeSubrange(matching..<stack.count)
-                }
-                continue
-            }
-
-            let element = WebHTMLNode(name: tag.name, attributes: tag.attributes)
-            stack[stack.count - 1].children.append(element)
-            guard !tag.isSelfClosing, !voidWebHTMLTags.contains(tag.name) else { continue }
-            if stack.count >= maximumTreeDepth {
-                overflowTags = [tag.name]
-            } else {
-                stack.append(element)
-            }
-        }
-        return document
-    }
-
-    private static func webHTMLTagEnd(in html: String, startingAt start: String.Index) -> String.Index? {
-        var cursor = html.index(after: start)
-        var quote: Character?
-        while cursor < html.endIndex {
-            let character = html[cursor]
-            if let activeQuote = quote {
-                if character == activeQuote { quote = nil }
-            } else if character == "\"" || character == "'" {
-                quote = character
-            } else if character == ">" {
-                return html.index(after: cursor)
-            }
-            cursor = html.index(after: cursor)
-        }
-        return nil
-    }
-
-    private static func parseWebHTMLTag(
-        _ source: String
-    ) -> (name: String, attributes: [String: String], isClosing: Bool, isSelfClosing: Bool)? {
-        let characters = Array(source)
-        var offset = 0
-
-        func skipWhitespace() {
-            while offset < characters.count, characters[offset].isWhitespace { offset += 1 }
-        }
-
-        skipWhitespace()
-        let isClosing = offset < characters.count && characters[offset] == "/"
-        if isClosing { offset += 1 }
-        skipWhitespace()
-
-        let nameStart = offset
-        while offset < characters.count,
-              !characters[offset].isWhitespace,
-              characters[offset] != "/",
-              characters[offset] != ">" {
-            offset += 1
-        }
-        guard offset > nameStart else { return nil }
-        let name = String(characters[nameStart..<offset]).lowercased()
-        if isClosing { return (name, [:], true, false) }
-
-        var attributes: [String: String] = [:]
-        var isSelfClosing = false
-        while offset < characters.count {
-            skipWhitespace()
-            guard offset < characters.count else { break }
-            if characters[offset] == "/" {
-                isSelfClosing = true
-                offset += 1
-                continue
-            }
-
-            let attributeStart = offset
-            while offset < characters.count,
-                  !characters[offset].isWhitespace,
-                  characters[offset] != "=",
-                  characters[offset] != "/",
-                  characters[offset] != ">" {
-                offset += 1
-            }
-            guard offset > attributeStart else {
-                offset += 1
-                continue
-            }
-            let key = String(characters[attributeStart..<offset]).lowercased()
-            skipWhitespace()
-
-            var value = ""
-            if offset < characters.count, characters[offset] == "=" {
-                offset += 1
-                skipWhitespace()
-                if offset < characters.count, characters[offset] == "\"" || characters[offset] == "'" {
-                    let quote = characters[offset]
-                    offset += 1
-                    let valueStart = offset
-                    while offset < characters.count, characters[offset] != quote { offset += 1 }
-                    value = String(characters[valueStart..<offset])
-                    if offset < characters.count { offset += 1 }
-                } else {
-                    let valueStart = offset
-                    while offset < characters.count,
-                          !characters[offset].isWhitespace,
-                          characters[offset] != ">" {
-                        offset += 1
-                    }
-                    value = String(characters[valueStart..<offset])
-                }
-            }
-            if attributes[key] == nil {
-                attributes[key] = value
-            }
-        }
-        return (name, attributes, false, isSelfClosing)
-    }
-
-    private static func firstWebElement(named name: String, in node: WebHTMLNode) -> WebHTMLNode? {
-        if node.name == name { return node }
-        for child in node.children {
-            if let match = firstWebElement(named: name, in: child) { return match }
-        }
-        return nil
-    }
-
-    private static func visitWebElements(in node: WebHTMLNode, _ visit: (WebHTMLNode) -> Void) {
-        visit(node)
-        for child in node.children {
-            visitWebElements(in: child, visit)
-        }
-    }
-
-    private static func webText(in node: WebHTMLNode) -> String {
-        var buffer = ""
-        appendReadableWebText(from: node, to: &buffer)
-        return buffer
-    }
-
-    private static func rawWebText(in node: WebHTMLNode) -> String {
-        if let text = node.text { return text }
-        return node.children.map(rawWebText(in:)).joined()
-    }
-
-    private static func appendReadableWebText(from node: WebHTMLNode, to output: inout String) {
-        if let text = node.text {
-            output += text
-            return
-        }
-        guard let name = node.name else {
-            for child in node.children { appendReadableWebText(from: child, to: &output) }
-            return
-        }
-        let attributes = node.attributes
-        let style = decodeWebHTMLEntities(attributes["style"] ?? "").lowercased()
-        guard !ignoredWebContentTags.contains(name),
-              attributes["hidden"] == nil,
-              attributes["aria-hidden"]?.lowercased() != "true",
-              !style.contains("display:none"),
-              !style.contains("display: none"),
-              !style.contains("visibility:hidden"),
-              !style.contains("visibility: hidden") else { return }
-
-        if name == "br" || name == "hr" {
-            output += "\n"
-            return
-        }
-        let isBlock = blockWebContentTags.contains(name)
-        if isBlock, !output.isEmpty, !output.hasSuffix("\n") { output += "\n" }
-        if name == "img", let alt = attributes["alt"], !alt.isEmpty {
-            output += alt
-        }
-        for child in node.children {
-            appendReadableWebText(from: child, to: &output)
-        }
-        if isBlock, !output.hasSuffix("\n") { output += "\n" }
-    }
-
-    private static func collectReadableHeadings(in node: WebHTMLNode, into headings: inout [String]) {
-        guard let name = node.name else {
-            for child in node.children { collectReadableHeadings(in: child, into: &headings) }
-            return
-        }
-        guard !ignoredWebContentTags.contains(name) else { return }
-        if ["h1", "h2", "h3", "h4", "h5", "h6"].contains(name) {
-            let heading = normalizedWebText(webText(in: node))
-            if !heading.isEmpty, !headings.contains(heading), headings.count < 32 {
-                headings.append(String(heading.prefix(300)))
-            }
-        }
-        for child in node.children { collectReadableHeadings(in: child, into: &headings) }
-    }
-
-    private static func collectReadableLinks(
-        in node: WebHTMLNode,
-        baseURL: URL,
-        into links: inout [[String: String]],
-        seen: inout Set<String>
-    ) {
-        guard let name = node.name else {
-            for child in node.children {
-                collectReadableLinks(in: child, baseURL: baseURL, into: &links, seen: &seen)
-            }
-            return
-        }
-        guard !ignoredWebContentTags.contains(name) else { return }
-        if name == "a",
-           let rawHref = node.attributes["href"],
-           let url = URL(string: decodeWebHTMLEntities(rawHref), relativeTo: baseURL)?.absoluteURL,
-           publicWebURL(url.absoluteString) != nil,
-           seen.insert(url.absoluteString).inserted,
-           links.count < 40 {
-            let anchorText = normalizedWebText(webText(in: node))
-            let fallbackLabel = node.attributes["title"].map(normalizedWebText) ?? url.host ?? "Link"
-            let label = anchorText.isEmpty ? fallbackLabel : anchorText
-            links.append([
-                "text": String(label.prefix(300)),
-                "url": url.absoluteString
-            ])
-        }
-        for child in node.children {
-            collectReadableLinks(in: child, baseURL: baseURL, into: &links, seen: &seen)
-        }
-    }
-
-    private static func decodeWebHTMLEntities(_ value: String) -> String {
-        let namedEntities = [
-            "amp": "&", "apos": "'", "gt": ">", "lt": "<", "nbsp": " ",
-            "quot": "\"", "copy": "©", "mdash": "—", "ndash": "–",
-            "lsquo": "‘", "rsquo": "’", "ldquo": "“", "rdquo": "”",
-            "hellip": "…", "bull": "•"
-        ]
-        var output = ""
-        var cursor = value.startIndex
-        while cursor < value.endIndex {
-            guard value[cursor] == "&" else {
-                output.append(value[cursor])
-                cursor = value.index(after: cursor)
-                continue
-            }
-            let entityStart = value.index(after: cursor)
-            guard let semicolon = value[entityStart...].firstIndex(of: ";"),
-                  value.distance(from: entityStart, to: semicolon) <= 16 else {
-                output.append("&")
-                cursor = entityStart
-                continue
-            }
-            let entity = String(value[entityStart..<semicolon])
-            var decoded: String?
-            if entity.hasPrefix("#x") || entity.hasPrefix("#X") {
-                if let scalarValue = UInt32(entity.dropFirst(2), radix: 16),
-                   let scalar = UnicodeScalar(scalarValue) {
-                    decoded = String(scalar)
-                }
-            } else if entity.hasPrefix("#") {
-                if let scalarValue = UInt32(entity.dropFirst()),
-                   let scalar = UnicodeScalar(scalarValue) {
-                    decoded = String(scalar)
-                }
-            } else {
-                decoded = namedEntities[entity.lowercased()]
-            }
-            if let decoded {
-                output += decoded
-                cursor = value.index(after: semicolon)
-            } else {
-                output += "&"
-                cursor = entityStart
-            }
-        }
-        return output
-    }
-
-    private static func normalizedWebText(_ value: String) -> String {
-        let decoded = decodeWebHTMLEntities(value)
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .replacingOccurrences(of: "\r", with: "\n")
-        return decoded.components(separatedBy: "\n").compactMap { line in
-            let normalizedLine = replacing(line, pattern: #"[ \t]+"#, with: " ")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            return normalizedLine.isEmpty ? nil : normalizedLine
-        }.joined(separator: "\n")
-    }
-
-    private static func replacing(_ value: String, pattern: String, with replacement: String) -> String {
-        guard let expression = try? NSRegularExpression(pattern: pattern) else { return value }
-        return expression.stringByReplacingMatches(
-            in: value,
-            range: NSRange(value.startIndex..., in: value),
-            withTemplate: replacement
-        )
-    }
-
-
     private static func extensionCatalog() -> LimaAIToolExecution {
         let loader = ExtensionLoader()
         let commands = loader.load(prepare: false, registerPackages: false).commands
@@ -2717,8 +2103,10 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     let toolIDs: Set<String>
 
     static let coreGroups: [LimaAIToolGroup] = [
-        .init(id: "memory", title: "Memory", summary: "Read saved local context; add, edit, or forget entries in the inspector",
+        .init(id: "memory", title: "Memory", summary: "Read saved local context and review it in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
+        .init(id: "memory-changes", title: "Memory changes", summary: "Propose saved context changes; each save, revision, or deletion asks separately",
+              symbol: "brain.head.profile", toolIDs: AIContextTools.memoryWriteIDs),
         .init(id: "subagents", title: "Subagents", summary: "Delegated analyses use this run’s configured concurrent and total budgets; inherits captured routed tools, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
@@ -2738,19 +2126,12 @@ struct LimaAIToolGroup: Identifiable, Hashable {
             toolIDs: ["search_files", "find_files", "list_directory", "file_metadata", "read_file"]
         ),
         .init(
-            id: "web-research",
-            title: "Web research",
-            summary: "Search and read public pages",
-            symbol: "globe",
-            toolIDs: ["search_web", "read_web"]
-        ),
-        .init(
             id: "browser",
             title: "Browser",
-            summary: "Inspect granted tabs and visible page content",
+            summary: "Research through granted tabs and inspect visible page content",
             symbol: "safari",
             toolIDs: [
-                "browser_capabilities", "browser_tabs", "browser_current", "browser_read",
+                "browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_scan",
                 "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
             ]
         ),
@@ -2771,23 +2152,30 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "local-files",
             title: "Local files",
-            summary: "Create or replace bounded text and source files",
+            summary: "Create, precisely edit, or replace bounded text and source files",
             symbol: "doc.badge.plus",
-            toolIDs: ["create_text_file", "replace_text_file"]
+            toolIDs: AILocalComputerActionTools.fileToolIDs
         ),
         .init(
             id: "terminal",
             title: "Terminal and code",
-            summary: "Run one approved bounded local developer command",
+            summary: "Run one approved bounded developer command outside the AI Workspace sandbox",
             symbol: "terminal",
             toolIDs: ["run_terminal_command"]
         ),
         .init(
+            id: "ai-workspace-terminal",
+            title: "AI Workspace terminal",
+            summary: "Start and monitor visible sandboxed sessions; commands require approval",
+            symbol: "terminal.fill",
+            toolIDs: AIWorkspaceActionTools.ids
+        ),
+        .init(
             id: "lima-workspace",
             title: "Lima workspace",
-            summary: "Read Lima status and installed extensions",
+            summary: "Inspect routed capabilities, app status, and installed extensions",
             symbol: "sparkles",
-            toolIDs: ["list_extensions", "get_lima_status"]
+            toolIDs: AIContextTools.capabilityIDs.union(["list_extensions", "get_lima_status"])
         )
     ]
 
@@ -2824,6 +2212,10 @@ extension LimaAIToolDefinition {
     var displayName: String {
         switch id {
         case "memory_search": return "Recall memory"
+        case "memory_save": return "Save memory"
+        case "memory_update": return "Revise memory"
+        case "memory_forget": return "Forget memory"
+        case "edit_text_file": return "Edit a file"
         case "agent_models": return "Subagent models"
         case "agent_delegate": return "Delegate analysis"
         case "read_screen_context": return "Screen context"
@@ -2831,10 +2223,17 @@ extension LimaAIToolDefinition {
         case "read_note": return "Read Note"
         case "search_files": return "Find files"
         case "read_file": return "Read a file"
-        case "search_web": return "Search the web"
-        case "read_web": return "Read a web page"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
+        case "lima_capabilities": return "Tool capabilities"
+        case "terminal_start": return "Start AI Workspace"
+        case "terminal_run": return "Run Workspace command"
+        case "terminal_status": return "Workspace status"
+        case "terminal_read": return "Workspace output"
+        case "terminal_wait": return "Wait for command"
+        case "terminal_interrupt": return "Interrupt command"
+        case "terminal_set_directory": return "Change Workspace directory"
+        case "terminal_close": return "Close Workspace session"
         default:
             if let extensionBinding { return "\(extensionBinding.extensionName) · \(extensionBinding.tool.title)" }
             return name.replacingOccurrences(of: "_", with: " ").capitalized
@@ -2843,6 +2242,10 @@ extension LimaAIToolDefinition {
 
     var userSummary: String {
         switch id {
+        case "memory_search": return "Read bounded global and current-project context"
+        case "memory_save": return "Save one approved, scoped memory entry"
+        case "memory_update": return "Revise one approved memory after a freshness check"
+        case "memory_forget": return "Remove one approved entry; past provider context remains"
         case "read_screen_context": return "App, window, and selected text"
         case "search_notes": return "Titles and short matching excerpts"
         case "read_note": return "One bounded local note range"
@@ -2850,8 +2253,6 @@ extension LimaAIToolDefinition {
         case "list_directory": return "Visible direct children only"
         case "file_metadata": return "Basic file metadata only"
         case "read_file": return "Bounded numbered text ranges"
-        case "search_web": return "Public results only"
-        case "read_web": return "Public text only, never submits"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
         case "browser_search_web": return "Search in a granted browser"
@@ -2863,7 +2264,16 @@ extension LimaAIToolDefinition {
         case "browser_submit": return "Submit a granted form"
         case "create_text_file": return "Create a text file"
         case "replace_text_file": return "Replace a text file"
-        case "run_terminal_command": return "Run a local developer command"
+        case "edit_text_file": return "Replace one unique text span"
+        case "run_terminal_command": return "Approved developer command outside the sandbox"
+        case "terminal_start": return "Create a visible, sandboxed AI-owned session"
+        case "terminal_run": return "Run in the sandbox; optionally allow this directory"
+        case "terminal_status": return "Read state and verified exit status"
+        case "terminal_read": return "Read up to 32 KB of session output"
+        case "terminal_wait": return "Wait briefly for verified completion and output"
+        case "terminal_interrupt": return "Request command cancellation"
+        case "terminal_set_directory": return "Switch to an existing Workspace directory"
+        case "terminal_close": return "Close an idle session; keep its files"
         default:
             if let extensionBinding { return extensionBinding.tool.description }
             return description
@@ -2872,21 +2282,24 @@ extension LimaAIToolDefinition {
 
     var symbol: String {
         switch id {
-        case "memory_search": return "brain.head.profile"
+        case "memory_search", "memory_save", "memory_update", "memory_forget": return "brain.head.profile"
         case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
         case "search_notes", "read_note": return "note.text"
         case "search_files", "find_files", "list_directory": return "folder"
         case "file_metadata": return "doc.badge.gearshape"
         case "read_file": return "doc.text"
-        case "search_web": return "globe"
-        case "read_web": return "doc.text.magnifyingglass"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
         case "browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab": return "safari"
         case "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
-        case "create_text_file", "replace_text_file": return "doc.badge.plus"
-        case "run_terminal_command": return "terminal"
+        case "create_text_file", "replace_text_file", "edit_text_file": return "doc.badge.plus"
+        case "run_terminal_command", "terminal_run": return "terminal"
+        case "terminal_start": return "terminal.fill"
+        case "terminal_status", "terminal_read", "terminal_wait": return "text.alignleft"
+        case "terminal_interrupt": return "stop.circle"
+        case "terminal_set_directory": return "folder"
+        case "terminal_close": return "xmark.circle"
         default: return "eye"
         }
     }
@@ -2951,9 +2364,9 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: migrationKey)
         }
-        // Action schemas remain inert until their category is explicitly enabled
-        // in AI Settings. Preselect them once so enabling a category is sufficient
-        // and does not silently re-enable a later user opt-out.
+        // Preselect action schemas once so the category policy remains the
+        // separate gate. Browser, file, and terminal categories start Off;
+        // saved-memory proposals start reviewable but every write still asks.
         let actionMigrationKey = "lima.ai.computer-actions-v1"
         if !defaults.bool(forKey: actionMigrationKey) {
             enabledToolIDs.formUnion(AILocalComputerActionTools.ids)
@@ -2963,6 +2376,14 @@ final class LimaAIToolStore: ObservableObject {
             ])
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: actionMigrationKey)
+        }
+        // Expose the new precise edit schema in existing custom selections once.
+        // The independent Local files action category remains off unless enabled.
+        let editTextMigrationKey = "lima.ai.edit-text-file-v1"
+        if !defaults.bool(forKey: editTextMigrationKey) {
+            enabledToolIDs.insert("edit_text_file")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: editTextMigrationKey)
         }
         // Existing installations may have saved a tool list before Browser and
         // Notes reading were available. Add only read-only schemas once; actual
@@ -2980,6 +2401,14 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: workspaceTerminalMigrationKey)
         }
+        // Existing custom installations already passed the original Workspace
+        // migration; add the new read-only wait once without resetting choices.
+        let workspaceWaitMigrationKey = "lima.ai.workspace-terminal-wait-v1"
+        if !defaults.bool(forKey: workspaceWaitMigrationKey) {
+            enabledToolIDs.insert("terminal_wait")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceWaitMigrationKey)
+        }
         let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
         if !defaults.bool(forKey: capabilityMigrationKey) {
             enabledToolIDs.insert("browser_capabilities")
@@ -2993,6 +2422,28 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(AIContextTools.capabilityIDs)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: toolCapabilitiesMigrationKey)
+        }
+        // Include memory mutations in existing custom lists once. The separate
+        // Saved memory category and per-item approval still gate every write;
+        // preserve later custom opt-outs.
+        let memoryWriteMigrationKey = "lima.ai.memory-writes-v1"
+        if !defaults.bool(forKey: memoryWriteMigrationKey) {
+            enabledToolIDs.formUnion(AIContextTools.memoryWriteIDs)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: memoryWriteMigrationKey)
+        }
+        // Preserve an existing web-research choice without retaining a callable
+        // provider search or direct fetch. Browser navigation still requires its
+        // independent action setting and site grant.
+        let retiredWebToolIDs: Set<String> = ["search_web", "read_web"]
+        if !enabledToolIDs.isDisjoint(with: retiredWebToolIDs) {
+            let hadSearch = enabledToolIDs.contains("search_web")
+            enabledToolIDs.subtract(retiredWebToolIDs)
+            enabledToolIDs.formUnion(["browser_capabilities", "browser_tabs", "browser_read", "browser_scan"])
+            if hadSearch {
+                enabledToolIDs.formUnion(["browser_search_web", "browser_open_tabs", "browser_navigate_tab"])
+            }
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
         }
     }
 
@@ -3784,6 +3235,7 @@ struct AIMarkdownView: View {
 struct AIToolApprovalView: View {
     let request: AIToolApprovalRequest
     let allow: () -> Void
+    let allowDirectory: () -> Void
     let deny: () -> Void
     @State private var showingFullRequest = false
 
@@ -3805,6 +3257,13 @@ struct AIToolApprovalView: View {
                 .limaFont(.caption)
                 .foregroundStyle(LimaColors.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
+            if let directory = request.directoryGrantPath {
+                Text("Directory scope: \(directory)")
+                    .font(.system(size: 11.5, design: .monospaced))
+                    .foregroundStyle(LimaColors.secondaryText)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
             if let arguments = formattedArguments {
                 DisclosureGroup("Review full request", isExpanded: $showingFullRequest) {
@@ -3822,19 +3281,31 @@ struct AIToolApprovalView: View {
                 .limaFont(.caption)
             }
 
-            HStack {
-                Text("Allow Once runs this request only and records the result in Activity.")
+            VStack(alignment: .leading, spacing: 7) {
+                Text(request.directoryGrantPath == nil
+                     ? "Allow Once runs only this request; its result appears in Activity."
+                     : "Allow Once runs only this command. Allow in Directory permits later commands in this session's current sandboxed directory until revoked, changed, or closed.")
                     .limaFont(.caption2)
                     .foregroundStyle(LimaColors.tertiaryText)
-                Spacer()
-                Button("Deny", action: deny)
-                Button("Allow Once", action: allow)
-                    .buttonStyle(.borderedProminent)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Deny", action: deny)
+                    if request.directoryGrantPath != nil {
+                        Button("Allow in Directory", action: allowDirectory)
+                            .help("Allow later commands only in this AI Workspace session's current directory; revoke from AI Terminal")
+                    }
+                    Button("Allow Once", action: allow)
+                        .buttonStyle(.borderedProminent)
+                }
             }
         }
         .padding(12)
-        .background(LimaColors.recessedSurface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .limaGlassContainer(region: .hud, cornerRadius: 10)
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaColors.warning.opacity(0.55), lineWidth: 1))
+        .onAppear {
+            showingFullRequest = AIContextTools.memoryWriteIDs.contains(request.localToolID ?? request.toolName)
+        }
     }
 
     private var requestSummary: String {
@@ -3860,10 +3331,25 @@ struct AIToolApprovalView: View {
             return "Type \(count) character\(count == 1 ? "" : "s") into \(quoted(arguments["selector"] as? String) ?? "the requested field")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
         case "browser_submit":
             return "Submit \(quoted(arguments["selector"] as? String) ?? "the requested form")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+        case "memory_save":
+            let title = compactQuoted(arguments["title"] as? String) ?? "a new entry"
+            let scope = arguments["scope"] as? String ?? "selected"
+            let preview = compactQuoted(arguments["content"] as? String) ?? "empty content"
+            return "Save \(title) as \(scope) memory. Content: \(preview)."
+        case "memory_update":
+            let currentTitle = compactQuoted(arguments["expected_title"] as? String) ?? "the selected entry"
+            let newTitle = compactQuoted(arguments["title"] as? String) ?? "an untitled entry"
+            let preview = compactQuoted(arguments["content"] as? String) ?? "empty content"
+            return "Revise saved memory \(currentTitle) to \(newTitle). New content: \(preview)."
+        case "memory_forget":
+            let title = compactQuoted(arguments["expected_title"] as? String) ?? "the selected entry"
+            return "Forget saved memory \(title). Context already sent to a provider cannot be retracted."
         case "create_text_file":
             return "Create \(quoted(arguments["path"] as? String) ?? "the requested file") with \(characterCount(arguments["content"])) character\(characterCount(arguments["content"]) == 1 ? "" : "s")."
         case "replace_text_file":
             return "Replace \(quoted(arguments["path"] as? String) ?? "the requested file") with \(characterCount(arguments["content"])) character\(characterCount(arguments["content"]) == 1 ? "" : "s")."
+        case "edit_text_file":
+            return "Edit \(compactQuoted(arguments["path"] as? String) ?? "the requested file") by replacing one exact \(characterCount(arguments["old_text"]))‑character span with \(characterCount(arguments["new_text"])) characters. Review the exact text below."
         case "run_terminal_command":
             let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
             let directory = arguments["working_directory"] as? String
@@ -3879,6 +3365,9 @@ struct AIToolApprovalView: View {
             return "Start a visible sandboxed AI terminal session at the Lima Workspace root."
         case "terminal_run":
             let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
+            if let directory = request.directoryGrantPath {
+                return "Run \(command) in \(compactQuoted(directory) ?? "the current directory"). You can allow only this command or future commands in this session and directory."
+            }
             return "Run \(command) in the sandboxed AI Workspace. Review the full command before allowing."
         case "terminal_set_directory":
             return "Move the AI session to \(compactQuoted(arguments["directory"] as? String) ?? "the requested Workspace directory")."
