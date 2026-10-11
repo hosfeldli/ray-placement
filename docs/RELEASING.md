@@ -164,6 +164,37 @@ Approve the `release` environment in GitHub when it pauses. A run with
 `publish=false` deliberately stops at a verified draft; use it only for a planned
 review or rehearsal, not as a shortcut around the release checks.
 
+### One-command hosted public release
+
+For a routine public deployment, run this from a clean, synchronized `main` checkout:
+
+```sh
+./scripts/deploy-release.sh --bump patch --publish
+```
+
+The wrapper verifies GitHub CLI access and the target repository, commits and pushes
+the next version, waits for CI on that exact commit, creates a new immutable tag,
+dispatches the hosted public-release workflow, and prints its run URL. It exits after
+the workflow is queued; GitHub continues building and publishing after the shell or
+chat closes. Use `--bump minor` or `--bump major` when appropriate. A dry run is
+available with `--bump patch --publish --dry-run`.
+
+The wrapper never moves or reuses a release tag. It stops before tagging if CI fails.
+It also preserves the protected `release` environment: if that environment requests
+a reviewer, approve the exact run in GitHub before the hosted job proceeds. If the
+dispatch succeeds but the run link has not appeared yet, use the workflow link printed
+by the wrapper and do not run the command again.
+
+#### GitHub email alert
+
+GitHub controls workflow-run email delivery through each account’s notification
+settings. Enable email notifications for **all workflow runs** in
+**GitHub Settings → Notifications → Actions**, and select a verified notification
+address at [GitHub notification settings](https://github.com/settings/notifications);
+a failures-only preference will not email successful deployments. The workflow
+name includes the release tag so the notification identifies the version.
+The repository cannot override a disabled account-level notification preference.
+
 ### Low-touch CLI execution
 
 For a routine public release, use the following bounded sequence rather than

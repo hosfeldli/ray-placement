@@ -73,6 +73,7 @@ jobs:
           ./scripts/test_update_verifier.sh
           /bin/zsh ./scripts/test_approved_lima_update.sh
           ./scripts/test_cloud_release_configuration.sh
+          ./scripts/test_deploy_release.sh
 
       - name: Run package smoke checks
         shell: zsh {0}

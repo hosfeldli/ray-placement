@@ -1,4 +1,5 @@
 name: Build and stage Lima release
+run-name: Lima ${{ inputs.release_tag }} public release
 
 on:
   workflow_dispatch:
