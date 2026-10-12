@@ -21,10 +21,24 @@ import Testing
     #expect(LimaWorkspaceMetrics.sidebarWidth(contentWidth: 600, preferred: 232) == 0)
     #expect(LimaWorkspaceMetrics.sidebarWidth(contentWidth: 668, preferred: 232) == 232)
     #expect(LimaWorkspaceMetrics.sidebarWidth(contentWidth: 1400, preferred: nil) == 0)
-    #expect(!LimaWorkspaceMetrics.showsInspector(contentWidth: 711))
-    #expect(LimaWorkspaceMetrics.showsInspector(contentWidth: 712))
-    #expect(!LimaWorkspaceMetrics.showsInspector(contentWidth: 943, sidebarWidth: 232))
-    #expect(LimaWorkspaceMetrics.showsInspector(contentWidth: 944, sidebarWidth: 232))
+    #expect(!LimaWorkspaceMetrics.showsInspector(contentWidth: 751))
+    #expect(LimaWorkspaceMetrics.showsInspector(contentWidth: 752))
+    #expect(!LimaWorkspaceMetrics.showsInspector(contentWidth: 983, sidebarWidth: 232))
+    #expect(LimaWorkspaceMetrics.showsInspector(contentWidth: 984, sidebarWidth: 232))
+}
+
+@Test @MainActor func noteChecklistToggleIsScopedAndRejectsStaleRows() {
+    let first = MarkdownNote(title: "Plan", content: "# Plan\n- [ ] First action\n- [x] Done")
+    let second = MarkdownNote(title: "Other", content: "- [ ] Keep untouched")
+    let store = NotesStore(visualFixtures: [first, second])
+    let task = store.taskDashboard.first { $0.noteID == first.id && $0.text == "First action" }!
+    #expect(store.toggleTask(task))
+    #expect(store.notes.first { $0.id == first.id }?.content == "# Plan\n- [x] First action\n- [x] Done")
+    #expect(store.notes.first { $0.id == second.id }?.content == "- [ ] Keep untouched")
+    #expect(!store.toggleTask(task))
+    let updated = store.taskDashboard.first { $0.noteID == first.id && $0.text == "First action" }!
+    #expect(store.toggleTask(updated))
+    #expect(store.notes.first { $0.id == first.id }?.content == first.content)
 }
 
 @Test func homeRecentItemsSortRealWorkAndSkipEmptyChats() {

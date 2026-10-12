@@ -713,6 +713,7 @@ final class LauncherViewModel: ObservableObject {
 
     private func refreshRootResults() {
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsed = UniversalSearchCoordinator.parse(cleanQuery)
         universalSearchGeneration += 1
         let generation = universalSearchGeneration
         universalSearchTask?.cancel()
@@ -723,11 +724,10 @@ final class LauncherViewModel: ObservableObject {
         rootFileSearchPending = false
         rootUniversalSearchPending = false
         results = rootResults()
-        guard !cleanQuery.isEmpty else {
+        guard !parsed.query.isEmpty else {
             isSearching = false
             return
         }
-        let parsed = UniversalSearchCoordinator.parse(cleanQuery)
         let shouldSearchFiles = (parsed.prefix == nil || parsed.prefix == "file") && parsed.query.count >= 2
         rootUniversalSearchPending = true
         rootFileSearchPending = shouldSearchFiles
@@ -825,6 +825,9 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func rootResults() -> [LauncherItem] {
+        // The idle launcher has no result rows or hidden keyboard targets.
+        // Workspaces remain available through explicit lower controls.
+        guard !UniversalSearchCoordinator.parse(query).query.isEmpty else { return [] }
         var items = builtInItems() + extensionItems() + applicationItems() + macroItems() + specializedItems()
         if let selection = contextualSelectionText {
             items.insert(contentsOf: contextualItems(for: selection), at: 0)
@@ -850,10 +853,6 @@ final class LauncherViewModel: ObservableObject {
         let localIDs = Set(items.map(\.id))
         items += universalResults.map(universalItem).filter { !localIDs.contains($0.id) }
         searchIndex.rebuild(items: items)
-        if parsed.prefix != nil && cleanQuery.isEmpty {
-            return Array(items.prefix(24))
-        }
-
         // Deliberately undocumented developer gate. The configuration item is
         // not part of the normal catalog or searchable text.
         if cleanQuery == "🤖" {
@@ -873,43 +872,6 @@ final class LauncherViewModel: ObservableObject {
         }
         if parsed.prefix == nil, !cleanQuery.isEmpty {
             items.append(contentsOf: directInvocationItems(for: cleanQuery))
-        }
-
-        guard !cleanQuery.isEmpty else {
-            let priority = [
-                "builtin.notes", "builtin.capture-clipboard-note", "builtin.capture-selection-note",
-                "builtin.capture-dictation-note", "builtin.note-dictation", "builtin.clipboard", "builtin.ai-chat",
-                "builtin.search-files", "builtin.quick-note", "builtin.terminal",
-                "extension.local.system-controls.force-quit-application",
-                "extension.local.window-management.left-half", "extension.local.window-management.right-half",
-                "extension.local.window-management.maximize", "builtin.command-history", "builtin.extensions-folder",
-                "builtin.settings", "builtin.reload-extensions"
-            ]
-            let defaults = priority.compactMap { id in items.first { $0.id == id } }
-            let recent: [LauncherItem] = usage.recentIdentifiers(limit: 8).compactMap { identifier in
-                guard let item = items.first(where: { $0.id == identifier }) else { return nil }
-                var recentItem = item
-                recentItem.accessory = "Recent"
-                return recentItem
-            }
-            let favorites = items
-                .filter { CommandManager.shared.isFavorite($0.id) }
-                .sorted { CommandManager.shared.favoriteRank($0.id) < CommandManager.shared.favoriteRank($1.id) }
-                .map { item -> LauncherItem in
-                    var favorite = item
-                    favorite.accessory = "Favorite"
-                    return favorite
-                }
-            let contextual = contextualSelectionText == nil ? [] : items.filter { $0.id.hasPrefix("context.") }.prefix(4).map { $0 }
-            let ordered = Array(contextual) + Array(favorites.prefix(4)) + Array(recent.prefix(4)) + defaults.filter { defaultItem in
-                !contextual.contains(where: { $0.id == defaultItem.id })
-                    && !recent.contains(where: { $0.id == defaultItem.id })
-                    && !favorites.contains(where: { $0.id == defaultItem.id })
-            }
-            var unique = [LauncherItem]()
-            var identifiers = Set<String>()
-            for item in ordered where identifiers.insert(item.id).inserted { unique.append(item) }
-            return Array(unique.prefix(11))
         }
 
         let clipboardScores = Dictionary(clipboard.entries.compactMap { entry -> (UUID, Double)? in

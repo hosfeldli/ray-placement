@@ -190,6 +190,39 @@ struct LimaChrome<Content: View>: View {
     }
 }
 
+/// One static spectral edge per major window. It adds depth without stacking
+/// blurred materials over scrolling content or depending on a particular wallpaper.
+struct LimaPrismFrame: View {
+    let radius: CGFloat
+    @ObservedObject private var settings = SettingsStore.shared
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
+        let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
+        let strength = min(0.82, settings.glassStyle.prismaticEdgeOpacity * 2)
+        ZStack {
+            shape.strokeBorder(LimaTheme.borderStrong, lineWidth: LimaDesign.hairlineWidth)
+            if !opaque && strength > 0 {
+                shape.strokeBorder(
+                    LinearGradient(
+                        colors: [settings.accentTheme.primary.opacity(strength),
+                                 Color.cyan.opacity(strength * 0.68),
+                                 settings.accentTheme.primary.opacity(strength * 0.52),
+                                 Color.pink.opacity(strength * 0.62)],
+                        startPoint: .topLeading, endPoint: .bottomTrailing
+                    ),
+                    lineWidth: 1.15
+                )
+                .shadow(color: settings.accentTheme.primary.opacity(strength * 0.36), radius: 9)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
 /// A deliberate hit target for moving transparent windows. Unlike
 /// isMovableByWindowBackground, it cannot steal clicks from editors or buttons.
 struct LimaWindowDragRegion: NSViewRepresentable {

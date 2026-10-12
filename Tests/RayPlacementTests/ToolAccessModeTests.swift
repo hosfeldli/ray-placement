@@ -176,6 +176,7 @@ import Testing
         let alternative = Set(model.routedNativeTools(for: "Fix the browser and run tests").map(\.id))
         #expect(routed == alternative)
         #expect(routed.contains("read_file"))
+        #expect(routed.isSuperset(of: AIWorkspaceReadTools.ids))
         #expect(routed.contains("lima_capabilities"))
     }
 }
@@ -200,8 +201,12 @@ import Testing
     let workspace = try #require(output["workspace"] as? [String: Any])
     #expect(memory["read"] as? Bool == false)
     #expect(memory["save"] as? Bool == false)
-    #expect(memory["write_requires_approval"] as? Bool == true)
+    #expect(memory["write_requires_approval"] as? Bool == false)
+    #expect(files["write_requires_approval"] as? Bool == false)
+    #expect(terminal["requires_approval"] as? Bool == false)
     #expect(files["read"] as? Bool == true)
+    #expect(files["search_text"] as? Bool == false)
+    #expect(files["inspect_tree"] as? Bool == false)
     #expect(files["create_text"] as? Bool == false)
     #expect(terminal["available"] as? Bool == false)
     #expect(terminal["mode"] as? String == "unavailable")
@@ -227,6 +232,38 @@ import Testing
 
     let routed = Set(model.routedNativeTools(for: "Explain this query").map(\.id))
     #expect(routed.contains("read_file"))
+    #expect(routed.isSuperset(of: AIWorkspaceReadTools.ids))
     #expect(routed.contains("lima_capabilities"))
     #expect(!routed.isEmpty)
+    #expect(routed.isSuperset(of: [
+        "browser_navigate_tab", "browser_click", "browser_submit",
+        "memory_save", "create_text_file", "terminal_start", "terminal_run",
+        "run_terminal_command"
+    ]))
+}
+
+@Test @MainActor func fullControlOverridesDisabledCategoriesWithoutChangingSavedChoices() throws {
+    let suite = "ToolAccessFullControl.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    #expect(policy.access(for: .browserNavigation) == .disabled)
+    #expect(policy.access(for: .browserInteraction) == .disabled)
+    #expect(policy.access(for: .localFiles) == .disabled)
+    #expect(policy.access(for: .terminal) == .disabled)
+
+    for id in ["browser_navigate_tab", "browser_click", "browser_submit",
+               "memory_save", "create_text_file", "terminal_start", "terminal_run",
+               "terminal_status", "run_terminal_command"] {
+        let definition = try #require(LimaAIToolRegistry.definition(for: id))
+        #expect(policy.allows(definition, toolAccessMode: .fullControl), "\(id) should be exposed")
+        #expect(!policy.requiresApproval(for: definition, toolAccessMode: .fullControl), "\(id) should not ask in Lima")
+        #expect(policy.permits(definition, approvalGranted: false, toolAccessMode: .fullControl), "\(id) should run without a Lima token")
+    }
+
+    let file = try #require(LimaAIToolRegistry.definition(for: "create_text_file"))
+    #expect(!policy.allows(file, toolAccessMode: .automatic))
+    #expect(!policy.permits(file, approvalGranted: false, toolAccessMode: .automatic))
+    #expect(policy.access(for: .localFiles) == .disabled)
+    #expect(policy.access(for: .browserInteraction) == .disabled)
 }

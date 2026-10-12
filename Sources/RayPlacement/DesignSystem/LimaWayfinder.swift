@@ -331,6 +331,18 @@ struct LimaWayfinderRail: View {
         .frame(maxWidth: .infinity)
         .frame(minHeight: max(labeled ? 43 : 36, 32 * typography.scale))
         .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
+        .overlay {
+            if selected {
+                RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous)
+                    .strokeBorder(
+                        LinearGradient(colors: [settings.accentTheme.primary.opacity(0.72),
+                                                LimaTheme.borderStrong.opacity(0.32)],
+                                       startPoint: .leading, endPoint: .trailing),
+                        lineWidth: 0.9
+                    )
+                    .allowsHitTesting(false)
+            }
+        }
         .contentShape(RoundedRectangle(cornerRadius: LimaRadius.control))
     }
 }

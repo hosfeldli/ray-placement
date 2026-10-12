@@ -5,14 +5,36 @@ import Testing
 @Test func subagentCapabilityBundleIsExplicitAndSanitized() {
     let bundle = AIContextTools.subagentCapabilityBundle
     #expect(bundle.contains("every Lima tool routed for the parent"))
-    #expect(bundle.contains("including tools that can require user approval"))
-    #expect(bundle.contains("pause for the parent user’s normal Lima approval"))
+    #expect(bundle.contains("In Full Control, actions do not need Lima per-action approval"))
+    #expect(bundle.contains("in other modes, pause for the parent user when approval is required"))
     #expect(bundle.contains("Recursive subagent delegation is unavailable"))
     #expect(!bundle.contains("Available tools: none"))
 
     let diagnostic = AIChatDiagnostic(stage: .delegation, message: AIContextTools.delegationCapabilityTrace)
     #expect(diagnostic.stage.rawValue == "delegation")
     #expect(diagnostic.message == AIContextTools.delegationCapabilityTrace)
+}
+
+@Test @MainActor func subagentFullControlInheritsParentRoutedActionsWithoutSavedCategorySwitches() throws {
+    let suite = "SubagentFullControl.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.disabled, for: .savedMemory)
+
+    let names = ["read_file", "search_workspace_text", "inspect_directory_tree",
+                 "browser_click", "memory_save", "terminal_start", "agent_delegate"]
+    let tools = try names.map { try #require(LimaAIToolRegistry.definition(for: $0)) }
+    let fullControl = AIContextTools.inheritedAgentTools(
+        from: tools, actionPolicy: policy, toolAccessMode: .fullControl
+    )
+    #expect(Set(fullControl.map { $0.id }) == Set(names).subtracting(["agent_delegate"]))
+
+    let automatic = AIContextTools.inheritedAgentTools(
+        from: tools, actionPolicy: policy, toolAccessMode: .automatic
+    )
+    #expect(Set(automatic.map { $0.id }) == Set(["read_file", "search_workspace_text",
+                                                  "inspect_directory_tree"]))
 }
 
 @Test @MainActor func subagentInheritsParentEnabledActionToolsAndExcludesRecursiveDelegation() {

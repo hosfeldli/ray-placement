@@ -29,7 +29,8 @@ private func makeCapabilities(
     interactionPolicyAvailable: Bool = true,
     navigation: AIComputerActionAccess = .allowWithJournal,
     interaction: AIComputerActionAccess = .allowWithJournal,
-    context: BrowserCapabilityTurnContext = capabilityContext()
+    context: BrowserCapabilityTurnContext = capabilityContext(),
+    mode: LimaAIToolAccessMode = .automatic
 ) -> BrowserCapabilityState {
     BrowserCapabilityState(
         bridgeEnabled: true,
@@ -43,7 +44,8 @@ private func makeCapabilities(
         interactionPolicyAvailable: interactionPolicyAvailable,
         navigationAccess: navigation,
         interactionAccess: interaction,
-        context: context
+        context: context,
+        toolAccessMode: mode
     )
 }
 
@@ -92,6 +94,26 @@ private func makeCapabilities(
     let context = capabilityContext(pendingApproval: true)
     let state = makeCapabilities(context: context)
 
+    #expect(state.interaction.status == .requiresApproval)
+    #expect(state.interactionSubmitRequiresApproval)
+}
+
+@Test func fullControlSkipsLimaPromptsButNotBrowserSiteGrants() {
+    let state = makeCapabilities(mode: .fullControl)
+    #expect(state.navigation.status == .available)
+    #expect(state.interaction.status == .available)
+    #expect(!state.interactionSubmitRequiresApproval)
+    #expect(state.decisions(forOrigin: "https://ungranted.example").interaction.status == .siteNotGranted)
+
+    let unavailable = makeCapabilities(interactionOrigins: [], mode: .fullControl)
+    #expect(unavailable.interaction.status == .siteNotGranted)
+    let incompatible = makeCapabilities(companionInteraction: false, mode: .fullControl)
+    #expect(incompatible.interaction.status == .incompatibleCompanion)
+}
+
+@Test func askModeStillRequiresPromptsWithJournalCategory() {
+    let state = makeCapabilities(mode: .askForActions)
+    #expect(state.navigation.status == .requiresApproval)
     #expect(state.interaction.status == .requiresApproval)
     #expect(state.interactionSubmitRequiresApproval)
 }

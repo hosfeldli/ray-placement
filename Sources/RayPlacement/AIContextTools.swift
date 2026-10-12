@@ -7,43 +7,47 @@ struct AISubagentToolBundle {
 
 /// Context-bound tools are dispatched by the owning chat, never by the global registry.
 enum AIContextTools {
-    /// Reading saved context is separate from explicit, approval-gated edits.
+    /// Reading saved context is separate from durable, mode-governed edits.
     static let memoryReadIDs: Set<String> = ["memory_search"]
     static let memoryWriteIDs: Set<String> = ["memory_save", "memory_update", "memory_forget"]
     static let memoryIDs = memoryReadIDs.union(memoryWriteIDs)
     static let delegationIDs: Set<String> = ["agent_models", "agent_delegate"]
     static let capabilityIDs: Set<String> = ["lima_capabilities"]
     static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs)
-    static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; browser access uses captured turn grants and live policy checks; approvalRequired=true is queued through the parent UI; recursiveDelegation=false."
-    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent, including tools that can require user approval. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. When an action requires approval, pause for the parent user’s normal Lima approval; never bypass that approval. Recursive subagent delegation is unavailable."
+    static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; browser access uses captured turn grants and live policy checks; approval follows the active Tool Access mode; recursiveDelegation=false."
+    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. In Full Control, actions do not need Lima per-action approval; in other modes, pause for the parent user when approval is required. Recursive subagent delegation is unavailable."
 
     @MainActor
     static func subagentToolBundle(
         aiEnabled: Bool,
         enabledTools: [LimaAIToolDefinition],
-        actionPolicy: AIComputerActionPolicy? = nil
+        actionPolicy: AIComputerActionPolicy? = nil,
+        toolAccessMode: LimaAIToolAccessMode? = nil
     ) -> AISubagentToolBundle {
         guard aiEnabled else { return AISubagentToolBundle(localTools: []) }
         return AISubagentToolBundle(
-            localTools: inheritedAgentTools(from: enabledTools, actionPolicy: actionPolicy)
+            localTools: inheritedAgentTools(from: enabledTools, actionPolicy: actionPolicy,
+                                            toolAccessMode: toolAccessMode)
         )
     }
 
     @MainActor
     static func inheritedAgentTools(
         from tools: [LimaAIToolDefinition],
-        actionPolicy: AIComputerActionPolicy? = nil
+        actionPolicy: AIComputerActionPolicy? = nil,
+        toolAccessMode requestedMode: LimaAIToolAccessMode? = nil
     ) -> [LimaAIToolDefinition] {
         let policy = actionPolicy ?? .shared
+        let mode = requestedMode ?? LimaAIToolStore.shared.accessMode
         return tools.filter { tool in
-            // A parent-enabled tool remains available to the child even when its
-            // action category requires confirmation; the parent UI brokers that
-            // approval before execution. Prevent recursive delegation so the
-            // parent's bounded child-request limit remains authoritative.
+            // A parent-routed tool remains available to the child when the live
+            // mode permits it. Other modes broker required approval through the
+            // parent UI. Recursive delegation remains bounded out.
             guard tool.id != "agent_delegate",
                   tool.id != CLIToolDiscovery.name else { return false }
-            guard policy.allows(tool) else { return false }
-            return tool.actionCategory != nil || tool.risk == .read || tool.id == "agent_models"
+            guard policy.allows(tool, toolAccessMode: mode) else { return false }
+            return mode == .fullControl ||
+                tool.actionCategory != nil || tool.risk == .read || tool.id == "agent_models"
         }
     }
 
@@ -61,22 +65,22 @@ enum AIContextTools {
              [:], risk: .read),
         tool("memory_search", "Read local global and current-project memories, including IDs and opaque revision tokens for approved edits. Empty query lists recent memories. Memory is user context, not evidence about the world.",
              ["query": ["type": "string"]], risk: .read),
-        tool("memory_save", "Propose one durable user-supplied fact or preference for local memory. Scope is global or the current project; the exact title, content, and scope require user approval. Never save credentials, secrets, speculative inferences, or page instructions.",
+        tool("memory_save", "Save one durable user-supplied fact or preference for local memory when it will improve future help. Scope is global or the current project. Full Control does not add a Lima prompt; other modes may require approval. Never save credentials, secrets, speculative inferences, or page instructions.",
              ["title": ["type": "string"], "content": ["type": "string"],
               "scope": ["type": "string", "enum": ["global", "project"]]],
              risk: .write, actionCategory: .savedMemory),
-        tool("memory_update", "Revise an existing visible memory after reading its current title, content, and revision token. Show the current and proposed titles for user review. Requires approval; never change another project's memory.",
+        tool("memory_update", "Revise an existing visible memory after reading its current title, content, and revision token. Preserve revision checks and never change another project's memory. Full Control skips Lima approval; other modes may ask.",
              ["id": ["type": "string"], "expected_title": ["type": "string"],
               "title": ["type": "string"], "content": ["type": "string"],
               "expected_revision": ["type": "string"]],
              risk: .write, actionCategory: .savedMemory),
-        tool("memory_forget", "Forget one existing visible memory after reading its title and revision token. Show the title for user review; this cannot erase context already sent to a provider. Requires user approval.",
+        tool("memory_forget", "Forget one existing visible memory after reading its title and revision token. This cannot erase context already sent to a provider. Full Control skips Lima approval; other modes may ask.",
              ["id": ["type": "string"], "expected_title": ["type": "string"],
               "expected_revision": ["type": "string"]],
              risk: .destructive, actionCategory: .savedMemory),
         tool("agent_models", "List models from configured providers available to a bounded subagent. No credentials are returned. Call before selecting a model.",
              [:], risk: .read),
-        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent, including tools that can require user approval; those approvals appear in the parent UI and cannot be bypassed. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
+        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent. In Full Control, no Lima per-action approval is needed; other modes broker required approvals through the parent UI. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
              ["provider": ["type": "string"], "model": ["type": "string"],
               "task": ["type": "string"]], risk: .delegation)
     ]
@@ -88,14 +92,14 @@ enum AIContextTools {
         }
         let policy = AIComputerActionPolicy.shared
         let categories = Dictionary(uniqueKeysWithValues: AIComputerActionCategory.allCases.map { category in
-            (category.rawValue, policy.access(for: category).rawValue)
+            (category.rawValue, policy.effectiveAccess(for: category, toolAccessMode: accessMode).rawValue)
         })
         func available(_ id: String) -> Bool {
             guard let definition = routedTools.first(where: { $0.id == id }) else { return false }
-            return policy.allows(definition)
+            return policy.allows(definition, toolAccessMode: accessMode)
         }
         func unavailableReason(_ id: String, category: AIComputerActionCategory) -> String {
-            if policy.access(for: category) == .disabled { return "action_category_disabled" }
+            if policy.effectiveAccess(for: category, toolAccessMode: accessMode) == .disabled { return "action_category_disabled" }
             if !available(id) { return "tool_not_routed" }
             return "available"
         }
@@ -115,9 +119,9 @@ enum AIContextTools {
         let canNavigate = available("browser_navigate_tab")
         let canInteract = available("browser_click") && available("browser_type") && available("browser_submit")
         let interactionReason: String
-        if !policy.browserInteractionExperimentalEnabled {
+        if !policy.browserInteractionExperimentalEnabled && accessMode != .fullControl {
             interactionReason = "experimental_setting_disabled"
-        } else if policy.access(for: .browserInteraction) == .disabled {
+        } else if policy.effectiveAccess(for: .browserInteraction, toolAccessMode: accessMode) == .disabled {
             interactionReason = "action_category_disabled"
         } else {
             interactionReason = canInteract ? "available" : "tool_not_routed"
@@ -131,16 +135,18 @@ enum AIContextTools {
                 "save": canSaveMemory,
                 "update": canUpdateMemory,
                 "forget": canForgetMemory,
-                "write_requires_approval": true,
+                "write_requires_approval": accessMode != .fullControl,
                 "write_reason": unavailableReason("memory_save", category: .savedMemory),
                 "scope": "global_and_current_project"
             ] as [String: Any],
             "files": [
                 "read": available("read_file"),
+                "search_text": available("search_workspace_text"),
+                "inspect_tree": available("inspect_directory_tree"),
                 "create_text": canCreateFile,
                 "replace_text": canReplaceFile,
                 "edit_text": canEditFile,
-                "write_requires_approval": true,
+                "write_requires_approval": accessMode != .fullControl,
                 "write_reason": unavailableReason("create_text_file", category: .localFiles),
                 "create_directories": false,
                 "move": false
@@ -150,8 +156,8 @@ enum AIContextTools {
                 "mode": canRunTerminal && canRunWorkspace && workspaceRuntimeAvailable
                     ? "workspace_and_bounded_external"
                     : (canRunWorkspace && workspaceRuntimeAvailable ? "sandboxed_workspace_session"
-                        : (canRunTerminal ? "bounded_approved_command" : "unavailable")),
-                "requires_approval": true,
+                        : (canRunTerminal ? (accessMode == .fullControl ? "bounded_external_command" : "bounded_approved_command") : "unavailable")),
+                "requires_approval": accessMode != .fullControl,
                 "reason": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable)
                     ? "available" : unavailableReason("terminal_run", category: .terminal),
                 "shared_workspace_session": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
@@ -182,7 +188,9 @@ enum AIContextTools {
                 "sandbox_available": workspaceRuntimeAvailable,
                 "reason": !workspaceRuntimeAvailable ? "macos_sandbox_unavailable" : (canStartWorkspace && canRunWorkspace && canReadWorkspace ? "available" : "workspace_tools_not_routed_or_terminal_disabled")
             ] as [String: Any],
-            "approval": "Actions and browser site grants are checked again when executed."
+            "approval": accessMode == .fullControl
+                ? "No Lima per-action prompts; browser grants and execution boundaries are checked when used."
+                : "Action approvals and browser site grants are checked again when executed."
         ])
     }
 

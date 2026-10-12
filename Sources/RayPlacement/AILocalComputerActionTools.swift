@@ -4,8 +4,8 @@ import RayPlacementCore
 
 /// Local actions intentionally stay narrow: regular UTF-8 text/source files
 /// under the current user’s home directory, and one noninteractive developer
-/// command at a time. The chat approval is checked again here so a direct call
-/// cannot bypass the UI decision.
+/// command at a time. Live Tool Access policy is checked again here so a
+/// direct call cannot bypass the active mode or execution limits.
 @MainActor
 enum AILocalComputerActionTools {
     nonisolated static let fileToolIDs: Set<String> = ["create_text_file", "replace_text_file", "edit_text_file"]
@@ -25,7 +25,7 @@ enum AILocalComputerActionTools {
         ),
         tool(
             "replace_text_file",
-            "Atomically replace one existing bounded UTF-8 text or source file after the user approves. Never creates directories, follows symlinks, changes permissions, deletes, renames, or writes hidden or sensitive paths. expected_modified_at must exactly match the value from file_metadata so Lima never replaces a file that changed after inspection.",
+            "Atomically replace one existing bounded UTF-8 text or source file when the active Tool Access mode permits it. Never creates directories, follows symlinks, changes permissions, deletes, renames, or writes hidden or sensitive paths. expected_modified_at must exactly match the value from file_metadata so Lima never replaces a file that changed after inspection.",
             [
                 "path": ["type": "string", "description": "Absolute path for an existing text or source file under the current user’s home folder."],
                 "content": ["type": "string", "description": "Complete replacement UTF-8 content, limited to 96 KB."],
@@ -36,7 +36,7 @@ enum AILocalComputerActionTools {
         ),
         tool(
             "edit_text_file",
-            "Replace exactly one literal text span in an existing bounded UTF-8 text or source file after approval. Requires the exact modified_at from file_metadata and an old_text span observed in read_file. Rejects missing or repeated spans, stale files, symlinks, hidden or sensitive paths, and output over 96 KB.",
+            "Replace exactly one literal text span in an existing bounded UTF-8 text or source file when the active Tool Access mode permits it. Requires the exact modified_at from file_metadata and an old_text span observed in read_file. Rejects missing or repeated spans, stale files, symlinks, hidden or sensitive paths, and output over 96 KB.",
             [
                 "path": ["type": "string", "description": "Absolute path for an existing text or source file under the current user’s home folder."],
                 "old_text": ["type": "string", "description": "A nonempty, exact, unique UTF-8 span from the current file, limited to 32 KB."],
@@ -48,7 +48,7 @@ enum AILocalComputerActionTools {
         ),
         tool(
             "run_terminal_command",
-            "Run one bounded, approved local developer command without a shell. Supports Swift build/test/run, Xcode build/test, read-only Git, or an existing local Python or Node script. Set working_directory to the project for builds and tests; omit it only to use your home folder. The command and streaming output appear in a one-shot AI session in Terminal. Unlike dedicated AI Workspace sessions, this compatibility path runs as your macOS user outside the sandbox; every run requires approval. Timeout defaults to 180 seconds (maximum 300).",
+            "Run one bounded local developer command without a shell when the active Tool Access mode permits it. Supports Swift build/test/run, Xcode build/test, read-only Git, or an existing local Python or Node script. Set working_directory to the project for builds and tests; omit it only to use your home folder. The command and streaming output appear in a one-shot AI session in Terminal. Unlike dedicated AI Workspace sessions, this compatibility path runs as your macOS user outside the sandbox. Full Control skips Lima prompts; other modes may require approval. Timeout defaults to 180 seconds (maximum 300).",
             [
                 "command": ["type": "string", "description": "One supported local developer command of at most 4096 characters, such as swift test or python3 script.py. Lima does not interpret shell syntax."],
                 "working_directory": ["type": "string", "description": "Absolute existing non-sensitive project directory under your home folder; omit only to run in your home folder."],

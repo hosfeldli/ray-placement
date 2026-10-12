@@ -237,7 +237,7 @@ final class UniversalSearchCoordinator {
         return results.sorted { $0.score > $1.score }.prefix(24).map { $0 }
     }
 
-    static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
+    nonisolated static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
         let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let known = ["note", "notes", "dictation", "terminal", "workflow", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files"]
         for prefix in known where clean.lowercased().hasPrefix(prefix + ":") {

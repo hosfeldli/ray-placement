@@ -49,7 +49,8 @@ enum AIProviderFailure {
 
     private static let safeLimaToolNames: Set<String> = [
         "read_screen_context", "search_files", "find_files", "list_directory",
-        "file_metadata", "read_file", "list_extensions", "get_lima_status",
+        "file_metadata", "read_file", "search_workspace_text", "inspect_directory_tree",
+        "list_extensions", "get_lima_status",
         "lima_connection_test", "browser_capabilities", "browser_tabs", "browser_current",
         "browser_read", "browser_scan", "salesforce_read_case_links", "salesforce_resolve_case",
         "salesforce_resolve_cases", "browser_search_web", "browser_open_tabs", "browser_focus_tab",
@@ -57,7 +58,7 @@ enum AIProviderFailure {
     ]
 
     private static let safeLimaSchemaPropertyNames: Set<String> = [
-        "query", "directory", "path", "start_line", "length", "url", "tab_id",
+        "query", "directory", "path", "start_line", "length", "max_depth", "url", "tab_id",
         "case_number", "case_numbers", "urls", "background", "expected_url"
     ]
 

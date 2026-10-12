@@ -30,7 +30,7 @@ enum BrowserBridgeAITools {
         tool("browser_search_web", "Open or reuse a Google search-results tab for a bounded public-web query, then use browser_read on its returned tab ID. This is browser navigation, not background search: it requires the Google site grant and Lima's navigation action policy. It never bypasses login, opens arbitrary hosts, or submits forms.",
              ["query": ["type": "string", "description": "A public-web search query of 1 to 200 UTF-8 bytes; do not include credentials or private data."]],
              risk: .navigation, actionCategory: .browserNavigation),
-        tool("browser_open_tabs", "Open up to 50 HTTPS URLs in one bounded approved batch. reuse_existing defaults to true and matches canonical URL, never title; set false to deliberately create duplicates. Returns one result per requested URL; tab IDs and final URLs are included only when Lima can observe them unambiguously. Every destination needs a grant before any tab opens.",
+        tool("browser_open_tabs", "Open up to 50 HTTPS URLs in one bounded batch under the active Tool Access mode. reuse_existing defaults to true and matches canonical URL, never title; set false to deliberately create duplicates. Returns one result per requested URL; tab IDs and final URLs are included only when Lima can observe them unambiguously. Every destination needs a grant before any tab opens.",
              [
                 "urls": ["type": "array", "minItems": 1, "maxItems": 50,
                          "items": ["type": "string", "description": "An HTTPS URL previously resolved from granted browser content."]],
@@ -48,20 +48,20 @@ enum BrowserBridgeAITools {
                 "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."],
                 "url": ["type": "string", "description": "An HTTPS destination on an explicitly granted browser site."]
              ], risk: .navigation, actionCategory: .browserNavigation),
-        tool("browser_click", "Click one non-submit control in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL and Browser Bridge interaction access. Lima asks per action unless the user explicitly enabled Allow with journal. Never clicks links or submits forms.",
+        tool("browser_click", "Click one non-submit control in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL and Browser Bridge interaction access. Full Control skips Lima prompts; other modes may ask per action. Never clicks links or submits forms.",
              [
                 "tab_id": ["type": "integer", "minimum": 0],
                 "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."],
                 "target": ["type": "string", "description": "An opaque target ID returned by the latest browser_read snapshot for this tab."]
              ], risk: .write, actionCategory: .browserInteraction),
-        tool("browser_type", "Type bounded text into one nonsensitive input, textarea, or content-editable target in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL and Browser Bridge interaction access. Lima asks per action unless the user explicitly enabled Allow with journal.",
+        tool("browser_type", "Type bounded text into one nonsensitive input, textarea, or content-editable target in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL and Browser Bridge interaction access. Full Control skips Lima prompts; other modes may ask per action.",
              [
                 "tab_id": ["type": "integer", "minimum": 0],
                 "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."],
                 "target": ["type": "string", "description": "An opaque target ID returned by the latest browser_read snapshot for this tab."],
                 "text": ["type": "string", "description": "Text to type, limited to 4,000 characters. Never include credentials or secrets."]
              ], risk: .write, actionCategory: .browserInteraction),
-        tool("browser_submit", "Submit one nonsensitive form in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL, individual Lima approval, and Browser Bridge interaction access even in journal mode. Never claims the remote service accepted the submission.",
+        tool("browser_submit", "Submit one nonsensitive form in an exact-site-granted tab. Use only an opaque target returned by the latest browser_read.controls; if no target is returned, do not guess. Requires an exact current URL and Browser Bridge interaction access; Full Control skips Lima approval, while other modes require it. Never claims the remote service accepted the submission.",
              [
                 "tab_id": ["type": "integer", "minimum": 0],
                 "expected_url": ["type": "string", "description": "The exact HTTPS URL previously returned by a Lima browser tool."],

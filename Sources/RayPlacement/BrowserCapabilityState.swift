@@ -56,7 +56,7 @@ struct BrowserCapabilityState: Equatable, Sendable {
     let exactInteractionOrigins: [String]
     let broadHTTPSGrantInstalled: Bool
     let broadHTTPSReadingEnabled: Bool
-    let interactionSubmitRequiresApproval = true
+    let interactionSubmitRequiresApproval: Bool
 
     struct OriginDecisions: Equatable, Sendable {
         let origin: String?
@@ -129,8 +129,10 @@ struct BrowserCapabilityState: Equatable, Sendable {
         interactionPolicyAvailable: Bool,
         navigationAccess: AIComputerActionAccess,
         interactionAccess: AIComputerActionAccess,
-        context: BrowserCapabilityTurnContext
+        context: BrowserCapabilityTurnContext,
+        toolAccessMode: LimaAIToolAccessMode = .automatic
     ) {
+        self.interactionSubmitRequiresApproval = toolAccessMode != .fullControl
         self.exactReadOrigins = exactReadOrigins.sorted()
         self.exactInteractionOrigins = exactInteractionOrigins.sorted()
         self.broadHTTPSGrantInstalled = broadHTTPSGrantInstalled
@@ -178,7 +180,7 @@ struct BrowserCapabilityState: Equatable, Sendable {
         } else if exactReadOrigins.isEmpty && !(broadHTTPSGrantInstalled && broadHTTPSReadingEnabled) {
             navigation = .blocked(broadHTTPSGrantInstalled ? .broadGrantDisabled : .siteNotGranted,
                                   "The destination must have an exact site grant or an enabled broad HTTPS grant.")
-        } else if navigationAccess == .askEveryTime {
+        } else if navigationAccess == .askEveryTime || toolAccessMode == .askForActions {
             navigation = .blocked(.requiresApproval, "Lima asks for approval before each navigation action.")
         } else {
             navigation = .available("Navigation is journaled when used.")
@@ -194,10 +196,12 @@ struct BrowserCapabilityState: Equatable, Sendable {
             interaction = .blocked(.incompatibleCompanion, "The signed companion does not advertise browser_interaction_v1.")
         } else if exactInteractionOrigins.isEmpty {
             interaction = .blocked(.siteNotGranted, "Interaction requires a separate exact-site grant in the companion; broad HTTPS read grants do not apply.")
-        } else if context.pendingApproval || interactionAccess == .askEveryTime {
-            interaction = .blocked(.requiresApproval, "Lima asks before browser interactions; form submission always requires an individual approval.")
+        } else if context.pendingApproval || interactionAccess == .askEveryTime || toolAccessMode == .askForActions {
+            interaction = .blocked(.requiresApproval, "Lima asks before browser interactions in the current Tool Access mode.")
         } else {
-            interaction = .available("Click and type use the selected journal policy; form submission still asks for approval.")
+            interaction = .available(toolAccessMode == .fullControl
+                ? "Full Control skips Lima action prompts; exact-site companion grants still apply."
+                : "Click and type use the selected journal policy; form submission still asks for approval.")
         }
     }
 }

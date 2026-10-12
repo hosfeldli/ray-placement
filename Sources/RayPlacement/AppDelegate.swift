@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var observers: [NSObjectProtocol] = []
     private var registeredActivationShortcut: ShortcutSpec?
+    private var registeredExpandedWorkspaceShortcut: ShortcutSpec?
     private var registeredNotesShortcut: ShortcutSpec?
     private var registeredQuickNoteShortcut: ShortcutSpec?
     private var registeredDictationShortcut: ShortcutSpec?
@@ -126,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleLauncher() { launcher.toggle() }
     @objc func showSettings() { launcher.showSettings() }
     @objc func showNotes() { launcher.showNotes() }
+    @objc func showExpandedWorkspace() { launcher.showExpandedWorkspace() }
     @objc func showAIChat() { launcher.showAIChat() }
     @objc func showExtensionStore() { launcher.showExtensionStore() }
     @objc func showQuickNote() { launcher.showQuickNote() }
@@ -169,6 +171,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func registerActionHotkeys() {
+        registerActionHotkey(
+            identifier: "builtin.expanded-workspace",
+            displayName: "Open Workspace",
+            enabled: SettingsStore.shared.expandedWorkspaceHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.expandedWorkspaceShortcut,
+            previous: &registeredExpandedWorkspaceShortcut,
+            restore: SettingsStore.shared.restoreExpandedWorkspaceShortcut
+        ) { [weak self] in
+            self?.launcher.showExpandedWorkspace()
+        }
         registerActionHotkey(
             identifier: "builtin.notes",
             displayName: "Notes",

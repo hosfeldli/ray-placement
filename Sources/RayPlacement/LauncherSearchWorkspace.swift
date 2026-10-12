@@ -46,6 +46,7 @@ enum LauncherSearchDesign {
 @MainActor
 struct LauncherSearchWorkspace: View {
     @ObservedObject var model: LauncherViewModel
+    @ObservedObject var aiChatModel: AIChatViewModel
     let openWorkspace: (LimaWorkspaceModule) -> Void
     let openSettings: () -> Void
     let createNote: () -> Void
@@ -57,8 +58,10 @@ struct LauncherSearchWorkspace: View {
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
-    private var idle: Bool { model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    private var opaque: Bool { reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency) }
+    private var idle: Bool { UniversalSearchCoordinator.parse(model.query).query.isEmpty }
     private var selection: LauncherItem? {
         guard let item = model.selectedItem, model.isActionable(item) else { return nil }
         return item
@@ -69,42 +72,52 @@ struct LauncherSearchWorkspace: View {
             let canShowInspector = LauncherSearchDesign.canShowInspector(at: geometry.size.width)
             let hasInspector = canShowInspector && showingInspector
             let wide = geometry.size.width >= 680
-            VStack(spacing: 0) {
-                LimaWindowDragRegion()
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 24)
-                    .overlay(alignment: .leading) {
-                        Text("LIMA")
-                            .limaFont(.system(size: 9, weight: .semibold))
-                            .tracking(1.6)
-                            .foregroundStyle(LimaTheme.textTertiary)
-                            .padding(.leading, wide ? 18 : 14)
-                            .allowsHitTesting(false)
-                    }
-                VStack(spacing: 14) {
-                    searchField
-                    HStack(alignment: .top, spacing: 14) {
-                        results
-                        if hasInspector {
-                            Rectangle().fill(LimaTheme.borderSubtle).frame(width: 0.5)
-                            ScrollView {
-                                if let item = selection { inspector(item) }
-                                else { emptyInspector }
+            Group {
+                if idle {
+                    idleSearch(wide: wide)
+                } else {
+                    VStack(spacing: 0) {
+                        LimaWindowDragRegion()
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 12)
+                        VStack(spacing: 12) {
+                            searchField
+                            HStack(alignment: .top, spacing: 14) {
+                                results
+                                if hasInspector {
+                                    Rectangle().fill(LimaTheme.borderSubtle).frame(width: 0.5)
+                                    ScrollView {
+                                        if let item = selection { inspector(item) }
+                                        else { emptyInspector }
+                                    }
+                                    .frame(width: LauncherSearchDesign.inspectorWidth)
+                                }
                             }
-                            .frame(width: LauncherSearchDesign.inspectorWidth)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                        .padding(.horizontal, wide ? 16 : 12)
+                        .padding(.bottom, wide ? 16 : 12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        footer(wide: wide, canShowInspector: canShowInspector)
+                    }
+                    .background {
+                        ZStack {
+                            LimaTheme.surfacePrimary.opacity(opaque ? 1 : settings.glassStyle.baseOpacity)
+                            if !opaque {
+                                LinearGradient(
+                                    colors: [settings.accentTheme.primary.opacity(0.12), .clear,
+                                             settings.accentTheme.primary.opacity(0.07)],
+                                    startPoint: .topLeading, endPoint: .bottomTrailing
+                                )
+                            }
                         }
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
+                    .overlay { LimaPrismFrame(radius: LimaRadius.launcherWindow) }
+                    .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(0.22), radius: 14, y: 5)
                 }
-                .padding(.horizontal, wide ? 16 : 12)
-                .padding(.bottom, wide ? 16 : 12)
-                .padding(.top, 4)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                footer(wide: wide, canShowInspector: canShowInspector)
             }
-            .background(LimaTheme.surfacePrimary.opacity(
-                reduceTransparency ? 1 : settings.glassStyle.baseOpacity
-            ))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { searchFocused = true }
         .onChange(of: model.focusGeneration) { _ in searchFocused = true }
@@ -129,29 +142,92 @@ struct LauncherSearchWorkspace: View {
         .accessibilityIdentifier("lima-search-workspace")
     }
 
-    private var searchField: some View {
-        HStack(spacing: 13) {
-            Menu {
-                Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
-                ForEach(["app", "command", "file", "note", "dictation", "chat", "workflow", "workspace", "context", "clipboard"], id: \.self) { scope in
-                    Button(scope.capitalized) {
-                        model.query = scope + ": " + UniversalSearchCoordinator.parse(model.query).query
-                        searchFocused = true
+    private func idleSearch(wide: Bool) -> some View {
+        VStack(spacing: 8) {
+            VStack(spacing: 7) {
+                HStack(spacing: 11) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(LimaTheme.textPrimary)
+                        .frame(width: 23)
+                        .accessibilityHidden(true)
+                    ZStack(alignment: .leading) {
+                        if model.query.isEmpty {
+                            Text("Search, ask, or run a command…")
+                                .foregroundStyle(LimaTheme.textSecondary)
+                                .lineLimit(1)
+                                .allowsHitTesting(false)
+                                .accessibilityHidden(true)
+                        }
+                        TextField("", text: $model.query)
+                            .textFieldStyle(.plain)
+                            .focused($searchFocused)
+                            .onSubmit(submitSearch)
+                            .accessibilityLabel("Search commands, apps, and local content")
+                    }
+                    .limaFont(.system(size: 16))
+                    if !model.query.isEmpty {
+                        Button {
+                            model.query = ""
+                            searchFocused = true
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .help("Clear search")
+                        .accessibilityLabel("Clear search")
                     }
                 }
-                Divider()
-                Button("Files…") { model.enter(.files) }
-            } label: {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 23, weight: .regular))
-                    .foregroundStyle(LimaTheme.textSecondary)
+                .frame(height: 34)
+                HStack(spacing: 8) {
+                    quickActions(wide: wide)
+                    Spacer(minLength: 4)
+                    launcherModelPicker(wide: wide)
+                    searchSubmitButton
+                }
+                .frame(height: 39)
             }
-            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-            .help("Narrow search: apps, commands, files, notes, dictation, chats, workflows, workspaces, Context Shelf, or clipboard")
-            .accessibilityLabel("Search scope")
+            .padding(.horizontal, wide ? 16 : 12)
+            .padding(.vertical, 12)
+            .limaGlassContainer(region: .composer, cornerRadius: 20)
+            .overlay { LimaPrismFrame(radius: 20) }
+            .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(0.22), radius: 9, y: 3)
+
+            HStack(spacing: 12) {
+                HStack(spacing: 5) {
+                    keycap("↩")
+                    Text("Search or run")
+                }
+                Rectangle().fill(LimaTheme.borderSubtle).frame(width: 1, height: 13)
+                HStack(spacing: 5) {
+                    keycap("esc")
+                    Text("Close")
+                }
+            }
+            .limaFont(.caption)
+            .foregroundStyle(LimaTheme.textSecondary)
+            .padding(.horizontal, 12)
+            .frame(height: 27)
+            .background(LimaTheme.surfaceSecondary.opacity(opaque ? 1 : 0.9),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
+            .accessibilityElement(children: .combine)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 1)
+        .padding(.vertical, 1)
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(LimaTheme.accentInk)
+                .accessibilityHidden(true)
             ZStack(alignment: .leading) {
                 if model.query.isEmpty {
-                    Text("Search or run a command")
+                    Text("Search, ask, or run a command…")
                         .foregroundStyle(LimaTheme.textSecondary)
                         .lineLimit(1)
                         .allowsHitTesting(false)
@@ -163,7 +239,7 @@ struct LauncherSearchWorkspace: View {
                     .onSubmit { model.executeSelected() }
                     .accessibilityLabel("Search commands, apps, and local content")
             }
-            .limaFont(.system(size: 19))
+            .limaFont(.system(size: 17))
             if model.isSearching { ProgressView().controlSize(.small) }
             if !model.query.isEmpty {
                 Button { model.query = ""; searchFocused = true } label: {
@@ -173,16 +249,153 @@ struct LauncherSearchWorkspace: View {
                 .foregroundStyle(LimaTheme.textSecondary)
                 .help("Clear search")
                 .accessibilityLabel("Clear search")
-            } else {
-                keycap("⌘ F")
             }
         }
         .padding(.horizontal, 17)
-        .frame(height: 58)
-        .limaGlassContainer(region: .toolbar, cornerRadius: LimaRadius.searchField)
-        .overlay(RoundedRectangle(cornerRadius: LimaRadius.searchField).strokeBorder(
-            searchFocused ? LimaTheme.fieldFocusedBorder.opacity(0.65) : LimaTheme.borderStrong,
-            lineWidth: LimaDesign.hairlineWidth))
+        .frame(height: idle ? 52 : 56)
+        .limaGlassContainer(region: .composer, cornerRadius: LimaRadius.searchField)
+        .overlay {
+            RoundedRectangle(cornerRadius: LimaRadius.searchField)
+                .strokeBorder(
+                    LinearGradient(colors: [settings.accentTheme.primary.opacity(0.72),
+                                            LimaTheme.borderStrong,
+                                            settings.accentTheme.primary.opacity(0.48)],
+                                   startPoint: .topLeading, endPoint: .bottomTrailing),
+                    lineWidth: searchFocused ? 1.2 : 0.8
+                )
+                .allowsHitTesting(false)
+        }
+        .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(0.17), radius: 9)
+    }
+
+    private func quickActions(wide: Bool) -> some View {
+        HStack(spacing: 7) {
+            quickAction("AI", symbol: "sparkles", compact: !wide, selected: true) { openWorkspace(.ai) }
+            quickAction("Notes", symbol: "note.text", compact: !wide) { openWorkspace(.notes) }
+            quickAction("Files", symbol: "doc", compact: !wide) { model.enter(.files) }
+            quickAction("Web", symbol: "globe", compact: !wide) {
+                aiChatModel.appendDraftPrompt("Research with Browser Bridge: ")
+                openWorkspace(.ai)
+            }
+            Menu {
+                ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
+                    Button(module.title, systemImage: module.symbol) { openWorkspace(module) }
+                }
+                Divider()
+                Menu("Search in") {
+                    Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
+                    ForEach(["app", "command", "file", "note", "dictation", "chat", "workflow", "workspace", "context", "clipboard"], id: \.self) { scope in
+                        Button(scope.capitalized) {
+                            model.query = scope + ": " + UniversalSearchCoordinator.parse(model.query).query
+                            searchFocused = true
+                        }
+                    }
+                }
+                Button("Settings", systemImage: "gearshape", action: openSettings)
+            } label: {
+                Group {
+                    if wide { Label("Workspace", systemImage: "square.stack.3d.up") }
+                    else { Image(systemName: "square.stack.3d.up") }
+                }
+                .limaFont(.system(size: 12, weight: .medium))
+                .padding(.horizontal, wide ? 9 : 0)
+                .frame(width: wide ? nil : 35, height: 35)
+                .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .tint(LimaTheme.textSecondary)
+            .accessibilityLabel("Workspace options and search scope")
+        }
+        .foregroundStyle(LimaTheme.textSecondary)
+        .frame(height: 36)
+    }
+
+    private var searchSubmitButton: some View {
+        Button(action: submitSearch) {
+            Image(systemName: "arrow.up")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 37, height: 37)
+                .background(LinearGradient(colors: [Color.blue, settings.accentTheme.primary, Color.pink],
+                                           startPoint: .topLeading, endPoint: .bottomTrailing),
+                            in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.4), lineWidth: 0.8))
+                .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(0.45), radius: 7)
+        }
+        .buttonStyle(.plain)
+        .help(idle ? "Open AI Chat" : "Open selected result")
+        .accessibilityLabel(idle ? "Open AI Chat" : "Open selected result")
+    }
+
+    private func launcherModelPicker(wide: Bool) -> some View {
+        Menu {
+            Text("Choose the model for AI Chat")
+            ForEach(aiChatModel.pickerModels) { option in
+                Button {
+                    aiChatModel.selectModel(option)
+                } label: {
+                    Label(option.displayName, systemImage: aiChatModel.model == option.id ? "checkmark" : "circle")
+                }
+            }
+            Divider()
+            Menu("Switch provider") {
+                ForEach(AIProvider.chatProviders) { provider in
+                    Button(provider.title) { aiChatModel.selectProvider(provider) }
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "sparkle")
+                    .foregroundStyle(LimaTheme.accentInk)
+                if wide {
+                    Text(aiChatModel.selectedModelOption.displayName)
+                        .lineLimit(1)
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .limaFont(.system(size: 12, weight: .medium))
+            .foregroundStyle(LimaTheme.textPrimary)
+            .padding(.horizontal, 10)
+            .frame(height: 35)
+            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: true, vertical: false)
+        .disabled(aiChatModel.canEndTask)
+        .help("Choose the AI provider and model")
+        .accessibilityLabel("AI model: \(aiChatModel.selectedModelOption.displayName)")
+    }
+
+    private func submitSearch() {
+        if idle { openWorkspace(.ai) }
+        else { model.executeSelected() }
+    }
+
+    private func quickAction(_ title: String, symbol: String, compact: Bool, selected: Bool = false,
+                             action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Group {
+                if compact { Image(systemName: symbol) }
+                else { Label(title, systemImage: symbol) }
+            }
+            .limaFont(.system(size: 12, weight: selected ? .semibold : .medium))
+            .foregroundStyle(selected ? LimaTheme.accentInk : LimaTheme.textSecondary)
+            .padding(.horizontal, compact ? 0 : 10)
+            .frame(width: compact ? 32 : nil, height: 32)
+            .background(selected ? LimaTheme.accentSoft : LimaTheme.surfaceSecondary,
+                        in: RoundedRectangle(cornerRadius: 9))
+            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
+                selected ? settings.accentTheme.primary.opacity(0.75) : LimaTheme.borderSubtle,
+                lineWidth: selected ? 0.9 : 0.5))
+        }
+        .buttonStyle(.plain)
+        .help("Open \(title)")
+        .accessibilityLabel("Open \(title)")
     }
 
     private var results: some View {
@@ -194,16 +407,23 @@ struct LauncherSearchWorkspace: View {
                         Text(String(context.prefix(140))).limaFont(.caption)
                             .foregroundStyle(LimaTheme.textSecondary).lineLimit(2).padding(.bottom, 8)
                     }
-                    Text(idle ? "Suggested for you" : "Search results")
-                        .limaFont(.callout.weight(.medium))
-                        .foregroundStyle(LimaTheme.textSecondary)
-                        .padding(.horizontal, 10).padding(.bottom, 5)
-                    ForEach(Array(model.results.enumerated()), id: \.element.id) { index, item in
-                        if idle, index == 6 {
-                            Divider().padding(.vertical, 12)
-                            Text("More from your workspace").limaFont(.callout.weight(.medium))
-                                .foregroundStyle(LimaTheme.textSecondary).padding(.horizontal, 10)
+                    HStack {
+                        Text("Search results")
+                            .limaFont(.callout.weight(.semibold))
+                        Spacer()
+                        if !model.results.isEmpty {
+                            Text("\(model.results.count) found").limaFont(.caption)
                         }
+                    }
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .padding(.horizontal, 10).padding(.bottom, 5)
+                    if model.results.isEmpty && !model.isSearching {
+                        Label("No matches. Try a different search or scope.", systemImage: "magnifyingglass")
+                            .limaFont(.callout)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                            .frame(maxWidth: .infinity, minHeight: 100)
+                    }
+                    ForEach(Array(model.results.enumerated()), id: \.element.id) { index, item in
                         resultRow(item, index: index).id(item.id)
                     }
                 }

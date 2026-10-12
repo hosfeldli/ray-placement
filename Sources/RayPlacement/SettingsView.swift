@@ -255,6 +255,7 @@ struct SettingsView: View {
     private func shortcutValue(for assignmentID: String) -> String {
         switch assignmentID {
         case "builtin.activation": return settings.activationShortcut
+        case "builtin.expanded-workspace": return settings.expandedWorkspaceShortcut
         case "builtin.notes": return settings.notesShortcut
         case "builtin.quick-note": return settings.quickNoteShortcut
         case "builtin.dictation": return settings.dictationShortcut
@@ -292,6 +293,7 @@ struct SettingsView: View {
     private func applyShortcut(_ shortcut: String, to assignmentID: String) {
         switch assignmentID {
         case "builtin.activation": settings.activationShortcut = shortcut
+        case "builtin.expanded-workspace": settings.expandedWorkspaceShortcut = shortcut
         case "builtin.notes": settings.notesShortcut = shortcut
         case "builtin.quick-note": settings.quickNoteShortcut = shortcut
         case "builtin.dictation": settings.dictationShortcut = shortcut
@@ -311,6 +313,7 @@ struct SettingsView: View {
     private func shortcutTitle(for assignmentID: String) -> String {
         let titles = [
             "builtin.activation": "Open Search",
+            "builtin.expanded-workspace": "Open Workspace",
             "builtin.notes": "Notes",
             "builtin.quick-note": "Quick Note",
             "builtin.dictation": "Dictation",
@@ -598,7 +601,7 @@ struct SettingsView: View {
                     get: { actionPolicy.browserInteractionExperimentalEnabled },
                     set: { actionPolicy.setBrowserInteractionExperimentalEnabled($0) }
                 ))
-                Text("Off by default. Unlocks browser click, type, and submit actions in AI Settings. An enabled interaction policy, exact-site access, and a compatible signed Browser Bridge companion are still required. Click and type may use an explicitly selected Activity journal mode; form submission always asks in Lima. Browser reading and navigation do not require this switch.")
+                Text("Outside Full Control, this switch unlocks browser click, type, and submit in AI Settings. Full Control exposes those Lima tools without Lima action prompts, but exact-site interaction access and a compatible signed Browser Bridge companion are still required. Browser reading and navigation do not require this switch.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -1340,6 +1343,12 @@ struct SettingsView: View {
                     shortcut: shortcutBinding(for: "builtin.activation")
                 )
                 PrimaryShortcutRow(
+                    title: "Open Workspace",
+                    symbol: "rectangle.expand.vertical",
+                    enabled: $settings.expandedWorkspaceHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.expanded-workspace")
+                )
+                PrimaryShortcutRow(
                     title: "Notes",
                     symbol: "note.text",
                     enabled: $settings.notesHotkeyEnabled,
@@ -1631,6 +1640,12 @@ struct SettingsView: View {
                     symbol: "magnifyingglass",
                     enabled: $settings.activationHotkeyEnabled,
                     shortcut: shortcutBinding(for: "builtin.activation")
+                )
+                PrimaryShortcutRow(
+                    title: "Open Workspace",
+                    symbol: "rectangle.expand.vertical",
+                    enabled: $settings.expandedWorkspaceHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.expanded-workspace")
                 )
                 Text("Click the shortcut field, then press the keys you want to use from any app. If macOS already uses that shortcut, change the macOS shortcut first.")
                     .limaFont(.caption)

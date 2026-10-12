@@ -11,23 +11,23 @@ enum LimaWayfinderPalette {
         func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat) -> NSColor {
             NSColor(srgbRed: r, green: g, blue: b, alpha: 1)
         }
-        let canvas = dark ? rgb(0.078, 0.086, 0.118) : rgb(0.935, 0.947, 0.976)
-        let content = dark ? rgb(0.108, 0.122, 0.163) : rgb(0.970, 0.976, 0.992)
-        let raised = dark ? rgb(0.153, 0.169, 0.218) : rgb(1, 1, 1)
-        let navigation = dark ? rgb(0.120, 0.133, 0.178) : rgb(0.941, 0.953, 0.984)
-        let selection = content.blended(withFraction: dark ? 0.22 : 0.12, of: accent) ?? content
+        let canvas = dark ? rgb(0.039, 0.051, 0.088) : rgb(0.927, 0.940, 0.970)
+        let content = dark ? rgb(0.063, 0.075, 0.120) : rgb(0.974, 0.980, 0.994)
+        let raised = dark ? rgb(0.101, 0.117, 0.169) : rgb(1, 1, 1)
+        let navigation = dark ? rgb(0.071, 0.084, 0.135) : rgb(0.943, 0.953, 0.983)
+        let selection = content.blended(withFraction: dark ? 0.30 : 0.16, of: accent) ?? content
         switch role {
         case .canvas: return canvas
         case .navigation: return navigation
         case .content: return content
         case .raised: return raised
-        case .field: return dark ? rgb(0.126, 0.141, 0.188) : rgb(1, 1, 1)
+        case .field: return dark ? rgb(0.083, 0.100, 0.151) : rgb(1, 1, 1)
         case .selection: return selection
         case .border:
             if highContrast { return dark ? rgb(0.51, 0.55, 0.57) : rgb(0.42, 0.46, 0.45) }
-            return dark ? rgb(0.265, 0.286, 0.357) : rgb(0.837, 0.859, 0.914)
+            return dark ? rgb(0.244, 0.278, 0.369) : rgb(0.816, 0.843, 0.908)
         case .strongBorder:
-            return dark ? rgb(0.47, 0.51, 0.61) : rgb(0.55, 0.60, 0.71)
+            return dark ? rgb(0.43, 0.50, 0.65) : rgb(0.52, 0.58, 0.71)
         case .accentInk:
             // Use the same ink on a card, the rail, and selected rows. Shift
             // light accents darker in Light mode rather than falling to black.

@@ -47,19 +47,24 @@ struct AIChatVisualPreview: View {
     var body: some View {
         ZStack {
             LiquidGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-            AIChatWorkspaceView(model: model, isEmbedded: true,
-                terminalVisualSessions: AIChatVisualFixtures.terminalSessions(for: scenario),
-                terminalInitiallyMinimized: scenario == .terminalMinimized)
-                .overlay(alignment: .topTrailing) {
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
                     Label("TEST DATA", systemImage: "testtube.2")
                         .limaFont(.caption2.weight(.bold))
                         .foregroundStyle(.black.opacity(0.8))
                         .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
+                        .padding(.vertical, 4)
                         .background(.orange, in: Capsule())
-                        .padding(16)
                         .accessibilityLabel("Test data")
                 }
+                .padding(.horizontal, 16)
+                .frame(height: 28)
+                AIChatWorkspaceView(model: model, isEmbedded: true,
+                    terminalVisualSessions: AIChatVisualFixtures.terminalSessions(for: scenario),
+                    terminalInitiallyMinimized: scenario == .terminalMinimized)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .accessibilityIdentifier("ai-visual-\(scenario.rawValue)")
     }

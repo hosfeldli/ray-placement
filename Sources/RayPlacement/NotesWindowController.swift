@@ -264,6 +264,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         }
     }
 
+    func presentExpanded() {
+        restoreWorkspace()
+        present()
+    }
+
     func present(module: LimaWorkspaceModule) {
         selectModule(module)
         present()
@@ -828,11 +833,7 @@ private struct WorkspaceView: View {
             }
             .environment(\.limaWorkspaceSizeClass, sizeClass)
             .clipShape(RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous)
-                    .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
-                    .allowsHitTesting(false)
-            }
+            .overlay { LimaPrismFrame(radius: LimaRadius.majorSurface) }
             .padding(sizeClass == .compact ? 4 : 8)
         }
         .background(Color.clear)
@@ -958,22 +959,70 @@ private struct WorkspaceView: View {
                 && LimaWorkspaceMetrics.sidebarWidth(contentWidth: proxy.size.width, preferred: sizeClass.contextSidebarWidth) > 0
             let sidebarWidth = notesSidebarFits && presentation.sidebarVisible ? (sizeClass.contextSidebarWidth ?? 0) : 0
             HStack(spacing: 8) {
-            LimaToolbarTitle(
-                symbol: workspaceModuleSymbol(presentation.activeModule),
-                title: workspaceModuleTitle(presentation.activeModule),
-                subtitle: "Workspace"
-            )
-            .frame(maxWidth: 240, alignment: .leading)
+            if presentation.activeModule != .notes || sizeClass != .expanded {
+                LimaToolbarTitle(
+                    symbol: workspaceModuleSymbol(presentation.activeModule),
+                    title: workspaceModuleTitle(presentation.activeModule),
+                    subtitle: "Workspace"
+                )
+                .frame(maxWidth: 240, alignment: .leading)
 
-            LimaWindowDragRegion()
-                .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
-
-            Button { openCommandSearch("") } label: {
-                Image(systemName: "magnifyingglass").frame(width: 28, height: 28)
+                LimaWindowDragRegion()
+                    .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
             }
-            .buttonStyle(.borderless)
-            .help("Search commands and applications")
-            .accessibilityLabel("Search commands and applications")
+
+            if sizeClass == .expanded {
+                Button { openCommandSearch("") } label: {
+                    HStack(spacing: 9) {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundStyle(LimaTheme.accentInk)
+                        Text("Search, ask, or run a command…")
+                            .lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                    .limaFont(.system(size: 12, weight: .medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(width: presentation.activeModule == .notes
+                           ? min(440, max(260, proxy.size.width * 0.44))
+                           : min(330, max(210, proxy.size.width * 0.36)), height: 34)
+                    .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
+                    .overlay(RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(LimaTheme.borderStrong.opacity(0.55), lineWidth: 0.7))
+                }
+                .buttonStyle(.plain)
+                .help("Open Search")
+                .accessibilityLabel("Open Search")
+            } else {
+                Button { openCommandSearch("") } label: {
+                    Image(systemName: "magnifyingglass").frame(width: 28, height: 28)
+                }
+                .buttonStyle(.borderless)
+                .help("Open Search")
+                .accessibilityLabel("Open Search")
+            }
+
+            if presentation.activeModule == .notes && sizeClass == .expanded {
+                Menu {
+                    Button("Notes", systemImage: "note.text") { selectModule(.notes) }
+                    Button("AI Chat", systemImage: "sparkles") { selectModule(.ai) }
+                    Button("Context", systemImage: "tray") { selectModule(.context) }
+                } label: {
+                    Label("Notes + AI", systemImage: "rectangle.split.3x1")
+                        .limaFont(.system(size: 12, weight: .medium))
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10))
+                        .overlay(RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize(horizontal: true, vertical: false)
+                .help("Switch between Notes, AI Chat, and Context")
+                LimaWindowDragRegion()
+                    .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
+            }
 
             if presentation.activeModule == .notes {
                 if !notesSidebarFits || !presentation.sidebarVisible {

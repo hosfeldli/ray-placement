@@ -47,7 +47,9 @@ struct AIProviderSettingsView: View {
                 }
                 Text(toolStore.accessMode.detail)
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                Text("Changing modes does not erase existing tool selections or enable a disabled computer-action category. Browser site grants and required approvals remain in effect.")
+                Text(toolStore.accessMode == .fullControl
+                    ? "Full Control exposes every implemented Lima tool and skips Lima per-action prompts. Saved category choices return when you leave this mode. Browser site grants, macOS permissions, sandbox boundaries, and execution limits still apply."
+                    : "Changing modes does not erase existing tool selections. Outside Full Control, disabled computer-action categories remain unavailable and required Lima prompts remain in effect.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Agent execution") {
@@ -65,7 +67,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Browser research") {
-                Text("AI research uses Browser Bridge tabs only. Search and source pages must be available in a supported browser with the relevant site grants. Browser navigation follows its separate action setting; Lima does not use a background web-search provider or fetch pages outside the browser.")
+                Text("AI research uses Browser Bridge tabs only. Search and source pages must be available in a supported browser with the relevant site grants. Outside Full Control, navigation follows its category setting. Lima does not use a background web-search provider or fetch pages outside the browser.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 if legacyWebSearchCredentials.isConfigured {
                     Text("A Brave Search key saved for the retired tool remains in Keychain. Lima no longer uses it.")
@@ -95,50 +97,62 @@ struct AIProviderSettingsView: View {
                     Button("Cancel", role: .cancel) {}
                     Button("Enable Experiment") { actionPolicy.setBroadBrowserGrantsExperimentalEnabled(true) }
                 } message: {
-                    Text("If Zen or Firefox has already granted https://*/*, Lima can read eligible tabs across HTTPS sites. AI may send selected page context to your configured provider. Private windows and form values remain excluded. This switch does not grant browser interactions; those need a separate exact-site grant and AI action setting. Revoke the browser permission separately in the companion.")
+                    Text("If Zen or Firefox has already granted https://*/*, Lima can read eligible tabs across HTTPS sites. AI may send selected page context to your configured provider. Private windows and form values remain excluded. This switch does not grant browser interactions; those need a separate exact-site grant and a compatible signed companion. Outside Full Control, the Browser interaction category must also be enabled. Revoke the browser permission separately in the companion.")
                 }
-                Text("Off by default. This switch does not grant browser permission. It allows Lima to use a separately approved https://*/* reading grant; exact-site grants remain the default. Browser navigation and interactions still follow their separate AI action settings.")
+                Text("Off by default. This switch does not grant browser permission. It allows Lima to use a separately approved https://*/* reading grant; exact-site grants remain the default. Outside Full Control, browser navigation and interactions also follow their category settings.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Computer actions") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("Terminal and code start Off. Supervised AI Workspace sessions run in ~/Desktop/Lima Workspace, sandboxed without network or unrelated home access.", systemImage: "terminal")
-                    Label("Saved memory starts at Ask every time. AI may propose stable, user-supplied context, but each save, revision, or deletion needs your approval.", systemImage: "brain.head.profile")
-                    Label("Browser Search still needs Browser navigation and a site grant. Timeouts, output limits, and Activity journaling apply.", systemImage: "globe")
+                    Label("Outside Full Control, Terminal and code start Off. AI Workspace sessions remain sandboxed without network or unrelated home access in every mode.", systemImage: "terminal")
+                    Label("Outside Full Control, saved memory starts at Ask every time. Full Control can save stable user-supplied context without a Lima prompt.", systemImage: "brain.head.profile")
+                    Label("Browser Search still needs a Browser Bridge site grant. Timeouts, output limits, and Activity journaling apply.", systemImage: "globe")
                 }
                 .font(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)
-                ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled }) { category in
-                    Picker(category.title, selection: Binding(
-                        get: { actionPolicy.access(for: category) },
-                        set: { access in
-                            if category == .browserInteraction && access == .allowWithJournal {
-                                confirmInteractionJournal = true
-                            } else {
-                                actionPolicy.setAccess(access, for: category)
+                ForEach(AIComputerActionCategory.allCases.filter { $0 != .browserInteraction || actionPolicy.browserInteractionExperimentalEnabled || toolStore.accessMode == .fullControl }) { category in
+                    if toolStore.accessMode == .fullControl {
+                        HStack {
+                            Text(category.title)
+                            Spacer()
+                            Label("Included", systemImage: "checkmark.circle.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(LimaTheme.success)
+                        }
+                        Text("\(category.summary). Saved setting: \(actionPolicy.access(for: category).title) resumes when you leave Full Control.")
+                            .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    } else {
+                        Picker(category.title, selection: Binding(
+                            get: { actionPolicy.access(for: category) },
+                            set: { access in
+                                if category == .browserInteraction && access == .allowWithJournal {
+                                    confirmInteractionJournal = true
+                                } else {
+                                    actionPolicy.setAccess(access, for: category)
+                                }
+                            }
+                        )) {
+                            ForEach(category.supportedAccesses) { access in
+                                Text(access.title).tag(access)
                             }
                         }
-                    )) {
-                        ForEach(category.supportedAccesses) { access in
-                            Text(access.title).tag(access)
-                        }
+                        Text(category.summary)
+                            .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     }
-                    Text(category.summary)
-                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                if !actionPolicy.browserInteractionExperimentalEnabled {
+                if !actionPolicy.browserInteractionExperimentalEnabled && toolStore.accessMode != .fullControl {
                     Text("Browser click, type, and submit are hidden until you enable Browser AI interaction in Advanced → Experimental Features.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Browser navigation, click, and type can run without repeated Lima prompts only when their category is set to Allow with journal. Click and type still need an exact-site interaction grant in the companion. Form submission, saved-memory changes, local file writes, and the older unsandboxed code command always ask. AI Workspace commands ask unless you explicitly allow repeated runs in one session's current directory; changing directories or closing the session ends that grant. Browser interaction requires a compatible signed companion.")
+                Text("Full Control makes every implemented action tool available without Lima prompts, including browser submit, memory, file writes, and terminal. Browser interaction still requires a compatible signed companion and exact-site grant. Outside Full Control, the category choices above govern availability and prompting; AI Workspace can also use a revocable directory grant.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     .alert("Allow browser clicks and typing without repeated Lima prompts?", isPresented: $confirmInteractionJournal) {
                         Button("Cancel", role: .cancel) {}
                         Button("Allow with Journal") { actionPolicy.setAccess(.allowWithJournal, for: .browserInteraction) }
                     } message: {
-                        Text("On sites where you separately enabled Always allow interactions in Zen or Firefox, Lima may click or type requested content without another prompt. Each action is recorded in Activity. Form submission still asks in Lima, and you can return to Ask every time or Off here.")
+                        Text("Outside Full Control, sites separately granted Always allow interactions in Zen or Firefox can use Lima click and type without repeated Lima prompts. Each action is recorded in Activity; form submission still asks in those modes. Browser grants remain separate from Lima's Tool Access mode.")
                     }
-                Text("All AI terminal commands appear in Terminal. AI Workspace commands use a no-network macOS sandbox with writes confined to the session's current working directory and unrelated home reads denied. You may choose Allow in Directory for one session, then revoke it from AI Terminal; switching directories, closing the session, or turning Terminal Off also ends it. The older Run Terminal Command compatibility tool remains unsandboxed and always asks per command. A timeout may not stop child processes started by code.")
+                Text("All AI terminal commands appear in Terminal. AI Workspace commands use a no-network macOS sandbox with writes confined to the session's current working directory and unrelated home reads denied. Outside Full Control, Allow in Directory can cover one session until revoked or its directory changes. Full Control skips Lima prompts, including for the older unsandboxed Run Terminal Command compatibility tool. A timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Conversation configuration") {
@@ -162,7 +176,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. Enabled Lima tools, including Browser and Notes, run through Lima’s normal grants and approvals. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
+                    Text("Uses your local CLI sign-in. Lima tools, including Browser and Notes, follow the active Tool Access mode and Browser Bridge grants; Full Control skips Lima action prompts. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {

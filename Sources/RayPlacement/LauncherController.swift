@@ -261,6 +261,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         rememberFrontmostApplication(preferred: sourceApplication)
         viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
+        resizePanel(for: viewModel.mode, animated: false)
         presentPanel()
         DispatchQueue.main.async { [weak self] in
             PerformanceMonitor.shared.end(measurementID, succeeded: self?.panel.isVisible == true)
@@ -271,6 +272,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         viewModel.resetContextualSelection()
         viewModel.resetForPresentation()
         viewModel.enter(.root, query: query)
+        resizePanel(for: viewModel.mode, animated: false)
         presentPanel()
     }
 
@@ -311,6 +313,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         )
         viewModel.enter(.surface(LauncherSurfaceSession(surface: descriptor)))
         presentPanel()
+    }
+
+    func showExpandedWorkspace() {
+        hide()
+        notesWindow.presentExpanded()
     }
 
     func showNotes() {
@@ -736,8 +743,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         if let visibleFrame = targetScreen?.visibleFrame {
             let size = panel.frame.size
             let x = visibleFrame.midX - size.width / 2
-            let topInset = max(64, visibleFrame.height * 0.12)
-            let y = max(visibleFrame.minY + 24, visibleFrame.maxY - size.height - topInset)
+            let y: CGFloat
+            if viewModel.mode == .root {
+                // Center the compact command surface like a palette. When typing
+                // expands it, resizePanel preserves this visual center.
+                y = visibleFrame.midY - size.height / 2 - 36
+            } else {
+                let topInset = max(64, visibleFrame.height * 0.12)
+                y = max(visibleFrame.minY + 24, visibleFrame.maxY - size.height - topInset)
+            }
             finalOrigin = NSPoint(x: x, y: y)
         }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion

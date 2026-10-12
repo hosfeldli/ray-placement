@@ -344,12 +344,39 @@ final class NotesStore: ObservableObject {
     }
 
     var taskDashboard: [TaskSummary] {
-        notes.flatMap { note in
-            note.content.components(separatedBy: .newlines).enumerated().compactMap { index, line -> TaskSummary? in
-                guard let parts = parseTaskLine(line) else { return nil }
-                return TaskSummary(id: "\(note.id.uuidString):\(index)", noteID: note.id, noteTitle: note.displayTitle, text: parts.text, checked: parts.checked)
-            }
+        notes.flatMap { taskSummaries(in: $0) }
+    }
+
+    func tasks(for noteID: UUID) -> [TaskSummary] {
+        guard let note = notes.first(where: { $0.id == noteID }) else { return [] }
+        return taskSummaries(in: note)
+    }
+
+    private func taskSummaries(in note: MarkdownNote) -> [TaskSummary] {
+        note.content.components(separatedBy: .newlines).enumerated().compactMap { index, line -> TaskSummary? in
+            guard let parts = parseTaskLine(line) else { return nil }
+            return TaskSummary(id: "\(note.id.uuidString):\(index)", noteID: note.id, noteTitle: note.displayTitle, text: parts.text, checked: parts.checked)
         }
+    }
+
+    /// Toggle one visible checklist item without touching a different line if
+    /// the note changed between the inspector snapshot and the click.
+    @discardableResult
+    func toggleTask(_ task: TaskSummary) -> Bool {
+        guard let note = notes.first(where: { $0.id == task.noteID }),
+              let lineNumber = Int(task.id.split(separator: ":").last ?? "") else { return false }
+        var lines = note.content.components(separatedBy: .newlines)
+        guard lines.indices.contains(lineNumber),
+              let parsed = parseTaskLine(lines[lineNumber]),
+              parsed.text == task.text,
+              parsed.checked == task.checked,
+              let marker = lines[lineNumber].range(of: #"- \[[ xX]\]"#, options: .regularExpression) else {
+            return false
+        }
+        lines[lineNumber].replaceSubrange(marker, with: task.checked ? "- [ ]" : "- [x]")
+        let updated = lines.joined(separator: "\n")
+        updateNote(task.noteID) { $0.content = updated }
+        return true
     }
 
     func appendMarkdown(_ markdown: String) {

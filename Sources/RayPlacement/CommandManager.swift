@@ -148,6 +148,7 @@ final class CommandManager: ObservableObject {
         let settings = SettingsStore.shared
         let builtIns: [(id: String, title: String, value: String)] = [
             ("builtin.activation", "Launcher", settings.activationShortcut),
+            ("builtin.expanded-workspace", "Open Workspace", settings.expandedWorkspaceShortcut),
             ("builtin.notes", "Notes", settings.notesShortcut),
             ("builtin.quick-note", "Quick Note", settings.quickNoteShortcut),
             ("builtin.dictation", "Dictation", settings.dictationShortcut),

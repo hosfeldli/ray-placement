@@ -1,25 +1,41 @@
 import AppKit
+import RayPlacementCore
 import Testing
 @testable import RayPlacement
 
-@Test func searchWindowKeepsMockupProportionsAsResultsChange() {
+@Test func searchWindowIsCompactUntilTypingAndStableWhileSearching() {
     for density in AppInterfaceDensity.allCases {
         let idle = LauncherPanelLayout.size(for: .root, density: density, resultCount: 0)
         let populated = LauncherPanelLayout.size(for: .root, density: density, resultCount: 24, query: "notes")
-        #expect(idle == populated)
-        #expect(idle == LauncherPanelLayout.searchSize(density: density))
-        let canShowInspector = LauncherSearchDesign.canShowInspector(at: idle.width)
+        let emptyResults = LauncherPanelLayout.size(for: .root, density: density, resultCount: 0, query: "unlikely")
+        #expect(idle == LauncherPanelLayout.idleSearchSize(density: density))
+        #expect(LauncherPanelLayout.size(for: .root, density: density, query: "note: ") == idle)
+        #expect(populated == emptyResults)
+        #expect(populated == LauncherPanelLayout.searchSize(density: density))
+        #expect(idle.height < populated.height)
+        let canShowInspector = LauncherSearchDesign.canShowInspector(at: populated.width)
         #expect(canShowInspector == (density == .comfortable))
         if canShowInspector {
-            #expect(idle.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
+            #expect(populated.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
         }
         switch density {
-        case .compact: #expect(idle == NSSize(width: 720, height: 500))
-        case .balanced: #expect(idle == NSSize(width: 760, height: 520))
-        case .comfortable: #expect(idle == NSSize(width: 840, height: 580))
+        case .compact: #expect(idle == NSSize(width: 680, height: 138))
+        case .balanced: #expect(idle == NSSize(width: 720, height: 146))
+        case .comfortable: #expect(idle == NSSize(width: 760, height: 158))
         }
         #expect(LauncherPanelLayout.size(for: .files, density: density).width == density.launcherWidth)
         #expect(LauncherPanelLayout.size(for: .terminal, density: density) == LauncherPanelLayout.terminalSize)
+    }
+}
+
+@Test @MainActor func expandedWorkspaceShortcutParticipatesInConflictChecks() {
+    let manager = CommandManager.shared
+    manager.validateShortcuts([])
+    let assignment = manager.shortcutRegistry.assignments.first { $0.id == "builtin.expanded-workspace" }
+    #expect(assignment?.title == "Open Workspace")
+    #expect(assignment?.shortcut?.storageString == ShortcutSpec(string: SettingsStore.shared.expandedWorkspaceShortcut)?.storageString)
+    if let shortcut = assignment?.shortcut?.storageString {
+        #expect(manager.shortcutRegistry.owners(of: shortcut).contains { $0.id == "builtin.expanded-workspace" })
     }
 }
 
@@ -53,10 +69,32 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     func launcherViewModelDidRequestHide(_ viewModel: LauncherViewModel) {}
 }
 
+@Test @MainActor func idleSearchHasNoHiddenKeyboardActions() {
+    let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
+    let recorder = SearchExecutionRecorder()
+    model.delegate = recorder
+    #expect(model.results.isEmpty)
+    #expect(model.selectedItem == nil)
+    model.executeSelected()
+    model.executeVisibleItem(at: 0)
+    model.openActionPanel()
+    #expect(recorder.executedIDs.isEmpty)
+    #expect(model.actionPanelItem == nil)
+    model.query = "note: "
+    #expect(model.results.isEmpty)
+    #expect(!model.isSearching)
+    model.query = "notes"
+    #expect(model.results.contains { $0.id == "builtin.notes" })
+    model.query = ""
+    #expect(model.results.isEmpty)
+    #expect(model.selectedItem == nil)
+}
+
 @Test @MainActor func searchActionMenuOwnsKeyboardSelectionAndExecution() throws {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
+    model.query = "notes"
     let index = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
     model.select(index)
     model.openActionPanel()
@@ -90,6 +128,7 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
+    model.query = "notes"
     let index = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
     model.select(index)
     #expect(model.selectedItem?.id == "builtin.notes")

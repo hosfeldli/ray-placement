@@ -13,6 +13,14 @@ enum LauncherPanelLayout {
         }
     }
 
+    static func idleSearchSize(density: AppInterfaceDensity) -> NSSize {
+        switch density {
+        case .compact: return NSSize(width: 680, height: 138)
+        case .balanced: return NSSize(width: 720, height: 146)
+        case .comfortable: return NSSize(width: 760, height: 158)
+        }
+    }
+
     static func size(
         for mode: LauncherMode,
         density: AppInterfaceDensity,
@@ -26,9 +34,10 @@ enum LauncherPanelLayout {
         if mode == .contextShelf { return NSSize(width: width, height: min(640, max(standardHeight, 520))) }
         switch mode {
         case .root:
-            // Keep Search stable as results change; the controller clamps to the
-            // current screen and details remain an on-demand panel rather than a second workspace.
-            return searchSize(density: density)
+            // Empty Search is a compact input with explicit workspace controls.
+            // Typing expands into a stable results panel, even for zero matches.
+            return UniversalSearchCoordinator.parse(query).query.isEmpty
+                ? idleSearchSize(density: density) : searchSize(density: density)
         case .output, .writingReview:
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))
         case .extensionSurface(let session):

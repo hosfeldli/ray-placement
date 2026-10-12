@@ -70,9 +70,17 @@ struct NotesAppearancePalette {
             // on AppKit control colors, which can be near-black and can also
             // vary with the active material. The editor fields use this same
             // primary text role, so this prevents black text on dark gray cells.
-            background = NSColor(calibratedWhite: 0.115, alpha: 1)
-            elevatedSurface = NSColor(calibratedWhite: 0.185, alpha: 1)
-            recessedSurface = NSColor(calibratedWhite: 0.085, alpha: 1)
+            if theme == .prism {
+                // A navy writing canvas belongs to the same depth family as
+                // the Workspace glass instead of appearing as an opaque gray card.
+                background = NSColor(calibratedRed: 0.075, green: 0.090, blue: 0.140, alpha: 1)
+                elevatedSurface = NSColor(calibratedRed: 0.125, green: 0.145, blue: 0.220, alpha: 1)
+                recessedSurface = NSColor(calibratedRed: 0.055, green: 0.070, blue: 0.115, alpha: 1)
+            } else {
+                background = NSColor(calibratedWhite: 0.115, alpha: 1)
+                elevatedSurface = NSColor(calibratedWhite: 0.185, alpha: 1)
+                recessedSurface = NSColor(calibratedWhite: 0.085, alpha: 1)
+            }
             textPrimary = NSColor(calibratedWhite: 0.94, alpha: 1)
             textSecondary = NSColor(calibratedWhite: 0.76, alpha: 1)
             textTertiary = NSColor(calibratedWhite: 0.62, alpha: 1)

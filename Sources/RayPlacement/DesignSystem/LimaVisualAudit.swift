@@ -46,26 +46,35 @@ enum LimaVisualAudit {
                         }
                     }
                 }
-                for width: CGFloat in [420, 800, 1040] {
+                for size: NSSize in [NSSize(width: 420, height: 138),
+                                     NSSize(width: 720, height: 146),
+                                     NSSize(width: 760, height: 158)] {
                     let search = LauncherSearchAuditFixtures.view()
                         .environment(\.colorScheme, dark ? .dark : .light)
-                    if !(await render(search, size: NSSize(width: width, height: 700), appearance: appearance,
-                                      url: directory.appendingPathComponent("production-search-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                    if !(await render(search, size: size, appearance: appearance,
+                                      url: directory.appendingPathComponent("production-search-\(Int(size.width))-\(dark ? "dark" : "light").png"))) {
                         failures += 1
                     }
                 }
                 for scenario in ["filtered", "empty", "selection", "actions"] {
                     let search = LauncherSearchAuditFixtures.view(scenario: scenario)
                         .environment(\.colorScheme, dark ? .dark : .light)
-                    if !(await render(search, size: NSSize(width: 1040, height: 700), appearance: appearance,
+                    if !(await render(search, size: NSSize(width: 840, height: 580), appearance: appearance,
                                       url: directory.appendingPathComponent("production-search-\(scenario)-\(dark ? "dark" : "light").png"))) {
                         failures += 1
                     }
                 }
                 let smallSearch = LauncherSearchAuditFixtures.view()
                     .environment(\.colorScheme, dark ? .dark : .light)
-                if !(await render(smallSearch, size: NSSize(width: 640, height: 480), appearance: appearance,
+                if !(await render(smallSearch, size: NSSize(width: 640, height: 138), appearance: appearance,
                                   url: directory.appendingPathComponent("production-search-short-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
+                }
+                let opaqueSearch = LauncherSearchAuditFixtures.view()
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                    .environment(\.limaTestReduceTransparency, true)
+                if !(await render(opaqueSearch, size: NSSize(width: 720, height: 146), appearance: appearance,
+                                  url: directory.appendingPathComponent("production-search-reduce-transparency-\(dark ? "dark" : "light").png"))) {
                     failures += 1
                 }
                 let preferences = LimaMockupWorkspaceFixtures.settings()
@@ -89,7 +98,7 @@ enum LimaVisualAudit {
                 for scenario: AIChatVisualScenario in [.streaming, .memoryApproval, .terminalDirectoryApproval, .terminalRunning,
                                                        .terminalMinimized, .failure, .quota, .timeout, .markdown] {
                     let widths: [CGFloat] = [.memoryApproval, .terminalDirectoryApproval, .failure, .quota, .timeout].contains(scenario)
-                        ? [420, 600, 1040] : [420, 1040]
+                        ? [420, 600, 700, 1040, 1240] : [420, 700, 1040, 1240]
                     for width in widths {
                         let ai = AIChatVisualPreview(scenario: scenario)
                             .environment(\.colorScheme, dark ? .dark : .light)

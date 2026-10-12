@@ -174,7 +174,7 @@ struct CLIChatProviderClient: AIChatTransport {
     ) throws -> String {
         var header = [
             "You are responding inside Lima. Answer the user's request using only the conversation and context below.",
-            "Do not use the CLI's own shell, browser, file, or network tools. Request only the Lima tools listed below or returned by Lima tool discovery; Lima checks enablement and approvals before executing them.",
+            "Use relevant Lima tools proactively. Do not use the CLI's own shell, browser, file, or network tools; request only the Lima tools listed below or returned by Lima tool discovery. Lima checks the active Tool Access mode and runtime boundaries before executing them; Full Control adds no Lima per-action prompt.",
             "Instructions:\n" + String(systemInstructions.prefix(20_000))
         ]
         if !localTools.isEmpty {

@@ -492,6 +492,7 @@ final class BrowserBridgeService: ObservableObject {
         }
 
         let actionPolicy = AIComputerActionPolicy.shared
+        let toolAccessMode = toolStore.accessMode
         let state = BrowserCapabilityState(
             bridgeEnabled: enabled,
             companionConnected: companionConnected,
@@ -501,10 +502,11 @@ final class BrowserBridgeService: ObservableObject {
             broadHTTPSReadingEnabled: actionPolicy.broadBrowserGrantsExperimentalEnabled,
             exactInteractionOrigins: exactInteractionOrigins,
             companionSupportsInteraction: supportsInteraction,
-            interactionPolicyAvailable: actionPolicy.browserInteractionExperimentalEnabled && interactionPolicyAvailable,
-            navigationAccess: actionPolicy.access(for: .browserNavigation),
-            interactionAccess: actionPolicy.access(for: .browserInteraction),
-            context: context
+            interactionPolicyAvailable: (actionPolicy.browserInteractionExperimentalEnabled || toolAccessMode == .fullControl) && interactionPolicyAvailable,
+            navigationAccess: actionPolicy.effectiveAccess(for: .browserNavigation, toolAccessMode: toolAccessMode),
+            interactionAccess: actionPolicy.effectiveAccess(for: .browserInteraction, toolAccessMode: toolAccessMode),
+            context: context,
+            toolAccessMode: toolAccessMode
         )
 
         func decision(_ value: BrowserCapabilityDecision) -> JSONValue {
@@ -540,8 +542,8 @@ final class BrowserBridgeService: ObservableObject {
             "broadHTTPSReadingEnabled": .bool(state.broadHTTPSReadingEnabled),
             "interactionCapabilitySupported": .bool(supportsInteraction),
             "interactionPolicyAvailable": .bool(interactionPolicyAvailable),
-            "navigationPolicy": .string(actionPolicy.access(for: .browserNavigation).rawValue),
-            "interactionPolicy": .string(actionPolicy.access(for: .browserInteraction).rawValue),
+            "navigationPolicy": .string(actionPolicy.effectiveAccess(for: .browserNavigation, toolAccessMode: toolAccessMode).rawValue),
+            "interactionPolicy": .string(actionPolicy.effectiveAccess(for: .browserInteraction, toolAccessMode: toolAccessMode).rawValue),
             "submitRequiresApproval": .bool(state.interactionSubmitRequiresApproval),
             "selectedAgentID": context.selectedAgentID.map(JSONValue.string) ?? .null,
             "routedBrowserTools": .array(routedBrowserTools.map(JSONValue.string))

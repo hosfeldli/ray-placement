@@ -3,7 +3,7 @@ import SwiftUI
 /// Content-width breakpoints, measured after the global navigation rail.
 /// Do not squeeze an editor to preserve an optional inspector.
 enum LimaWorkspaceMetrics {
-    static let inspectorWidth: CGFloat = 260
+    static let inspectorWidth: CGFloat = 300
     static let minimumEditorWidth: CGFloat = 420
     static func sidebarWidth(contentWidth: CGFloat, preferred: CGFloat?) -> CGFloat {
         guard let preferred, contentWidth >= preferred + minimumEditorWidth + 16 else { return 0 }

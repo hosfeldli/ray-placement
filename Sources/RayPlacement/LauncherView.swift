@@ -70,10 +70,13 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow,
-                                identityLayer: true, tintOpacity: 0.16)
+            if viewModel.mode != .root {
+                LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow,
+                                    identityLayer: true, tintOpacity: 0.16)
+            }
             if viewModel.mode == .root {
-                LauncherSearchWorkspace(model: viewModel, openWorkspace: onOpenWorkspace,
+                LauncherSearchWorkspace(model: viewModel, aiChatModel: aiChatModel,
+                                        openWorkspace: onOpenWorkspace,
                                         openSettings: onOpenSettings, createNote: onCreateNote,
                                         dismiss: onDismissSearch)
                     .disabled(viewModel.actionPanelItem != nil)
@@ -119,25 +122,17 @@ struct LauncherView: View {
         // The shell is intentionally one continuous shape. The shadow is
         // applied after the clip so it remains outside the perimeter and does
         // not become a fuzzy second border.
-        .background(
-            LimaTheme.floatingWindowBackground
-                .opacity(reduceTransparency ? 1 : settings.glassStyle.launcherShellOpacity),
-            in: RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous)
-                .strokeBorder(
-                    LinearGradient(
-                        colors: [LimaTheme.borderStrong, settings.accentTheme.primary.opacity(0.18),
-                                 LimaTheme.borderStrong],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    ),
-                    lineWidth: LimaDesign.focusWidth
-                )
-                .allowsHitTesting(false)
+        .background {
+            if viewModel.mode != .root {
+                LimaTheme.floatingWindowBackground
+                    .opacity(reduceTransparency ? 1 : settings.glassStyle.launcherShellOpacity)
+                    .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
+            }
         }
-        .shadow(color: LimaTheme.shadowFloating, radius: 14, y: 6)
+        .overlay {
+            if viewModel.mode != .root { LimaPrismFrame(radius: LimaRadius.launcherWindow) }
+        }
+        .shadow(color: viewModel.mode == .root ? .clear : LimaTheme.shadowFloating, radius: 14, y: 6)
         .tint(settings.accentTheme.readablePrimary)
         .limaAnimation(LimaDesign.spring(0.30), value: viewModel.mode.visualIdentity)
         .onAppear {

@@ -3,7 +3,7 @@ import RayPlacementCore
 
 /// Opaque AI-owned command sessions are visible in the Terminal workspace.
 /// Starting, running, changing directory, and interrupting use the existing
-/// Terminal action category and Lima approval flow. A user may additionally
+/// Terminal action category and the active Tool Access mode. A user may additionally
 /// grant repeated runs in one session's current sandboxed directory. Reading an existing
 /// session only returns output from that AI-owned session.
 @MainActor
@@ -27,7 +27,7 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_run",
-            "Start a command in an AI Workspace session after Allow Once or under a live, revocable grant for this session's unchanged working directory. The command runs under a no-network sandbox with writes confined to that directory; output streams to the visible Terminal workspace. This tool returns immediately; use terminal_wait to observe completion and verified exit status without repeated polling. Do not put credentials in commands.",
+            "Start a command in an AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes may use Allow Once or a live, revocable grant for this session's unchanged working directory. The command runs under a no-network sandbox with writes confined to that directory; output streams to the visible Terminal workspace. This tool returns immediately; use terminal_wait to observe completion and verified exit status without repeated polling. Do not put credentials in commands.",
             properties: [
                 "session_id": ["type": "string", "description": "Opaque ID returned by terminal_start."],
                 "command": ["type": "string", "description": "One command, at most 4096 UTF-8 bytes."],

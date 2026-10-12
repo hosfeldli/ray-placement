@@ -439,6 +439,8 @@ final class SettingsStore: ObservableObject {
         static let aiMaximumSubagentsPerRun = "aiMaximumSubagentsPerRun"
         static let activationShortcut = "activationShortcut"
         static let activationHotkeyEnabled = "activationHotkeyEnabled"
+        static let expandedWorkspaceShortcut = "expandedWorkspaceShortcut"
+        static let expandedWorkspaceHotkeyEnabled = "expandedWorkspaceHotkeyEnabled"
         static let notesShortcut = "notesShortcut"
         static let notesHotkeyEnabled = "notesHotkeyEnabled"
         static let quickNoteShortcut = "quickNoteShortcut"
@@ -542,6 +544,22 @@ final class SettingsStore: ObservableObject {
         didSet {
             defaults.set(activationHotkeyEnabled, forKey: Key.activationHotkeyEnabled)
             NotificationCenter.default.post(name: .rayPlacementShortcutChanged, object: nil)
+        }
+    }
+
+    @Published var expandedWorkspaceShortcut: String {
+        didSet {
+            defaults.set(expandedWorkspaceShortcut, forKey: Key.expandedWorkspaceShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var expandedWorkspaceHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(expandedWorkspaceHotkeyEnabled, forKey: Key.expandedWorkspaceHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
         }
     }
 
@@ -1085,6 +1103,8 @@ final class SettingsStore: ObservableObject {
         )
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
         activationHotkeyEnabled = defaults.object(forKey: Key.activationHotkeyEnabled) as? Bool ?? true
+        expandedWorkspaceShortcut = defaults.string(forKey: Key.expandedWorkspaceShortcut) ?? "control+option+w"
+        expandedWorkspaceHotkeyEnabled = defaults.object(forKey: Key.expandedWorkspaceHotkeyEnabled) as? Bool ?? true
         notesShortcut = defaults.string(forKey: Key.notesShortcut) ?? "command+shift+n"
         notesHotkeyEnabled = defaults.object(forKey: Key.notesHotkeyEnabled) as? Bool ?? true
         quickNoteShortcut = defaults.string(forKey: Key.quickNoteShortcut) ?? "command+option+n"
@@ -1278,6 +1298,12 @@ final class SettingsStore: ObservableObject {
         isRestoringActivationShortcut = false
     }
 
+    func restoreExpandedWorkspaceShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        expandedWorkspaceShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
     func restoreNotesShortcut(_ shortcut: String) {
         isRestoringActionShortcut = true
         notesShortcut = shortcut
@@ -1457,6 +1483,8 @@ final class SettingsStore: ObservableObject {
         switch key {
         case Key.activationShortcut: if let value = string() { activationShortcut = value }
         case Key.activationHotkeyEnabled: if let value = bool() { activationHotkeyEnabled = value }
+        case Key.expandedWorkspaceShortcut: if let value = string() { expandedWorkspaceShortcut = value }
+        case Key.expandedWorkspaceHotkeyEnabled: if let value = bool() { expandedWorkspaceHotkeyEnabled = value }
         case Key.notesShortcut: if let value = string() { notesShortcut = value }
         case Key.notesHotkeyEnabled: if let value = bool() { notesHotkeyEnabled = value }
         case Key.quickNoteShortcut: if let value = string() { quickNoteShortcut = value }

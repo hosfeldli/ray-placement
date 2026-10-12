@@ -34,8 +34,10 @@ import RayPlacementCore
     #expect(notes.notes.count == 1)
 }
 
-@Test @MainActor func captureCommandsAreVisibleInRootAndCommandSearch() {
+@Test @MainActor func captureCommandsAreVisibleAfterTypingAndInCommandSearch() {
     let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    #expect(model.results.isEmpty)
+    model.query = "capture"
     let ids = Set(model.results.map(\.id))
     #expect(ids.contains("builtin.capture-clipboard-note"))
     #expect(ids.contains("builtin.capture-selection-note"))

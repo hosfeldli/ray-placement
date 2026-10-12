@@ -434,6 +434,8 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
         case "search_files": return "Find files"
+        case "search_workspace_text": return "Search file contents"
+        case "inspect_directory_tree": return "Inspect project tree"
         case "read_file": return "Read a file"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
@@ -1474,7 +1476,7 @@ struct LimaAIToolExecution: Sendable {
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Use only tools supplied in this request and only for their declared purpose. Never use an action tool unless the user explicitly asked for that action, and never attempt to bypass a missing tool, site grant, path rule, confirmation, or approval. Extension tools are read-only. Subagents inherit only this turn’s routed Lima tools. They may request computer actions only through the parent turn’s live grants and ordinary approval flow; they cannot bypass approvals or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step. Use tools only for their declared purpose; do not bypass a missing tool, browser site grant, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
 }
@@ -1625,6 +1627,7 @@ enum LimaAIToolRegistry {
 
     private static var candidateDefinitions: [LimaAIToolDefinition] {
         definitions
+            + AIWorkspaceReadTools.definitions
             + AIContextTools.definitions
             + AINotesTools.definitions
             + BrowserBridgeAITools.definitions
@@ -1633,10 +1636,13 @@ enum LimaAIToolRegistry {
             + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
     }
 
+    static var validDefinitions: [LimaAIToolDefinition] {
+        candidateDefinitions.filter { $0.responsePayload != nil }
+    }
+
     static var availableDefinitions: [LimaAIToolDefinition] {
-        candidateDefinitions
-            .filter { $0.responsePayload != nil }
-            .filter { AIComputerActionPolicy.shared.allows($0) }
+        let mode = LimaAIToolStore.shared.accessMode
+        return validDefinitions.filter { AIComputerActionPolicy.shared.allows($0, toolAccessMode: mode) }
     }
 
     static func schemaValidationMessage(for id: String) -> String? {
@@ -1645,6 +1651,7 @@ enum LimaAIToolRegistry {
 
     static var defaultEnabledToolIDs: Set<String> {
         Set(definitions.map(\.id))
+            .union(AIWorkspaceReadTools.ids)
             .union(AIContextTools.ids)
             .union(AINotesTools.ids)
             .union(BrowserBridgeAITools.readToolIDs)
@@ -1656,13 +1663,15 @@ enum LimaAIToolRegistry {
         return candidateDefinitions.first { $0.name == name || $0.id == name }
     }
 
-    static func enabledDefinitions(_ ids: Set<String>) -> [LimaAIToolDefinition] {
-        availableDefinitions.filter { definition in
-            guard ids.contains(definition.id) else { return false }
-            if definition.actionCategory != nil {
-                return AIComputerActionPolicy.shared.allows(definition)
-            }
-            return definition.risk == .read || AIContextTools.delegationIDs.contains(definition.id)
+    static func enabledDefinitions(_ ids: Set<String>,
+                                   toolAccessMode requestedMode: LimaAIToolAccessMode? = nil) -> [LimaAIToolDefinition] {
+        let toolAccessMode = requestedMode ?? LimaAIToolStore.shared.accessMode
+        return validDefinitions.filter { definition in
+            guard ids.contains(definition.id),
+                  AIComputerActionPolicy.shared.allows(definition, toolAccessMode: toolAccessMode) else { return false }
+            if toolAccessMode == .fullControl { return true }
+            return definition.actionCategory != nil || definition.risk == .read ||
+                AIContextTools.delegationIDs.contains(definition.id)
         }
     }
 
@@ -1720,6 +1729,9 @@ enum LimaAIToolRegistry {
             } catch {
                 return .json(["error": "The approved read-only extension tool could not be executed."], isError: true)
             }
+        }
+        if AIWorkspaceReadTools.ids.contains(definition.id) {
+            return await AIWorkspaceReadTools.execute(call)
         }
         if AINotesTools.ids.contains(definition.id) {
             return await AINotesTools.execute(call)
@@ -2105,7 +2117,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     static let coreGroups: [LimaAIToolGroup] = [
         .init(id: "memory", title: "Memory", summary: "Read saved local context and review it in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
-        .init(id: "memory-changes", title: "Memory changes", summary: "Propose saved context changes; each save, revision, or deletion asks separately",
+        .init(id: "memory-changes", title: "Memory changes", summary: "Save, revise, or forget stable user context under the active Tool Access mode",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryWriteIDs),
         .init(id: "subagents", title: "Subagents", summary: "Delegated analyses use this run’s configured concurrent and total budgets; inherits captured routed tools, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
@@ -2121,9 +2133,10 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "files",
             title: "Files",
-            summary: "Find and read local files",
+            summary: "Find names or text, inspect project trees, and read files",
             symbol: "folder",
-            toolIDs: ["search_files", "find_files", "list_directory", "file_metadata", "read_file"]
+            toolIDs: ["search_files", "find_files", "list_directory", "file_metadata", "read_file",
+                      "search_workspace_text", "inspect_directory_tree"]
         ),
         .init(
             id: "browser",
@@ -2145,7 +2158,7 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "browser-interaction",
             title: "Browser interaction",
-            summary: "Click and type with site access; submit always asks",
+            summary: "Click, type, and submit with exact-site access; Full Control skips Lima prompts",
             symbol: "cursorarrow.click",
             toolIDs: ["browser_click", "browser_type", "browser_submit"]
         ),
@@ -2159,14 +2172,14 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "terminal",
             title: "Terminal and code",
-            summary: "Run one approved bounded developer command outside the AI Workspace sandbox",
+            summary: "Run one bounded developer command outside the AI Workspace sandbox",
             symbol: "terminal",
             toolIDs: ["run_terminal_command"]
         ),
         .init(
             id: "ai-workspace-terminal",
             title: "AI Workspace terminal",
-            summary: "Start and monitor visible sandboxed sessions; commands require approval",
+            summary: "Start and monitor visible sandboxed sessions under the active mode",
             symbol: "terminal.fill",
             toolIDs: AIWorkspaceActionTools.ids
         ),
@@ -2222,6 +2235,8 @@ extension LimaAIToolDefinition {
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
         case "search_files": return "Find files"
+        case "search_workspace_text": return "Search file contents"
+        case "inspect_directory_tree": return "Inspect project tree"
         case "read_file": return "Read a file"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
@@ -2250,6 +2265,8 @@ extension LimaAIToolDefinition {
         case "search_notes": return "Titles and short matching excerpts"
         case "read_note": return "One bounded local note range"
         case "search_files", "find_files": return "Names and paths only"
+        case "search_workspace_text": return "Bounded text matches with line numbers"
+        case "inspect_directory_tree": return "Bounded safe paths to four levels"
         case "list_directory": return "Visible direct children only"
         case "file_metadata": return "Basic file metadata only"
         case "read_file": return "Bounded numbered text ranges"
@@ -2286,7 +2303,8 @@ extension LimaAIToolDefinition {
         case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
         case "search_notes", "read_note": return "note.text"
-        case "search_files", "find_files", "list_directory": return "folder"
+        case "search_files", "find_files", "list_directory", "inspect_directory_tree": return "folder"
+        case "search_workspace_text": return "text.magnifyingglass"
         case "file_metadata": return "doc.badge.gearshape"
         case "read_file": return "doc.text"
         case "list_extensions": return "square.grid.2x2"
@@ -2325,7 +2343,7 @@ enum LimaAIToolAccessMode: String, CaseIterable, Identifiable {
         switch self {
         case .automatic: return "Available tools follow your capability and action settings."
         case .askForActions: return "Use available tools, but ask before computer actions."
-        case .fullControl: return "Expose every available tool; site grants and safety approvals still apply."
+        case .fullControl: return "Expose every implemented tool without Lima per-action prompts; browser grants and system boundaries still apply."
         case .custom: return "Preserve your previous individual tool selections."
         }
     }
@@ -2364,9 +2382,9 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: migrationKey)
         }
-        // Preselect action schemas once so the category policy remains the
-        // separate gate. Browser, file, and terminal categories start Off;
-        // saved-memory proposals start reviewable but every write still asks.
+        // Preselect action schemas once. Outside Full Control, category policy
+        // remains a separate gate: browser, file, and terminal start Off, while
+        // saved-memory writes start reviewable.
         let actionMigrationKey = "lima.ai.computer-actions-v1"
         if !defaults.bool(forKey: actionMigrationKey) {
             enabledToolIDs.formUnion(AILocalComputerActionTools.ids)
@@ -2409,6 +2427,13 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: workspaceWaitMigrationKey)
         }
+        // Add bounded, read-only project discovery to existing Custom selections once.
+        let workspaceReadMigrationKey = "lima.ai.workspace-read-v1"
+        if !defaults.bool(forKey: workspaceReadMigrationKey) {
+            enabledToolIDs.formUnion(AIWorkspaceReadTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceReadMigrationKey)
+        }
         let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
         if !defaults.bool(forKey: capabilityMigrationKey) {
             enabledToolIDs.insert("browser_capabilities")
@@ -2424,7 +2449,7 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(true, forKey: toolCapabilitiesMigrationKey)
         }
         // Include memory mutations in existing custom lists once. The separate
-        // Saved memory category and per-item approval still gate every write;
+        // The saved-memory category and active mode still govern writes;
         // preserve later custom opt-outs.
         let memoryWriteMigrationKey = "lima.ai.memory-writes-v1"
         if !defaults.bool(forKey: memoryWriteMigrationKey) {
@@ -2454,7 +2479,11 @@ final class LimaAIToolStore: ObservableObject {
     }
 
     var effectiveEnabledToolIDs: Set<String> {
-        accessMode == .custom ? enabledToolIDs : Set(LimaAIToolRegistry.availableDefinitions.map(\.id))
+        switch accessMode {
+        case .custom: return enabledToolIDs
+        case .fullControl: return Set(LimaAIToolRegistry.validDefinitions.map(\.id))
+        case .automatic, .askForActions: return Set(LimaAIToolRegistry.availableDefinitions.map(\.id))
+        }
     }
 
     func setAccessMode(_ mode: LimaAIToolAccessMode) {
