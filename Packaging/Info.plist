@@ -19,18 +19,13 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.14.24</string>
+	<string>3.14.25</string>
 	<key>CFBundleVersion</key>
-	<string>3014024</string>
+	<string>3014025</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<false/>
-	<key>NSAppTransportSecurity</key>
-	<dict>
-		<key>NSAllowsLocalNetworking</key>
-		<true/>
-	</dict>
 	<key>LimaSparkleAppcastURL</key>
 	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
 	<key>LimaUpdateMetadataURL</key>
@@ -39,6 +34,11 @@
 	<integer>1</integer>
 	<key>NSAccessibilityUsageDescription</key>
 	<string>Lima uses Accessibility only when you ask it to read and replace selected text, resize windows, lock the screen, or paste into another app.</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Lima uses Apple Events only to show the current Apple Music or Spotify track and run the playback controls you press.</string>
 	<key>NSHighResolutionCapable</key>
