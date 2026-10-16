@@ -81,7 +81,7 @@ import Testing
 }
 
 @Test @MainActor func aiWorkspaceToolDefinitionsKeepReadsSeparateFromActions() {
-    #expect(AIWorkspaceActionTools.actionIDs.count == 5)
+    #expect(AIWorkspaceActionTools.actionIDs.count == 8)
     #expect(AIWorkspaceActionTools.readIDs == ["terminal_status", "terminal_read", "terminal_wait"])
     for definition in AIWorkspaceActionTools.definitions {
         if AIWorkspaceActionTools.actionIDs.contains(definition.id) {
@@ -107,9 +107,129 @@ private func waitForAIWorkspaceCommand(
     while Date() < deadline {
         let snapshot = try coordinator.status(sessionID: sessionID)
         if snapshot.state != .running { return snapshot }
-        await Task.yield()
+        try await Task.sleep(for: .milliseconds(25))
     }
     throw AIWorkspaceFixtureError.commandDidNotFinish
+}
+
+@MainActor
+private func waitForPTYText(
+    _ coordinator: AIWorkspaceTerminalCoordinator,
+    sessionID: UUID,
+    from startByte: Int,
+    containing marker: String
+) async throws -> String {
+    let deadline = Date().addingTimeInterval(10)
+    var cursor = startByte
+    var collected = ""
+    while Date() < deadline {
+        let result = try await coordinator.wait(sessionID: sessionID, from: cursor, maxWaitSeconds: 2)
+        #expect(result["interactive_pty"] as? Bool == true)
+        #expect(result["verified_success"] as? Bool == false)
+        #expect(result["command_finished"] as? Bool == false)
+        collected += result["output"] as? String ?? ""
+        if collected.contains(marker) { return collected }
+        cursor = result["next_byte"] as? Int ?? cursor
+        try await Task.sleep(for: .milliseconds(50))
+    }
+    throw AIWorkspaceFixtureError.commandDidNotFinish
+}
+
+@Test @MainActor func aiWorkspaceInteractivePTYIsSharedAndKeepsShellState() async throws {
+    let manager = FileManager.default
+    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    let root = manager.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaWorkspacePTYTests-\(UUID().uuidString)", isDirectory: true)
+    let project = root.appendingPathComponent("project", isDirectory: true)
+    try manager.createDirectory(at: project, withIntermediateDirectories: true)
+    defer { try? manager.removeItem(at: root) }
+
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
+    let owner = UUID()
+    let other = UUID()
+    let session = try coordinator.start(directory: "project", conversationID: owner, interactive: true)
+    #expect(session.isInteractivePTY)
+    #expect(session.state == .running)
+    let view = try #require(coordinator.ptyView(sessionID: session.id))
+    #expect(view.process.running)
+    #expect(coordinator.ptyView(sessionID: session.id) === view)
+    #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
+        try coordinator.resize(sessionID: session.id, columns: 19, rows: 42)
+    }
+    let resized = try coordinator.resize(sessionID: session.id, columns: 110, rows: 42)
+    #expect(resized["verified_size"] as? Bool == true)
+    #expect(resized["observed_columns"] as? Int == 110)
+    #expect(resized["observed_rows"] as? Int == 42)
+    let sizeCursor = try coordinator.status(sessionID: session.id).nextOutputByte
+    _ = try coordinator.write(sessionID: session.id, input: "printf 'pty-size:'; stty size\n")
+    let sizeOutput = try await waitForPTYText(coordinator, sessionID: session.id,
+                                              from: sizeCursor, containing: "pty-size:42 110")
+    #expect(sizeOutput.contains("pty-size:42 110"))
+
+    let suite = "AIWorkspacePTYPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    let input = "export LIMA_PTY_TEST=alive\n"
+    let arguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+        "session_id": session.id.uuidString, "input": input
+    ]), encoding: .utf8))
+    let call = AIOutputItem(phase: .completed, apiType: "function_call", callID: "pty-write",
+                            name: "terminal_write", arguments: arguments)
+    let unapproved = await AIWorkspaceActionTools.execute(call, approvalGranted: false,
+        actionPolicy: policy, conversationID: owner, runtime: coordinator)
+    #expect(unapproved.isError)
+    let wrongOwner = await AIWorkspaceActionTools.execute(call, approvalGranted: true,
+        actionPolicy: policy, conversationID: other, runtime: coordinator)
+    #expect(wrongOwner.isError)
+    #expect(wrongOwner.output.contains("another conversation"))
+    let resizeArguments = try #require(String(data: JSONSerialization.data(withJSONObject: [
+        "session_id": session.id.uuidString, "columns": 120, "rows": 44
+    ]), encoding: .utf8))
+    let resizeCall = AIOutputItem(phase: .completed, apiType: "function_call", callID: "pty-resize",
+                                  name: "terminal_resize", arguments: resizeArguments)
+    let resizeWrongOwner = await AIWorkspaceActionTools.execute(resizeCall, approvalGranted: true,
+        actionPolicy: policy, conversationID: other, runtime: coordinator)
+    #expect(resizeWrongOwner.isError)
+    let resizeApproved = await AIWorkspaceActionTools.execute(resizeCall, approvalGranted: true,
+        actionPolicy: policy, conversationID: owner, runtime: coordinator)
+    #expect(!resizeApproved.isError)
+    #expect(resizeApproved.output.contains("\"verified_size\":true"))
+    let approved = await AIWorkspaceActionTools.execute(call, approvalGranted: true,
+        actionPolicy: policy, conversationID: owner, runtime: coordinator)
+    #expect(!approved.isError)
+    #expect(approved.output.contains("\"input_accepted\":true"))
+    #expect(approved.output.contains("\"verified_success\":false"))
+
+    let cursor = try coordinator.status(sessionID: session.id).nextOutputByte
+    let accepted = try coordinator.write(sessionID: session.id,
+        input: "printf 'pty-state:%s\\n' \"$LIMA_PTY_TEST\"\n")
+    #expect(accepted["input_accepted"] as? Bool == true)
+    #expect(accepted["verified_success"] as? Bool == false)
+    let aiOutput = try await waitForPTYText(coordinator, sessionID: session.id,
+                                            from: cursor, containing: "pty-state:alive")
+    #expect(aiOutput.contains("pty-state:alive"))
+
+    // SwiftTerm's user-input path must reach the same process and AI read cursor.
+    let userCursor = try coordinator.status(sessionID: session.id).nextOutputByte
+    view.send(data: Array("printf 'user-visible-route\\n'\n".utf8)[...])
+    let userOutput = try await waitForPTYText(coordinator, sessionID: session.id,
+                                              from: userCursor, containing: "user-visible-route")
+    #expect(userOutput.contains("user-visible-route"))
+    #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
+        try coordinator.write(sessionID: session.id, input: "\u{1B}[2J")
+    }
+    #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
+        try coordinator.run(sessionID: session.id, command: "echo wrong-api", timeoutSeconds: 2)
+    }
+
+    _ = try coordinator.terminate(sessionID: session.id)
+    let ended = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
+    #expect(ended.state == .cancelled)
+    try coordinator.close(sessionID: session.id)
+    #expect(coordinator.ptyView(sessionID: session.id) == nil)
+    #expect(manager.fileExists(atPath: project.path))
 }
 
 @Test @MainActor func aiWorkspaceRuntimeStreamsVerifiedResultsAndCancellationToVisibleSessions() async throws {
@@ -169,6 +289,12 @@ private func waitForAIWorkspaceCommand(
     #expect(failed.state == .failed)
     #expect(failed.exitStatus == 7)
     #expect(failed.output.contains("failed-output"))
+    #expect(failed.toolFailure?.code == .nonzeroExit)
+    let failedWait = try await coordinator.wait(sessionID: started.id, from: nil, maxWaitSeconds: 1)
+    let failure = try #require(failedWait["failure"] as? [String: Any])
+    #expect(failure["code"] as? String == "nonzero_exit")
+    #expect(failure["recoverable"] as? Bool == true)
+    #expect((failure["next_action"] as? String)?.contains("Inspect terminal output") == true)
 
     _ = try coordinator.run(
         sessionID: started.id,

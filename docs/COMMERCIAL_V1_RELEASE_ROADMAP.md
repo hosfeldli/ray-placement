@@ -1,6 +1,6 @@
 # Lima commercial v1 release roadmap
 
-Status: October 2, 2026. This is a release gate, not a claim that the app is ready to sell.
+Status: October 14, 2026. This is a historical commercial roadmap; the current next-publish gate is `docs/EMBEDDED_BROWSER_RELEASE_GATE.md`. Neither document claims the app is ready to publish or sell.
 
 ## Product contract
 
@@ -10,7 +10,7 @@ Status: October 2, 2026. This is a release gate, not a claim that the app is rea
 - Default navigation exposes Home, Notes, AI, Context, then Clipboard, Workflows, Extensions under Tools. Grammar, Transcripts, Formatter, Terminal, passwords, and similar utilities stay available through Search/commands without crowding the rail.
 - Home resumes work (Continue, Recent, Pinned) instead of cataloging features.
 - AI shows recorded completed actions and the current action. It never schedules hypothetical tool calls visually. A model-authored plan, when present, must be labeled tentative and allowed to change.
-- Browser v1 defaults to reading and bounded open/focus/navigate. Click, type, and submit stay off by default behind Advanced → Experimental and require individual Lima approval. Local writes, file creation, code execution, and terminal actions remain separately policy-controlled and bounded.
+- The embedded Lima Browser shares human/AI tabs and uses one visible AI Control mode (Off, Read Only, Navigate, or Full Control). Sensitive controls remain protected; local files and terminal actions retain separate policy boundaries.
 
 ## Release stages and exit criteria
 
@@ -35,19 +35,11 @@ Status: October 2, 2026. This is a release gate, not a claim that the app is rea
 - Confirm every user-facing error is actionable, with technical detail behind disclosure, and that provider/tool configuration recedes after setup.
 - Confirm no pending or imagined tool step is displayed as a completed or scheduled action.
 
-### 3. Browser Bridge 1.3.0
+### 3. Embedded Browser acceptance
 
-**Verified locally:** the downloaded 1.3.0 XPI matches the reviewed companion source and includes Mozilla signature metadata. SHA-256 is `6d4c4f345fc7a8102a7a43b37807c5e97bfd4bd7752f210563c76a94d8a3c6b2`. The unchanged bytes are pinned in `Packaging/build-assets.json`, staged in the ignored local vendor path, and uploaded to the private versioned GCS build-asset object; a download-back SHA-256 matched. The hosted workflow points to 1.3.0. Browser JS (41), signing (11), native-host smoke, and relevant Swift tests passed.
+The old extension/native-host approach is retired. The current implementation uses WebKit inside the Lima Workspace, with the same tabs visible to the person and to AI. It reads generic semantic links, controls, headings, rows, shadow roots, and eligible frames; it does not use a site-specific adapter.
 
-**Live Zen evidence:** the signed 1.3.0 XPI is installed and active. A live service test verified its broad grant and interaction capability, filtered a broad-only `example.com` tab with Lima's experiment off, read that public page with the experiment on, and filtered it again after disabling. A later test could not reconnect after the Lima test app restarted; no navigation approval was reached. Firefox live testing was waived for this requested deployment, but Firefox behavior is not verified.
-
-**Not yet certified:** local packaging does not establish the full browser interaction matrix. Before public release, restore and verify reliable Zen reconnection, then test:
-- version and capability advertisement, native-helper connection, exact-site grant, tab listing, selection/page read;
-- open, batch-open, focus, navigate, expected-URL mismatch, cross-site denial, revocation, and Stop;
-- Experimental click/type/submit only when explicitly enabled, with individual Lima approval, safe targets, and denial/cancel behavior;
-- restart persistence and multiple profiles/sessions; test Firefox separately before claiming Firefox support.
-
-Do not publish a bridge-enabled app or mark browser trust/live acceptance complete until that matrix passes. An earlier companion's results do not certify 1.3.0.
+**Exit criteria still open:** complete screenshots, bounded keyboard actions, exact frame overlay geometry, tab suspension/pooling, sensitive-action review, and post-action verification. Exercise SPAs, virtualized regions, same- and cross-origin frames, popups, user takeover, and all four AI Control modes in live Browser sessions. Use `docs/EMBEDDED_BROWSER_RELEASE_GATE.md` as the authoritative next-publish checklist.
 
 ### 4. First-run trust and support
 
@@ -64,7 +56,7 @@ Do not publish a bridge-enabled app or mark browser trust/live acceptance comple
 - Measure Search appearance and local-results latency, Workspace/module/note switching, clipboard search, AI first feedback and Stop; log regressions and eliminate main-thread blocking.
 - Run the release-candidate matrix: fresh install, old→new updates, signed/unsigned and network failures, interrupted download/install, relaunch/rollback, and clean uninstall.
 - Run a small end-to-end regression suite for Search, Notes, Dictation, AI, Clipboard, Context, Workflows, and Browser, plus visual snapshots.
-- Build both model-free and full app variants with the same pinned signed XPI; verify the embedded bytes and app/DMG signatures. Do not alter a signed XPI or overwrite a published release.
+- Build model-free and full app variants without any legacy Browser extension or native host; verify the app/DMG signatures and the absence of retired assets. Never overwrite a published release.
 - Stage a **new** version/tag as a draft only after source is committed, CI is green, browser acceptance passes, and the build matrix is complete. Public publication is a separate review.
 
 ### 6. Commercial beta

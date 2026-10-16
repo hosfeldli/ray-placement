@@ -174,6 +174,14 @@ private struct TerminalSurface: NSViewRepresentable {
     func updateNSView(_ nsView: ShelfCapturingTerminalView, context: Context) {}
 }
 
+private struct AIWorkspacePTYSurface: NSViewRepresentable {
+    let terminalView: AIWorkspacePTYTerminalView
+
+    func makeNSView(context: Context) -> AIWorkspacePTYTerminalView { terminalView }
+
+    func updateNSView(_ nsView: AIWorkspacePTYTerminalView, context: Context) {}
+}
+
 struct DeveloperTerminalView: View {
     @ObservedObject var model: DeveloperTerminalModel
     @ObservedObject private var aiSessions = AIWorkspaceTerminalCoordinator.shared
@@ -221,7 +229,12 @@ struct DeveloperTerminalView: View {
                             Divider()
                         }
                         if session.state == .running {
-                            Button("Stop AI Session") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                            if session.isInteractivePTY {
+                                Button("Interrupt Foreground Job") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                                Button("End Interactive Shell") { _ = try? aiSessions.terminate(sessionID: session.id) }
+                            } else {
+                                Button("Stop AI Session") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                            }
                         } else {
                             Button("Close AI Session") {
                                 _ = try? aiSessions.close(sessionID: session.id)
@@ -291,29 +304,42 @@ struct DeveloperTerminalView: View {
                         .help("AI may run more commands in this session's current directory; revoke from Terminal options")
                 }
                 if session.state == .running {
-                    Button("Stop") { _ = try? aiSessions.interrupt(sessionID: session.id) }
-                        .buttonStyle(.borderless)
+                    if session.isInteractivePTY {
+                        Button("Interrupt") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                            .buttonStyle(.borderless)
+                        Button("End Shell") { _ = try? aiSessions.terminate(sessionID: session.id) }
+                            .buttonStyle(.borderless)
+                    } else {
+                        Button("Stop") { _ = try? aiSessions.interrupt(sessionID: session.id) }
+                            .buttonStyle(.borderless)
+                    }
                 }
             }
             .limaFont(.caption)
             .padding(.horizontal, LimaSpacing.md)
             .frame(height: LimaDesign.toolbarHeight)
             .background(LimaTheme.surfaceSecondary)
-            ScrollViewReader { proxy in
-                ScrollView {
-                    Text(session.output.isEmpty ? "AI Workspace session ready." : session.output)
-                        .font(.system(size: 12, design: .monospaced))
-                        .foregroundStyle(LimaTheme.textPrimary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(LimaSpacing.md)
-                    Color.clear.frame(height: 1).id("bottom")
+            if session.isInteractivePTY, let pty = aiSessions.ptyView(sessionID: session.id) {
+                AIWorkspacePTYSurface(terminalView: pty)
+                    .background(Color(nsColor: pty.nativeBackgroundColor))
+                    .accessibilityLabel("Interactive AI Workspace Terminal")
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(session.output.isEmpty ? "AI Workspace session ready." : session.output)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(LimaTheme.textPrimary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(LimaSpacing.md)
+                        Color.clear.frame(height: 1).id("bottom")
+                    }
+                    .onChange(of: session.nextOutputByte) { _ in
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
-                .onChange(of: session.nextOutputByte) { _ in
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
+                .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
             }
-            .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityLabel("AI Workspace Terminal")

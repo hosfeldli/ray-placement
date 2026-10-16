@@ -21,6 +21,13 @@ import Testing
     #expect(!production.isTestCredential)
 }
 
+@Test func testRunnerIsolationDoesNotEnableLiveAIWithoutExplicitSwitches() {
+    #expect(LimaTestEnvironment.isTestRunner(processName: "swiftpm-testing-helper"))
+    #expect(LimaTestEnvironment.isTestRunner(processName: "xctest"))
+    #expect(!LimaTestEnvironment.isTestRunner(processName: "Lima"))
+    #expect(!LimaTestEnvironment.allowsLiveAI(environment: [:]))
+}
+
 @Test func liveAITestsRequireBothTestModeAndExplicitSessionSwitch() {
     #expect(!LimaTestEnvironment.allowsLiveAI(environment: ["LIMA_TEST_MODE": "1"]))
     #expect(!LimaTestEnvironment.allowsLiveAI(environment: ["LIMA_ALLOW_LIVE_AI_TESTS": "1"]))
@@ -155,6 +162,53 @@ import Testing
     #expect(model.executionRun?.assistantMessageID == assistant?.id)
     #expect(model.executionRun?.completedAt != nil)
     #expect(!model.canEndTask)
+}
+
+@Test @MainActor func emptyProviderCompletionIsTerminalAndComposerReady() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .responseCreated("fixture-empty"),
+            .completed("fixture-empty")
+        ])
+    )
+    model.draft = "Return a visible answer"
+    model.send()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(model.executionRun?.state == .failed)
+    #expect(model.executionRun?.completedAt != nil)
+    #expect(!model.canEndTask)
+    #expect(!model.currentTaskState.isActive)
+    #expect(model.currentTaskState.title == "Request needs attention")
+    #expect(assistant.failure != nil)
+    #expect(assistant.text.contains("Retry this request"))
+    #expect(store.conversations.first?.messages.contains { $0.role == .user && $0.text == "Return a visible answer" } == true)
+}
+
+@Test @MainActor func orphanedAIExecutionSelfRepairsWithoutRestart() async throws {
+    let model = AIChatVisualFixtures.model(for: .streaming)
+    let assistantID = try #require(model.executionRun?.assistantMessageID)
+    let partialAnswer = model.streamingText
+    #expect(model.canEndTask)
+
+    model.simulateOrphanedRunForTesting()
+    for _ in 0..<200 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+
+    #expect(model.executionRun?.state == .failed)
+    #expect(!model.canEndTask)
+    #expect(!model.currentTaskState.isActive)
+    #expect(model.currentTaskState.title == "Request needs attention")
+    let answer = model.selectedConversation?.messages.first(where: { $0.id == assistantID })?.text
+    #expect(answer == partialAnswer)
 }
 
 @Test @MainActor func endingStreamingTaskKeepsVisiblePartialAnswerAndStoppedState() async {
@@ -297,9 +351,10 @@ import Testing
     let continuation = model.approvalContinuationContextForTesting
     #expect(model.pendingApproval != nil)
     #expect(continuation != nil)
-    #expect(continuation?.localTools.isEmpty == true)
-    #expect(continuation?.browserRoutingContext.turnToolIDs.isEmpty == true)
-    #expect(continuation?.systemInstructions.contains("Browser routing for this turn") == true)
+    let capturedToolIDs = Set(continuation?.localTools.map(\.id) ?? [])
+    #expect(capturedToolIDs.isSuperset(of: BrowserWorkspaceAITools.ids))
+    #expect(capturedToolIDs.contains("browser_read"))
+    #expect(continuation?.systemInstructions.contains("embedded Browser AI Control") == true)
 
     model.endTask()
     #expect(model.approvalContinuationContextForTesting == nil)
@@ -477,127 +532,44 @@ import Testing
     #expect(!routed.contains("search_web"))
     #expect(!routed.contains("read_web"))
     #expect(routed.contains("browser_read"))
-    #expect(!routed.contains("browser_open_tabs")) // Its live action category is Off.
+    #expect(!routed.contains("browser_open_tabs"))
+    #expect(routed.isSuperset(of: BrowserWorkspaceAITools.ids))
     #expect(model.isBrowserPrompt("Open new tabs for these cases"))
     #expect(model.isBrowserPrompt("Open all of these links"))
     #expect(model.isBrowserPrompt("Open this web result"))
-    #expect(model.requestsBrowserNavigation("Open this web result"))
     #expect(model.isBrowserPrompt("Click the Continue button"))
     #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
 
-    let pageReadRoute = model.browserToolIDs(for: "Read this website and summarize the page")
-    #expect(pageReadRoute.contains("browser_read"))
-    #expect(!pageReadRoute.contains("browser_submit"))
     #expect(model.systemInstructions.contains("Distinguish search snippets"))
     #expect(model.systemInstructions.contains("independent verification"))
 }
 
-@Test @MainActor func browserNavigationPromptRoutesInspectionOnly() async throws {
-    let model = AIChatViewModel(
-        store: AIConversationStore(fixtures: []),
-        credentials: AIChatCredentialStore(configuration: .fixture),
-        nativeToolStore: LimaAIToolStore(fixtures: Set(BrowserBridgeAITools.definitions.map { $0.id })),
-        transport: FixtureAITransport.standard
-    )
-
-    let routed = Set(model.routedNativeTools(for: "Open new tabs for these web results").map { $0.id })
-    #expect(!routed.contains("browser_open_tabs"))
-    #expect(!routed.contains("browser_focus_tab"))
-    #expect(!routed.contains("browser_navigate_tab"))
-
-    model.draft = "Open new tabs for these web results"
-    model.send()
-    for _ in 0..<100 where model.isStreaming { try await Task.sleep(for: .milliseconds(10)) }
-
-    #expect(!model.isStreaming)
-    #expect(model.streamError == nil)
-}
-
-@Test @MainActor func browserNavigationDefaultsOffAtEveryAIToolGate() async {
-    let navigationIDs = ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
-    let definitions = LimaAIToolRegistry.enabledDefinitions(Set(navigationIDs))
-    #expect(definitions.isEmpty)
-    for id in navigationIDs {
-        let call = AIOutputItem(
-            phase: .completed,
-            apiType: "function_call",
-            callID: "call_\(id)",
-            name: id,
-            arguments: "{}"
-        )
-        let bridgeResult = await BrowserBridgeAITools.execute(call)
-        #expect(bridgeResult.isError)
-        #expect(bridgeResult.output.contains("disabled or still needs your approval"))
-        let registryResult = await LimaAIToolRegistry.execute(call)
-        #expect(registryResult.isError)
-    }
-}
-
-@Test @MainActor func computerActionPolicyRetainsPerCategoryConfirmationRules() throws {
+@Test @MainActor func computerActionPolicyKeepsEmbeddedBrowserAuthoritySeparate() throws {
     let suite = "RayPlacementTests.computer-action-policy.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let policy = AIComputerActionPolicy(defaults: defaults)
-    let navigation = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_navigate_tab" })
-    let interaction = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_type" })
-    let click = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_click" })
-    let submit = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_submit" })
+    let browser = try #require(BrowserWorkspaceAITools.definitions.first { $0.id == "browser_navigate" })
     let localFile = try #require(AILocalComputerActionTools.definitions.first { $0.id == "create_text_file" })
     let savedMemory = try #require(AIContextTools.definitions.first { $0.id == "memory_save" })
     let terminal = try #require(AILocalComputerActionTools.definitions.first { $0.id == "run_terminal_command" })
 
-    #expect(policy.access(for: .browserNavigation) == .disabled)
-    #expect(policy.access(for: .browserInteraction) == .disabled)
-    #expect(!policy.browserInteractionExperimentalEnabled)
-    #expect(!policy.broadBrowserGrantsExperimentalEnabled)
+    #expect(browser.actionCategory == nil)
+    #expect(!policy.requiresApproval(for: browser))
     #expect(policy.access(for: .localFiles) == .disabled)
     #expect(policy.access(for: .savedMemory) == .askEveryTime)
-    #expect(policy.requiresApproval(for: savedMemory))
     #expect(policy.access(for: .terminal) == .disabled)
-
-    policy.setAccess(.allowWithJournal, for: .browserNavigation)
-    #expect(!policy.requiresApproval(for: navigation))
-    policy.setBroadBrowserGrantsExperimentalEnabled(true)
-    #expect(policy.broadBrowserGrantsExperimentalEnabled)
-    #expect(defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
-    #expect(AIComputerActionPolicy(defaults: defaults).broadBrowserGrantsExperimentalEnabled)
-    #expect(policy.requiresApproval(for: interaction))
-    policy.setBroadBrowserGrantsExperimentalEnabled(false)
-    #expect(!policy.broadBrowserGrantsExperimentalEnabled)
-    #expect(!defaults.bool(forKey: AIComputerActionPolicy.broadBrowserGrantsKey))
-    #expect(!AIComputerActionPolicy(defaults: defaults).broadBrowserGrantsExperimentalEnabled)
-    policy.setAccess(.askEveryTime, for: .browserInteraction)
-    #expect(policy.access(for: .browserInteraction) == .disabled)
-    policy.setBrowserInteractionExperimentalEnabled(true)
-    policy.setAccess(.askEveryTime, for: .browserInteraction)
-    #expect(policy.access(for: .browserInteraction) == .askEveryTime)
+    #expect(policy.requiresApproval(for: savedMemory))
     policy.setAccess(.askEveryTime, for: .localFiles)
-    policy.setAccess(.askEveryTime, for: .savedMemory)
     policy.setAccess(.askEveryTime, for: .terminal)
-    #expect(policy.requiresApproval(for: interaction))
-    #expect(policy.requiresApproval(for: click))
-    #expect(policy.requiresApproval(for: submit))
     #expect(policy.requiresApproval(for: localFile))
-    #expect(policy.requiresApproval(for: savedMemory))
     #expect(policy.requiresApproval(for: terminal))
-    policy.setAccess(.allowWithJournal, for: .browserInteraction)
-    #expect(policy.access(for: .browserInteraction) == .allowWithJournal)
-    #expect(!policy.requiresApproval(for: interaction))
-    #expect(!policy.requiresApproval(for: click))
-    #expect(policy.requiresApproval(for: submit))
-    #expect(policy.requiresApproval(for: localFile))
-    #expect(policy.requiresApproval(for: savedMemory))
-    #expect(policy.requiresApproval(for: terminal))
-    #expect(AIComputerActionPolicy(defaults: defaults).access(for: .browserInteraction) == .allowWithJournal)
-    policy.setBrowserInteractionExperimentalEnabled(false)
-    #expect(policy.access(for: .browserInteraction) == .disabled)
-    #expect(defaults.string(forKey: "lima.ai.computer-action.browserInteraction") == AIComputerActionAccess.disabled.rawValue)
-    #expect(defaults.string(forKey: "lima.ai.computer-action.browserNavigation") == AIComputerActionAccess.allowWithJournal.rawValue)
     policy.setAccess(.disabled, for: .savedMemory)
     #expect(AIComputerActionPolicy(defaults: defaults).access(for: .savedMemory) == .disabled)
     #expect(!policy.allows(savedMemory))
 }
+
 
 @Test func localCommandRunnerRejectsGitWritesAndEscapingOperands() {
     let directory = URL(fileURLWithPath: "/Users/example/project", isDirectory: true)
@@ -626,7 +598,7 @@ import Testing
 }
 
 @Test @MainActor func strictToolSchemasAreProviderReadyAndNormalizeOptionalArguments() throws {
-    let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions + AILocalComputerActionTools.definitions
+    let definitions = LimaAIToolRegistry.definitions + BrowserWorkspaceAITools.definitions + AILocalComputerActionTools.definitions
     #expect(definitions.allSatisfy { $0.responsePayload != nil })
 
     for definition in definitions {
@@ -644,16 +616,14 @@ import Testing
     let directory = try #require(properties["directory"] as? [String: Any])
     #expect(directory["type"] as? [String] == ["string", "null"])
 
-    let batchOpen = try #require(definitions.first { $0.id == "browser_open_tabs" })
-    #expect(batchOpen.risk == .navigation)
-    #expect(batchOpen.responsePayload?["strict"] as? Bool == true)
-    let batchParameters = try #require(batchOpen.responsePayload?["parameters"] as? [String: Any])
-    let batchProperties = try #require(batchParameters["properties"] as? [String: Any])
-    let urls = try #require(batchProperties["urls"] as? [String: Any])
-    #expect(urls["maxItems"] as? Int == 50)
+    let newTab = try #require(definitions.first { $0.id == "browser_new_tab" })
+    #expect(newTab.risk == .navigation)
+    #expect(newTab.responsePayload?["strict"] as? Bool == true)
+    let tabParameters = try #require(newTab.responsePayload?["parameters"] as? [String: Any])
+    let tabProperties = try #require(tabParameters["properties"] as? [String: Any])
+    let url = try #require(tabProperties["url"] as? [String: Any])
+    #expect(url["type"] as? [String] == ["string", "null"])
 
-    let queueLinks = try #require(definitions.first { $0.id == "salesforce_read_case_links" })
-    #expect(queueLinks.risk == .read)
     let replacement = try #require(definitions.first { $0.id == "replace_text_file" })
     let replacementParameters = try #require(replacement.responsePayload?["parameters"] as? [String: Any])
     #expect(Set(try #require(replacementParameters["required"] as? [String])) == ["content", "expected_modified_at", "path"])
@@ -670,41 +640,17 @@ import Testing
     #expect(terminalDirectory["type"] as? [String] == ["string", "null"])
 }
 
-@Test @MainActor func browserSearchBuildsOnlyBoundedHTTPSGoogleQueries() throws {
-    let search = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_search_web" })
-    #expect(search.risk == .navigation)
-    #expect(search.actionCategory == .browserNavigation)
-    let urlString = try #require(BrowserBridgeAITools.searchURL(for: "swift package tests & build"))
-    let url = try #require(URL(string: urlString))
-    #expect(url.scheme == "https")
-    #expect(url.host == "www.google.com")
-    #expect(url.path == "/search")
-    #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.first?.value == "swift package tests & build")
-    #expect(BrowserBridgeAITools.searchURL(for: "") == nil)
-    #expect(BrowserBridgeAITools.searchURL(for: "secret\nvalue") == nil)
-    #expect(BrowserBridgeAITools.searchURL(for: String(repeating: "a", count: 201)) == nil)
-}
-
-@Test @MainActor func browserURLToolsDoNotUseUnsupportedURIFormat() throws {
-    let fields = [
-        "browser_open_tabs": "urls",
-        "browser_focus_tab": "expected_url",
-        "browser_navigate_tab": "url"
-    ]
-    for definition in BrowserBridgeAITools.definitions where fields[definition.id] != nil {
+@Test @MainActor func embeddedBrowserURLToolsDoNotUseUnsupportedURIFormat() throws {
+    for (id, field) in [("browser_new_tab", "url"), ("browser_navigate", "url")] {
+        let definition = try #require(BrowserWorkspaceAITools.definitions.first { $0.id == id })
         let parameters = try #require(definition.responsePayload?["parameters"] as? [String: Any])
         let properties = try #require(parameters["properties"] as? [String: Any])
-        let property = try #require(properties[fields[definition.id]!] as? [String: Any])
-        let value: [String: Any]
-        if definition.id == "browser_open_tabs" {
-            value = try #require(property["items"] as? [String: Any])
-        } else {
-            value = property
-        }
-        #expect(value["format"] == nil)
-        #expect((value["description"] as? String)?.contains("HTTPS") == true)
+        let property = try #require(properties[field] as? [String: Any])
+        #expect(property["format"] == nil)
+        #expect((property["description"] as? String)?.contains("HTTPS") == true)
     }
 }
+
 
 @Test func strictSchemaValidatorRejectsUnsupportedURIFormat() {
     let definition = LimaAIToolDefinition(
@@ -1739,6 +1685,70 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     print("Fixture long-chat composer send: 8 turns, longest synchronous call \(longest) ms; no live provider or UI rendering")
 }
 
+@Test @MainActor func oneHundredMixedAIRunsLeaveNoActiveExecutionProjection() async throws {
+    let first = AIConversation(title: "Stress A")
+    let second = AIConversation(title: "Stress B")
+    let store = AIConversationStore(fixtures: [first, second])
+    let registry = TaskRegistry()
+    var transport = FixtureAITransport(events: [])
+    transport.toolOutputEvents = [.textDelta("Recovered from tool failure"), .completed("tool-continuation")]
+    transport.replyStream = { input, _ in
+        let index = Int(input.split(separator: " ").last ?? "") ?? 0
+        return AsyncThrowingStream { continuation in
+            continuation.yield(.responseCreated("stress-\(index)"))
+            switch index % 10 {
+            case 1:
+                continuation.yield(.failed("Fixture provider failure"))
+            case 2:
+                continuation.yield(.outputItem(AIOutputItem(
+                    phase: .completed,
+                    apiType: "function_call",
+                    callID: "tool-\(index)",
+                    name: "fixture_missing_tool",
+                    arguments: "{}"
+                )))
+                continuation.yield(.completed("stress-\(index)"))
+            default:
+                continuation.yield(.textDelta("Answer \(index)"))
+                continuation.yield(.completed("stress-\(index)"))
+            }
+            continuation.finish()
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport,
+        taskRegistry: registry
+    )
+
+    for index in 0..<100 {
+        model.select(index.isMultiple(of: 2) ? first.id : second.id)
+        model.draft = "Stress run \(index)"
+        model.send()
+        if index % 10 == 0 {
+            model.cancel()
+        } else {
+            for _ in 0..<500 where model.canEndTask {
+                try await Task.sleep(for: .milliseconds(2))
+            }
+        }
+        #expect(model.executionRun?.state.isTerminal == true)
+        #expect(!model.canEndTask)
+        #expect(!model.isStreaming)
+        #expect(model.pendingApproval == nil)
+        #expect(!model.hasActiveStreamTaskForTesting)
+        #expect(registry.activeTasks.isEmpty)
+    }
+    for _ in 0..<500 {
+        if await model.inFlightExecutionLoopCountForTesting() == 0 { break }
+        try await Task.sleep(for: .milliseconds(2))
+    }
+    #expect(await model.inFlightExecutionLoopCountForTesting() == 0)
+    #expect(store.conversations.reduce(0) { $0 + $1.messages.filter { $0.role == .user }.count } == 100)
+}
+
 @Test @MainActor func deletedConversationCannotCompleteAnUnpersistedAIRun() async throws {
     let registry = TaskRegistry()
     let store = AIConversationStore(fixtures: [])
@@ -1760,6 +1770,33 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
     #expect(registry.activeTasks.isEmpty)
     #expect(registry.recentTasks.first?.state == .failed)
     #expect(!model.isStreaming)
+}
+
+@Test @MainActor func cancellingDeletedConversationClearsOrphanedStreamingText() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(
+            events: [.textDelta("Partial answer"), .completed("cancel-removed-chat")],
+            interEventDelay: .seconds(2)
+        )
+    )
+    model.draft = "Start a response"
+    model.send()
+    for _ in 0..<300 where model.streamingText != "Partial answer" {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.streamingText == "Partial answer")
+    let id = try #require(store.conversations.first?.id)
+    store.delete(id: id)
+    model.cancel()
+
+    #expect(model.executionRun?.state == .cancelled)
+    #expect(!model.canEndTask)
+    #expect(model.streamingText.isEmpty)
+    #expect(model.streamingTextAssistantID == nil)
 }
 
 @Test @MainActor func deletedAssistantMessageCannotCompleteAnUnpersistedAIRun() async throws {

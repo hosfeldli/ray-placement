@@ -47,19 +47,16 @@ enum AIProviderFailure {
         "maxItems", "format"
     ]
 
-    private static let safeLimaToolNames: Set<String> = [
+    private static let safeLimaToolNames: Set<String> = Set([
         "read_screen_context", "search_files", "find_files", "list_directory",
         "file_metadata", "read_file", "search_workspace_text", "inspect_directory_tree",
-        "list_extensions", "get_lima_status",
-        "lima_connection_test", "browser_capabilities", "browser_tabs", "browser_current",
-        "browser_read", "browser_scan", "salesforce_read_case_links", "salesforce_resolve_case",
-        "salesforce_resolve_cases", "browser_search_web", "browser_open_tabs", "browser_focus_tab",
-        "browser_navigate_tab"
-    ]
+        "list_extensions", "get_lima_status", "lima_connection_test"
+    ]).union(BrowserWorkspaceAITools.ids)
 
     private static let safeLimaSchemaPropertyNames: Set<String> = [
         "query", "directory", "path", "start_line", "length", "max_depth", "url", "tab_id",
-        "case_number", "case_numbers", "urls", "background", "expected_url"
+        "background", "result_id", "offset", "max_bytes", "max_passes", "target",
+        "disposition", "direction", "fraction", "kind", "value", "timeout_ms", "text"
     ]
 
     static func code(_ raw: Any?) -> String? {

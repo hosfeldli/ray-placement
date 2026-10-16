@@ -41,6 +41,22 @@ import Testing
     #expect(AIActivityStream.terminalState(from: [request, approval, denied], steps: finished) == .needsAttention)
 }
 
+@Test func parallelSubagentStepsFollowReservedOrdinalsNotSchedulerOrder() {
+    let second = AIAgentActivity(kind: .toolStarted, title: "Subagent 2",
+                                 detail: "Analyze B", correlationID: "child-b")
+    let first = AIAgentActivity(kind: .toolStarted, title: "Subagent 1",
+                                detail: "Analyze A", correlationID: "child-a")
+    let firstDone = AIAgentActivity(kind: .toolCompleted, title: "Subagent 1",
+                                    correlationID: "child-a", completed: true)
+    let secondDone = AIAgentActivity(kind: .toolCompleted, title: "Subagent 2",
+                                     correlationID: "child-b", completed: true)
+    let steps = AIActivityStream.steps(from: [second, first, firstDone, secondDone], isActive: false)
+    #expect(steps.map(\.title) == ["Subagent 1", "Subagent 2"])
+    #expect(steps.map(\.detail) == ["Analyze A", "Analyze B"])
+    #expect(steps.map(\.correlationID) == ["child-a", "child-b"])
+    #expect(steps.allSatisfy { $0.status == .completed })
+}
+
 @Test func activityTerminalStateRespectsExplicitStopAndSuccess() {
     let stopped = AIAgentActivity(kind: .completed, title: "Stopped", completed: true)
     #expect(AIActivityStream.terminalState(from: [stopped], steps: []) == .stopped)

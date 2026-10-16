@@ -20,16 +20,26 @@ final class LauncherViewModel: ObservableObject {
     @Published var query = "" {
         didSet {
             if oldValue != query {
+                let phase = LauncherSearchPhase(query: query)
+                if searchPhase != phase { searchPhase = phase }
                 closeActionPanel()
                 selectedIndex = 0
                 if mode == .files {
                     SurfaceStateCache.shared.set(.string(query), for: "files", key: "query")
                 }
-                refreshResults()
+                if mode == .root && !searchPresented {
+                    // A command query may be prepared before the panel appears.
+                    // Keep its phase, but defer catalog work until presentation.
+                    results = []
+                    isSearching = false
+                } else {
+                    refreshResults()
+                }
             }
         }
     }
     @Published private(set) var mode: LauncherMode = .root
+    @Published private(set) var searchPhase: LauncherSearchPhase = .idle
     @Published private(set) var results: [LauncherItem] = []
     @Published private(set) var universalResults: [LimaSearchResult] = []
     /// The emoji picker owns its own lightweight data path. Keeping the raw
@@ -61,7 +71,26 @@ final class LauncherViewModel: ObservableObject {
     private let extensionLoader = ExtensionLoader()
     private let usage = UsageStore()
     private let aliasStore = CommandAliasStore()
-    private let searchIndex = LauncherSearchIndex()
+    private let searchEngine = LauncherSearchEngine()
+    /// Each source owns its own command models and normalized documents. A note
+    /// edit updates only Notes documents; applications and commands stay cached.
+    private enum CatalogSource: CaseIterable {
+        case builtins, extensions, applications, macros, notes, shelf, clipboard, workflows, outputs
+    }
+    private var catalogItemsBySource: [CatalogSource: [LauncherItem]] = [:]
+    private var catalogInputsBySource: [CatalogSource: [LauncherSearchDocumentInput]] = [:]
+    private var catalogDocumentBuildCounts: [CatalogSource: Int] = [:]
+    private var rootCatalog: [LauncherItem]?
+    private var rootCatalogByID: [String: LauncherItem] = [:]
+    private var searchCatalog: SearchCatalogSnapshot?
+    private var searchCatalogRevision: UInt64 = 0
+    private var localSearchHits: [LauncherSearchHit] = []
+    private var rootLocalSearchPending = false
+    private var localSearchTask: Task<Void, Never>?
+    private var catalogRefreshScheduled = false
+    /// Standalone models are presented by default; the live controller updates this
+    /// as the panel opens and closes so hidden store changes do not rank a query.
+    private var searchPresented = true
     private var applications: [ApplicationRecord] = []
     @Published private(set) var extensionCommands: [LoadedExtensionCommand] = []
     private var fileResults: [URL] = []
@@ -73,6 +102,7 @@ final class LauncherViewModel: ObservableObject {
     private var searchWorkItem: DispatchWorkItem?
     private var universalSearchTask: Task<Void, Never>?
     private var universalSearchGeneration = 0
+    private var lastScheduledRootQuery = ""
     private var clipboardSearchWorkItem: DispatchWorkItem?
     private var clipboardSearchGeneration = 0
     private var clipboardObserver: AnyCancellable?
@@ -81,20 +111,38 @@ final class LauncherViewModel: ObservableObject {
     init(clipboard: ClipboardHistoryService, scanApplications: Bool = true) {
         self.clipboard = clipboard
         clipboardObserver = clipboard.$entries.sink { [weak self] _ in
-            self?.refreshResults()
+            self?.rootCatalogDidChange(.clipboard)
         }
         catalogObservers = [
-            NotesStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() },
-            ContextShelfStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() },
-            WorkflowStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() },
-            LimaMacroStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() },
-            ExtensionOutputStore.shared.objectWillChange.sink { [weak self] _ in self?.refreshResults() }
+            // Observe only searchable collections; selection, editor focus, and
+            // other store UI changes must not invalidate the command catalog.
+            NotesStore.shared.$notes.sink { [weak self] _ in self?.rootCatalogDidChange(.notes) },
+            ContextShelfStore.shared.$items.sink { [weak self] _ in self?.rootCatalogDidChange(.shelf) },
+            WorkflowStore.shared.$workflows.sink { [weak self] _ in self?.rootCatalogDidChange(.workflows) },
+            LimaMacroStore.shared.$chains.sink { [weak self] _ in self?.rootCatalogDidChange(.macros) },
+            ExtensionOutputStore.shared.$outputs.sink { [weak self] _ in self?.rootCatalogDidChange(.outputs) },
+            CommandManager.shared.$favoriteIDs.sink { [weak self] _ in self?.rootCatalogDidChange() },
+            CommandManager.shared.$profiles.sink { [weak self] _ in self?.rootCatalogDidChange() },
+            CommandManager.shared.$activeProfileID.sink { [weak self] _ in self?.rootCatalogDidChange() },
+            // Only preferences that affect command availability, shortcut labels,
+            // or the Clipboard entry can change this catalog.
+            SettingsStore.shared.$extensionEnabledOverrides.sink { [weak self] _ in self?.rootCatalogDidChange(.extensions) },
+            SettingsStore.shared.$extensionPackEnabledOverrides.sink { [weak self] _ in self?.rootCatalogDidChange(.extensions) },
+            SettingsStore.shared.$extensionHotkeyEnabledOverrides.sink { [weak self] _ in self?.rootCatalogDidChange(.extensions) },
+            SettingsStore.shared.$extensionShortcutOverrides.sink { [weak self] _ in self?.rootCatalogDidChange(.extensions) },
+            SettingsStore.shared.$clipboardEnabled.sink { [weak self] _ in self?.rootCatalogDidChange(.clipboard) },
+            SettingsStore.shared.$notesShortcut.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
+            SettingsStore.shared.$notesHotkeyEnabled.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
+            SettingsStore.shared.$quickNoteShortcut.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
+            SettingsStore.shared.$quickNoteHotkeyEnabled.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
+            SettingsStore.shared.$dictationShortcut.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
+            SettingsStore.shared.$dictationHotkeyEnabled.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) }
         ]
         reloadExtensions(notify: false)
         if scanApplications {
             applicationIndex.scan { [weak self] records in
                 self?.applications = records
-                self?.refreshResults()
+                self?.rootCatalogDidChange(.applications)
             }
         }
         refreshResults()
@@ -231,13 +279,145 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func refreshForSettings() {
-        refreshResults()
+        invalidateRootCatalog()
+        if searchPresented { refreshResults() }
     }
 
+    func setSearchPresented(_ presented: Bool) {
+        guard searchPresented != presented else { return }
+        searchPresented = presented
+        if presented {
+            if mode == .root, searchPhase == .active { refreshRootResults() }
+        } else {
+            searchWorkItem?.cancel()
+            localSearchTask?.cancel()
+            universalSearchTask?.cancel()
+            fileSearch.cancel()
+            universalSearchGeneration += 1
+            localSearchHits = []
+            rootLocalSearchPending = false
+            rootFileSearchPending = false
+            rootUniversalSearchPending = false
+            isSearching = false
+            if mode == .root {
+                universalResults = []
+                rootFileResults = []
+                results = []
+                selectedIndex = 0
+            }
+        }
+    }
+
+    private func rootCatalogDidChange(_ source: CatalogSource? = nil) {
+        invalidateRootCatalog(source)
+        guard searchPresented, mode == .root, searchPhase == .active,
+              !catalogRefreshScheduled else { return }
+        // Published values arrive after willChange. Coalesce source events and
+        // rebuild only the changed sections after stores commit their values.
+        catalogRefreshScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.catalogRefreshScheduled = false
+            guard self.searchPresented, self.mode == .root,
+                  self.searchPhase == .active else { return }
+            self.refreshResults()
+        }
+    }
+
+    private func invalidateRootCatalog(_ source: CatalogSource? = nil) {
+        rootCatalog = nil
+        rootCatalogByID = [:]
+        searchCatalog = nil
+        if let source {
+            catalogItemsBySource.removeValue(forKey: source)
+            catalogInputsBySource.removeValue(forKey: source)
+        } else {
+            catalogItemsBySource.removeAll()
+            catalogInputsBySource.removeAll()
+        }
+    }
+
+    private func catalogItems(for source: CatalogSource) -> [LauncherItem] {
+        if let cached = catalogItemsBySource[source] { return cached }
+        let items: [LauncherItem]
+        switch source {
+        case .builtins: items = builtInItems()
+        case .extensions: items = extensionItems()
+        case .applications: items = applicationItems()
+        case .macros: items = macroItems()
+        case .notes: items = noteItems()
+        case .shelf: items = shelfItems()
+        case .clipboard: items = clipboardItems()
+        case .workflows: items = workflowItems()
+        case .outputs: items = outputItems()
+        }
+        catalogItemsBySource[source] = items
+        return items
+    }
+
+    private func rootCatalogItems() -> [LauncherItem] {
+        if let rootCatalog { return rootCatalog }
+        let items = CatalogSource.allCases.flatMap(catalogItems(for:))
+        rootCatalog = items
+        rootCatalogByID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return items
+    }
+
+    private func localSearchCatalog() -> SearchCatalogSnapshot {
+        if let searchCatalog { return searchCatalog }
+        _ = rootCatalogItems()
+        let inputs = CatalogSource.allCases.flatMap { source -> [LauncherSearchDocumentInput] in
+            if let cached = catalogInputsBySource[source] { return cached }
+            let clipboardText: [String: String] = source == .clipboard
+                ? Dictionary(clipboard.entries.prefix(500).map {
+                    ("clipboard.\($0.id)", String($0.text.prefix(8_000)))
+                }, uniquingKeysWith: { first, _ in first }) : [:]
+            let extensionAliases: [String: [String]] = source == .extensions
+                ? Dictionary(extensionCommands.map {
+                    ("extension.\($0.extensionID).\($0.command.id)", $0.command.aliases ?? [])
+                }, uniquingKeysWith: { first, _ in first }) : [:]
+            let built = catalogItems(for: source).map { item -> LauncherSearchDocumentInput in
+                let favoriteRank = CommandManager.shared.favoriteRank(item.id)
+                let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
+                return LauncherSearchDocumentInput(
+                    item: item, searchText: clipboardText[item.id],
+                    userAliases: aliasStore.aliases(for: item.id),
+                    extensionAliases: extensionAliases[item.id] ?? [],
+                    rankingBonus: usage.score(for: item.id) + favoriteBonus
+                )
+            }
+            catalogInputsBySource[source] = built
+            catalogDocumentBuildCounts[source, default: 0] += 1
+            return built
+        }
+        searchCatalogRevision &+= 1
+        let snapshot = SearchCatalogSnapshot(revision: searchCatalogRevision, inputs: inputs)
+        searchCatalog = snapshot
+        return snapshot
+    }
+
+    /// Test synchronization point for the debounced local actor search. Tests
+    /// should assert a settled result rather than the first-keypress placeholder.
+    func waitForLocalSearchForTesting() async {
+        await localSearchTask?.value
+    }
+
+    #if DEBUG
+    func searchDocumentBuildCountForTesting(_ source: String) -> Int {
+        guard let source = CatalogSource.allCases.first(where: { String(describing: $0) == source }) else { return 0 }
+        return catalogDocumentBuildCounts[source, default: 0]
+    }
+    #endif
+
     func aliases(for commandID: String) -> [String] { aliasStore.aliases(for: commandID) }
-    func setAliases(_ aliases: [String], for commandID: String) { aliasStore.set(aliases, for: commandID); refreshResults() }
-    func resetLearnedRanking() { usage.reset(); refreshResults() }
-    func forgetLearnedRanking(_ commandID: String) { usage.forget(commandID); refreshResults() }
+    private func invalidateSearchDocuments() {
+        searchCatalog = nil
+        catalogInputsBySource.removeAll()
+    }
+
+    func setAliases(_ aliases: [String], for commandID: String) { aliasStore.set(aliases, for: commandID); invalidateSearchDocuments(); refreshResults() }
+    func resetLearnedRanking() { usage.reset(); invalidateSearchDocuments(); refreshResults() }
+    func forgetLearnedRanking(_ commandID: String) { usage.forget(commandID); invalidateSearchDocuments(); refreshResults() }
     func lastLearnedCommands(limit: Int = 10) -> [String] { usage.recentIdentifiers(limit: limit) }
 
     var commandDescriptors: [ManagedCommandDescriptor] {
@@ -254,6 +434,7 @@ final class LauncherViewModel: ObservableObject {
 
     func resetForPresentation() {
         searchWorkItem?.cancel()
+        localSearchTask?.cancel()
         universalSearchTask?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
@@ -338,6 +519,9 @@ final class LauncherViewModel: ObservableObject {
 
     func enter(_ newMode: LauncherMode) {
         searchWorkItem?.cancel()
+        localSearchTask?.cancel()
+        rootLocalSearchPending = false
+        localSearchHits = []
         universalSearchTask?.cancel()
         clipboardSearchWorkItem?.cancel()
         fileSearch.cancel()
@@ -404,7 +588,7 @@ final class LauncherViewModel: ObservableObject {
         extensionCommands = loaded.commands
         manifestExtensionIssues = loaded.issues
         updateExtensionIssues()
-        refreshResults()
+        rootCatalogDidChange(.extensions)
         if notify { delegate?.launcherViewModelDidReloadExtensions(self) }
     }
 
@@ -415,7 +599,7 @@ final class LauncherViewModel: ObservableObject {
         extensionCommands = loaded.commands
         manifestExtensionIssues = loaded.issues
         updateExtensionIssues()
-        refreshResults()
+        rootCatalogDidChange(.extensions)
         delegate?.launcherViewModelDidReloadExtensions(self)
         return report.summary
     }
@@ -593,7 +777,7 @@ final class LauncherViewModel: ObservableObject {
 
     func repeatLastAction() {
         guard let identifier = usage.lastIdentifier() else { return }
-        let items = builtInItems() + extensionItems() + applicationItems() + macroItems() + specializedItems()
+        let items = rootCatalogItems()
         guard let item = items.first(where: { $0.id == identifier }) else { return }
         execute(item: item)
     }
@@ -608,6 +792,7 @@ final class LauncherViewModel: ObservableObject {
             EmojiUsageStore.shared.record(emoji)
         } else {
             usage.record(item.id, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
+            invalidateSearchDocuments()
         }
     }
 
@@ -712,26 +897,64 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func refreshRootResults() {
+        // Non-query triggers (selection, aliases, learned ranking) can arrive
+        // after the panel closes. Never rebuild or rank a hidden root search.
+        guard searchPresented else {
+            lastScheduledRootQuery = ""
+            results = []
+            isSearching = false
+            return
+        }
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed = UniversalSearchCoordinator.parse(cleanQuery)
         universalSearchGeneration += 1
         let generation = universalSearchGeneration
+        localSearchTask?.cancel()
         universalSearchTask?.cancel()
         searchWorkItem?.cancel()
         fileSearch.cancel()
+        localSearchHits = []
         universalResults = []
         rootFileResults = []
+        rootLocalSearchPending = false
         rootFileSearchPending = false
         rootUniversalSearchPending = false
-        results = rootResults()
         guard !parsed.query.isEmpty else {
+            lastScheduledRootQuery = ""
+            results = []
             isSearching = false
             return
         }
+        // Show the first query after an empty composer without a fixed delay;
+        // only subsequent keystrokes need coalescing.
+        let debounceMilliseconds = lastScheduledRootQuery.isEmpty ? 0 : 35
+        lastScheduledRootQuery = parsed.query
         let shouldSearchFiles = (parsed.prefix == nil || parsed.prefix == "file") && parsed.query.count >= 2
+        rootLocalSearchPending = true
         rootUniversalSearchPending = true
         rootFileSearchPending = shouldSearchFiles
         isSearching = true
+        results = rootResults()
+        localSearchTask = Task { [weak self] in
+            // Yield one turn for first-keypress focus; debounce rapid edits.
+            if debounceMilliseconds == 0 { await Task.yield() }
+            else { try? await Task.sleep(for: .milliseconds(debounceMilliseconds)) }
+            guard !Task.isCancelled, let self else { return }
+            let catalog = self.localSearchCatalog()
+            let response = await self.searchEngine.search(
+                LauncherSearchRequest(rawQuery: cleanQuery, generation: generation),
+                catalog: catalog
+            )
+            guard !Task.isCancelled, self.searchPresented, self.mode == .root,
+                  response.generation == self.universalSearchGeneration,
+                  self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
+            let selectedID = self.selectedItem?.id
+            self.localSearchHits = response.hits
+            self.rootLocalSearchPending = false
+            self.isSearching = self.rootUniversalSearchPending || self.rootFileSearchPending
+            self.results = self.rootResults()
+            self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+        }
         if shouldSearchFiles {
             let request = DispatchWorkItem { [weak self] in
                 guard let self else { return }
@@ -742,9 +965,9 @@ final class LauncherViewModel: ObservableObject {
                     let selectedID = self.selectedItem?.id
                     self.rootFileResults = Array(urls.prefix(12))
                     self.rootFileSearchPending = false
+                    self.isSearching = self.rootLocalSearchPending || self.rootUniversalSearchPending
                     self.results = self.rootResults()
                     self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
-                    self.isSearching = self.rootUniversalSearchPending
                 }
             }
             searchWorkItem = request
@@ -752,6 +975,11 @@ final class LauncherViewModel: ObservableObject {
         }
         let searchStartedAt = Date()
         universalSearchTask = Task { [weak self] in
+            // Start the first query promptly; coalesce later keystrokes before
+            // capturing provider snapshots or ranking workspace documents.
+            if debounceMilliseconds == 0 { await Task.yield() }
+            else { try? await Task.sleep(for: .milliseconds(debounceMilliseconds)) }
+            guard !Task.isCancelled else { return }
             let found = await UniversalSearchCoordinator.shared.search(cleanQuery)
             let wasCancelled = Task.isCancelled
             await MainActor.run {
@@ -770,10 +998,10 @@ final class LauncherViewModel: ObservableObject {
                       self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
                 let selectedID = self.selectedItem?.id
                 self.universalResults = found
+                self.rootUniversalSearchPending = false
+                self.isSearching = self.rootLocalSearchPending || self.rootFileSearchPending
                 self.results = self.rootResults()
                 self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
-                self.rootUniversalSearchPending = false
-                self.isSearching = self.rootFileSearchPending
             }
         }
     }
@@ -826,68 +1054,49 @@ final class LauncherViewModel: ObservableObject {
 
     private func rootResults() -> [LauncherItem] {
         // The idle launcher has no result rows or hidden keyboard targets.
-        // Workspaces remain available through explicit lower controls.
         guard !UniversalSearchCoordinator.parse(query).query.isEmpty else { return [] }
-        var items = builtInItems() + extensionItems() + applicationItems() + macroItems() + specializedItems()
-        if let selection = contextualSelectionText {
-            items.insert(contentsOf: contextualItems(for: selection), at: 0)
-        }
         let parsed = UniversalSearchCoordinator.parse(query)
         let cleanQuery = parsed.query
-        if let scope = parsed.prefix {
-            switch scope {
-            case "app": items = applicationItems()
-            case "file": items = []
-            case "command": items = builtInItems() + extensionItems() + macroItems()
-            case "clipboard":
-                items = clipboard.entries.compactMap { entry in
-                    guard cleanQuery.isEmpty || FuzzyMatcher.score(entry.text, query: cleanQuery) != nil else { return nil }
-                    return LauncherItem(id: "clipboard.\(entry.id)", title: String(entry.text.prefix(100)),
-                        subtitle: "Clipboard history", icon: .system("clipboard"), keywords: [],
-                        action: .clipboardEntry(entry.id), accessory: "Copy")
-                }
-            default: items = []
-            }
-        }
-        items += rootFileResults.map(fileItem)
-        let localIDs = Set(items.map(\.id))
-        items += universalResults.map(universalItem).filter { !localIDs.contains($0.id) }
-        searchIndex.rebuild(items: items)
-        // Deliberately undocumented developer gate. The configuration item is
-        // not part of the normal catalog or searchable text.
+        // Deliberately undocumented developer gate; never part of the catalog.
         if cleanQuery == "🤖" {
             return [LauncherItem(
-                id: "developer.grammar-settings",
-                title: "Grammar Engine",
+                id: "developer.grammar-settings", title: "Grammar Engine",
                 subtitle: "Configure an enhanced proofreading provider",
-                icon: .system("lock.shield.fill"),
-                keywords: [],
-                action: .system(.openDeveloperGrammarSettings),
-                accessory: "Developer"
+                icon: .system("lock.shield.fill"), keywords: [],
+                action: .system(.openDeveloperGrammarSettings), accessory: "Developer"
             )]
         }
 
-        if parsed.prefix == nil, !cleanQuery.isEmpty, let result = calculatorResult(for: cleanQuery) {
-            items.insert(result, at: 0)
-        }
-        if parsed.prefix == nil, !cleanQuery.isEmpty {
-            items.append(contentsOf: directInvocationItems(for: cleanQuery))
-        }
-
-        let clipboardScores = Dictionary(clipboard.entries.compactMap { entry -> (UUID, Double)? in
-            guard let score = FuzzyMatcher.score(entry.text, query: cleanQuery) else { return nil }
-            return (entry.id, 14_000 + score)
-        }, uniquingKeysWith: max)
-        let ranked = items.compactMap { item -> (LauncherItem, Double)? in
-            // Provider matches may come from full note/transcript content, not the preview.
-            let providerScore = universalResults.first(where: { $0.id.replacingOccurrences(of: ":", with: ".") == item.id }).map { 14_000 + $0.score }
-            let contentScore: Double?
-            if case .clipboardEntry(let id) = item.action {
-                contentScore = clipboardScores[id]
-            } else {
-                contentScore = providerScore
+        // Only a small set of per-query actions is assembled on MainActor.
+        // The full command/app/Clipboard catalog has already been ranked by
+        // LauncherSearchEngine and arrives here as bounded identifier hits.
+        var dynamic: [LauncherItem] = []
+        if parsed.prefix == nil {
+            if let selection = contextualSelectionText {
+                dynamic += contextualItems(for: selection)
             }
-            guard let baseScore = searchScore(for: item, query: cleanQuery) ?? contentScore else { return nil }
+            if let calculator = calculatorResult(for: cleanQuery) {
+                dynamic.append(calculator)
+            }
+            dynamic += directInvocationItems(for: cleanQuery)
+        }
+        dynamic += rootFileResults.map(fileItem)
+        let localIDs = Set(localSearchHits.map(\.id))
+        dynamic += universalResults.map(universalItem).filter { !localIDs.contains($0.id) }
+        let providerScores = Dictionary(universalResults.map {
+            ($0.id.replacingOccurrences(of: ":", with: "."), 14_000 + $0.score)
+        }, uniquingKeysWith: max)
+
+        let localRanked: [(LauncherItem, Double)] = localSearchHits.compactMap { hit in
+            guard var item = rootCatalogByID[hit.id] else { return nil }
+            item.aliasKind = hit.aliasKind
+            return (item, hit.score)
+        }
+        let dynamicRanked: [(LauncherItem, Double)] = dynamic.compactMap { item in
+            // Provider matches may come from full note/transcript content,
+            // not the visible preview. Keep that score when local text misses.
+            guard let baseScore = searchScore(for: item, query: cleanQuery)
+                ?? providerScores[item.id] else { return nil }
             let provenance = aliasProvenance(for: item, query: cleanQuery)
             var rankedItem = item
             rankedItem.aliasKind = provenance.kind
@@ -895,17 +1104,18 @@ final class LauncherViewModel: ObservableObject {
             let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
             return (rankedItem, baseScore + provenance.bonus + usage.score(for: item.id) + favoriteBonus)
         }
-        .sorted { first, second in
-            if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
+        let ranked = (localRanked + dynamicRanked).sorted { first, second in
+            if first.1 == second.1 {
+                return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending
+            }
             return first.1 > second.1
         }
-        .prefix(24)
-        .map(\.0)
-        if ranked.isEmpty && universalResults.isEmpty {
+        if ranked.isEmpty {
             let subtitle = isSearching ? "Searching Spotlight and your workspace…" : "Try another app, file, or command name"
-            return [placeholderItem(id: "root.empty", title: isSearching ? "Searching…" : "No results", subtitle: subtitle, icon: "magnifyingglass")]
+            return [placeholderItem(id: "root.empty", title: isSearching ? "Searching…" : "No results",
+                                    subtitle: subtitle, icon: "magnifyingglass")]
         }
-        return Array(ranked.prefix(24))
+        return Array(ranked.prefix(24).map(\.0))
     }
 
     private func normalizedSearchTokens(_ value: String) -> [String] {
@@ -1292,7 +1502,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func historyItems() -> [LauncherItem] {
-        let items = builtInItems() + extensionItems() + applicationItems() + macroItems() + specializedItems()
+        let items = rootCatalogItems()
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let recent = usage.recentIdentifiers(limit: 50).compactMap { identifier in
             items.first { $0.id == identifier }
@@ -1385,23 +1595,34 @@ final class LauncherViewModel: ObservableObject {
         ]
     }
 
-    private func specializedItems() -> [LauncherItem] {
-        let notes = NotesStore.shared.notes.prefix(30).map { note in
+    private func noteItems() -> [LauncherItem] {
+        NotesStore.shared.notes.prefix(30).map { note in
             LauncherItem(id: "note.\(note.id.uuidString)", title: note.title, subtitle: note.content.prefix(80).description, icon: .system("note.text"), keywords: note.tags + ["note", "markdown"], action: .note(note.id), accessory: note.isFavorite ? "Favorite" : "Note", aliasKind: nil)
         }
-        let shelf = ContextShelfStore.shared.items.prefix(30).map { item in
+    }
+
+    private func shelfItems() -> [LauncherItem] {
+        ContextShelfStore.shared.items.prefix(30).map { item in
             LauncherItem(id: "shelf.\(item.id.uuidString)", title: item.title, subtitle: item.preview, icon: .system("tray.full"), keywords: ["shelf", item.kind.rawValue], action: .shelfItem(item.id), accessory: item.isPinned ? "Pinned" : "Shelf", aliasKind: nil)
         }
-        let clips = clipboard.entries.prefix(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 30 : 500).map { entry in
+    }
+
+    private func clipboardItems() -> [LauncherItem] {
+        clipboard.entries.prefix(500).map { entry in
             LauncherItem(id: "clipboard.\(entry.id.uuidString)", title: String(entry.text.prefix(70)), subtitle: "Clipboard entry", icon: .system("clipboard"), keywords: ["clipboard", "copy", "paste"], action: .clipboardEntry(entry.id), accessory: entry.pinned ? "Pinned" : "Clipboard", aliasKind: nil)
         }
-        let workflows = WorkflowStore.shared.workflows.prefix(30).map { workflow in
+    }
+
+    private func workflowItems() -> [LauncherItem] {
+        WorkflowStore.shared.workflows.prefix(30).map { workflow in
             LauncherItem(id: "workflow.\(workflow.id.uuidString)", title: workflow.name, subtitle: "\(workflow.steps.count) steps", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation"], action: .workflow(workflow.id), accessory: workflow.favorite ? "Favorite" : "Workflow", aliasKind: nil)
         }
-        let outputs = ExtensionOutputStore.shared.outputs.prefix(30).map { output in
+    }
+
+    private func outputItems() -> [LauncherItem] {
+        ExtensionOutputStore.shared.outputs.prefix(30).map { output in
             LauncherItem(id: "output.\(output.id.uuidString)", title: output.title, subtitle: String(output.value.prefix(80)), icon: .system("text.quote"), keywords: ["output", output.descriptor.kind.rawValue], action: .extensionOutput(output.id), accessory: "Output", aliasKind: nil)
         }
-        return notes + shelf + clips + workflows + outputs
     }
 
     private func macroItems() -> [LauncherItem] {

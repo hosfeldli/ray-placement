@@ -288,6 +288,7 @@ enum AIAttachmentKind: String, Codable, CaseIterable, Sendable {
     case image
     case clipboard
     case selection
+    case pastedText
 
     var symbol: String {
         switch self {
@@ -295,6 +296,7 @@ enum AIAttachmentKind: String, Codable, CaseIterable, Sendable {
         case .image: return "photo"
         case .clipboard: return "doc.on.clipboard"
         case .selection: return "text.quote"
+        case .pastedText: return "doc.text"
         }
     }
 }
@@ -306,6 +308,11 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
     var path: String?
     var text: String?
     var mimeType: String?
+    /// For pasted text, `id` is the durable blob reference; these fields are
+    /// deliberately small so conversation JSON never includes the full paste.
+    var byteCount: Int?
+    var lineCount: Int?
+    var previewText: String?
     var createdAt: Date
 
     init(
@@ -315,6 +322,9 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
         path: String? = nil,
         text: String? = nil,
         mimeType: String? = nil,
+        byteCount: Int? = nil,
+        lineCount: Int? = nil,
+        previewText: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -323,12 +333,22 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
         self.path = path
         self.text = text
         self.mimeType = mimeType
+        self.byteCount = byteCount
+        self.lineCount = lineCount
+        self.previewText = previewText
         self.createdAt = createdAt
     }
 
     var preview: String {
+        if let previewText { return previewText }
         if let text { return text.replacingOccurrences(of: "\n", with: " ").prefix(100).description }
         return path ?? displayName
+    }
+
+    var metadataSummary: String? {
+        guard kind == .pastedText, let byteCount, let lineCount else { return nil }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+        return "\(size) · \(lineCount.formatted()) lines"
     }
 }
 
@@ -378,6 +398,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
     var kind: AIAgentActivityKind
     var title: String
     var detail: String?
+    var toolOutputReference: AIToolOutputReference?
     var correlationID: String?
     var startedAt: Date
     var endedAt: Date?
@@ -391,6 +412,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         kind: AIAgentActivityKind,
         title: String,
         detail: String? = nil,
+        toolOutputReference: AIToolOutputReference? = nil,
         correlationID: String? = nil,
         startedAt: Date = Date(),
         endedAt: Date? = nil,
@@ -403,6 +425,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         self.kind = kind
         self.title = title
         self.detail = detail
+        self.toolOutputReference = toolOutputReference
         self.correlationID = correlationID
         self.startedAt = startedAt
         self.endedAt = endedAt
@@ -442,10 +465,13 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "lima_capabilities": return "Check tool capabilities"
         case "terminal_start": return "Start AI Workspace"
         case "terminal_run": return "Run Workspace command"
+        case "terminal_write": return "Write to Workspace shell"
         case "terminal_status": return "Check Workspace status"
         case "terminal_read": return "Read Workspace output"
         case "terminal_wait": return "Wait for Workspace command"
         case "terminal_interrupt": return "Interrupt Workspace command"
+        case "terminal_resize": return "Resize Workspace shell"
+        case "terminal_terminate": return "End Workspace shell"
         case "terminal_set_directory": return "Change Workspace directory"
         case "terminal_close": return "Close AI Workspace session"
         default: return title.replacingOccurrences(of: "_", with: " ")
@@ -819,8 +845,8 @@ enum AIChatConfigurationCatalog {
         AIChatSkillConfiguration(
             id: "skill.research",
             name: "Research",
-            instructions: "Research through granted Browser Bridge tabs only. Check browser capabilities and readiness, inspect actual page content, distinguish snippets from opened sources, and cite URLs actually returned. Report unavailable grants or login walls without bypassing them.",
-            preferredToolIDs: ["browser_capabilities", "browser_search_web", "browser_read", "browser_scan"],
+            instructions: "Research through Lima's embedded Browser tabs only. Check Browser AI Control and page readiness, inspect actual page content, distinguish snippets from opened sources, and cite URLs actually returned. Report inaccessible pages or login walls without bypassing them.",
+            preferredToolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scroll", "browser_open_link", "browser_wait"],
             recommendedProviderID: nil,
             recommendedModelID: nil
         )
@@ -852,12 +878,12 @@ enum AIChatConfigurationCatalog {
         AIChatAgentConfiguration(
             id: "agent.research",
             name: "Research",
-            instructions: "Answer from granted Browser Bridge pages and state uncertainty or access limits plainly.",
+            instructions: "Answer from accessible Lima Browser pages and state uncertainty or access limits plainly.",
             providerID: nil,
             modelID: nil,
             reasoningEffort: .medium,
             skillIDs: ["skill.research"],
-            toolIDs: ["browser_capabilities", "browser_search_web", "browser_read", "browser_scan"],
+            toolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scan", "browser_open_link", "browser_wait"],
             contextDefaults: []
         )
     ]
@@ -1021,12 +1047,11 @@ struct LimaAIToolDefinition: Identifiable, @unchecked Sendable {
     }
 }
 
-/// Immutable inputs captured for one provider turn. Keeping local tools,
-/// browser routing, and instructions together prevents approval continuation
-/// from mixing captured permissions with later mutable settings.
+/// Immutable inputs captured for one provider turn. Keeping routed local
+/// tools and instructions together prevents approval continuation from mixing
+/// captured permissions with later mutable settings.
 struct AIApprovalContinuationContext: Sendable {
     let localTools: [LimaAIToolDefinition]
-    let browserRoutingContext: BrowserCapabilityTurnContext
     let systemInstructions: String
 
     var localToolIDs: [String] { localTools.map(\.id) }
@@ -1463,20 +1488,31 @@ enum AIToolSchemaValidator {
 struct LimaAIToolExecution: Sendable {
     let output: String
     let isError: Bool
+    let browserTabID: UUID?
+    /// Ephemeral typed handoff; image pixels never enter the textual tool output.
+    let browserScreenshot: BrowserScreenshotResult?
 
-    static func json(_ object: Any, isError: Bool = false) -> Self {
+    init(output: String, isError: Bool, browserTabID: UUID? = nil,
+         browserScreenshot: BrowserScreenshotResult? = nil) {
+        self.output = output
+        self.isError = isError
+        self.browserTabID = browserTabID
+        self.browserScreenshot = browserScreenshot
+    }
+
+    static func json(_ object: Any, isError: Bool = false, browserTabID: UUID? = nil) -> Self {
         guard JSONSerialization.isValidJSONObject(object),
               let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
               let text = String(data: data, encoding: .utf8) else {
             return Self(output: "{\\\"error\\\":\\\"Lima could not encode the tool result.\\\"}", isError: true)
         }
-        return Self(output: text, isError: isError)
+        return Self(output: text, isError: isError, browserTabID: browserTabID)
     }
 }
 
 enum AIReadOnlyPolicy {
     static let assistantInstructions = """
-    You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step. Use tools only for their declared purpose; do not bypass a missing tool, browser site grant, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step. Use tools only for their declared purpose; do not bypass a missing tool, Browser AI Control mode, user-interaction pause, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
 }
@@ -1630,7 +1666,7 @@ enum LimaAIToolRegistry {
             + AIWorkspaceReadTools.definitions
             + AIContextTools.definitions
             + AINotesTools.definitions
-            + BrowserBridgeAITools.definitions
+            + BrowserWorkspaceAITools.definitions
             + AILocalComputerActionTools.definitions
             + AIWorkspaceActionTools.definitions
             + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
@@ -1654,7 +1690,6 @@ enum LimaAIToolRegistry {
             .union(AIWorkspaceReadTools.ids)
             .union(AIContextTools.ids)
             .union(AINotesTools.ids)
-            .union(BrowserBridgeAITools.readToolIDs)
             .union(AIWorkspaceActionTools.readIDs)
     }
 
@@ -1669,6 +1704,10 @@ enum LimaAIToolRegistry {
         return validDefinitions.filter { definition in
             guard ids.contains(definition.id),
                   AIComputerActionPolicy.shared.allows(definition, toolAccessMode: toolAccessMode) else { return false }
+            if BrowserWorkspaceAITools.ids.contains(definition.id) {
+                return BrowserWorkspaceAITools.isAvailable(definition.id,
+                    mode: BrowserWorkspaceModel.shared.aiControlMode)
+            }
             if toolAccessMode == .fullControl { return true }
             return definition.actionCategory != nil || definition.risk == .read ||
                 AIContextTools.delegationIDs.contains(definition.id)
@@ -1697,14 +1736,14 @@ enum LimaAIToolRegistry {
     static func execute(
         _ call: AIOutputItem,
         approvalGranted: Bool = false,
-        browserRoutingContext: BrowserCapabilityTurnContext? = nil,
         conversationID: UUID? = nil
     ) async -> LimaAIToolExecution {
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
             return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
         }
         guard let definition = definition(for: call.name),
-              definition.risk == .read || definition.actionCategory != nil else {
+              definition.risk == .read || definition.actionCategory != nil
+                || BrowserWorkspaceAITools.ids.contains(definition.id) else {
             return .json(["error": "Lima AI Chat only permits registered tools enabled by the current action policy."], isError: true)
         }
         // terminal_run has an additional live, session-scoped grant gate in
@@ -1736,12 +1775,8 @@ enum LimaAIToolRegistry {
         if AINotesTools.ids.contains(definition.id) {
             return await AINotesTools.execute(call)
         }
-        if BrowserBridgeAITools.definitions.contains(where: { $0.id == definition.id }) {
-            return await BrowserBridgeAITools.execute(
-                call,
-                approvalGranted: approvalGranted,
-                routingContext: browserRoutingContext
-            )
+        if BrowserWorkspaceAITools.ids.contains(definition.id) {
+            return await BrowserWorkspaceAITools.execute(call)
         }
         if AILocalComputerActionTools.ids.contains(definition.id) {
             return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted,
@@ -2139,30 +2174,6 @@ struct LimaAIToolGroup: Identifiable, Hashable {
                       "search_workspace_text", "inspect_directory_tree"]
         ),
         .init(
-            id: "browser",
-            title: "Browser",
-            summary: "Research through granted tabs and inspect visible page content",
-            symbol: "safari",
-            toolIDs: [
-                "browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_scan",
-                "salesforce_read_case_links", "salesforce_resolve_case", "salesforce_resolve_cases"
-            ]
-        ),
-        .init(
-            id: "browser-navigation",
-            title: "Browser navigation",
-            summary: "Search, open, focus, and navigate granted tabs",
-            symbol: "safari",
-            toolIDs: ["browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"]
-        ),
-        .init(
-            id: "browser-interaction",
-            title: "Browser interaction",
-            summary: "Click, type, and submit with exact-site access; Full Control skips Lima prompts",
-            symbol: "cursorarrow.click",
-            toolIDs: ["browser_click", "browser_type", "browser_submit"]
-        ),
-        .init(
             id: "local-files",
             title: "Local files",
             summary: "Create, precisely edit, or replace bounded text and source files",
@@ -2243,10 +2254,13 @@ extension LimaAIToolDefinition {
         case "lima_capabilities": return "Tool capabilities"
         case "terminal_start": return "Start AI Workspace"
         case "terminal_run": return "Run Workspace command"
+        case "terminal_write": return "Write to Workspace shell"
         case "terminal_status": return "Workspace status"
         case "terminal_read": return "Workspace output"
         case "terminal_wait": return "Wait for command"
         case "terminal_interrupt": return "Interrupt command"
+        case "terminal_resize": return "Resize Workspace shell"
+        case "terminal_terminate": return "End Workspace shell"
         case "terminal_set_directory": return "Change Workspace directory"
         case "terminal_close": return "Close Workspace session"
         default:
@@ -2272,13 +2286,12 @@ extension LimaAIToolDefinition {
         case "read_file": return "Bounded numbered text ranges"
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
-        case "browser_search_web": return "Search in a granted browser"
-        case "browser_open_tabs": return "Open granted tabs"
-        case "browser_focus_tab": return "Focus a granted tab"
-        case "browser_navigate_tab": return "Navigate a granted tab"
-        case "browser_click": return "Click in a granted tab"
-        case "browser_type": return "Type in a granted tab"
-        case "browser_submit": return "Submit a granted form"
+        case "browser_focus_tab": return "Select a Lima Browser tab"
+        case "browser_open_link": return "Open a verified semantic link"
+        case "browser_navigate": return "Navigate a Lima Browser tab"
+        case "browser_click": return "Click a nonsensitive Browser control"
+        case "browser_type": return "Type into a nonsensitive Browser field"
+        case "browser_submit": return "Submit an ordinary Browser form"
         case "create_text_file": return "Create a text file"
         case "replace_text_file": return "Replace a text file"
         case "edit_text_file": return "Replace one unique text span"
@@ -2289,6 +2302,7 @@ extension LimaAIToolDefinition {
         case "terminal_read": return "Read up to 32 KB of session output"
         case "terminal_wait": return "Wait briefly for verified completion and output"
         case "terminal_interrupt": return "Request command cancellation"
+        case "terminal_resize": return "Resize the shared PTY and verify its window size"
         case "terminal_set_directory": return "Switch to an existing Workspace directory"
         case "terminal_close": return "Close an idle session; keep its files"
         default:
@@ -2309,16 +2323,16 @@ extension LimaAIToolDefinition {
         case "read_file": return "doc.text"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
-        case "browser_search_web", "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab": return "safari"
         case "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
         case "create_text_file", "replace_text_file", "edit_text_file": return "doc.badge.plus"
         case "run_terminal_command", "terminal_run": return "terminal"
         case "terminal_start": return "terminal.fill"
         case "terminal_status", "terminal_read", "terminal_wait": return "text.alignleft"
         case "terminal_interrupt": return "stop.circle"
+        case "terminal_resize": return "arrow.up.left.and.arrow.down.right"
         case "terminal_set_directory": return "folder"
         case "terminal_close": return "xmark.circle"
-        default: return "eye"
+        default: return BrowserWorkspaceAITools.ids.contains(id) ? "safari" : "eye"
         }
     }
 }
@@ -2343,7 +2357,7 @@ enum LimaAIToolAccessMode: String, CaseIterable, Identifiable {
         switch self {
         case .automatic: return "Available tools follow your capability and action settings."
         case .askForActions: return "Use available tools, but ask before computer actions."
-        case .fullControl: return "Expose every implemented tool without Lima per-action prompts; browser grants and system boundaries still apply."
+        case .fullControl: return "Expose every implemented tool without Lima per-action prompts; Browser AI Control and system boundaries still apply."
         case .custom: return "Preserve your previous individual tool selections."
         }
     }
@@ -2388,10 +2402,6 @@ final class LimaAIToolStore: ObservableObject {
         let actionMigrationKey = "lima.ai.computer-actions-v1"
         if !defaults.bool(forKey: actionMigrationKey) {
             enabledToolIDs.formUnion(AILocalComputerActionTools.ids)
-            enabledToolIDs.formUnion([
-                "browser_open_tabs", "browser_focus_tab", "browser_navigate_tab",
-                "browser_click", "browser_type", "browser_submit"
-            ])
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: actionMigrationKey)
         }
@@ -2403,13 +2413,11 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: editTextMigrationKey)
         }
-        // Existing installations may have saved a tool list before Browser and
-        // Notes reading were available. Add only read-only schemas once; actual
-        // browser content still requires a site grant and a routed AI request.
+        // Notes reading remains a selectable capability. Embedded Browser access
+        // is governed only by the Browser toolbar, never this saved tool list.
         let readMigrationKey = "lima.ai.browser-notes-read-v1"
         if !defaults.bool(forKey: readMigrationKey) {
             enabledToolIDs.formUnion(AINotesTools.ids)
-            enabledToolIDs.formUnion(BrowserBridgeAITools.readToolIDs)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: readMigrationKey)
         }
@@ -2427,6 +2435,22 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: workspaceWaitMigrationKey)
         }
+        // Make the new PTY actions selectable in existing Custom installations.
+        // The independent Terminal category still gates their execution.
+        let workspacePTYMigrationKey = "lima.ai.workspace-terminal-pty-v1"
+        if !defaults.bool(forKey: workspacePTYMigrationKey) {
+            enabledToolIDs.formUnion(["terminal_write", "terminal_terminate"])
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspacePTYMigrationKey)
+        }
+        // Make resize available to existing Custom selections without changing
+        // the independent Terminal authority or per-action approval behavior.
+        let workspaceResizeMigrationKey = "lima.ai.workspace-terminal-resize-v1"
+        if !defaults.bool(forKey: workspaceResizeMigrationKey) {
+            enabledToolIDs.insert("terminal_resize")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceResizeMigrationKey)
+        }
         // Add bounded, read-only project discovery to existing Custom selections once.
         let workspaceReadMigrationKey = "lima.ai.workspace-read-v1"
         if !defaults.bool(forKey: workspaceReadMigrationKey) {
@@ -2434,10 +2458,9 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: workspaceReadMigrationKey)
         }
+        // Retain the old migration marker without adding a second Browser switch.
         let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
         if !defaults.bool(forKey: capabilityMigrationKey) {
-            enabledToolIDs.insert("browser_capabilities")
-            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: capabilityMigrationKey)
         }
         // A diagnostic meta-tool must remain discoverable even on installations
@@ -2457,18 +2480,18 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: memoryWriteMigrationKey)
         }
-        // Preserve an existing web-research choice without retaining a callable
-        // provider search or direct fetch. Browser navigation still requires its
-        // independent action setting and site grant.
-        let retiredWebToolIDs: Set<String> = ["search_web", "read_web"]
-        if !enabledToolIDs.isDisjoint(with: retiredWebToolIDs) {
-            let hadSearch = enabledToolIDs.contains("search_web")
-            enabledToolIDs.subtract(retiredWebToolIDs)
-            enabledToolIDs.formUnion(["browser_capabilities", "browser_tabs", "browser_read", "browser_scan"])
-            if hadSearch {
-                enabledToolIDs.formUnion(["browser_search_web", "browser_open_tabs", "browser_navigate_tab"])
-            }
+        // Retire Bridge and provider-web selections. The Browser toolbar is the
+        // sole authority, including for installations with legacy saved choices.
+        let embeddedBrowserMigrationKey = "lima.ai.embedded-browser-v1"
+        if !defaults.bool(forKey: embeddedBrowserMigrationKey) {
+            let retiredBrowserToolIDs: Set<String> = [
+                "search_web", "read_web", "browser_search_web", "browser_open_tabs",
+                "browser_navigate_tab", "salesforce_read_case_links",
+                "salesforce_resolve_case", "salesforce_resolve_cases"
+            ]
+            enabledToolIDs.subtract(retiredBrowserToolIDs.union(BrowserWorkspaceAITools.ids))
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: embeddedBrowserMigrationKey)
         }
     }
 
@@ -2480,7 +2503,7 @@ final class LimaAIToolStore: ObservableObject {
 
     var effectiveEnabledToolIDs: Set<String> {
         switch accessMode {
-        case .custom: return enabledToolIDs
+        case .custom: return enabledToolIDs.union(BrowserWorkspaceAITools.ids)
         case .fullControl: return Set(LimaAIToolRegistry.validDefinitions.map(\.id))
         case .automatic, .askForActions: return Set(LimaAIToolRegistry.availableDefinitions.map(\.id))
         }
@@ -2501,6 +2524,7 @@ final class LimaAIToolStore: ObservableObject {
     }
 
     func setEnabled(_ definition: LimaAIToolDefinition, enabled: Bool) {
+        guard !BrowserWorkspaceAITools.ids.contains(definition.id) else { return }
         setAccessMode(.custom)
         if enabled { enabledToolIDs.insert(definition.id) }
         else { enabledToolIDs.remove(definition.id) }
@@ -2508,6 +2532,7 @@ final class LimaAIToolStore: ObservableObject {
     }
 
     func setEnabled(_ group: LimaAIToolGroup, enabled: Bool) {
+        guard group.toolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids) else { return }
         setAccessMode(.custom)
         if enabled { enabledToolIDs.formUnion(group.toolIDs) }
         else { enabledToolIDs.subtract(group.toolIDs) }
@@ -2712,6 +2737,7 @@ enum AIFileAttachmentPolicy {
 
     static func canAttach(_ attachment: AIAttachment) -> Bool {
         if attachment.kind == .file, attachment.text != nil { return true }
+        if attachment.kind == .pastedText { return (try? AIPastedTextStore.providerText(for: attachment)) != nil }
         guard let path = attachment.path, let url = try? safeURL(path),
               let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentTypeKey]),
               values.isRegularFile == true, values.isSymbolicLink != true,
@@ -2724,6 +2750,8 @@ enum AIFileAttachmentPolicy {
             return size <= maximumImageBytes && imageMIMETypes.contains((attachment.mimeType ?? "").lowercased())
         case .clipboard, .selection:
             return attachment.text != nil
+        case .pastedText:
+            return false
         }
     }
 
@@ -2861,6 +2889,9 @@ struct AIInputEncoder {
                 if let value = attachment.text {
                     content.append(["type": "input_text", "text": "\n\n[\(attachment.displayName)]\n\(String(value.prefix(96_000)))"])
                 }
+            case .pastedText:
+                let value = try AIPastedTextStore.providerText(for: attachment)
+                content.append(["type": "input_text", "text": "[Pasted Text]\n\(value)"])
             case .file:
                 let value = try AIFileAttachmentPolicy.text(for: attachment)
                 content.append(["type": "input_text", "text": "[File: \(attachment.displayName)]\n\(value)"])
@@ -2908,19 +2939,34 @@ struct LimaMarkdownDocumentView: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool { lhs.markdown == rhs.markdown }
 
+    @State private var renderTree: LimaMarkdownRenderTree?
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                markdownBlock(block)
+        Group {
+            if let renderTree, renderTree.source == markdown {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Array(renderTree.blocks.enumerated()), id: \.offset) { _, block in
+                        markdownBlock(block)
+                    }
+                }
+            } else {
+                Text(markdown)
+                    .foregroundStyle(LimaTheme.textPrimary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+        }
+        .task(id: markdown) {
+            renderTree = await LimaMarkdownRenderService.shared.renderTree(for: markdown)
         }
     }
 
     @ViewBuilder
-    private func markdownBlock(_ block: Block) -> some View {
+    private func markdownBlock(_ block: LimaMarkdownRenderTree.Block) -> some View {
         switch block {
         case .paragraph(let value):
             inlineText(value)
+                .foregroundStyle(LimaTheme.textPrimary)
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         case .heading(let level, let value):
@@ -2930,14 +2976,15 @@ struct LimaMarkdownDocumentView: View, Equatable {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, level == 1 ? 4 : 1)
-        case .list(let ordered, let items):
+        case .list(let ordered, let start, let items):
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        listMarker(item, index: index, ordered: ordered)
+                        listMarker(item, index: index + start - 1, ordered: ordered)
                             .frame(width: ordered ? 22 : 14, alignment: .trailing)
                             .foregroundStyle(LimaTheme.textSecondary)
-                        inlineText(cleanListItem(item))
+                        inlineText(item)
+                            .foregroundStyle(LimaTheme.textPrimary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -2966,6 +3013,7 @@ struct LimaMarkdownDocumentView: View, Equatable {
                 }
                 Text(value)
                     .font(.system(size: 12.5, design: .monospaced))
+                    .foregroundStyle(LimaTheme.textPrimary)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2988,19 +3036,19 @@ struct LimaMarkdownDocumentView: View, Equatable {
                 .fill(LimaTheme.borderStrong)
                 .frame(height: LimaDesign.borderWidth)
                 .padding(.vertical, 4)
+        case .literal(let value):
+            Text(value)
+                .foregroundStyle(LimaTheme.textPrimary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func inlineText(_ value: String) -> Text {
-        if let attributed = Self.cachedInlineMarkdown(for: value).attributed {
-            return Text(attributed)
-        }
-        return Text(value)
-    }
+    private func inlineText(_ value: AttributedString) -> Text { Text(value) }
 
     @ViewBuilder
-    private func listMarker(_ item: String, index: Int, ordered: Bool) -> some View {
-        let trimmed = item.trimmingCharacters(in: .whitespaces)
+    private func listMarker(_ item: AttributedString, index: Int, ordered: Bool) -> some View {
+        let trimmed = String(item.characters).trimmingCharacters(in: .whitespaces)
         if trimmed.hasPrefix("[ ]") {
             Image(systemName: "square")
         } else if trimmed.lowercased().hasPrefix("[x]") {
@@ -3011,11 +3059,12 @@ struct LimaMarkdownDocumentView: View, Equatable {
         }
     }
 
-    private func tableRow(_ cells: [String], header: Bool) -> some View {
+    private func tableRow(_ cells: [AttributedString], header: Bool) -> some View {
         HStack(spacing: 0) {
             ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
                 inlineText(cell)
                     .limaFont(.callout.weight(header ? .semibold : .regular))
+                    .foregroundStyle(LimaTheme.textPrimary)
                     .textSelection(.enabled)
                     .frame(width: 150, alignment: .leading)
                     .padding(.horizontal, 10)
@@ -3028,200 +3077,12 @@ struct LimaMarkdownDocumentView: View, Equatable {
         }
     }
 
-    private func cleanListItem(_ value: String) -> String {
-        let trimmed = value.trimmingCharacters(in: .whitespaces)
-        guard trimmed.hasPrefix("[ ]") || trimmed.lowercased().hasPrefix("[x]") else { return value }
-        return String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-    }
-
     private func headingFont(for level: Int) -> Font {
         switch level {
         case 1: return .title2.weight(.semibold)
         case 2: return .title3.weight(.semibold)
         default: return .headline
         }
-    }
-
-    private enum Block {
-        case heading(Int, String)
-        case paragraph(String)
-        case list(Bool, [String])
-        case quote(String)
-        case code(String, String)
-        case table([String], [[String]])
-        case rule
-    }
-
-    private final class ParsedBlockEntry {
-        let blocks: [Block]
-        init(_ blocks: [Block]) { self.blocks = blocks }
-    }
-
-    private static let parsedBlockCache: NSCache<NSString, ParsedBlockEntry> = {
-        let cache = NSCache<NSString, ParsedBlockEntry>()
-        cache.countLimit = 64
-        cache.totalCostLimit = 8 * 1_024 * 1_024
-        return cache
-    }()
-
-    private final class InlineMarkdownEntry {
-        let attributed: AttributedString?
-
-        init(_ markdown: String) {
-            attributed = try? AttributedString(markdown: markdown, options: .init(interpretedSyntax: .full))
-        }
-    }
-
-    private static let inlineMarkdownCache: NSCache<NSString, InlineMarkdownEntry> = {
-        let cache = NSCache<NSString, InlineMarkdownEntry>()
-        cache.countLimit = 512
-        cache.totalCostLimit = 4 * 1_024 * 1_024
-        return cache
-    }()
-
-    private var blocks: [Block] { Self.cachedBlocks(for: markdown).blocks }
-
-    static func cachedDocumentIdentityForTesting(_ markdown: String) -> ObjectIdentifier {
-        ObjectIdentifier(cachedBlocks(for: markdown))
-    }
-
-    private static func cachedBlocks(for markdown: String) -> ParsedBlockEntry {
-        let key = markdown as NSString
-        if let cached = parsedBlockCache.object(forKey: key) { return cached }
-        let parsed = ParsedBlockEntry(parseBlocks(markdown))
-        parsedBlockCache.setObject(parsed, forKey: key, cost: max(1, markdown.utf8.count))
-        return parsed
-    }
-
-    private static func cachedInlineMarkdown(for markdown: String) -> InlineMarkdownEntry {
-        let key = markdown as NSString
-        if let cached = inlineMarkdownCache.object(forKey: key) { return cached }
-        let parsed = InlineMarkdownEntry(markdown)
-        inlineMarkdownCache.setObject(parsed, forKey: key, cost: max(1, markdown.utf8.count * 2))
-        return parsed
-    }
-
-    static func cachedInlineMarkdownIdentityForTesting(_ markdown: String) -> ObjectIdentifier {
-        ObjectIdentifier(cachedInlineMarkdown(for: markdown))
-    }
-
-    private static func parseBlocks(_ markdown: String) -> [Block] {
-        let lines = markdown.components(separatedBy: .newlines)
-        let codeFence = String(repeating: "\u{60}", count: 3)
-        var result: [Block] = []
-        var paragraph: [String] = []
-        var index = 0
-
-        func flushParagraph() {
-            let value = paragraph.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty { result.append(.paragraph(value)) }
-            paragraph = []
-        }
-
-        while index < lines.count {
-            let line = lines[index]
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-
-            if trimmed.isEmpty {
-                flushParagraph()
-                index += 1
-            } else if trimmed.hasPrefix(codeFence) {
-                flushParagraph()
-                let language = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                index += 1
-                var code: [String] = []
-                while index < lines.count, !lines[index].trimmingCharacters(in: .whitespaces).hasPrefix(codeFence) {
-                    code.append(lines[index])
-                    index += 1
-                }
-                if index < lines.count { index += 1 }
-                result.append(.code(language, code.joined(separator: "\n")))
-            } else if let heading = heading(from: trimmed) {
-                flushParagraph()
-                result.append(.heading(heading.level, heading.value))
-                index += 1
-            } else if isRule(trimmed) {
-                flushParagraph()
-                result.append(.rule)
-                index += 1
-            } else if trimmed.hasPrefix(">") {
-                flushParagraph()
-                var quote: [String] = []
-                while index < lines.count {
-                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
-                    guard candidate.hasPrefix(">") else { break }
-                    quote.append(String(candidate.dropFirst()).trimmingCharacters(in: .whitespaces))
-                    index += 1
-                }
-                result.append(.quote(quote.joined(separator: "\n")))
-            } else if let list = listStart(trimmed) {
-                flushParagraph()
-                var items: [String] = []
-                while index < lines.count {
-                    let candidate = lines[index].trimmingCharacters(in: .whitespaces)
-                    guard let next = listStart(candidate), next.ordered == list.ordered else { break }
-                    items.append(next.value)
-                    index += 1
-                }
-                result.append(.list(list.ordered, items))
-            } else if index + 1 < lines.count, trimmed.contains("|"), isTableSeparator(lines[index + 1]) {
-                flushParagraph()
-                let headers = tableCells(trimmed)
-                index += 2
-                var rows: [[String]] = []
-                while index < lines.count, lines[index].contains("|"), !lines[index].trimmingCharacters(in: .whitespaces).isEmpty {
-                    rows.append(tableCells(lines[index]))
-                    index += 1
-                }
-                result.append(.table(headers, rows))
-            } else {
-                paragraph.append(line)
-                index += 1
-            }
-        }
-
-        flushParagraph()
-        return result.isEmpty ? [.paragraph("")] : result
-    }
-
-    private static func heading(from line: String) -> (level: Int, value: String)? {
-        let hashes = line.prefix { $0 == "#" }
-        guard !hashes.isEmpty, hashes.count <= 6 else { return nil }
-        let remainder = line.dropFirst(hashes.count)
-        guard remainder.first == " " else { return nil }
-        return (hashes.count, remainder.trimmingCharacters(in: .whitespaces))
-    }
-
-    private static func listStart(_ line: String) -> (ordered: Bool, value: String)? {
-        if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
-            return (false, String(line.dropFirst(2)))
-        }
-        guard let period = line.firstIndex(of: "."), period > line.startIndex else { return nil }
-        let prefix = line[..<period]
-        let afterPeriod = line.index(after: period)
-        guard prefix.allSatisfy(\.isNumber), line[afterPeriod...].first == " " else { return nil }
-        return (true, String(line[line.index(after: afterPeriod)...]).trimmingCharacters(in: .whitespaces))
-    }
-
-    private static func isRule(_ line: String) -> Bool {
-        let compact = line.replacingOccurrences(of: " ", with: "")
-        return compact.count >= 3 && (Set(compact) == ["-"] || Set(compact) == ["*"] || Set(compact) == ["_"])
-    }
-
-    private static func isTableSeparator(_ line: String) -> Bool {
-        let cells = tableCells(line)
-        return !cells.isEmpty && cells.allSatisfy { cell in
-            let compact = cell.replacingOccurrences(of: ":", with: "").replacingOccurrences(of: "-", with: "")
-            return compact.isEmpty && cell.contains("-")
-        }
-    }
-
-    private static func tableCells(_ line: String) -> [String] {
-        line
-            .trimmingCharacters(in: .whitespaces)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "|"))
-            .split(separator: "|", omittingEmptySubsequences: false)
-            .map { String($0).trimmingCharacters(in: .whitespaces) }
     }
 }
 
@@ -3232,33 +3093,6 @@ struct AIMarkdownView: View {
         LimaMarkdownDocumentView(markdown: markdown)
     }
 
-    private enum Block { case text(String); case code(String, String) }
-
-    private var blocks: [Block] {
-        var result: [Block] = []
-        var text = ""
-        var code: String?
-        var language = ""
-        var codeLines: [String] = []
-        for line in markdown.components(separatedBy: .newlines) {
-            if line.hasPrefix("```") {
-                if code != nil {
-                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.text(text.trimmingCharacters(in: .whitespacesAndNewlines))); text = "" }
-                    result.append(.code(language, codeLines.joined(separator: "\n")))
-                    code = nil; language = ""; codeLines = []
-                } else {
-                    code = ""; language = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                }
-            } else if code != nil {
-                codeLines.append(line)
-            } else {
-                text += line + "\n"
-            }
-        }
-        if code != nil { text += "```\(language)\n\(codeLines.joined(separator: "\n"))" }
-        if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { result.append(.text(text.trimmingCharacters(in: .whitespacesAndNewlines))) }
-        return result.isEmpty ? [.text("")] : result
-    }
 }
 
 struct AIToolApprovalView: View {
@@ -3341,25 +3175,21 @@ struct AIToolApprovalView: View {
         let arguments = decodedArguments
         let toolID = request.localToolID ?? request.toolName
         switch toolID {
-        case "browser_search_web":
-            return "Open a Google results tab for \(quoted(arguments["query"] as? String) ?? "the requested query")."
-        case "browser_open_tabs":
-            let urls = arguments["urls"] as? [String] ?? []
-            return "Open \(urls.count) tab\(urls.count == 1 ? "" : "s")\(hostList(urls).isEmpty ? "" : " at " + hostList(urls))."
+        case "browser_new_tab":
+            return "Create a Lima Browser tab\(host(arguments["url"] as? String).map { " at \($0)" } ?? "")."
+        case "browser_open_link":
+            return "Open a verified semantic link in the Lima Browser."
         case "browser_focus_tab":
-            return "Focus \(host(arguments["expectedURL"] as? String) ?? "the requested tab")."
-        case "browser_navigate_tab":
-            let source = host(arguments["expectedURL"] as? String)
-            let destination = host(arguments["url"] as? String)
-            if let source, let destination { return "Navigate \(source) to \(destination)." }
-            return "Navigate the requested browser tab."
+            return "Select the requested Lima Browser tab."
+        case "browser_navigate":
+            return "Navigate a Lima Browser tab to \(host(arguments["url"] as? String) ?? "the requested site")."
         case "browser_click":
-            return "Click \(quoted(arguments["selector"] as? String) ?? "the requested element")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+            return "Click the requested nonsensitive Browser control."
         case "browser_type":
             let count = (arguments["text"] as? String)?.count ?? 0
-            return "Type \(count) character\(count == 1 ? "" : "s") into \(quoted(arguments["selector"] as? String) ?? "the requested field")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+            return "Type \(count) character\(count == 1 ? "" : "s") into the requested nonsensitive Browser field."
         case "browser_submit":
-            return "Submit \(quoted(arguments["selector"] as? String) ?? "the requested form")\(host(arguments["expectedURL"] as? String).map { " at \($0)" } ?? "")."
+            return "Submit the requested ordinary Browser form."
         case "memory_save":
             let title = compactQuoted(arguments["title"] as? String) ?? "a new entry"
             let scope = arguments["scope"] as? String ?? "selected"
@@ -3434,11 +3264,6 @@ struct AIToolApprovalView: View {
         return host
     }
 
-    private func hostList(_ urls: [String]) -> String {
-        let values = Array(Set(urls.compactMap(host))).sorted()
-        return values.prefix(3).joined(separator: ", ") + (values.count > 3 ? "…" : "")
-    }
-
     private func quoted(_ value: String?) -> String? {
         guard let value, !value.isEmpty else { return nil }
         return "“\(value)”"
@@ -3470,7 +3295,12 @@ struct AIAttachmentStrip: View {
                     ForEach(attachments) { attachment in
                         HStack(spacing: 5) {
                             Image(systemName: attachment.kind.symbol)
-                            Text(attachment.displayName).lineLimit(1)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(attachment.displayName).lineLimit(1)
+                                if let summary = attachment.metadataSummary {
+                                    Text(summary).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
+                                }
+                            }
                             Button { remove(attachment) } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless)
                         }
                         .limaFont(.caption)

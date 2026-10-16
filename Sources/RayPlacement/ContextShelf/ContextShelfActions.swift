@@ -509,8 +509,9 @@ struct ContextShelfView: View {
         .onDrag {
             let provider = NSItemProvider()
             let typeIdentifier = ContextShelfIntegration.itemUTType.identifier
+            let itemIDData = Data(item.id.uuidString.utf8)
             provider.registerDataRepresentation(forTypeIdentifier: typeIdentifier, visibility: .all) { completion in
-                completion(Data(item.id.uuidString.utf8), nil)
+                Task { @MainActor in completion(itemIDData, nil) }
                 return nil
             }
             return provider

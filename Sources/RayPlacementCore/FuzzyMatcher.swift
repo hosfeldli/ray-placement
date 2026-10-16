@@ -3,9 +3,15 @@ import Foundation
 public enum FuzzyMatcher {
     /// Scores a candidate against a query. Higher is better; nil means no match.
     public static func score(_ candidate: String, query: String) -> Double? {
-        let candidate = candidate.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let query = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        scoreNormalized(
+            candidate.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current),
+            query: query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        )
+    }
 
+    /// Search indexes can normalize documents once when their source changes.
+    /// Both arguments must already use the same case/diacritic folding policy.
+    public static func scoreNormalized(_ candidate: String, query: String) -> Double? {
         guard !query.isEmpty else { return 0 }
         if candidate == query { return 10_000 }
         if candidate.hasPrefix(query) { return 7_500 - Double(candidate.count - query.count) }

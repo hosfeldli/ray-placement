@@ -15,6 +15,7 @@ enum AIChatVisualScenario: String, CaseIterable {
     case quota = "ai-quota"
     case timeout = "ai-timeout"
     case manyChats = "ai-many-chats"
+    case pastedText = "ai-pasted-text"
 
     var title: String {
         switch self {
@@ -31,6 +32,7 @@ enum AIChatVisualScenario: String, CaseIterable {
         case .quota: return "AI Chat — Credits Exhausted"
         case .timeout: return "AI Chat — Timeout"
         case .manyChats: return "AI Chat — Many Conversations"
+        case .pastedText: return "AI Chat — Pasted Text"
         }
     }
 }
@@ -184,6 +186,7 @@ enum AIChatVisualFixtures {
             conversationID: nil,
             directory: "/Users/fixture/Desktop/Lima Workspace/Prism Demo",
             isBoundedExternal: false,
+            isInteractivePTY: false,
             state: scenario == .terminalRunning ? .running : .completed,
             output: output,
             firstOutputByte: 0,
@@ -214,6 +217,18 @@ enum AIChatVisualFixtures {
         )
 
         switch scenario {
+        case .pastedText:
+            model.draft = "What caused these errors?"
+            model.attachments = [
+                AIAttachment(
+                    kind: .pastedText,
+                    displayName: "Pasted Text",
+                    mimeType: "text/plain",
+                    byteCount: 307_142,
+                    lineCount: 5_182,
+                    previewText: "Could not get load ID from carrier response"
+                )
+            ]
         case .streaming:
             model.applyVisualFixture(isStreaming: true)
         case .approval:
@@ -294,6 +309,8 @@ enum AIChatVisualFixtures {
             conversations = manyConversations
         case .conversation:
             conversations = [normalConversation, earlierConversation]
+        case .pastedText:
+            conversations = [normalConversation]
         }
         return conversations.map { conversation in
             var conversation = conversation

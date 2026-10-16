@@ -59,7 +59,12 @@ else
     # The immutable tag has already been checked against HEAD above. Tell GitHub
     # to use that existing tag rather than treating a normal first draft as a
     # conflicting release state.
-    gh release create "$TAG" --draft --verify-tag --title "Lima $TAG" --generate-notes
+    notes_file="$PROJECT_DIRECTORY/docs/releases/$TAG.md"
+    if [[ -f "$notes_file" ]]; then
+        gh release create "$TAG" --draft --verify-tag --title "Lima $TAG" --notes-file "$notes_file"
+    else
+        gh release create "$TAG" --draft --verify-tag --title "Lima $TAG" --generate-notes
+    fi
 fi
 
 release_upload_if_needed "$TAG" "$DIST/Lima-Update.zip" Lima-Update.zip "$(jq -er '.update.sha256' "$DIST/Lima-release.json")"

@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import RayPlacementCore
 
@@ -183,58 +184,122 @@ struct LimaContextSearchProvider: LimaSearchProvider {
 final class UniversalSearchCoordinator {
     static let shared = UniversalSearchCoordinator()
 
-    func search(_ rawQuery: String) async -> [LimaSearchResult] {
-        let (prefix, query) = Self.parse(rawQuery)
-        let notes = LimaNotesSearchProvider(notes: NotesStore.shared.notes)
-        let dictation = LimaDictationSearchProvider(conversations: DictationConversationStore.shared.conversations)
-        let aiConversations = LimaAIConversationSearchProvider(conversations: AIConversationStore.shared.conversations)
-        let terminal = LimaTerminalSearchProvider()
-        let workflows = LimaWorkflowSearchProvider(workflows: WorkflowStore.shared.workflows)
-        let workspaces = LimaWorkspaceSearchProvider(profiles: WorkspaceProfileStore.shared.profiles)
-        let context = LimaContextSearchProvider(entries: ContextShelfStore.shared.items.map { item in
-            .init(id: item.id, title: item.title, preview: item.preview,
-                  text: String((item.textValue ?? "").prefix(8_000)),
-                  kind: item.kind.rawValue, pinned: item.isPinned)
-        })
-        let clipboard = LimaClipboardSearchProvider(entries: SettingsStore.shared.clipboardEnabled
-            ? ClipboardHistoryService.shared.entries.map { .init(id: $0.id, text: $0.text, pinned: $0.pinned) }
-            : [])
-        let providers: [any LimaSearchProvider]
-        switch prefix {
-        case "note": providers = [notes]
-        case "dictation": providers = [dictation]
-        case "chat": providers = [aiConversations]
-        case "terminal": providers = [terminal]
-        case "workflow", "command": providers = [workflows]
-        case "workspace": providers = [workspaces]
-        case "context": providers = [context]
-        case "app", "file": providers = []
-        case "clipboard": providers = [clipboard]
-        default: providers = [notes, dictation, aiConversations, terminal, workflows, workspaces, context, clipboard]
-        }
-        let results = await withTaskGroup(
-            of: (Int, [LimaSearchResult]).self,
-            returning: [LimaSearchResult].self
-        ) { group in
-            for (index, provider) in providers.enumerated() {
-                group.addTask {
-                    guard !Task.isCancelled else { return (index, []) }
-                    return (index, await provider.search(query: query))
-                }
-            }
+    private let engine = UniversalSearchEngine()
+    private var snapshot: UniversalSearchSnapshot = .empty
+    private var snapshotRevision: UInt64 = 0
+    private var snapshotDirty = true
+    private var observers: [AnyCancellable] = []
 
-            var batches = Array(repeating: [LimaSearchResult](), count: providers.count)
-            for await (index, batch) in group {
-                guard !Task.isCancelled else {
-                    group.cancelAll()
-                    return []
-                }
-                batches[index] = batch
-            }
-            return batches.flatMap { $0 }
+    private init() {
+        // Collection-specific events invalidate the catalog. Search remains
+        // completely idle while the launcher is hidden; the next visible
+        // query takes one bounded snapshot and updates the background actor.
+        observers = [
+            NotesStore.shared.$notes.sink { [weak self] _ in self?.snapshotDirty = true },
+            DictationConversationStore.shared.$conversations.sink { [weak self] _ in self?.snapshotDirty = true },
+            AIConversationStore.shared.$conversationSummaries.sink { [weak self] _ in self?.snapshotDirty = true },
+            WorkflowStore.shared.$workflows.sink { [weak self] _ in self?.snapshotDirty = true },
+            WorkspaceProfileStore.shared.$profiles.sink { [weak self] _ in self?.snapshotDirty = true },
+            ContextShelfStore.shared.$items.sink { [weak self] _ in self?.snapshotDirty = true },
+            ClipboardHistoryService.shared.$entries.sink { [weak self] _ in self?.snapshotDirty = true },
+            SettingsStore.shared.$clipboardEnabled.sink { [weak self] _ in self?.snapshotDirty = true }
+        ]
+    }
+
+    func search(_ rawQuery: String) async -> [LimaSearchResult] {
+        if snapshotDirty {
+            snapshot = buildSnapshot()
+            snapshotRevision &+= 1
+            snapshotDirty = false
         }
-        guard !Task.isCancelled else { return [] }
-        return results.sorted { $0.score > $1.score }.prefix(24).map { $0 }
+        return await engine.search(rawQuery, revision: snapshotRevision, snapshot: snapshot)
+    }
+
+    private func buildSnapshot() -> UniversalSearchSnapshot {
+        var documents: [UniversalSearchDocument] = []
+        for note in NotesStore.shared.notes {
+            documents.append(UniversalSearchDocument(
+                id: "note:\(note.id.uuidString)", kind: .note,
+                title: note.displayTitle, subtitle: note.preview,
+                keywords: note.tags,
+                searchText: "\(note.displayTitle) \(note.content.prefix(20_000)) \(note.tags.joined(separator: " "))"
+            ))
+        }
+        for conversation in DictationConversationStore.shared.conversations {
+            var remaining = 20_000
+            var segments: [String] = []
+            for segment in conversation.segments.reversed() {
+                guard remaining > 0 else { break }
+                let text = String(segment.suffix(remaining))
+                segments.append(text)
+                remaining -= text.count + 2
+            }
+            let recentText = segments.reversed().joined(separator: "\n\n")
+            documents.append(UniversalSearchDocument(
+                id: "dictation:\(conversation.id.uuidString)", kind: .dictation,
+                title: conversation.title, subtitle: conversation.preview,
+                searchText: "\(conversation.title) \(recentText)"
+            ))
+        }
+        for conversation in AIConversationStore.shared.conversations {
+            let recentText = conversation.messages.suffix(4)
+                .map { String($0.text.prefix(800)) }
+                .joined(separator: " ")
+            documents.append(UniversalSearchDocument(
+                id: "conversation:\(conversation.id.uuidString)", kind: .aiConversation,
+                title: conversation.title,
+                subtitle: "AI Chat · \(conversation.provider.title) · \(conversation.preview)",
+                keywords: ["AI chat", conversation.provider.title],
+                searchText: "\(conversation.title) \(recentText)"
+            ))
+        }
+        documents.append(UniversalSearchDocument(
+            id: "terminal", kind: .terminal, title: "Terminal",
+            subtitle: "Open Lima’s single shell",
+            keywords: ["shell", "command line", "developer"],
+            searchText: "terminal shell command line developer"
+        ))
+        for workflow in WorkflowStore.shared.workflows {
+            let commands = workflow.steps.map(\.commandID)
+            documents.append(UniversalSearchDocument(
+                id: "workflow:\(workflow.id.uuidString)", kind: .command,
+                title: workflow.name,
+                subtitle: "Workflow · \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s")",
+                keywords: commands,
+                searchText: "\(workflow.name) \(commands.joined(separator: " "))"
+            ))
+        }
+        for profile in WorkspaceProfileStore.shared.profiles {
+            documents.append(UniversalSearchDocument(
+                id: "workspace:\(profile.id.uuidString)", kind: .workspace,
+                title: profile.name, subtitle: "Workspace",
+                keywords: ["workspace", "project"], searchText: profile.name,
+                scoreBonus: profile.favorite ? 15 : 0
+            ))
+        }
+        for item in ContextShelfStore.shared.items {
+            let body = String((item.textValue ?? "").prefix(8_000))
+            documents.append(UniversalSearchDocument(
+                id: "context:\(item.id.uuidString)", kind: .context,
+                title: item.title,
+                subtitle: "Context Shelf · \(item.isPinned ? "Pinned " : "")\(item.kind.rawValue)",
+                keywords: ["context", "shelf", item.kind.rawValue],
+                searchText: "\(item.title) \(item.preview) \(body)",
+                scoreBonus: item.isPinned ? 15 : 0
+            ))
+        }
+        if SettingsStore.shared.clipboardEnabled {
+            for entry in ClipboardHistoryService.shared.entries {
+                let preview = String(entry.text.prefix(8_000))
+                documents.append(UniversalSearchDocument(
+                    id: "clipboard:\(entry.id.uuidString)", kind: .clipboard,
+                    title: String(preview.replacingOccurrences(of: "\n", with: " ").prefix(100)),
+                    subtitle: "Clipboard history · Copy", searchText: preview,
+                    scoreBonus: entry.pinned ? 15 : 0
+                ))
+            }
+        }
+        return UniversalSearchSnapshot(documents: documents)
     }
 
     nonisolated static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {

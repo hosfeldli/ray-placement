@@ -135,19 +135,34 @@ enum AIProviderHTTP {
             message.content.reduce(0) { total, item in
                 switch item {
                 case .text(let value): return total + value.count
-                case .image(_, let base64): return total + base64.count
+                // Base64 expansion is transport encoding, not text context.
+                // Raster size is independently capped by the screenshot store.
+                case .image: return total + 1_024
                 case .toolUse(_, _, let arguments): return total + arguments.count
                 case .toolResult(_, let output): return total + output.count
                 }
             }
         }
+        // Never orphan a tool result by trimming away its immediately prior
+        // assistant tool-use message. The latest user content can include a
+        // screenshot image next to that result.
+        let latestResultIDs = Set(history.last?.content.compactMap { item -> String? in
+            if case .toolResult(let id, _) = item { return id }
+            return nil
+        } ?? [])
+        let protectedStart = history.lastIndex { message in
+            message.content.contains { item in
+                if case .toolUse(let id, _, _) = item { return latestResultIDs.contains(id) }
+                return false
+            }
+        } ?? (history.count - 1)
         var first = 0
         var characters = history.reduce(0) { $0 + size($1) }
-        while characters > maximumCharacters, first < history.count - 1 {
+        while characters > maximumCharacters, first < protectedStart {
             characters -= size(history[first])
             first += 1
         }
-        while first < history.count - 1, history[first].role != .user { first += 1 }
+        while first < protectedStart, history[first].role != .user { first += 1 }
         return Array(history.dropFirst(first))
     }
 
@@ -188,6 +203,9 @@ enum AIProviderHTTP {
                 if let text = attachment.text, !text.isEmpty {
                     content.append(.text("[\(attachment.displayName)]\n\(String(text.prefix(96_000)))"))
                 }
+            case .pastedText:
+                let text = try AIPastedTextStore.providerText(for: attachment)
+                content.append(.text("[Pasted Text]\n\(text)"))
             case .file:
                 let text = try AIFileAttachmentPolicy.text(for: attachment)
                 content.append(.text("[File: \(attachment.displayName)]\n\(text)"))
@@ -514,13 +532,16 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                     results.append(["role": "tool", "tool_call_id": id, "content": output])
                 }
             }
+            // Chat Completions requires the tool response immediately after
+            // its assistant call. Put any separate screenshot user image after
+            // those tool rows, never before them.
+            messages += results
             if !content.isEmpty || !calls.isEmpty {
                 var row: [String: Any] = ["role": message.role == .assistant ? "assistant" : "user"]
                 if !content.isEmpty { row["content"] = content }
                 if !calls.isEmpty { row["tool_calls"] = calls }
                 messages.append(row)
             }
-            messages += results
         }
         return messages
     }

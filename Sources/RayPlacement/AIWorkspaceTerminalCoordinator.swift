@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import Foundation
 
@@ -15,6 +16,7 @@ struct AIWorkspaceTerminalSnapshot: Identifiable, Equatable {
     let conversationID: UUID?
     let directory: String
     let isBoundedExternal: Bool
+    let isInteractivePTY: Bool
     let state: AIWorkspaceTerminalState
     let output: String
     let firstOutputByte: Int
@@ -28,6 +30,30 @@ struct AIWorkspaceTerminalSnapshot: Identifiable, Equatable {
     var title: String {
         let prefix = isBoundedExternal ? "AI · External · " : "AI · "
         return prefix + URL(fileURLWithPath: directory).lastPathComponent
+    }
+
+    var toolFailure: AIToolFailure? {
+        switch state {
+        case .failed where exitStatus != nil:
+            return AIToolFailure(.nonzeroExit, message: "The \(isInteractivePTY ? "shell" : "command") exited with status \(exitStatus.map(String.init) ?? "unknown").",
+                                 recoverable: true,
+                                 nextAction: "Inspect terminal output, correct the command, and run it again.",
+                                 suggestedTools: ["terminal_read", "terminal_run"])
+        case .failed:
+            return AIToolFailure(.resourceUnavailable, message: "The command could not be launched.",
+                                 recoverable: true,
+                                 nextAction: "Inspect terminal output and check the workspace before retrying.",
+                                 suggestedTools: ["terminal_read", "terminal_status"])
+        case .timedOut:
+            return AIToolFailure(.processTimedOut, message: "The command exceeded its time limit.",
+                                 recoverable: true,
+                                 nextAction: "Inspect output and choose whether to retry with a longer limit.",
+                                 suggestedTools: ["terminal_read"])
+        case .cancelled:
+            return AIToolFailure(.cancelled, message: "The command was cancelled.", recoverable: false)
+        case .idle, .running, .completed:
+            return nil
+        }
     }
 }
 
@@ -97,10 +123,10 @@ private struct AIWorkspaceCommandResult: Sendable {
     let outputTruncated: Bool
 }
 
-/// Owns AI command sessions displayed by the Terminal workspace. The visible
-/// shell remains user-owned; AI never injects text into it. AI processes run in
-/// a default-deny macOS sandbox with writes and temporary files confined to
-/// the dedicated workspace, no network grant, and no unrelated home reads.
+/// Owns AI command sessions displayed by the Terminal workspace. Bounded
+/// commands remain isolated one-shot processes; opt-in interactive sessions
+/// share one visible SwiftTerm PTY between user and AI. Both paths use the
+/// dedicated no-network macOS sandbox until workspace authority is redesigned.
 @MainActor
 final class AIWorkspaceTerminalCoordinator: ObservableObject {
     static let shared = AIWorkspaceTerminalCoordinator()
@@ -137,6 +163,9 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         let conversationID: UUID?
         let root: URL
         let isBoundedExternal: Bool
+        var isInteractivePTY = false
+        var ptyView: AIWorkspacePTYTerminalView?
+        var terminateRequested = false
         var directory: URL
         var directoryGrantPath: String?
         var state: AIWorkspaceTerminalState = .idle
@@ -164,6 +193,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                 conversationID: conversationID,
                 directory: directory.path,
                 isBoundedExternal: isBoundedExternal,
+                isInteractivePTY: isInteractivePTY,
                 state: state,
                 output: String(decoding: output, as: UTF8.self),
                 firstOutputByte: firstOutputByte,
@@ -192,6 +222,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         case notRunning
         case notWorkspaceSession
         case invalidCommand
+        case invalidInput
+        case invalidSize
+        case notInteractiveSession
+        case interactiveSessionRequiresWrite
         case invalidWait
 
         var errorDescription: String? {
@@ -209,6 +243,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             case .notRunning: return "This session has no running command to interrupt."
             case .notWorkspaceSession: return "This visible bounded command session is not an AI Workspace session."
             case .invalidCommand: return "Provide one bounded UTF-8 command without binary control characters."
+            case .invalidInput: return "Send at most 4096 UTF-8 bytes without binary or terminal-control escapes."
+            case .invalidSize: return "Choose 20–500 columns and 5–200 rows for a running PTY."
+            case .notInteractiveSession: return "This operation needs an interactive PTY session; start one with interactive: true."
+            case .interactiveSessionRequiresWrite: return "This session is an interactive PTY; use terminal_write instead of terminal_run."
             case .invalidWait: return "Wait between 1 and 20 seconds for a launched AI Workspace command."
             }
         }
@@ -235,8 +273,11 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
 
     @discardableResult
     func start(directory relativeDirectory: String? = nil, newWorkspace: String? = nil,
-               conversationID: UUID? = nil) throws -> AIWorkspaceTerminalSnapshot {
+               conversationID: UUID? = nil, interactive: Bool = false) throws -> AIWorkspaceTerminalSnapshot {
         guard sessionOrder.count < Self.maximumSessions else { throw WorkspaceError.tooManySessions }
+        if interactive, sessionByID.values.filter({ $0.state == .running }).count >= Self.maximumConcurrentCommands {
+            throw WorkspaceError.tooManyCommands
+        }
         guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
             throw WorkspaceError.unavailable
         }
@@ -257,9 +298,143 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             directory = try Self.validDirectory(relativeDirectory ?? ".", root: root)
         }
         let session = Session(root: root, directory: directory, conversationID: conversationID)
+        if interactive { try launchPTY(session) }
         sessionByID[session.id] = session
         sessionOrder.append(session.id)
         publish()
+        return session.snapshot
+    }
+
+    private func launchPTY(_ session: Session) throws {
+        let manager = FileManager.default
+        let temporary = session.directory.appendingPathComponent(".tmp", isDirectory: true)
+        let cache = session.directory.appendingPathComponent(".cache", isDirectory: true)
+        try manager.createDirectory(at: temporary, withIntermediateDirectories: true)
+        try manager.createDirectory(at: cache, withIntermediateDirectories: true)
+        guard try Self.directoryExistsWithoutSymlink(temporary),
+              try Self.directoryExistsWithoutSymlink(cache) else { throw WorkspaceError.symlink }
+
+        let view = AIWorkspacePTYTerminalView(frame: .zero)
+        view.optionAsMetaKey = true
+        view.allowMouseReporting = true
+        view.nativeForegroundColor = NSColor(calibratedWhite: 0.91, alpha: 1)
+        view.nativeBackgroundColor = NSColor(calibratedRed: 0.026, green: 0.035, blue: 0.055, alpha: 1)
+        view.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
+        view.setAccessibilityLabel("Interactive AI Workspace terminal")
+        view.onOutput = { [weak self, sessionID = session.id] chunk in
+            self?.appendPTYChunk(chunk, sessionID: sessionID)
+        }
+        view.onExit = { [weak self, weak view, sessionID = session.id] exitCode in
+            guard let view else { return }
+            self?.finishPTY(sessionID: sessionID, view: view, exitCode: exitCode)
+        }
+        let environment: [String: String] = [
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
+            "HOME": session.directory.path,
+            "TMPDIR": temporary.path + "/",
+            "XDG_CACHE_HOME": cache.path,
+            "npm_config_cache": cache.appendingPathComponent("npm").path,
+            "ZDOTDIR": session.directory.path,
+            "LANG": "en_US.UTF-8",
+            "LC_ALL": "en_US.UTF-8",
+            "TERM": "xterm-256color",
+            "TERM_PROGRAM": "Lima"
+        ]
+        view.startProcess(
+            executable: "/usr/bin/sandbox-exec",
+            args: ["-p", Self.sandboxProfile(root: session.directory), "/bin/zsh", "-f", "-i"],
+            environment: environment.map { "\($0.key)=\($0.value)" },
+            currentDirectory: session.directory.path
+        )
+        guard view.process.running else { throw WorkspaceError.unavailable }
+        session.isInteractivePTY = true
+        session.ptyView = view
+        session.state = .running
+    }
+
+    private func appendPTYChunk(_ chunk: Data, sessionID: UUID) {
+        guard let session = sessionByID[sessionID], session.isInteractivePTY else { return }
+        append(chunk, to: session)
+        let now = ProcessInfo.processInfo.systemUptime
+        if now - session.lastPublishedAt >= 0.05 {
+            session.lastPublishedAt = now
+            publish(session)
+        }
+    }
+
+    private func finishPTY(sessionID: UUID, view: AIWorkspacePTYTerminalView, exitCode: Int32?) {
+        guard let session = sessionByID[sessionID], session.ptyView === view else { return }
+        session.exitStatus = exitCode.map(Int.init)
+        session.state = session.terminateRequested ? .cancelled : exitCode == 0 ? .completed : .failed
+        publish(session)
+    }
+
+    func ptyView(sessionID: UUID) -> AIWorkspacePTYTerminalView? {
+        sessionByID[sessionID]?.ptyView
+    }
+
+    @discardableResult
+    func write(sessionID: UUID, input: String) throws -> [String: Any] {
+        let session = try find(sessionID)
+        guard session.isInteractivePTY, let view = session.ptyView else { throw WorkspaceError.notInteractiveSession }
+        guard session.state == .running, view.process.running else { throw WorkspaceError.notRunning }
+        guard !input.isEmpty, input.utf8.count <= 4_096,
+              !input.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
+              }) else { throw WorkspaceError.invalidInput }
+        let bytes = Array(input.utf8)
+        view.process.send(data: bytes[...])
+        return [
+            "session_id": session.id.uuidString,
+            "accepted_bytes": bytes.count,
+            "input_accepted": true,
+            "verified_success": false,
+            "next_byte": session.nextOutputByte,
+            "next_step": "Use terminal_wait or terminal_read to inspect output; input acceptance does not verify command success."
+        ]
+    }
+
+    /// Resize the same PTY shown to the user. Read back the kernel window size
+    /// rather than treating a SwiftTerm emulator update as verified delivery.
+    func resize(sessionID: UUID, columns: Int, rows: Int) throws -> [String: Any] {
+        let session = try find(sessionID)
+        guard session.isInteractivePTY, let view = session.ptyView else { throw WorkspaceError.notInteractiveSession }
+        guard session.state == .running, view.process.running else { throw WorkspaceError.notRunning }
+        guard (20...500).contains(columns), (5...200).contains(rows) else { throw WorkspaceError.invalidSize }
+        view.resize(cols: columns, rows: rows)
+        var observed = winsize()
+        let readbackSucceeded = Darwin.ioctl(view.process.childfd, TIOCGWINSZ, &observed) == 0
+        let observedColumns = readbackSucceeded ? Int(observed.ws_col) : nil
+        let observedRows = readbackSucceeded ? Int(observed.ws_row) : nil
+        var result: [String: Any] = [
+            "session_id": session.id.uuidString,
+            "requested_columns": columns,
+            "requested_rows": rows,
+            "verified_size": observedColumns == columns && observedRows == rows
+        ]
+        if let observedColumns, let observedRows {
+            result["observed_columns"] = observedColumns
+            result["observed_rows"] = observedRows
+        }
+        return result
+    }
+
+    @discardableResult
+    func terminate(sessionID: UUID) throws -> AIWorkspaceTerminalSnapshot {
+        let session = try find(sessionID)
+        guard session.isInteractivePTY, let view = session.ptyView else { throw WorkspaceError.notInteractiveSession }
+        guard session.state == .running, view.process.running else { throw WorkspaceError.notRunning }
+        if session.terminateRequested { return session.snapshot }
+        let pid = view.process.shellPid
+        guard pid > 0, Darwin.kill(pid, SIGHUP) == 0 else { throw WorkspaceError.unavailable }
+        session.terminateRequested = true
+        Task { [weak self, weak view, sessionID] in
+            try? await Task.sleep(for: .seconds(2))
+            guard let self, let view,
+                  let current = self.sessionByID[sessionID], current.ptyView === view,
+                  current.state == .running, view.process.shellPid == pid else { return }
+            _ = Darwin.kill(pid, SIGKILL)
+        }
         return session.snapshot
     }
 
@@ -382,6 +557,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     func close(sessionID: UUID) throws {
         let session = try find(sessionID)
         guard session.state != .running else { throw WorkspaceError.alreadyRunning }
+        session.ptyView?.onOutput = nil
+        session.ptyView?.onExit = nil
+        session.ptyView?.terminate() // Close SwiftTerm I/O after its exit callback has been observed.
+        session.ptyView = nil
         sessionByID.removeValue(forKey: sessionID)
         sessionOrder.removeAll { $0 == sessionID }
         publish()
@@ -396,6 +575,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return [
             "session_id": session.id.uuidString,
             "state": session.state.rawValue,
+            "interactive_pty": session.isInteractivePTY,
             "output": String(decoding: chunk, as: UTF8.self),
             "from_byte": start,
             "next_byte": next,
@@ -413,18 +593,25 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         guard !initial.isBoundedExternal else { throw WorkspaceError.notWorkspaceSession }
         guard initial.state != .idle else { throw WorkspaceError.notRunning }
 
+        let interactive = initial.isInteractivePTY
+        let cursor = min(max(requestedByte ?? initial.firstOutputByte, initial.firstOutputByte), initial.nextOutputByte)
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(maxWaitSeconds))
-        while try status(sessionID: sessionID).state == .running && clock.now < deadline {
+        while clock.now < deadline {
+            let current = try status(sessionID: sessionID)
+            if current.state != .running || (interactive && current.nextOutputByte > cursor) { break }
             try Task.checkCancellation()
             try await Task.sleep(for: .milliseconds(100))
         }
         try Task.checkCancellation()
         let snapshot = try status(sessionID: sessionID)
         var result = try read(sessionID: sessionID, from: requestedByte)
-        result["verified_success"] = snapshot.state == .completed && snapshot.exitStatus == 0
-        result["command_finished"] = snapshot.state != .running
-        result["wait_expired"] = snapshot.state == .running
+        result["interactive_pty"] = interactive
+        result["verified_success"] = !interactive && snapshot.state == .completed && snapshot.exitStatus == 0
+        result["command_finished"] = !interactive && snapshot.state != .running
+        result["shell_finished"] = interactive && snapshot.state != .running
+        result["wait_expired"] = snapshot.state == .running && (!interactive || snapshot.nextOutputByte <= cursor)
+        if let failure = snapshot.toolFailure { result["failure"] = failure.jsonObject }
         return result
     }
 
@@ -432,6 +619,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     func run(sessionID: UUID, command: String, timeoutSeconds: Int) throws -> AIWorkspaceTerminalSnapshot {
         let session = try find(sessionID)
         guard !session.isBoundedExternal else { throw WorkspaceError.notWorkspaceSession }
+        guard !session.isInteractivePTY else { throw WorkspaceError.interactiveSessionRequiresWrite }
         guard session.state != .running else { throw WorkspaceError.alreadyRunning }
         guard sessionByID.values.filter({ $0.state == .running }).count < Self.maximumConcurrentCommands else {
             throw WorkspaceError.tooManyCommands
@@ -497,7 +685,9 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     func interrupt(sessionID: UUID) throws -> AIWorkspaceTerminalSnapshot {
         let session = try find(sessionID)
         guard session.state == .running else { throw WorkspaceError.notRunning }
-        if let box = session.box { box.cancel() }
+        if session.isInteractivePTY, let view = session.ptyView {
+            view.process.send(data: [3][...]) // ETX/Ctrl-C reaches the foreground job, not the shell process.
+        } else if let box = session.box { box.cancel() }
         else if let externalCancel = session.externalCancel { externalCancel() }
         else { throw WorkspaceError.notRunning }
         return session.snapshot
@@ -595,6 +785,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         (allow file-read* (subpath \(quoted(root.path))))
         (allow file-write* (subpath \(quoted(root.path))))
         (allow file-read* file-write* (literal "/dev/null"))
+        (allow file-ioctl)
         (allow sysctl*)
         """
     }

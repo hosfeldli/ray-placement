@@ -13,16 +13,20 @@ a separate future project.
 
 ## Safety rules
 
+* The complete-scope Browser and AI Workbench publish remains blocked until every
+    item in [the embedded Browser release gate](EMBEDDED_BROWSER_RELEASE_GATE.md)
+    is complete. For `v3.14.25` only, the requester explicitly directed a limited
+    release despite open feature and performance gates. Disclose those limits in
+    the tag-matched release notes; never claim the full Workbench is complete or
+    bypass failed build, signing, artifact, or remote-verification checks.
 * `release_prepare.sh` is the only release script that changes version metadata.
 * Build, stage, verify, and publish scripts do not commit, push, tag, or rewrite
     source files. Tagging is an explicit operation handled only by
     `release_tag.sh`.
 * `release_stage.sh` creates or resumes **draft** releases only.
-* Bridge-enabled releases require a source-matching Mozilla-signed companion XPI
-    via `LIMA_BROWSER_BRIDGE_SIGNED_XPI`; preserve the downloaded signed bytes.
-    `release_build.sh` rejects a missing/invalid artifact, computes its digest, and
-    verifies it inside the built app/DMG. Future companion updates use a newly
-    approved XPI and a new app version/tag; never replace a published release.
+* Except for the documented limited `v3.14.25` release, the embedded Browser
+    release gate must pass before preparing a version. The signed app and DMG
+    verifiers reject legacy Browser Bridge native-host and extension resources.
 * Published releases are never overwritten by the release scripts.
 * `release_publish.sh` is the only publication step and requires `--yes`.
     Publication is public and should be treated as irreversible.
@@ -277,8 +281,7 @@ not bypass source identity, signing, asset digest, or draft-verification checks.
 
 ```sh
 # Create, build, stage, and verify the next patch as a GitHub draft locally.
-LIMA_BROWSER_BRIDGE_SIGNED_XPI="$HOME/Downloads/Lima Browser Bridge 1.4.0.xpi" \
-    ./scripts/release.sh ship --bump patch
+./scripts/release.sh ship --bump patch
 
 # Inspect the next version without changing the working tree or GitHub.
 ./scripts/release.sh ship --bump patch --dry-run
@@ -417,10 +420,8 @@ It stages a verified draft by default. The manual dispatch has a default-off
 draft verification succeeds. Leaving it off keeps the draft for separate review.
 
 GitHub’s temporary `gha-creds-*.json` file remains ignored runner material.
-The source-matching Browser Bridge 1.4.0 XPI is pinned at its exact
-manifest destination so a tagged release can use verified bytes without a
-separate GCS upload. The repository-tracked asset manifest pins its SHA-256,
-and `prepare_build_assets.sh` verifies it again before packaging.
+The repository-tracked asset manifest pins the required model and writing-tool
+inputs. `prepare_build_assets.sh` verifies them before packaging.
 
 ### Persistent cloud resources
 
@@ -450,8 +451,8 @@ secrets and grants no project-wide Owner, Editor, or service-account-key access.
 ### Build assets and recovery
 
 `Packaging/build-assets.json` pins the GCS object name, installation location,
-SHA-256, and mode for the Whisper model, Harper binary, and Mozilla-signed Browser
-Bridge XPI. `prepare_build_assets.sh` verifies every materialized input before
+SHA-256, and mode for the Whisper model and Harper binary.
+`prepare_build_assets.sh` verifies every materialized input before
 packaging; Whisper retains its verified installed/upstream fallback for local
 development. Harper remains in Git LFS pending a separate, history-aware cleanup;
 that does not change the hosted asset-verification contract.

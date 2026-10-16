@@ -8,7 +8,8 @@ import Testing
     #expect(SettingsSection.sidebarSections.contains(.browser))
     #expect(SettingsSection.sidebarSections.contains(.ai))
     #expect(SettingsSection.ai.matches("compatible endpoint"))
-    #expect(SettingsSection.browser.matches("zen"))
+    #expect(SettingsSection.browser.matches("ai control"))
+    #expect(!SettingsSection.browser.matches("zen"))
 }
 
 @Test func providerEndpointsRejectSecretsAndInsecureRemoteTransport() {

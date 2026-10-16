@@ -31,17 +31,14 @@ jobs:
             /bin/zsh -n "$file"
           done
 
-      - name: Validate browser release-package gates
+      - name: Validate embedded browser release-package gates
         shell: zsh {0}
         run: |
           set -euo pipefail
           /bin/zsh -n scripts/release_build.sh scripts/package_app.sh scripts/package_liamflow_app.sh scripts/create_liamflow_dmg.sh scripts/verify_liamflow_app.sh scripts/verify_liamflow_dmg.sh
-          /usr/bin/grep -q 'LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256' scripts/release_build.sh
-          /usr/bin/grep -q 'verify_browser_bridge_package.py' scripts/package_app.sh
-          /usr/bin/grep -q 'LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256' scripts/verify_liamflow_dmg.sh
-          python3 -m py_compile scripts/verify_browser_bridge_package.py
-          python3 scripts/package_browser_bridge.py build/lima-browser-bridge-unsigned.xpi
-          python3 scripts/verify_browser_bridge_package.py build/lima-browser-bridge-unsigned.xpi
+          ! /usr/bin/grep -Eq 'LIMA_BROWSER_BRIDGE|SIGNED_XPI|package_browser_bridge|verify_browser_bridge_package' scripts/release_build.sh scripts/package_app.sh scripts/package_liamflow_app.sh scripts/create_liamflow_dmg.sh scripts/verify_liamflow_app.sh scripts/verify_liamflow_dmg.sh
+          ! /usr/bin/grep -Eq 'LimaBrowserBridgeHost|BrowserBridge' Package.swift
+          /usr/bin/grep -q 'obsolete browser native helper remains' scripts/verify_liamflow_app.sh
 
       - name: Lint GitHub Actions workflows
         shell: bash

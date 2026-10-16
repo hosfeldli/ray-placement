@@ -36,7 +36,7 @@ enum LimaVisualAudit {
                         failures += 1
                     }
                 }
-                for module: LimaWorkspaceModule in [.home, .notes, .ai, .extensions] {
+                for module: LimaWorkspaceModule in [.home, .notes, .ai, .browser, .extensions] {
                     for width: CGFloat in [420, 800, 1240] {
                         let view = LimaMockupWorkspaceFixtures.workspace(module, compact: width < 720)
                             .environment(\.colorScheme, dark ? .dark : .light)
@@ -96,7 +96,7 @@ enum LimaVisualAudit {
                     }
                 }
                 for scenario: AIChatVisualScenario in [.streaming, .memoryApproval, .terminalDirectoryApproval, .terminalRunning,
-                                                       .terminalMinimized, .failure, .quota, .timeout, .markdown] {
+                                                       .terminalMinimized, .failure, .quota, .timeout, .markdown, .pastedText] {
                     let widths: [CGFloat] = [.memoryApproval, .terminalDirectoryApproval, .failure, .quota, .timeout].contains(scenario)
                         ? [420, 600, 700, 1040, 1240] : [420, 700, 1040, 1240]
                     for width in widths {

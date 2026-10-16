@@ -26,6 +26,11 @@
 	<string>13.0</string>
 	<key>LSUIElement</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>LimaSparkleAppcastURL</key>
 	<string>https://github.com/hosfeldli/ray-placement/releases/latest/download/appcast.xml</string>
 	<key>LimaUpdateMetadataURL</key>

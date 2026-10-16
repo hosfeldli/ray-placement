@@ -41,3 +41,42 @@ import Testing
     #expect(migratedName.hasPrefix("mcp-servers-"))
     #expect(try String(contentsOf: archive.appendingPathComponent(migratedName)) == "new")
 }
+
+@Test func retiredBrowserBridgePreferencesAreRemovedWithoutTouchingBrowserMode() throws {
+    let suite = "LegacyBrowserBridgePreferences.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(true, forKey: "lima.browserBridge.enabled")
+    defaults.set("allowWithJournal", forKey: "lima.ai.computer-action.browserInteraction")
+    defaults.set("readOnly", forKey: "limaBrowserAIControlMode")
+
+    LegacyConnectionMigration.retireBrowserBridgePreferences(defaults: defaults)
+
+    #expect(defaults.object(forKey: "lima.browserBridge.enabled") == nil)
+    #expect(defaults.object(forKey: "lima.ai.computer-action.browserInteraction") == nil)
+    #expect(defaults.string(forKey: "limaBrowserAIControlMode") == "readOnly")
+}
+
+@Test func retiredBrowserBridgeMigrationRemovesOnlyOwnedNativeHostManifests() throws {
+    let fm = FileManager.default
+    let home = fm.temporaryDirectory.appendingPathComponent("LimaLegacyBrowserHost-\(UUID().uuidString)")
+    defer { try? fm.removeItem(at: home) }
+    let mozilla = home.appendingPathComponent("Library/Application Support/Mozilla/NativeMessagingHosts/com.lima.browser_bridge.json")
+    let zen = home.appendingPathComponent("Library/Application Support/Zen/NativeMessagingHosts/com.lima.browser_bridge.json")
+    try fm.createDirectory(at: mozilla.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try fm.createDirectory(at: zen.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let owned: [String: Any] = [
+        "name": "com.lima.browser_bridge", "type": "stdio",
+        "path": "/Applications/Lima.app/Contents/MacOS/LimaBrowserBridgeHost",
+        "allowed_extensions": ["lima-browser-bridge@liamhosfeld.com"]
+    ]
+    try JSONSerialization.data(withJSONObject: owned).write(to: mozilla)
+    var foreign = owned
+    foreign["allowed_extensions"] = ["some-other-extension@example.com"]
+    try JSONSerialization.data(withJSONObject: foreign).write(to: zen)
+
+    #expect(try LegacyConnectionMigration.retireBrowserBridgeNativeHosts(home: home) == 1)
+    #expect(!fm.fileExists(atPath: mozilla.path))
+    #expect(fm.fileExists(atPath: zen.path))
+    #expect(try LegacyConnectionMigration.retireBrowserBridgeNativeHosts(home: home) == 0)
+}

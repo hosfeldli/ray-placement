@@ -34,12 +34,12 @@ struct HomeRecentItem: Identifiable {
         }
     }
 
-    static func sorted(notes: [MarkdownNote], conversations: [AIConversation]) -> [Self] {
+    static func sorted(notes: [MarkdownNote], conversations: [AIConversationSummary]) -> [Self] {
         let noteItems = notes.map {
             Self(destination: .note($0.id), title: $0.displayTitle, preview: $0.preview, updatedAt: $0.modifiedAt)
         }
         // A newly created, empty chat is not work to resume.
-        let conversationItems = conversations.filter { !$0.messages.isEmpty }.map {
+        let conversationItems = conversations.filter(\.hasMessages).map {
             Self(destination: .conversation($0.id), title: $0.title, preview: $0.preview, updatedAt: $0.updatedAt)
         }
         return (noteItems + conversationItems).sorted {
@@ -61,7 +61,7 @@ struct HomeWorkspaceView: View {
     let openCommandSearch: (String) -> Void
 
     private var recent: [HomeRecentItem] {
-        HomeRecentItem.sorted(notes: store.notes, conversations: conversations.conversations)
+        HomeRecentItem.sorted(notes: store.notes, conversations: conversations.conversationSummaries)
     }
 
     private var pinnedNotes: [MarkdownNote] {

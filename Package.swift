@@ -5,13 +5,15 @@ import PackageDescription
 
 let packageDependencies: [Package.Dependency] = [
     .package(url: "https://github.com/migueldeicaza/SwiftTerm.git", exact: "1.15.0"),
-    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6")
+    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.6"),
+    .package(url: "https://github.com/swiftlang/swift-markdown.git", exact: "0.9.0")
 ]
 let appDependencies: [Target.Dependency] = [
     "RayPlacementCore",
     "RayPlacementWriting",
     .product(name: "SwiftTerm", package: "SwiftTerm"),
-    .product(name: "Sparkle", package: "Sparkle")
+    .product(name: "Sparkle", package: "Sparkle"),
+    .product(name: "Markdown", package: "swift-markdown")
 ]
 
 let package = Package(
@@ -21,7 +23,6 @@ let package = Package(
     ],
     products: [
         .executable(name: "RayPlacement", targets: ["RayPlacement"]),
-        .executable(name: "LimaBrowserBridgeHost", targets: ["LimaBrowserBridgeHost"]),
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
     ],
@@ -29,10 +30,6 @@ let package = Package(
     targets: [
         .target(name: "RayPlacementCore", resources: [.process("Fixtures")]),
         .target(name: "RayPlacementWriting"),
-        .executableTarget(
-            name: "LimaBrowserBridgeHost",
-            dependencies: ["RayPlacementCore"]
-        ),
         .executableTarget(
             name: "RayPlacement",
             dependencies: appDependencies

@@ -54,7 +54,7 @@ import Testing
 }
 
 @Test func providerFailureMapsVerifiedToolSchemaPathToKnownLimaTool() throws {
-    let path = "tools[6].parameters.properties.urls.items.format"
+    let path = "tools[6].parameters.properties.url.items.format"
     let body = try JSONSerialization.data(withJSONObject: [
         "error": [
             "code": "invalid_request_error",
@@ -68,18 +68,18 @@ import Testing
     let parameters: [String: Any] = [
         "type": "object",
         "properties": [
-            "urls": [
+            "url": [
                 "type": "array",
                 "items": ["type": "string", "format": "email"]
             ]
         ],
-        "required": ["urls"],
+        "required": ["url"],
         "additionalProperties": false
     ]
     var outgoingTools = Array(repeating: ["type": "function", "name": "placeholder"] as [String: Any], count: 6)
     outgoingTools.append([
         "type": "function",
-        "name": "browser_open_tabs",
+        "name": "browser_new_tab",
         "parameters": parameters
     ])
 
@@ -87,7 +87,7 @@ import Testing
         forSchemaParameter: details.parameter,
         outgoingTools: outgoingTools
     )
-    #expect(toolName == "browser_open_tabs")
+    #expect(toolName == "browser_new_tab")
 
     let presentation = AIProviderFailure.presentation(
         provider: "OpenAI",
@@ -99,8 +99,8 @@ import Testing
         toolName: toolName
     )
     #expect(presentation.contains("The model rejected a Lima tool schema."))
-    #expect(presentation.contains("Tool: browser_open_tabs"))
-    #expect(presentation.contains("Schema field: urls.items.format."))
+    #expect(presentation.contains("Tool: browser_new_tab"))
+    #expect(presentation.contains("Schema field: url.items.format."))
     #expect(!presentation.contains("This provider text must not be shown."))
 }
 

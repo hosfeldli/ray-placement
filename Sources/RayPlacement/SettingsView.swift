@@ -46,7 +46,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .commands: return "Command Center"
         case .writing: return "Writing & Dictation"
         case .ai: return "AI Chat"
-        case .browser: return "Browser Bridge"
+        case .browser: return "Browser"
         case .appearance: return "Appearance"
         case .advanced: return "Advanced"
         }
@@ -72,7 +72,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .commands: "Commands, extensions, and shortcuts"
         case .writing: "Notes, grammar, and speech to text"
         case .ai: "Existing providers and chat behavior"
-        case .browser: "Browser access and site grants"
+        case .browser: "Embedded browser, AI control, and privacy"
         case .appearance: "Theme, colors, and readable layouts"
         case .advanced: "Performance, privacy, and diagnostics"
         }
@@ -101,7 +101,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .ai:
             return ["ai", "chat", "provider", "model", "anthropic", "claude", "openai", "gemini", "compatible", "endpoint", "api key", "reasoning"]
         case .browser:
-            return ["zen", "firefox", "browser", "bridge", "site", "permissions", "native", "helper", "salesforce", "tabs"]
+            return ["browser", "web", "tabs", "privacy", "ai control", "navigation", "website data"]
         case .appearance:
             return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
         case .advanced:
@@ -480,7 +480,7 @@ struct SettingsView: View {
         case .commands: commandCenterTab
         case .writing: writingSettingsTab
         case .ai: AIProviderSettingsView(model: aiChatModel)
-        case .browser: BrowserBridgeSettingsView()
+        case .browser: BrowserWorkspaceSettingsView()
         case .appearance: appearanceSettingsTab
         case .advanced: advancedSettingsTab
         }
@@ -596,12 +596,8 @@ struct SettingsView: View {
 
     private var experimentalTab: some View {
         Form {
-            Section("Experimental Features") {
-                Toggle("Browser AI interaction", isOn: Binding(
-                    get: { actionPolicy.browserInteractionExperimentalEnabled },
-                    set: { actionPolicy.setBrowserInteractionExperimentalEnabled($0) }
-                ))
-                Text("Outside Full Control, this switch unlocks browser click, type, and submit in AI Settings. Full Control exposes those Lima tools without Lima action prompts, but exact-site interaction access and a compatible signed Browser Bridge companion are still required. Browser reading and navigation do not require this switch.")
+            Section("Browser") {
+                Text("Use Browser settings or the Browser toolbar to choose one AI Control mode for reading, navigation, and interaction. Sensitive controls remain protected.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }

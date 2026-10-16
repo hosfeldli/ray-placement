@@ -148,6 +148,7 @@ struct CommandCenterView: View {
     let makeShortcutBinding: (String) -> Binding<String>
 
     @ObservedObject private var nativeToolStore = LimaAIToolStore.shared
+    @ObservedObject private var browser = BrowserWorkspaceModel.shared
     @State private var shortcutLookup = ""
     @State private var selectedArea: Area = .catalog
     @State private var selectedFilter: CommandCenterFilter = .all
@@ -598,8 +599,12 @@ struct CommandCenterView: View {
                 .controlSize(.small)
         case .tool:
             LabeledContent("Risk", value: entry.risk ?? "Unknown")
-            if let tool = LimaAIToolRegistry.definition(for: entry.id),
-               tool.risk == .read || (tool.actionCategory != nil && AIComputerActionPolicy.shared.allows(tool)) {
+            if BrowserWorkspaceAITools.ids.contains(entry.id) {
+                LabeledContent("Browser AI Control", value: browser.aiControlMode.title)
+                Text("Change Browser access with the single AI Control menu in the Browser toolbar or Browser settings. Individual Browser tools cannot be toggled here.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            } else if let tool = LimaAIToolRegistry.definition(for: entry.id),
+                      tool.risk == .read || (tool.actionCategory != nil && AIComputerActionPolicy.shared.allows(tool)) {
                 Toggle("Enabled for AI", isOn: Binding(
                     get: { nativeToolStore.isEnabled(tool) },
                     set: { enabled in
@@ -609,7 +614,7 @@ struct CommandCenterView: View {
                         nativeToolStore.setEnabled(current, enabled: enabled)
                     }
                 ))
-                Text("Applies to future AI requests. Browser actions still require site grants and their selected approval policy.")
+                Text("Applies to future AI requests. Embedded Browser access is controlled separately by its AI Control mode.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             } else {
                 LabeledContent("Enabled for AI", value: "Not eligible")

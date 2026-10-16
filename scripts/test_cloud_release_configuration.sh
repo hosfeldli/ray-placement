@@ -15,18 +15,9 @@ for script in \
     /bin/zsh -n "$ROOT/scripts/$script"
 done
 
-# Temporary OIDC credentials remain ignored. The small signed companion is
-# whitelisted and pinned by exact path so tagged builds need no separate GCS
-# upload once the artifact is committed. prepare_build_assets.sh rechecks its digest.
+# Temporary OIDC credentials remain ignored. prepare_build_assets.sh verifies
+# only the model and writing-tool assets needed by tagged releases.
 git -C "$ROOT" check-ignore -q gha-creds-ci.json
-BRIDGE_XPI="$ROOT/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi"
-[[ -f "$BRIDGE_XPI" && ! -L "$BRIDGE_XPI" ]]
-if git -C "$ROOT" check-ignore -q -- "$BRIDGE_XPI"; then
-    print -u2 'The pinned Browser Bridge XPI must not be ignored.'
-    exit 1
-fi
-/usr/bin/python3 "$ROOT/scripts/verify_browser_bridge_package.py" "$BRIDGE_XPI" --require-signature
-
 /usr/bin/python3 - "$MANIFEST" "$ROOT" <<'PY'
 import hashlib
 import json
@@ -39,7 +30,7 @@ with open(manifest_path, encoding="utf-8") as source:
     manifest = json.load(source)
 assert manifest.get("schemaVersion") == 1
 assets = manifest.get("assets")
-assert set(assets) == {"whisperModel", "harper", "browserBridgeSignedXPI"}
+assert set(assets) == {"whisperModel", "harper"}
 for name, asset in assets.items():
     assert re.fullmatch(r"[0-9a-f]{64}", asset["sha256"]), name
     assert asset["mode"] in {"0644", "0755"}, name
@@ -58,7 +49,6 @@ grep -Fq 'id-token: write' "$WORKFLOW"
 grep -Fq 'google-github-actions/auth@v3' "$WORKFLOW"
 grep -Fq 'google-github-actions/setup-gcloud@v3' "$WORKFLOW"
 grep -Fq './scripts/prepare_build_assets.sh' "$WORKFLOW"
-grep -Fq 'LIMA_BROWSER_BRIDGE_SIGNED_XPI: ${{ github.workspace }}/Packaging/Vendor/BrowserBridge/lima-browser-bridge-1.4.0-signed.xpi' "$WORKFLOW"
 grep -Fq './scripts/ci_prepare_signing.sh' "$WORKFLOW"
 grep -Fq './scripts/archive_release_to_gcs.sh' "$WORKFLOW"
 grep -Fq './scripts/release_publish.sh --tag "$RELEASE_TAG" --yes' "$WORKFLOW"
@@ -73,4 +63,4 @@ LIMA_RELEASE_SIGNING_DIRECTORY=/tmp/lima-cloud-config-test ROOT="$ROOT" /bin/zsh
     [[ "$LIMA_RELEASE_SIGNING_KEYCHAIN" == /tmp/lima-cloud-config-test/RayPlacementSigning.keychain-db ]]
     [[ "$LIMA_RELEASE_LOCAL_SIGNING_KEYCHAIN" == "$LIMA_RELEASE_SIGNING_KEYCHAIN" ]]
 '
-print 'PASS: cloud release configuration is syntactically valid, secret-free in workflow, and pins local assets.'
+print 'PASS: cloud release configuration is syntactically valid, secret-free in workflow, and pins required assets.'

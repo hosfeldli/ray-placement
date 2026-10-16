@@ -54,8 +54,9 @@ struct PrismaticPanelShape: InsettableShape {
 }
 
 struct LimaGlassBackdrop: View {
-    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var appearance = AppearancePreferences.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
     var material: NSVisualEffectView.Material = .underWindowBackground
     var blendingMode: NSVisualEffectView.BlendingMode = .behindWindow
     var identityLayer = false
@@ -63,15 +64,15 @@ struct LimaGlassBackdrop: View {
 
     var body: some View {
         ZStack {
-            if reduceTransparency {
+            if reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency) {
                 LimaTheme.windowBackground
             } else {
                 VisualEffectView(material: material, blendingMode: blendingMode)
                 LimaTheme.windowBackground
-                    .opacity(tintOpacity ?? settings.glassStyle.backdropTintOpacity)
+                    .opacity(tintOpacity ?? appearance.snapshot.glassStyle.backdropTintOpacity)
                 if identityLayer {
                     LinearGradient(
-                        colors: [settings.accentTheme.primary.opacity(0.035), .clear, settings.accentTheme.tertiary.opacity(0.018)],
+                        colors: [appearance.snapshot.accent.primary.opacity(0.035), .clear, appearance.snapshot.accent.tertiary.opacity(0.018)],
                         startPoint: .topLeading,
                         endPoint: .bottomTrailing
                     )

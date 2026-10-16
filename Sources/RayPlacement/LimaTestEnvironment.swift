@@ -8,7 +8,15 @@ enum LimaTestEnvironment {
     static let testDataDirectoryVariable = "LIMA_TEST_DATA_DIRECTORY"
 
     static var isEnabled: Bool {
-        isEnabled(environment: ProcessInfo.processInfo.environment)
+        isEnabled(environment: ProcessInfo.processInfo.environment) ||
+            isTestRunner(processName: ProcessInfo.processInfo.processName)
+    }
+
+    // SwiftPM/XCTest processes must never inherit the user's Lima preferences,
+    // persisted content, or credential namespace merely because the caller ran
+    // `swift test` without setting LIMA_TEST_MODE explicitly.
+    static func isTestRunner(processName: String) -> Bool {
+        processName == "swiftpm-testing-helper" || processName == "xctest"
     }
 
     static var allowsLiveAI: Bool {
@@ -28,7 +36,7 @@ enum LimaTestEnvironment {
     /// the normal Application Support directory.
     static let dataRoot: URL? = {
         let environment = ProcessInfo.processInfo.environment
-        guard isEnabled(environment: environment) else { return nil }
+        guard isEnabled else { return nil }
         if let path = environment[testDataDirectoryVariable], !path.isEmpty {
             return URL(fileURLWithPath: path, isDirectory: true)
         }

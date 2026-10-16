@@ -23,7 +23,7 @@ import RayPlacementCore
         LimaQAIdentifiers.AI.activity,
         LimaQAIdentifiers.Context.search,
         LimaQAIdentifiers.Context.list,
-        LimaQAIdentifiers.Settings.browserBridge
+        LimaQAIdentifiers.Settings.browser
     ]
 
     #expect(LimaQAIdentifiers.Workspace.module(.notes) == "workspace.module.notes")
@@ -55,12 +55,12 @@ import RayPlacementCore
 
 @Test func workspaceConfigurationCanHideRegroupAndReorderEveryModule() {
     var configuration = WorkspaceConfiguration.defaultConfiguration
-    #expect(configuration.workspaceModules == [.home, .notes, .ai, .context])
+    #expect(configuration.workspaceModules == [.home, .notes, .ai, .browser, .context])
     #expect(configuration.toolModules == [.clipboard, .workflows, .extensions, .terminal])
     #expect(configuration.hiddenModules == [.grammar, .dictation, .formatter])
 
     configuration.move(.notes, in: .workspace, by: 1)
-    #expect(configuration.workspaceModules == [.home, .ai, .notes, .context])
+    #expect(configuration.workspaceModules == [.home, .ai, .notes, .browser, .context])
     configuration.setSection(.workspace, for: .grammar)
     #expect(configuration.workspaceModules.last == .grammar)
     #expect(!configuration.hiddenModules.contains(.grammar))

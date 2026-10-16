@@ -109,14 +109,12 @@ struct LauncherView: View {
             width: viewModel.mode == .root ? nil : LauncherPanelLayout.size(
                 for: viewModel.mode,
                 density: settings.interfaceDensity,
-                resultCount: viewModel.results.count,
-                query: viewModel.query
+                searchPhase: viewModel.searchPhase
             ).width,
             height: viewModel.mode == .root ? nil : LauncherPanelLayout.size(
                 for: viewModel.mode,
                 density: settings.interfaceDensity,
-                resultCount: viewModel.results.count,
-                query: viewModel.query
+                searchPhase: viewModel.searchPhase
             ).height
         )
         // The shell is intentionally one continuous shape. The shadow is

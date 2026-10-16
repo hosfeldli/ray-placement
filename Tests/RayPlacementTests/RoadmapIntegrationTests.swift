@@ -34,23 +34,25 @@ import RayPlacementCore
     #expect(notes.notes.count == 1)
 }
 
-@Test @MainActor func captureCommandsAreVisibleAfterTypingAndInCommandSearch() {
+@Test @MainActor func captureCommandsAreVisibleAfterTypingAndInCommandSearch() async {
     let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
     #expect(model.results.isEmpty)
     model.query = "capture"
+    await model.waitForLocalSearchForTesting()
     let ids = Set(model.results.map(\.id))
     #expect(ids.contains("builtin.capture-clipboard-note"))
     #expect(ids.contains("builtin.capture-selection-note"))
     #expect(ids.contains("builtin.capture-dictation-note"))
 
     model.query = "command: capture"
+    await model.waitForLocalSearchForTesting()
     let scopedIDs = Set(model.results.map(\.id))
     #expect(scopedIDs.contains("builtin.capture-clipboard-note"))
     #expect(scopedIDs.contains("builtin.capture-selection-note"))
     #expect(scopedIDs.contains("builtin.capture-dictation-note"))
 }
 
-@Test @MainActor func hiddenWorkspaceModulesRemainAvailableInCommandSearch() {
+@Test @MainActor func hiddenWorkspaceModulesRemainAvailableInCommandSearch() async {
     let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
     let commandIDs = Set(model.commandDescriptors.map(\.id))
     for id in ["builtin.grammar", "builtin.transcripts", "builtin.formatter"] {
@@ -62,6 +64,7 @@ import RayPlacementCore
         ("command: formatter", "builtin.formatter")
     ] {
         model.query = query
+        await model.waitForLocalSearchForTesting()
         #expect(model.results.contains { $0.id == id })
     }
 }
@@ -96,6 +99,7 @@ import RayPlacementCore
         profiles.delete(first)
         profiles.delete(second)
         registry.update { $0 = originalState }
+        registry.flushPendingWrites()
     }
 
     registry.update { $0.activeModule = "ai" }
@@ -103,9 +107,39 @@ import RayPlacementCore
     #expect(registry.state.activeModule == "notes")
     profiles.activate(second)
     #expect(registry.state.activeModule == "ai")
+    // A shutdown-style flush must not wait for the debounce timer to retain
+    // the most recent module selection.
+    registry.flushPendingWrites()
+    let persisted = PrivateFileStore().loadJSON(
+        WorkspaceState.self,
+        from: ApplicationPaths.applicationSupport.appendingPathComponent("workspace-state.json")
+    )
+    #expect(persisted.value?.activeModule == "ai")
 }
 
-@Test @MainActor func workflowBuiltinsShareRootCommandIDsAndResolveOlderChains() {
+@Test func workspacePersistenceFlushesTheNewestQueuedSnapshot() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("lima-workspace-persistence-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("workspace-state.json")
+    let persistence = WorkspaceStatePersistence(url: url)
+    var first = WorkspaceState()
+    first.activeModule = "notes"
+    var newest = first
+    newest.activeModule = "ai"
+
+    persistence.write(first) { _ in }
+    persistence.write(newest) { _ in }
+    persistence.flush()
+
+    let loaded = PrivateFileStore().loadJSON(WorkspaceState.self, from: url)
+    #expect(loaded.result.state == .loaded)
+    #expect(loaded.value?.activeModule == "ai")
+    let permissions = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? Int
+    #expect(permissions == 0o600)
+}
+
+@Test @MainActor func workflowBuiltinsShareRootCommandIDsAndResolveOlderChains() async {
     let canonical: [LimaWorkflowBuiltin: String] = [
         .openNotes: "builtin.notes",
         .openAI: "builtin.ai-chat",
@@ -132,6 +166,7 @@ import RayPlacementCore
     }
     let search = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
     search.query = "new note"
+    await search.waitForLocalSearchForTesting()
     #expect(search.results.contains { $0.id == "builtin.create-note" })
 }
 

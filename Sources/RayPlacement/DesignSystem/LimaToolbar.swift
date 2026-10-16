@@ -23,7 +23,7 @@ struct GlassHairline: View {
 }
 
 struct LimaToolbarTitle: View {
-    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var appearance = AppearancePreferences.shared
     let symbol: String
     let title: String
     let subtitle: String?
@@ -38,9 +38,9 @@ struct LimaToolbarTitle: View {
         HStack(spacing: 9) {
             Image(systemName: symbol)
                 .limaFont(.system(size: 13, weight: .semibold))
-                .foregroundStyle(settings.accentTheme.readablePrimary)
+                .foregroundStyle(appearance.snapshot.accent.readablePrimary)
                 .frame(width: LimaDesign.titleIconSize, height: LimaDesign.titleIconSize)
-                .background(settings.accentTheme.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
+                .background(appearance.snapshot.accent.primary.opacity(0.08), in: RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous))
                 .overlay { RoundedRectangle(cornerRadius: LimaRadius.control, style: .continuous).stroke(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth) }
             VStack(alignment: .leading, spacing: subtitle == nil ? 0 : 1) {
                 Text(title)

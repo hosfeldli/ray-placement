@@ -54,6 +54,44 @@ import Testing
     #expect(answer.localizedCaseInsensitiveContains("blue"))
 }
 
+@Test @MainActor func liveCodexCLINativeToolExecutionSmoke() async throws {
+    guard ProcessInfo.processInfo.environment["LIMA_TEST_LIVE_CODEX"] == "1",
+          LimaTestEnvironment.allowsLiveAI else { return }
+
+    // The model receives only this read-only native Lima tool (plus the CLI
+    // discovery shim). This exercises Lima's policy gate, executor, provider
+    // continuation, durable assistant state, and TaskRegistry projection.
+    let conversation = AIConversation(provider: .codexCLI, model: "default")
+    let store = AIConversationStore(fixtures: [conversation])
+    let tasks = TaskRegistry()
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .current(environment: ["LIMA_TEST_MODE": "1"])),
+        nativeToolStore: LimaAIToolStore(fixtures: ["get_lima_status"]),
+        transport: CLIChatProviderClient(provider: .codexCLI),
+        taskRegistry: tasks
+    )
+    #expect(model.requestLocalTools(for: "Read Lima status").contains { $0.id == "get_lima_status" })
+
+    model.draft = "Call get_lima_status with {}. Wait for the Lima tool result, then report its app_version."
+    model.send()
+    for _ in 0..<900 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    if model.canEndTask { model.endTask() }
+
+    let assistant = try #require(store.conversation(id: conversation.id)?.messages.last(where: { $0.role == .assistant }))
+    #expect(model.executionRun?.state == .completed)
+    #expect(assistant.failure == nil)
+    let expectedVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "development"
+    #expect(assistant.text.localizedCaseInsensitiveContains(expectedVersion))
+    #expect(assistant.activities?.contains(where: { $0.kind == .toolCompleted && $0.title == "get_lima_status" }) == true)
+    #expect(tasks.activeTasks.isEmpty)
+    #expect(!model.canEndTask)
+    #expect(!model.hasActiveStreamTaskForTesting)
+    #expect(await model.inFlightExecutionLoopCountForTesting() == 0)
+}
+
 @Test func cliProviderArgumentsKeepPromptOffCommandLineAndConstrainTools() {
     let directory = URL(fileURLWithPath: "/tmp/lima-cli-test")
     let codex = CLIChatProviderClient.arguments(for: .codexCLI, model: "default", workingDirectory: directory)

@@ -71,6 +71,22 @@ private func geminiFrame(_ object: [String: Any]) throws -> AIProviderSSEFrame {
     })
 }
 
+@Test func geminiBrowserScreenshotKeepsFunctionResponseAndImageTogether() {
+    let history = [
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: "capture", name: "browser_screenshot", arguments: "{}")
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: "capture", output: "{\"captured\":true}"),
+            .image(mediaType: "image/jpeg", base64: "fixture")
+        ])
+    ]
+    let parts = GeminiAIProviderClient.geminiContents(history).last?["parts"] as? [[String: Any]]
+    #expect(parts?.count == 2)
+    #expect((parts?.first?["functionResponse"] as? [String: Any])?["name"] as? String == "browser_screenshot")
+    #expect((parts?.last?["inline_data"] as? [String: Any])?["mime_type"] as? String == "image/jpeg")
+}
+
 @Test func geminiToolResultsAlwaysEncodeAsObjects() {
     for output in ["plain text", "[1,2]", "{\"ok\":true}"] {
         let history = [

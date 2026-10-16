@@ -23,6 +23,40 @@ private func compatibleFrame(_ object: [String: Any]) throws -> AIProviderSSEFra
     #expect(messages[4]["tool_call_id"] as? String == "b")
 }
 
+@Test func browserScreenshotFollowsItsToolResultAsEphemeralImageInput() throws {
+    let history = [
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: "capture", name: "browser_screenshot", arguments: "{}")
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: "capture", output: "{\"captured\":true}"),
+            .text("Browser screenshot from tool call capture."),
+            .image(mediaType: "image/jpeg", base64: "fixture")
+        ])
+    ]
+    let compatible = OpenAICompatibleAIProviderClient.chatMessages(
+        history, systemInstructions: "agent instructions"
+    )
+    #expect(compatible.count == 4)
+    #expect(compatible[1]["role"] as? String == "assistant")
+    #expect(compatible[2]["role"] as? String == "tool")
+    #expect(compatible[3]["role"] as? String == "user")
+    let image = (compatible[3]["content"] as? [[String: Any]])?.last
+    #expect(image?["type"] as? String == "image_url")
+
+    let anthropic = AIProviderHTTP.messages(history)
+    let content = try #require(anthropic.last?["content"] as? [[String: Any]])
+    #expect(content.first?["type"] as? String == "tool_result")
+    #expect(content.last?["type"] as? String == "image")
+
+    let responseImage = AIEngineScreenshotInput(
+        callID: "capture", mediaType: "image/jpeg", base64: "fixture"
+    ).responseInput
+    let responseParts = try #require(responseImage["content"] as? [[String: Any]])
+    #expect(responseParts.last?["type"] as? String == "input_image")
+    #expect(responseParts.last?["image_url"] as? String == "data:image/jpeg;base64,fixture")
+}
+
 @Test func compatibleDecoderFinalizesToolsOnceAndPreservesUsage() throws {
     var decoder = AICompatibleStreamDecoder()
     let first = try compatibleFrame(["choices": [["delta": ["tool_calls": [

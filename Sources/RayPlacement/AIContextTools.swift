@@ -14,8 +14,8 @@ enum AIContextTools {
     static let delegationIDs: Set<String> = ["agent_models", "agent_delegate"]
     static let capabilityIDs: Set<String> = ["lima_capabilities"]
     static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs)
-    static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; browser access uses captured turn grants and live policy checks; approval follows the active Tool Access mode; recursiveDelegation=false."
-    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Browser access uses the parent turn’s captured routing context plus current grants and policy checks. In Full Control, actions do not need Lima per-action approval; in other modes, pause for the parent user when approval is required. Recursive subagent delegation is unavailable."
+    static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; embedded Browser access rechecks live AI Control for each action; approval follows the active Tool Access mode outside Browser; recursiveDelegation=false."
+    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Embedded Browser actions recheck the live Browser AI Control mode and page safety at execution. In Full Control, actions do not need Lima per-action approval; in other modes, pause for the parent user when approval is required outside Browser. Recursive subagent delegation is unavailable."
 
     @MainActor
     static func subagentToolBundle(
@@ -46,7 +46,7 @@ enum AIContextTools {
             guard tool.id != "agent_delegate",
                   tool.id != CLIToolDiscovery.name else { return false }
             guard policy.allows(tool, toolAccessMode: mode) else { return false }
-            return mode == .fullControl ||
+            return mode == .fullControl || BrowserWorkspaceAITools.ids.contains(tool.id) ||
                 tool.actionCategory != nil || tool.risk == .read || tool.id == "agent_models"
         }
     }
@@ -61,7 +61,7 @@ enum AIContextTools {
     }
 
     static let definitions: [LimaAIToolDefinition] = [
-        tool("lima_capabilities", "Report Lima's current Tool Access mode, tools routed for this turn, and live computer-action categories. This is diagnostic only; browser site grants and approvals are checked again at execution.",
+        tool("lima_capabilities", "Report Lima's current Tool Access mode, tools routed for this turn, and live computer-action categories. This is diagnostic only; embedded Browser AI Control and action boundaries are checked again at execution.",
              [:], risk: .read),
         tool("memory_search", "Read local global and current-project memories, including IDs and opaque revision tokens for approved edits. Empty query lists recent memories. Memory is user context, not evidence about the world.",
              ["query": ["type": "string"]], risk: .read),
@@ -80,7 +80,7 @@ enum AIContextTools {
              risk: .destructive, actionCategory: .savedMemory),
         tool("agent_models", "List models from configured providers available to a bounded subagent. No credentials are returned. Call before selecting a model.",
              [:], risk: .read),
-        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent. In Full Control, no Lima per-action approval is needed; other modes broker required approvals through the parent UI. Browser access still requires live grants and action policy. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
+        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent. In Full Control, no Lima per-action approval is needed; other modes broker required approvals through the parent UI. Embedded Browser access follows the live Browser AI Control mode and sensitive-target protections. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
              ["provider": ["type": "string"], "model": ["type": "string"],
               "task": ["type": "string"]], risk: .delegation)
     ]
@@ -116,16 +116,13 @@ enum AIContextTools {
         let canReadWorkspace = available("terminal_read") && available("terminal_status")
         let canWaitWorkspace = available("terminal_wait")
         let workspaceRuntimeAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec")
-        let canNavigate = available("browser_navigate_tab")
+        let browserMode = BrowserWorkspaceModel.shared.aiControlMode
+        let canNavigate = available("browser_navigate")
         let canInteract = available("browser_click") && available("browser_type") && available("browser_submit")
-        let interactionReason: String
-        if !policy.browserInteractionExperimentalEnabled && accessMode != .fullControl {
-            interactionReason = "experimental_setting_disabled"
-        } else if policy.effectiveAccess(for: .browserInteraction, toolAccessMode: accessMode) == .disabled {
-            interactionReason = "action_category_disabled"
-        } else {
-            interactionReason = canInteract ? "available" : "tool_not_routed"
-        }
+        let navigationReason = canNavigate ? "available" :
+            (browserMode.canNavigate ? "tool_not_routed" : "ai_control_mode_limited")
+        let interactionReason = canInteract ? "available" :
+            (browserMode.canInteract ? "tool_not_routed" : "ai_control_mode_limited")
         return .json([
             "tool_access_mode": accessMode.rawValue,
             "routed_tools": routedTools.map(\.name).sorted(),
@@ -168,14 +165,13 @@ enum AIContextTools {
                 "bounded_external_network_policy": canRunTerminal ? "not_sandboxed" : "unavailable"
             ] as [String: Any],
             "browser": [
+                "runtime": "embedded_webkit",
+                "ai_control": browserMode.rawValue,
                 "read": available("browser_read"),
                 "navigate": canNavigate,
                 "interact": canInteract,
-                "navigation_reason": unavailableReason("browser_navigate_tab", category: .browserNavigation),
-                "interaction_reason": interactionReason,
-                "bridge_connection": "not_checked",
-                "site_grant": "not_checked",
-                "site_grant_check": "browser_capabilities"
+                "navigation_reason": navigationReason,
+                "interaction_reason": interactionReason
             ] as [String: Any],
             "notes": [
                 "read": available("read_note"),
@@ -189,8 +185,8 @@ enum AIContextTools {
                 "reason": !workspaceRuntimeAvailable ? "macos_sandbox_unavailable" : (canStartWorkspace && canRunWorkspace && canReadWorkspace ? "available" : "workspace_tools_not_routed_or_terminal_disabled")
             ] as [String: Any],
             "approval": accessMode == .fullControl
-                ? "No Lima per-action prompts; browser grants and execution boundaries are checked when used."
-                : "Action approvals and browser site grants are checked again when executed."
+                ? "No Lima per-action prompts; Browser AI Control and execution boundaries are checked when used."
+                : "Action approvals and Browser AI Control are checked again when executed."
         ])
     }
 

@@ -33,5 +33,13 @@ grep -Fq 'gh release create "$TAG" --draft --verify-tag' "${SCRIPT_DIRECTORY}/re
     print -u2 'Staging no longer creates a first draft from the verified immutable tag.'
     exit 1
 }
+grep -Fq 'notes_file="$PROJECT_DIRECTORY/docs/releases/$TAG.md"' "${SCRIPT_DIRECTORY}/release_stage.sh" || {
+    print -u2 'Staging no longer resolves tag-specific release notes.'
+    exit 1
+}
+grep -Fq -- '--notes-file "$notes_file"' "${SCRIPT_DIRECTORY}/release_stage.sh" || {
+    print -u2 'Staging no longer attaches tag-specific release notes to a first draft.'
+    exit 1
+}
 
 print 'Release dispatcher and first-draft regression tests passed.'

@@ -14,7 +14,7 @@ struct LimaWorkspaceNavigation: Equatable {
 }
 
 extension LimaWorkspaceModule {
-    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .context]
+    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .browser, .context]
     static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions, .terminal]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
     static let hiddenDestinations: [LimaWorkspaceModule] = [.grammar, .dictation, .formatter]
@@ -24,6 +24,7 @@ extension LimaWorkspaceModule {
         case .home: "Home"
         case .notes: "Notes"
         case .ai: "AI"
+        case .browser: "Browser"
         case .context: "Context"
         case .grammar: "Grammar"
         case .dictation: "Dictation"
@@ -40,6 +41,7 @@ extension LimaWorkspaceModule {
         case .home: "house"
         case .notes: "note.text"
         case .ai: "sparkles"
+        case .browser: "globe"
         case .context: "tray.full"
         case .grammar: "textformat.abc"
         case .dictation: "waveform"
@@ -57,6 +59,7 @@ extension LimaWorkspaceModule {
         case .home: "1"
         case .notes: "2"
         case .ai: "3"
+        case .browser: "B"
         case .context: "4"
         case .grammar: "5"
         case .dictation: "6"
@@ -121,12 +124,13 @@ struct LimaWayfinderRail: View {
     var activeWorkspaceProfileID: UUID? = nil
     var selectWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
     var createWorkspaceProfile: (() -> Void)? = nil
-    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var layout = WorkspaceLayoutStore.shared
+    private let settings = SettingsStore.shared
     @State private var hovered: String?
     @ObservedObject private var typography = AppTypography.shared
 
     private var labeled: Bool {
-        switch settings.workspaceConfiguration.railPresentation {
+        switch layout.configuration.railPresentation {
         case .adaptive: sizeClass == .expanded
         case .icons: false
         case .iconsAndLabels: true
@@ -135,7 +139,7 @@ struct LimaWayfinderRail: View {
 
     private var configuredWidth: CGFloat {
         let base = labeled ? max(sizeClass.moduleRailWidth, 48 + 114 * typography.scale) : sizeClass.moduleRailWidth
-        switch settings.workspaceConfiguration.railWidth {
+        switch layout.configuration.railWidth {
         case .compact: return max(labeled ? 160 : 44, base - 24)
         case .standard: return base
         case .wide: return base + (labeled ? 48 : 12)
@@ -195,7 +199,7 @@ struct LimaWayfinderRail: View {
 
             ScrollView(.vertical) {
                 VStack(spacing: 8) {
-                    ForEach(settings.workspaceConfiguration.sections) { section in
+                    ForEach(layout.configuration.sections) { section in
                         railGroup(section.name.uppercased(), destinations: section.modules)
                     }
                 }
@@ -244,7 +248,8 @@ struct LimaWayfinderRail: View {
         .padding(.vertical, 14)
         .frame(width: configuredWidth)
         .frame(maxHeight: .infinity, alignment: .top)
-        .limaGlassSidebar(cornerRadius: 0)
+        .limaGlassContainer(region: .sidebar, cornerRadius: 22)
+        .overlay { LimaPrismFrame(radius: 22).allowsHitTesting(false) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace navigation")
         .accessibilityIdentifier(LimaQAIdentifiers.Workspace.sidebar)
@@ -256,9 +261,9 @@ struct LimaWayfinderRail: View {
         }
         .background {
             // Keep established shortcuts working without showing these tools in the rail.
-            ForEach(settings.workspaceConfiguration.hiddenModules, id: \.self) { module in
+            ForEach(layout.configuration.hiddenModules, id: \.self) { module in
                 Button("") { select(module) }
-                    .keyboardShortcut(KeyEquivalent(Character(settings.workspaceConfiguration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
+                    .keyboardShortcut(KeyEquivalent(Character(layout.configuration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
                     .hidden()
                     .accessibilityHidden(true)
             }
@@ -267,7 +272,7 @@ struct LimaWayfinderRail: View {
 
     @ViewBuilder
     private func railGroup(_ title: String, destinations: [LimaWorkspaceModule]) -> some View {
-        if labeled && settings.workspaceConfiguration.showsSectionNames {
+        if labeled && layout.configuration.showsSectionNames {
             Text(title)
                 .font(.system(size: 8.5, weight: .bold))
                 .tracking(0.9)
@@ -281,19 +286,19 @@ struct LimaWayfinderRail: View {
         ForEach(destinations, id: \.self) { module in
             Button { select(module) } label: {
                 railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue,
-                          shortcut: "⌥⌘\(settings.workspaceConfiguration.shortcutKey(for: module))")
+                          shortcut: "⌥⌘\(layout.configuration.shortcutKey(for: module))")
             }
             .buttonStyle(.plain)
-            .keyboardShortcut(KeyEquivalent(Character(settings.workspaceConfiguration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
+            .keyboardShortcut(KeyEquivalent(Character(layout.configuration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
             .background {
-                if let alias = settings.workspaceConfiguration.shortcutAlias(for: module) {
+                if let alias = layout.configuration.shortcutAlias(for: module) {
                     Button("") { select(module) }
                         .keyboardShortcut(KeyEquivalent(Character(alias.lowercased())), modifiers: [.command, .option])
                         .hidden()
                         .accessibilityHidden(true)
                 }
             }
-            .help("\(module.title) · ⌥⌘\(settings.workspaceConfiguration.shortcutKey(for: module))\(settings.workspaceConfiguration.shortcutAlias(for: module).map { " · ⌥⌘\($0)" } ?? "")")
+            .help("\(module.title) · ⌥⌘\(layout.configuration.shortcutKey(for: module))\(layout.configuration.shortcutAlias(for: module).map { " · ⌥⌘\($0)" } ?? "")")
             .accessibilityLabel(module.title)
             .accessibilityIdentifier(LimaQAIdentifiers.Workspace.module(module))
             .accessibilityValue(module == current ? "Current workspace" : "")
@@ -320,7 +325,7 @@ struct LimaWayfinderRail: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                if settings.workspaceConfiguration.showsKeyboardShortcuts, let shortcut {
+                if layout.configuration.showsKeyboardShortcuts, let shortcut {
                     Text(shortcut).font(.system(size: 9, weight: .medium))
                         .foregroundStyle(LimaTheme.textTertiary)
                 }

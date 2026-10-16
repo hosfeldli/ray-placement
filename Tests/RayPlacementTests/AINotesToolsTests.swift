@@ -52,11 +52,11 @@ import RayPlacementCore
         nativeToolStore: LimaAIToolStore(fixtures: AINotesTools.ids),
         transport: FixtureAITransport.standard
     )
-    #expect(Set(model.routedNativeTools(for: "Explain this query").map(\.id)) == AINotesTools.ids)
-    #expect(Set(model.routedNativeTools(for: "Search my notes for browser integration").map(\.id)) == AINotesTools.ids)
+    #expect(Set(model.routedNativeTools(for: "Explain this query").map(\.id)) == AINotesTools.ids.union(BrowserWorkspaceAITools.ids))
+    #expect(Set(model.routedNativeTools(for: "Search my notes for browser integration").map(\.id)) == AINotesTools.ids.union(BrowserWorkspaceAITools.ids))
 }
 
-@Test @MainActor func browserAndNotesReadToolsMigrateOnceWithoutGrantingNavigation() throws {
+@Test @MainActor func notesReadToolsMigrateWithoutAddingBrowserSelections() throws {
     let suite = "RayPlacementTests.browser-notes-read-migration.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
@@ -66,14 +66,15 @@ import RayPlacementCore
 
     let store = LimaAIToolStore(defaults: defaults)
     #expect(store.enabledToolIDs.isSuperset(of: AINotesTools.ids))
-    #expect(store.enabledToolIDs.isSuperset(of: BrowserBridgeAITools.readToolIDs))
+    #expect(store.enabledToolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids))
+    #expect(store.effectiveEnabledToolIDs.contains("browser_read"))
     #expect(!store.enabledToolIDs.contains("browser_open_tabs"))
-    #expect(!store.enabledToolIDs.contains("browser_click"))
 
-    let browserRead = try #require(BrowserBridgeAITools.definitions.first { $0.id == "browser_read" })
+    let browserRead = try #require(LimaAIToolRegistry.definition(for: "browser_read"))
     store.setEnabled(browserRead, enabled: false)
     let reloaded = LimaAIToolStore(defaults: defaults)
-    #expect(!reloaded.enabledToolIDs.contains("browser_read"))
+    #expect(reloaded.enabledToolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids))
+    #expect(reloaded.effectiveEnabledToolIDs.contains("browser_read"))
     #expect(reloaded.enabledToolIDs.contains("search_notes"))
     #expect(defaults.bool(forKey: "lima.ai.browser-notes-read-v1"))
 }

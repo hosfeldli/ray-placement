@@ -1,5 +1,14 @@
 import AppKit
 
+enum LauncherSearchPhase: Equatable, Sendable {
+    case idle
+    case active
+
+    init(query: String) {
+        self = UniversalSearchCoordinator.parse(query).query.isEmpty ? .idle : .active
+    }
+}
+
 // The terminal needs more room than the command launcher, but remains a
 // floating workspace rather than becoming a full-screen window.
 enum LauncherPanelLayout {
@@ -24,8 +33,7 @@ enum LauncherPanelLayout {
     static func size(
         for mode: LauncherMode,
         density: AppInterfaceDensity,
-        resultCount: Int = 0,
-        query: String = ""
+        searchPhase: LauncherSearchPhase = .idle
     ) -> NSSize {
         if mode == .terminal { return terminalSize }
 
@@ -36,7 +44,7 @@ enum LauncherPanelLayout {
         case .root:
             // Empty Search is a compact input with explicit workspace controls.
             // Typing expands into a stable results panel, even for zero matches.
-            return UniversalSearchCoordinator.parse(query).query.isEmpty
+            return searchPhase == .idle
                 ? idleSearchSize(density: density) : searchSize(density: density)
         case .output, .writingReview:
             return NSSize(width: width, height: min(640, max(standardHeight + 84, 540)))

@@ -236,13 +236,15 @@ private func contextJSON(_ result: LimaAIToolExecution) throws -> [String: Any] 
     #expect(UniversalSearchCoordinator.parse("notes:  ").query.isEmpty)
 }
 
-@Test @MainActor func scopedClipboardKeepsDeepMatchesAndDraftActions() throws {
+@Test @MainActor func scopedClipboardKeepsDeepMatchesAndDraftActions() async throws {
     let entry = ClipboardEntry(text: String(repeating: "A short preface. ", count: 20) + "quartzmarker")
     let olderEntries = (0..<120).map { ClipboardEntry(text: "Unrelated clip \($0)") } + [entry]
     let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: olderEntries), scanApplications: false)
     model.query = "quartzmarker"
+    await model.waitForLocalSearchForTesting()
     #expect(model.results.contains { $0.id == "clipboard.\(entry.id)" })
     model.query = "clipboard: quartzmarker"
+    await model.waitForLocalSearchForTesting()
     let match = try #require(model.results.first { $0.id == "clipboard.\(entry.id)" })
     #expect(!match.title.contains("quartzmarker"))
     #expect(model.results.filter { $0.id == match.id }.count == 1)
@@ -327,7 +329,7 @@ private func contextJSON(_ result: LimaAIToolExecution) throws -> [String: Any] 
     let model = functionalModel(tools: ids)
     #expect(model.isBrowserPrompt("Inspect the links on this page"))
     #expect(model.isBrowserPrompt("Read my current webpage"))
-    #expect(Set(model.routedNativeTools(for: "Read my current webpage").map(\.id)).isSubset(of: ids))
+    #expect(Set(model.routedNativeTools(for: "Read my current webpage").map(\.id)).isSuperset(of: BrowserWorkspaceAITools.ids))
     #expect(model.routedNativeTools(for: "Read my current webpage").contains { $0.id == "browser_current" })
 }
 

@@ -103,12 +103,10 @@ import Testing
 @Test @MainActor func capabilityGroupsRetainUnderlyingOptInPreferences() throws {
     let store = LimaAIToolStore(fixtures: LimaAIToolRegistry.defaultEnabledToolIDs)
     let groups = LimaAIToolGroup.visibleGroups(for: LimaAIToolRegistry.availableDefinitions)
-    let browser = try #require(groups.first { $0.id == "browser" })
     let limaWorkspace = try #require(groups.first { $0.id == "lima-workspace" })
-    #expect(groups.first { $0.id == "browser-navigation" } == nil) // Navigation is off by default.
-
+    #expect(groups.first { $0.id == "browser" } == nil) // Only the Browser toolbar controls AI access.
+    #expect(groups.first { $0.id == "browser-navigation" } == nil)
     #expect(groups.first { $0.id == "web-research" } == nil)
-    #expect(browser.toolIDs.contains("browser_scan"))
     #expect(groups.first { $0.id == "ai-workspace-terminal" } == nil) // Terminal reads and actions start off.
     #expect(LimaAIToolGroup.coreGroups.first { $0.id == "ai-workspace-terminal" }?.toolIDs == AIWorkspaceActionTools.ids)
     let eligibleWorkspace = LimaAIToolGroup.visibleGroups(for: AIWorkspaceActionTools.definitions)
@@ -119,12 +117,12 @@ import Testing
     #expect(wait.displayName == "Wait for command")
     #expect(wait.userSummary.contains("verified completion"))
     #expect(external.userSummary.contains("outside the sandbox"))
-    #expect(store.isEnabled(browser))
-    store.setEnabled(browser, enabled: false)
-    #expect(!store.isEnabled(browser))
-    store.setEnabled(browser, enabled: true)
-    #expect(store.isEnabled(browser))
-    #expect(browser.toolIDs.allSatisfy(store.enabledToolIDs.contains))
+    #expect(store.effectiveEnabledToolIDs.isSuperset(of: BrowserWorkspaceAITools.ids))
+    #expect(store.enabledToolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids))
+    let browserRead = try #require(LimaAIToolRegistry.definition(for: "browser_read"))
+    store.setEnabled(browserRead, enabled: false)
+    #expect(store.effectiveEnabledToolIDs.contains("browser_read"))
+    #expect(store.enabledToolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids))
 }
 
 @Test @MainActor func modelSelectionRemainsAvailableDuringBackgroundCatalogUpdate() async throws {

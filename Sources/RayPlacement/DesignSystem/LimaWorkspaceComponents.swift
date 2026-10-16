@@ -167,6 +167,7 @@ extension LimaWorkspaceModule {
     var featureTint: AppAccentTheme {
         switch self {
         case .home, .ai, .context: .violet
+        case .browser: .cyan
         case .notes: .orange
         case .grammar: .green
         case .dictation: .rose

@@ -46,7 +46,7 @@ enum LimaGlassRegion {
 /// uses NSVisualEffectView; a future SDK can replace only this adapter with the
 /// native glass container while leaving callers and content surfaces unchanged.
 struct LimaGlassContainer<Content: View>: View {
-    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var appearance = AppearancePreferences.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
@@ -63,16 +63,16 @@ struct LimaGlassContainer<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let prismOpacity = min(0.65, settings.glassStyle.prismaticEdgeOpacity * region.prismStrength)
+        let prismOpacity = min(0.65, appearance.snapshot.glassStyle.prismaticEdgeOpacity * region.prismStrength)
         let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
         content
             .background {
                 ZStack {
                     LimaTheme.surfacePrimary
-                        .opacity(opaque ? 1 : settings.glassStyle.baseOpacity)
+                        .opacity(opaque ? 1 : appearance.snapshot.glassStyle.baseOpacity)
                     if !opaque {
                         VisualEffectView(material: region.fallbackMaterial, blendingMode: .withinWindow)
-                            .opacity(settings.glassStyle.materialOpacity)
+                            .opacity(appearance.snapshot.glassStyle.materialOpacity)
                         // A static spectral wash makes the structural material legible
                         // even against a plain desktop, without another blur layer.
                         if prismOpacity > 0 {
@@ -194,28 +194,28 @@ struct LimaChrome<Content: View>: View {
 /// blurred materials over scrolling content or depending on a particular wallpaper.
 struct LimaPrismFrame: View {
     let radius: CGFloat
-    @ObservedObject private var settings = SettingsStore.shared
+    @ObservedObject private var appearance = AppearancePreferences.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
         let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
-        let strength = min(0.82, settings.glassStyle.prismaticEdgeOpacity * 2)
+        let strength = min(0.82, appearance.snapshot.glassStyle.prismaticEdgeOpacity * 2)
         ZStack {
             shape.strokeBorder(LimaTheme.borderStrong, lineWidth: LimaDesign.hairlineWidth)
             if !opaque && strength > 0 {
                 shape.strokeBorder(
                     LinearGradient(
-                        colors: [settings.accentTheme.primary.opacity(strength),
+                        colors: [appearance.snapshot.accent.primary.opacity(strength),
                                  Color.cyan.opacity(strength * 0.68),
-                                 settings.accentTheme.primary.opacity(strength * 0.52),
+                                 appearance.snapshot.accent.primary.opacity(strength * 0.52),
                                  Color.pink.opacity(strength * 0.62)],
                         startPoint: .topLeading, endPoint: .bottomTrailing
                     ),
                     lineWidth: 1.15
                 )
-                .shadow(color: settings.accentTheme.primary.opacity(strength * 0.36), radius: 9)
+                .shadow(color: appearance.snapshot.accent.primary.opacity(strength * 0.36), radius: 9)
             }
         }
         .allowsHitTesting(false)

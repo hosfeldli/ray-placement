@@ -577,7 +577,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         window.hasShadow = true
         window.delegate = self
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: WorkspaceView(
+        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: WorkspaceShellView(content: WorkspaceModuleHost(
             store: store,
             conversations: conversations,
             dictation: dictation,
@@ -603,7 +603,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             togglePinnedReference: { [weak self] id in self?.togglePinnedReference(id) },
             selectPinnedReference: { [weak self] id in self?.selectPinnedReference(id) },
             toggleNotesFocusMode: { [weak self] in self?.toggleNotesFocusMode() }
-        )))
+        ))))
         return window
     }
 
@@ -725,25 +725,108 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 }
 
-private struct WorkspaceView: View {
-    @ObservedObject var store: NotesStore
-    @ObservedObject var conversations: DictationConversationStore
-    @ObservedObject var dictation: NoteDictationService
+/// Owns only window chrome and navigation. Active feature updates invalidate
+/// WorkspaceModuleHost without asking SwiftUI to rebuild this structural shell.
+private struct WorkspaceShellView: View {
+    @ObservedObject var presentation: WorkspacePresentationModel
+    @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
+    let content: WorkspaceModuleHost
+
+    init(content: WorkspaceModuleHost) {
+        self.content = content
+        self.presentation = content.presentation
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
+            ZStack {
+                LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
+                WorkspacePrismBackground(module: presentation.activeModule)
+                HStack(spacing: 10) {
+                    LimaWayfinderRail(
+                        current: presentation.activeModule,
+                        previous: presentation.navigation.previous,
+                        sizeClass: sizeClass,
+                        select: content.selectModule,
+                        openSettings: content.openSettings,
+                        isDocked: presentation.mode.isDocked,
+                        openInWindow: content.restoreWorkspace,
+                        workspaceProfiles: content.switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
+                        activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
+                        selectWorkspaceProfile: content.switchWorkspaceProfile,
+                        createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
+                    )
+                    .padding(.leading, 8)
+                    .padding(.vertical, 8)
+                    content
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.trailing, 8)
+                        .padding(.vertical, 8)
+                }
+            }
+            .environment(\.limaWorkspaceSizeClass, sizeClass)
+            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous))
+            .overlay { LimaPrismFrame(radius: LimaRadius.majorSurface) }
+            .padding(sizeClass == .compact ? 4 : 8)
+        }
+        .background(Color.clear)
+        .frame(
+            minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
+            minHeight: 500
+        )
+    }
+}
+
+/// One inexpensive ambient wash belongs to the Workspace canvas, not to each
+/// content card. Reduce Transparency leaves only the opaque backdrop beneath it.
+private struct WorkspacePrismBackground: View {
+    let module: LimaWorkspaceModule
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
+
+    var body: some View {
+        if !reduceTransparency && !(LimaTestEnvironment.isEnabled && testReduceTransparency) {
+            ZStack {
+                RadialGradient(
+                    colors: [module.featureTint.primary.opacity(0.10), .clear],
+                    center: .topLeading, startRadius: 0, endRadius: 650
+                )
+                RadialGradient(
+                    colors: [Color.cyan.opacity(0.045), .clear],
+                    center: .bottomTrailing, startRadius: 20, endRadius: 700
+                )
+            }
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+        }
+    }
+}
+
+/// Owns feature-specific state and only the currently active module's content.
+private struct WorkspaceModuleHost: View {
+    // Feature stores are observed only while their module is active. The host
+    // passes references to child views without subscribing to every mutation.
+    let store: NotesStore
+    let conversations: DictationConversationStore
+    let dictation: NoteDictationService
     /// Streaming updates are observed only by AIChatWorkspaceView, not this shell.
     let aiChatModel: AIChatViewModel
-    @ObservedObject var terminalModel: DeveloperTerminalModel
-    @ObservedObject var formatterModel: FormatterWorkspaceModel
-    @ObservedObject var launcherViewModel: LauncherViewModel
-    @ObservedObject var extensionStoreModel: ExtensionStoreModel
+    // These models are observed by their module views. Passing a reference
+    // through the shell must not invalidate its rail or geometry on every
+    // Terminal keystroke, Formatter edit, or extension/launcher update.
+    let terminalModel: DeveloperTerminalModel
+    let formatterModel: FormatterWorkspaceModel
+    let launcherViewModel: LauncherViewModel
+    let extensionStoreModel: ExtensionStoreModel
     let reloadExtensions: () -> Void
     let runWorkflow: (WorkflowDefinition) -> Void
     let openCommandSearch: (String) -> Void
     let selectModule: (LimaWorkspaceModule) -> Void
     var switchWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
     @ObservedObject var presentation: WorkspacePresentationModel
-    @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
-    @ObservedObject private var settings = SettingsStore.shared
-    @ObservedObject private var contextShelf = ContextShelfStore.shared
+    private let settings = SettingsStore.shared
+    private let contextShelf = ContextShelfStore.shared
     let dockLeft: () -> Void
     let dockRight: () -> Void
     let restoreWorkspace: () -> Void
@@ -756,6 +839,8 @@ private struct WorkspaceView: View {
     let selectPinnedReference: (UUID) -> Void
     let toggleNotesFocusMode: () -> Void
 
+    @StateObject private var notesPresentation = NotesWorkspacePresentationModel()
+    @State private var activeFeatureRevision: UInt64 = 0
     @State private var searchQuery = ""
     @State private var noteFilter: NotesWorkspaceFilter = .all
     @State private var isSearchPresented = false
@@ -777,71 +862,63 @@ private struct WorkspaceView: View {
     @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.limaWorkspaceSizeClass) private var sizeClass
     @FocusState private var dictationEditorFocused: Bool
 
-    private var filteredNotes: [MarkdownNote] {
-        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let notes = store.notes.filter { noteFilter.includes($0) }
-        guard !query.isEmpty else { return notes }
-        return notes.filter { note in
-            note.displayTitle.lowercased().contains(query)
-                || note.content.prefix(20_000).lowercased().contains(query)
-                || note.tags.contains { $0.lowercased().contains(query) }
-        }
-    }
+    private var filteredNotes: [MarkdownNote] { notesPresentation.filteredNotes }
 
     private var pinnedNotes: [MarkdownNote] { filteredNotes.filter(\.isPinned) }
     private var favoriteNotes: [MarkdownNote] { filteredNotes.filter { !$0.isPinned && $0.isFavorite } }
     private var regularNotes: [MarkdownNote] { filteredNotes.filter { !$0.isPinned && !$0.isFavorite } }
 
     var body: some View {
-        GeometryReader { proxy in
-            let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
-            ZStack {
-                LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-                HStack(spacing: 0) {
-                    LimaWayfinderRail(
-                        current: presentation.activeModule,
-                        previous: presentation.navigation.previous,
-                        sizeClass: sizeClass,
-                        select: selectModule,
-                        openSettings: openSettings,
-                        isDocked: presentation.mode.isDocked,
-                        openInWindow: restoreWorkspace,
-                        workspaceProfiles: switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
-                        activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
-                        selectWorkspaceProfile: switchWorkspaceProfile,
-                        createWorkspaceProfile: switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
-                    )
-                    Rectangle()
-                        .fill(LimaDesign.separator)
-                        .frame(width: LimaDesign.hairlineWidth)
-                    VStack(spacing: 0) {
-                        if presentation.activeModule != .ai && presentation.activeModule != .workflows {
-                            workspaceHeader(sizeClass: sizeClass)
-                            GlassHairline()
-                        } else {
-                            LimaWindowDragRegion()
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 14)
-                            GlassHairline()
-                        }
-                        workspaceModule(sizeClass: sizeClass)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }
+        let _ = activeFeatureRevision
+        VStack(spacing: 0) {
+            if presentation.activeModule != .ai && presentation.activeModule != .workflows && presentation.activeModule != .browser {
+                workspaceHeader(sizeClass: sizeClass)
+                Color.clear.frame(height: 8)
+            } else {
+                LimaWindowDragRegion()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 14)
+                GlassHairline()
             }
-            .environment(\.limaWorkspaceSizeClass, sizeClass)
-            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous))
-            .overlay { LimaPrismFrame(radius: LimaRadius.majorSurface) }
-            .padding(sizeClass == .compact ? 4 : 8)
+            workspaceModule(sizeClass: sizeClass)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .background(Color.clear)
-        .frame(
-            minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
-            minHeight: 500
-        )
         .tint(SettingsStore.shared.accentTheme.readablePrimary)
+        .onReceive(store.$notes) { notes in
+            guard presentation.activeModule == .notes else { return }
+            notesPresentation.setNotes(notes)
+        }
+        .onReceive(store.objectWillChange) { _ in
+            guard presentation.activeModule == .notes else { return }
+            activeFeatureRevision &+= 1
+        }
+        .onReceive(conversations.objectWillChange) { _ in
+            guard presentation.activeModule == .dictation || presentation.activeModule == .notes else { return }
+            activeFeatureRevision &+= 1
+        }
+        .onReceive(dictation.objectWillChange) { _ in
+            guard presentation.activeModule == .dictation || presentation.activeModule == .notes else { return }
+            activeFeatureRevision &+= 1
+        }
+        .onReceive(settings.objectWillChange) { _ in
+            guard presentation.activeModule == .notes else { return }
+            activeFeatureRevision &+= 1
+        }
+        .onAppear {
+            notesPresentation.setQuery(searchQuery)
+            notesPresentation.setFilter(noteFilter)
+            notesPresentation.setActive(presentation.activeModule == .notes)
+            if presentation.activeModule == .notes { notesPresentation.setNotes(store.notes) }
+        }
+        .onChange(of: searchQuery) { notesPresentation.setQuery($0) }
+        .onChange(of: noteFilter) { notesPresentation.setFilter($0) }
+        .onChange(of: presentation.activeModule) { module in
+            notesPresentation.setActive(module == .notes)
+            if module == .notes { notesPresentation.setNotes(store.notes) }
+        }
         .onChange(of: presentation.focusDictationEditor) { shouldFocus in
             guard shouldFocus else { return }
             DispatchQueue.main.async {
@@ -962,8 +1039,7 @@ private struct WorkspaceView: View {
             if presentation.activeModule != .notes || sizeClass != .expanded {
                 LimaToolbarTitle(
                     symbol: workspaceModuleSymbol(presentation.activeModule),
-                    title: workspaceModuleTitle(presentation.activeModule),
-                    subtitle: "Workspace"
+                    title: workspaceModuleTitle(presentation.activeModule)
                 )
                 .frame(maxWidth: 240, alignment: .leading)
 
@@ -1079,8 +1155,10 @@ private struct WorkspaceView: View {
             .accessibilityLabel("Workspace options")
         }
         .padding(.horizontal, 8)
-        .frame(height: 48)
-        .limaGlassSurface(cornerRadius: 0, depth: .recessed)
+        .frame(height: 44)
+        .limaGlassContainer(region: .toolbar, cornerRadius: 16)
+        .padding(.horizontal, 8)
+        .padding(.top, 2)
         }
         .frame(height: 48)
     }
@@ -1134,6 +1212,8 @@ private struct WorkspaceView: View {
                         onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
                         contextNotes: store
                     )
+                case .browser:
+                    BrowserWorkspaceView()
                 case .grammar:
                     GrammarWorkspaceView()
                         .background(Color.clear)
@@ -2807,7 +2887,7 @@ enum LimaMockupWorkspaceFixtures {
         let ai = AIChatVisualFixtures.model(for: .conversation)
         ai.prepareNoteDraft(notes.notes[0], prompt: "")
         let launcher = LauncherViewModel(clipboard: .shared, scanApplications: false)
-        return WorkspaceView(
+        return WorkspaceShellView(content: WorkspaceModuleHost(
             store: notes, conversations: DictationConversationStore(),
             dictation: NoteDictationService(onTranscript: { _ in }),
             aiChatModel: ai, terminalModel: DeveloperTerminalModel(),
@@ -2819,7 +2899,7 @@ enum LimaMockupWorkspaceFixtures {
             setQuickNoteTarget: { _ in }, setQuickNoteTargetMode: { _ in },
             quickNoteTargetMode: { .lastQuickNote }, togglePinnedReference: { _ in },
             selectPinnedReference: { _ in }, toggleNotesFocusMode: { presentation.notesFocusMode.toggle() }
-        )
+        ))
     }
 
     static func settings() -> some View {

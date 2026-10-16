@@ -11,23 +11,23 @@ import Testing
 }
 
 @Test @MainActor func commandCenterToolEnablementUsesTheSharedReadOnlyStore() throws {
-    let definitions = LimaAIToolRegistry.definitions + BrowserBridgeAITools.definitions
+    let definitions = LimaAIToolRegistry.definitions + BrowserWorkspaceAITools.definitions
     let store = LimaAIToolStore(fixtures: [])
     var rows = CommandCenterCatalog.nativeToolEntries(definitions: definitions, enabledIDs: store.enabledToolIDs)
     #expect(rows.count == definitions.count)
     #expect(rows.allSatisfy { !$0.isEnabled })
-    #expect(rows.filter { ["browser_open_tabs", "browser_focus_tab", "browser_navigate_tab"].contains($0.id) }
+    #expect(rows.filter { ["browser_new_tab", "browser_focus_tab", "browser_navigate"].contains($0.id) }
         .allSatisfy { $0.availableToAI == false })
     #expect(rows.first { $0.id == "browser_read" }?.availableToAI == true)
-    let bridge = try #require(definitions.first { $0.id == "browser_read" })
-    store.setEnabled(bridge, enabled: true)
+    let fileRead = try #require(definitions.first { $0.id == "read_file" })
+    store.setEnabled(fileRead, enabled: true)
     rows = CommandCenterCatalog.nativeToolEntries(definitions: definitions, enabledIDs: store.enabledToolIDs)
-    #expect(rows.first { $0.id == bridge.id }?.isEnabled == true)
+    #expect(rows.first { $0.id == fileRead.id }?.isEnabled == true)
     #expect(CommandCenterCatalog.visibleEntries(rows, filter: .disabled, query: "").count == rows.count - 1)
-    #expect(CommandCenterCatalog.visibleEntries(rows, filter: .tools, query: "browser").contains { $0.id == bridge.id })
-    store.setEnabled(bridge, enabled: false)
-    #expect(!store.isEnabled(bridge))
-    #expect(LimaAIToolRegistry.defaultEnabledToolIDs.contains(bridge.id))
+    #expect(CommandCenterCatalog.visibleEntries(rows, filter: .tools, query: "file").contains { $0.id == fileRead.id })
+    store.setEnabled(fileRead, enabled: false)
+    #expect(!store.isEnabled(fileRead))
+    #expect(LimaAIToolRegistry.defaultEnabledToolIDs.contains(fileRead.id))
 }
 
 @Test func commandCenterNeverDisplaysWriteToolsAsEnabledForAI() {

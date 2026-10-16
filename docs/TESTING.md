@@ -67,4 +67,15 @@ LIMA_TEST_OPENAI_API_KEY="$(tr -d '\r\n' < ~/Desktop/key.key)" \
 swift test --filter optInLiveResponsesPathLeavesVisibleAssistantText
 ```
 
+To test the installed, signed-in Codex CLI without an API key, opt in to the three live CLI checks:
+
+```sh
+LIMA_TEST_MODE=1 \
+LIMA_ALLOW_LIVE_AI_TESTS=1 \
+LIMA_TEST_LIVE_CODEX=1 \
+swift test --filter liveCodexCLI
+```
+
+`liveCodexCLIAdapterSmoke` checks a real answer. `liveCodexCLIToolEnvelopeSmoke` checks a real tool request and continuation with a **supplied fixture result**. `liveCodexCLINativeToolExecutionSmoke` sends through `AIChatViewModel`, executes Lima's real read-only `get_lima_status` tool, and checks the completed assistant, run, and task state. This does not validate every native tool, approval path, or the rendered macOS window.
+
 Keep ordinary UI, snapshot, and unit tests fixture-backed. The UI Lab continues to use its fixture transport even if these variables are present.

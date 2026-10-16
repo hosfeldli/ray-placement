@@ -1,22 +1,23 @@
 import AppKit
+import Combine
 import RayPlacementCore
+import SwiftUI
 import Testing
 @testable import RayPlacement
 
 @Test func searchWindowIsCompactUntilTypingAndStableWhileSearching() {
     for density in AppInterfaceDensity.allCases {
-        let idle = LauncherPanelLayout.size(for: .root, density: density, resultCount: 0)
-        let populated = LauncherPanelLayout.size(for: .root, density: density, resultCount: 24, query: "notes")
-        let emptyResults = LauncherPanelLayout.size(for: .root, density: density, resultCount: 0, query: "unlikely")
+        let idle = LauncherPanelLayout.size(for: .root, density: density, searchPhase: .idle)
+        let active = LauncherPanelLayout.size(for: .root, density: density, searchPhase: .active)
         #expect(idle == LauncherPanelLayout.idleSearchSize(density: density))
-        #expect(LauncherPanelLayout.size(for: .root, density: density, query: "note: ") == idle)
-        #expect(populated == emptyResults)
-        #expect(populated == LauncherPanelLayout.searchSize(density: density))
-        #expect(idle.height < populated.height)
-        let canShowInspector = LauncherSearchDesign.canShowInspector(at: populated.width)
+        #expect(active == LauncherPanelLayout.searchSize(density: density))
+        #expect(idle.height < active.height)
+        #expect(LauncherSearchPhase(query: "note: ") == .idle)
+        #expect(LauncherSearchPhase(query: "notes") == .active)
+        let canShowInspector = LauncherSearchDesign.canShowInspector(at: active.width)
         #expect(canShowInspector == (density == .comfortable))
         if canShowInspector {
-            #expect(populated.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
+            #expect(active.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
         }
         switch density {
         case .compact: #expect(idle == NSSize(width: 680, height: 138))
@@ -26,6 +27,113 @@ import Testing
         #expect(LauncherPanelLayout.size(for: .files, density: density).width == density.launcherWidth)
         #expect(LauncherPanelLayout.size(for: .terminal, density: density) == LauncherPanelLayout.terminalSize)
     }
+}
+
+@Test @MainActor func searchPhasePublishesOnlyIdleActiveTransitions() {
+    let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
+    var phases: [LauncherSearchPhase] = []
+    let subscription = model.$searchPhase.dropFirst().sink { phases.append($0) }
+    defer { subscription.cancel() }
+
+    #expect(model.searchPhase == .idle)
+    model.query = "n"
+    #expect(model.searchPhase == .active)
+    model.query = "no"
+    model.query = "note: "
+    #expect(model.searchPhase == .idle)
+    model.query = "note: n"
+    model.query = "note: no"
+    model.query = ""
+    #expect(model.searchPhase == .idle)
+    #expect(phases == [.active, .idle, .active, .idle])
+}
+
+@Test @MainActor func searchFieldKeepsNativeControlAcrossPhaseChanges() {
+    let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
+    let view = LauncherSearchWorkspace(
+        model: model,
+        aiChatModel: AIChatVisualFixtures.model(for: .empty),
+        openWorkspace: { _ in }, openSettings: {}, createNote: {}, dismiss: {}
+    )
+    let host = NSHostingView(rootView: view)
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 720, height: 146),
+        styleMask: [.borderless], backing: .buffered, defer: false
+    )
+    window.contentView = host
+    host.layoutSubtreeIfNeeded()
+
+    func fields(in view: NSView) -> [NSTextField] {
+        let current: [NSTextField]
+        if let field = view as? NSTextField, field.isEditable { current = [field] }
+        else { current = [] }
+        return current + view.subviews.flatMap { fields(in: $0) }
+    }
+
+    let before = fields(in: host)
+    #expect(before.count == 1)
+    model.query = "notes"
+    window.setContentSize(NSSize(width: 760, height: 520))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    host.layoutSubtreeIfNeeded()
+    let active = fields(in: host)
+    #expect(active.count == 1)
+    #expect(active.first === before.first)
+
+    model.query = ""
+    window.setContentSize(NSSize(width: 720, height: 146))
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    host.layoutSubtreeIfNeeded()
+    let idleAgain = fields(in: host)
+    #expect(idleAgain.count == 1)
+    #expect(idleAgain.first === before.first)
+}
+
+@Test @MainActor func hiddenSearchDefersRankingUntilPresented() async {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    model.setSearchPresented(false)
+    model.query = "notes"
+    #expect(model.searchPhase == .active)
+    #expect(model.results.isEmpty)
+    model.setContextualSelection("selected words")
+    #expect(model.results.isEmpty)
+    model.resetContextualSelection()
+    #expect(model.results.isEmpty)
+
+    model.setSearchPresented(true)
+    await model.waitForLocalSearchForTesting()
+    #expect(model.results.contains { $0.id == "builtin.notes" })
+
+    model.setSearchPresented(false)
+    #expect(model.results.isEmpty)
+    model.query = "files"
+    #expect(model.results.isEmpty)
+}
+
+@Test @MainActor func clipboardUpdatesRebuildOnlyClipboardSearchDocuments() async throws {
+    let clipboard = ClipboardHistoryService(fixtures: [ClipboardEntry(text: "First source")])
+    let model = LauncherViewModel(clipboard: clipboard, scanApplications: false)
+    model.query = "notes"
+    await model.waitForLocalSearchForTesting()
+    let builtins = model.searchDocumentBuildCountForTesting("builtins")
+    let notes = model.searchDocumentBuildCountForTesting("notes")
+    let clips = model.searchDocumentBuildCountForTesting("clipboard")
+    #expect(builtins == 1)
+    #expect(notes == 1)
+    #expect(clips == 1)
+
+    model.setSearchPresented(false)
+    let added = ClipboardEntry(text: "quartz-source-marker")
+    try clipboard.replace(with: [added])
+    #expect(model.searchDocumentBuildCountForTesting("clipboard") == clips)
+    model.query = "quartz-source-marker"
+    model.setSearchPresented(true)
+    await model.waitForLocalSearchForTesting()
+
+    #expect(model.results.contains { $0.id == "clipboard.\(added.id)" })
+    #expect(model.searchDocumentBuildCountForTesting("clipboard") == clips + 1)
+    #expect(model.searchDocumentBuildCountForTesting("builtins") == builtins)
+    #expect(model.searchDocumentBuildCountForTesting("notes") == notes)
 }
 
 @Test @MainActor func expandedWorkspaceShortcutParticipatesInConflictChecks() {
@@ -69,7 +177,7 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     func launcherViewModelDidRequestHide(_ viewModel: LauncherViewModel) {}
 }
 
-@Test @MainActor func idleSearchHasNoHiddenKeyboardActions() {
+@Test @MainActor func idleSearchHasNoHiddenKeyboardActions() async {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
@@ -84,17 +192,19 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     #expect(model.results.isEmpty)
     #expect(!model.isSearching)
     model.query = "notes"
+    await model.waitForLocalSearchForTesting()
     #expect(model.results.contains { $0.id == "builtin.notes" })
     model.query = ""
     #expect(model.results.isEmpty)
     #expect(model.selectedItem == nil)
 }
 
-@Test @MainActor func searchActionMenuOwnsKeyboardSelectionAndExecution() throws {
+@Test @MainActor func searchActionMenuOwnsKeyboardSelectionAndExecution() async throws {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
     model.query = "notes"
+    await model.waitForLocalSearchForTesting()
     let index = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
     model.select(index)
     model.openActionPanel()
@@ -124,11 +234,12 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     #expect(recorder.executedActions.count == 1)
 }
 
-@Test @MainActor func searchPreviewNeverExecutesUntilExplicitAction() throws {
+@Test @MainActor func searchPreviewNeverExecutesUntilExplicitAction() async throws {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
     model.query = "notes"
+    await model.waitForLocalSearchForTesting()
     let index = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
     model.select(index)
     #expect(model.selectedItem?.id == "builtin.notes")
@@ -139,4 +250,37 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     model.closeActionPanel()
     model.executeSelected()
     #expect(recorder.executedIDs == ["builtin.notes"])
+}
+
+@Test func universalSearchActorUsesImmutableSnapshotsAndRejectsOlderRevisions() async {
+    let engine = UniversalSearchEngine()
+    let first = UniversalSearchSnapshot(documents: [
+        UniversalSearchDocument(id: "note:first", kind: .note, title: "Quartz",
+                                subtitle: "First", searchText: "Quartz marker")
+    ])
+    let second = UniversalSearchSnapshot(documents: [
+        UniversalSearchDocument(id: "note:second", kind: .note, title: "Quartz",
+                                subtitle: "Second", searchText: "Quartz marker"),
+        UniversalSearchDocument(id: "clipboard:third", kind: .clipboard, title: "Quartz",
+                                subtitle: "Clipboard", searchText: "Quartz marker")
+    ])
+
+    let initial = await engine.search("note: quartz", revision: 1, snapshot: first)
+    #expect(initial.map(\.id) == ["note:first"])
+    let updated = await engine.search("note: quartz", revision: 2, snapshot: second)
+    #expect(updated.map(\.id) == ["note:second"])
+    let stale = await engine.search("note: quartz", revision: 1, snapshot: first)
+    #expect(stale.map(\.id) == ["note:second"])
+    let clipboard = await engine.search("clipboard: quartz", revision: 2, snapshot: second)
+    #expect(clipboard.map(\.id) == ["clipboard:third"])
+    #expect(await engine.search("file: quartz", revision: 2, snapshot: second) == [])
+}
+
+@Test func normalizedFuzzyScoringPreservesExistingRanking() {
+    let candidate = "Résumé notes and commands"
+    let query = "resume"
+    let normalizedCandidate = candidate.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+    #expect(FuzzyMatcher.score(candidate, query: query)
+        == FuzzyMatcher.scoreNormalized(normalizedCandidate, query: normalizedQuery))
 }

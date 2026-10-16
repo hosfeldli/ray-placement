@@ -17,6 +17,7 @@ struct AIActivityStreamStep: Identifiable, Equatable {
     var status: Status
     let isToolAction: Bool
     var correlationID: String? = nil
+    var toolOutputReference: AIToolOutputReference? = nil
 
     var symbol: String {
         switch status {
@@ -56,11 +57,13 @@ enum AIActivityStream {
                 }) {
                     steps[index].status = status
                     steps[index].detail = meaningfulDetail(activity.detail) ?? steps[index].detail
+                    steps[index].toolOutputReference = activity.toolOutputReference
                 } else {
                     steps.append(AIActivityStreamStep(
                         id: activity.id, title: activity.displayTitle,
                         detail: meaningfulDetail(activity.detail), status: status,
-                        isToolAction: true, correlationID: activity.correlationID
+                        isToolAction: true, correlationID: activity.correlationID,
+                        toolOutputReference: activity.toolOutputReference
                     ))
                 }
             case .toolApproval:
@@ -100,6 +103,17 @@ enum AIActivityStream {
                 steps[index].status = .interrupted
             }
         }
+        // Child runs execute concurrently, so their start events may arrive in
+        // scheduler order rather than the provider's requested order. Preserve
+        // all non-child action slots while presenting children by their
+        // reserved, monotonically increasing ordinal.
+        let childSlots = steps.indices.filter { subagentOrdinal(steps[$0].title) != nil }
+        let orderedChildren = childSlots.map { steps[$0] }.sorted {
+            (subagentOrdinal($0.title) ?? .max) < (subagentOrdinal($1.title) ?? .max)
+        }
+        for (slot, child) in zip(childSlots, orderedChildren) {
+            steps[slot] = child
+        }
         return steps
     }
 
@@ -113,6 +127,11 @@ enum AIActivityStream {
             $0.kind == .completed && ($0.title == "Stopped" || $0.title == "Task ended")
         }) { return .stopped }
         return .done
+    }
+
+    private static func subagentOrdinal(_ title: String) -> Int? {
+        guard title.hasPrefix("Subagent ") else { return nil }
+        return Int(title.dropFirst("Subagent ".count))
     }
 
     private static func meaningfulDetail(_ detail: String?) -> String? {

@@ -53,7 +53,7 @@ import Testing
     let emptyChat = AIConversation(title: "New Chat", updatedAt: base.addingTimeInterval(180))
     let recent = HomeRecentItem.sorted(
         notes: [olderNote, newerNote],
-        conversations: [emptyChat, conversation]
+        conversations: [emptyChat, conversation].map(AIConversationSummary.init)
     )
     #expect(recent.map(\.title) == ["Newer note", "Project discussion", "Older note"])
     #expect(recent.map(\.id).count == Set(recent.map(\.id)).count)

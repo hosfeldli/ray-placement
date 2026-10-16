@@ -101,7 +101,7 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
     catalog.retain(AIModelOption(id: "fixture-model"), for: .openAICompatible)
     let probe = ParallelSubagentProbe()
 
-    func delegate(_ id: String, _ task: String) -> AIChatStreamEvent {
+    let delegate: @Sendable (String, String) -> AIChatStreamEvent = { id, task in
         .outputItem(AIOutputItem(
             phase: .completed, apiType: "function_call", callID: id,
             name: "agent_delegate",

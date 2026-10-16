@@ -67,7 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         configureAccessoryMouseBindings()
         registerExtensionHotkeys()
         installObservers()
-        BrowserBridgeService.shared.start()
         NotificationCenter.default.addObserver(
             forName: .rayPlacementAppearanceChanged,
             object: nil,
@@ -115,8 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        BrowserBridgeService.shared.stop()
         launcher?.shutdown()
+        WorkspaceStateRegistry.shared.flushPendingWrites()
+        AIConversationStore.shared.flushPendingWrites()
         UsageMonitor.shared.flush()
         CrashRecoveryStore.shared.markCleanShutdown()
         hotKeys.unregisterAll()

@@ -126,6 +126,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
+        viewModel.setSearchPresented(false)
         extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
         workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
 
@@ -162,19 +163,17 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 onDismissSearch: { [weak self] in self?.hide() }
             )))
         surfaceSessionController.bind(to: viewModel)
-        modeSubscription = Publishers.CombineLatest3(viewModel.$mode, viewModel.$results, viewModel.$query)
-            .map { mode, results, query in
-                LauncherPanelLayout.size(
-                    for: mode,
-                    density: SettingsStore.shared.interfaceDensity,
-                    resultCount: results.count,
-                    query: query
-                )
+        modeSubscription = Publishers.CombineLatest3(
+            viewModel.$mode,
+            viewModel.$searchPhase,
+            SettingsStore.shared.$interfaceDensity
+        )
+            .map { mode, phase, density in
+                LauncherPanelLayout.size(for: mode, density: density, searchPhase: phase)
             }
             .removeDuplicates()
-            .sink { [weak self] _ in
-                guard let self else { return }
-                self.resizePanel(for: self.viewModel.mode, animated: true)
+            .sink { [weak self] size in
+                self?.resizePanel(to: size, animated: true)
             }
         surfaceModeSubscription = viewModel.$mode
             .sink { [weak self] mode in
@@ -182,15 +181,18 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.surfaceSessionController.surfaceChanged(to: mode)
                 self.refreshTerminalTimeoutPolicy()
             }
-        settingsSubscription = SettingsStore.shared.objectWillChange
-            .sink { [weak self] _ in
-                // Published values are updated immediately after
-                // objectWillChange. Re-evaluate on the next main-actor turn
-                // so a live terminal responds to the new setting.
-                Task { @MainActor in
-                    self?.refreshTerminalTimeoutPolicy()
-                }
+        settingsSubscription = Publishers.CombineLatest(
+            SettingsStore.shared.$launcherSurfaceTimeout,
+            SettingsStore.shared.$terminalUsesLauncherTimeout
+        )
+        .dropFirst()
+        .sink { [weak self] _ in
+            // Reapply only when the policy can actually change. The published
+            // values are available after the next main-actor turn.
+            Task { @MainActor in
+                self?.refreshTerminalTimeoutPolicy()
             }
+        }
         inlineExtensionSurfaceModel.onExecutionStateChanged = { [weak self] active in
             if active {
                 self?.surfaceSessionController.suspendTimeout()
@@ -278,6 +280,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func hide() {
         panel.orderOut(nil)
+        viewModel.setSearchPresented(false)
     }
 
     func shutdown() {
@@ -700,13 +703,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func resizePanel(for mode: LauncherMode, animated: Bool) {
-        let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         let desiredSize = LauncherPanelLayout.size(
             for: mode,
             density: SettingsStore.shared.interfaceDensity,
-            resultCount: viewModel.results.count,
-            query: viewModel.query
+            searchPhase: viewModel.searchPhase
         )
+        resizePanel(to: desiredSize, animated: animated)
+    }
+
+    private func resizePanel(to desiredSize: NSSize, animated: Bool) {
+        let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         let size: NSSize
         if let visibleFrame = targetScreen?.visibleFrame {
             size = NSSize(
@@ -761,6 +767,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         panel.setFrameOrigin(finalOrigin)
         panel.alphaValue = reduceMotion ? 1 : 0
         panel.makeKeyAndOrderFront(nil)
+        viewModel.setSearchPresented(true)
         guard !reduceMotion else { return }
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18

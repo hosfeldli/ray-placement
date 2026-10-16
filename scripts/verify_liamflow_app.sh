@@ -19,20 +19,12 @@ require() {
 
 require "Lima.app is missing" test -d "$APP_DIRECTORY"
 require "the Lima executable is missing" test -x "$BINARY"
-require "the browser native helper is missing" test -x "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
-require "the browser helper signature is invalid" codesign --verify --strict "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the obsolete browser native helper remains" test ! -e "$APP_DIRECTORY/Contents/MacOS/LimaBrowserBridgeHost"
+require "the obsolete Browser Bridge resources remain" test ! -e "$RESOURCES/BrowserBridge"
 if [[ "$QA_BUILD" == "1" ]]; then
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" == "true" ]] || { echo "Verification failed: the QA build marker is missing" >&2; exit 1; }
 else
     [[ "$(/usr/libexec/PlistBuddy -c 'Print :LimaQABuild' "$APP_DIRECTORY/Contents/Info.plist" 2>/dev/null || true)" != "true" ]] || { echo "Verification failed: the production app is marked as a QA build" >&2; exit 1; }
-fi
-require "the browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-unsigned.xpi"
-if [[ -f "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" ]]; then
-    require "the signed browser companion is invalid" python3 "$PROJECT_DIRECTORY/scripts/verify_browser_bridge_package.py" "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" --require-signature
-    if [[ -n "${LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256:-}" ]]; then
-        actual_xpi_sha="$(shasum -a 256 "$RESOURCES/BrowserBridge/lima-browser-bridge-signed.xpi" | awk '{print $1}')"
-        [[ "$actual_xpi_sha" == "$LIMA_BROWSER_BRIDGE_SIGNED_XPI_SHA256" ]] || { echo "Verification failed: bundled browser companion SHA-256 does not match the approved input" >&2; exit 1; }
-    fi
 fi
 require "Sparkle.framework is missing" test -d "$SPARKLE_FRAMEWORK"
 require "the Sparkle framework binary is missing" test -x "$SPARKLE_FRAMEWORK/Versions/B/Sparkle"
@@ -48,7 +40,7 @@ if [[ "${RAYPLACEMENT_MODEL_FREE_UPDATE:-0}" != "1" ]]; then
     [[ "$(shasum -a 256 "$RESOURCES/Whisper/model/ggml-small.en-tdrz.bin" | awk '{print $1}')" == ceac3ec06d1d98ef71aec665283564631055fd6129b79d8e1be4f9cc33cc54b4 ]] || { echo 'Verification failed: the dictation model checksum is incorrect' >&2; exit 1; }
 fi
 require "the extension documentation is missing" test -f "$RESOURCES/Documentation/EXTENSIONS.md"
-require "the bundled browser verifier is missing" test -f "$RESOURCES/Documentation/verify_browser_bridge_package.py"
+require "the obsolete browser verifier remains" test ! -e "$RESOURCES/Documentation/verify_browser_bridge_package.py"
 require "the emoji data is missing" test -f "$RESOURCES/Emoji/emoji-test.txt"
 require "the bundled extensions are missing" test -d "$RESOURCES/BundledExtensions"
 require "the bundled uninstaller is missing" test -x "$RESOURCES/Uninstall Lima.command"

@@ -1,7 +1,7 @@
 import SwiftUI
 import RayPlacementCore
 
-enum NotesWorkspaceFilter: String, CaseIterable, Identifiable {
+enum NotesWorkspaceFilter: String, CaseIterable, Identifiable, Sendable {
     case all = "All"
     case today = "Today"
     case pinned = "Pinned"

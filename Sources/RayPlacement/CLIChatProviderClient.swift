@@ -223,6 +223,7 @@ struct CLIChatProviderClient: AIChatTransport {
                 context.append("VISIBLE IMAGE — " + String(attachment.displayName.prefix(200)) + " (attached separately)")
                 continue
             case .file: attachmentText = try AIFileAttachmentPolicy.text(for: attachment)
+            case .pastedText: attachmentText = try AIPastedTextStore.providerText(for: attachment)
             case .clipboard, .selection:
                 guard let text = attachment.text, !text.isEmpty else { throw Failure.unsupportedAttachment }
                 attachmentText = text
