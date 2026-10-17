@@ -24,6 +24,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     @Published private(set) var urlString = ""
     @Published private(set) var isLoading = false
     @Published private(set) var isSuspended = true
+    @Published private(set) var webProcessAlive = true
     private(set) var navigationRevision = 0
     private(set) var completedNavigationRevision = 0
     private(set) var failedNavigationRevision = 0
@@ -71,6 +72,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
         view.uiDelegate = self
         view.allowsBackForwardNavigationGestures = true
         liveWebView = view
+        webProcessAlive = true
         isSuspended = false
         restoreFailed = false
         if let restoreURL, BrowserRuntime.safeDestination(restoreURL.absoluteString) != nil {
@@ -137,7 +139,14 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
         }
         isLoading = false
         isRestoring = false
+        webProcessAlive = true
         requestedNavigationURL = nil
+        updateIdentity()
+    }
+
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        webProcessAlive = false
+        isLoading = false
         updateIdentity()
     }
 
@@ -231,9 +240,6 @@ final class BrowserWorkspaceModel: ObservableObject {
             }
         }
     }
-    @Published var pauseOnUserInteraction: Bool {
-        didSet { if persistPreferences { LimaTestEnvironment.userDefaults.set(pauseOnUserInteraction, forKey: "limaBrowserPauseOnUserInteraction") } }
-    }
     @Published var showAIPointer: Bool {
         didSet { if persistPreferences { LimaTestEnvironment.userDefaults.set(showAIPointer, forKey: "limaBrowserShowAIPointer") } }
     }
@@ -246,8 +252,10 @@ final class BrowserWorkspaceModel: ObservableObject {
     @Published private(set) var pausedTabIDs: Set<UUID> = []
     @Published private(set) var automation: BrowserAutomationState?
     private var needsFreshReadTabIDs: Set<UUID> = []
+    private var userChangedTabIDs: Set<UUID> = []
     private var authorityRevisions: [UUID: UInt64] = [:]
     private var readRevisions: [UUID: UInt64] = [:]
+    private var lastReadinessByTabID: [UUID: BrowserReadiness] = [:]
     private let maximumAICreatedTabs = 20
     private let maximumLiveWebViews = 6
     private var liveTabOrder: [UUID] = []
@@ -272,7 +280,6 @@ final class BrowserWorkspaceModel: ObservableObject {
         aiControlMode = BrowserAIControlMode(
             rawValue: defaults.string(forKey: "limaBrowserAIControlMode") ?? ""
         ) ?? .fullControl
-        pauseOnUserInteraction = defaults.object(forKey: "limaBrowserPauseOnUserInteraction") as? Bool ?? true
         showAIPointer = defaults.object(forKey: "limaBrowserShowAIPointer") as? Bool ?? true
         highlightAITargets = defaults.object(forKey: "limaBrowserHighlightAITargets") as? Bool ?? true
         showActionDescriptions = defaults.object(forKey: "limaBrowserShowActionDescriptions") as? Bool ?? true
@@ -289,7 +296,7 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
 
     private func handleUserEvent(_ event: NSEvent) {
-        guard pauseOnUserInteraction, let tab = selectedTab,
+        guard let tab = selectedTab,
               let webView = tab.activeWebView,
               webView.window === event.window else { return }
         let isPageEvent: Bool
@@ -299,7 +306,16 @@ final class BrowserWorkspaceModel: ObservableObject {
             isPageEvent = webView.bounds.contains(webView.convert(event.locationInWindow, from: nil))
         }
         guard isPageEvent else { return }
-        pauseAI(on: tab.id)
+        markPageChangedByUser(tab.id)
+    }
+
+    /// Human input invalidates stale semantic targets without permanently
+    /// revoking the assistant's ability to reread the tab.
+    func markPageChangedByUser(_ id: UUID) {
+        guard tabs.contains(where: { $0.id == id }) else { return }
+        userChangedTabIDs.insert(id)
+        automation = nil
+        revokeBrowserState(for: id)
     }
 
     func pauseAI(on id: UUID) {
@@ -321,7 +337,9 @@ final class BrowserWorkspaceModel: ObservableObject {
 
     private func requireFreshTarget(_ id: UUID) throws {
         try requireAIAccess(id)
-        guard !needsFreshReadTabIDs.contains(id) else { throw BrowserRuntimeError.missingSnapshot }
+        guard !needsFreshReadTabIDs.contains(id) else {
+            throw userChangedTabIDs.contains(id) ? BrowserRuntimeError.pageChangedByUser : BrowserRuntimeError.missingSnapshot
+        }
     }
 
     func isResultAccessible(on id: UUID) -> Bool {
@@ -337,6 +355,20 @@ final class BrowserWorkspaceModel: ObservableObject {
 
     var selectedTab: BrowserTab? { tabs.first { $0.id == selectedTabID } }
     var liveWebViewCount: Int { tabs.filter(\.hasLiveWebView).count }
+
+    var authoritySnapshot: BrowserAuthoritySnapshot {
+        let id = selectedTabID
+        let selected = selectedTab
+        return BrowserAuthoritySnapshot(
+            available: true, controlMode: aiControlMode, tabCount: tabs.count,
+            selectedTabID: id, explicitlyPaused: id.map { pausedTabIDs.contains($0) } ?? false,
+            pageRevision: id.map { authorityRevisions[$0, default: 0] },
+            needsFreshRead: id.map { needsFreshReadTabIDs.contains($0) } ?? false,
+            liveWebViews: liveWebViewCount,
+            lastReadiness: id.flatMap { lastReadinessByTabID[$0] },
+            runtimeHealthy: selected?.webProcessAlive ?? true
+        )
+    }
 
     private func useLiveView(_ tab: BrowserTab) -> WKWebView {
         let view = tab.webView
@@ -360,6 +392,7 @@ final class BrowserWorkspaceModel: ObservableObject {
     private func revokeBrowserState(for id: UUID) {
         authorityRevisions[id, default: 0] &+= 1
         needsFreshReadTabIDs.insert(id)
+        lastReadinessByTabID.removeValue(forKey: id)
         let previous = pendingRevocations[id]?.task
         let runtime = self.runtime
         let task = Task {
@@ -432,7 +465,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         tabs.append(tab)
         let willSelect = foreground || selectedTabID == nil
         if willSelect { selectedTabID = tab.id }
-        if willSelect || isPopupConfiguration {
+        if (willSelect && url != nil) || isPopupConfiguration {
             // The lazy view consumes the requested URL once. Do not start a
             // second load, which could discard a newly opened page or popup.
             _ = useLiveView(tab)
@@ -450,7 +483,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         let tab = try tab(id)
         let wasSuspended = tab.isSuspended
         selectedTabID = id
-        _ = useLiveView(tab)
+        if tab.hasLiveWebView || !tab.urlString.isEmpty { _ = useLiveView(tab) }
         if wasSuspended { needsFreshReadTabIDs.insert(id) }
         trimLiveWebViews(protecting: id)
     }
@@ -465,6 +498,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         readRevisions.removeValue(forKey: id)
         pausedTabIDs.remove(id)
         needsFreshReadTabIDs.remove(id)
+        userChangedTabIDs.remove(id)
         await runtime.remove(tabID: id)
         await AIToolOutputStore.shared.removeBrowserResults(for: id)
         await BrowserScreenshotStore.shared.remove(for: id)
@@ -600,6 +634,8 @@ final class BrowserWorkspaceModel: ObservableObject {
             throw BrowserRuntimeError.staleTarget
         }
         needsFreshReadTabIDs.remove(id)
+        userChangedTabIDs.remove(id)
+        lastReadinessByTabID[id] = snapshot.readiness
         tab.updateIdentity()
         return snapshot
     }
@@ -1378,18 +1414,32 @@ struct BrowserWorkspaceView: View {
             if let tab = model.selectedTab {
                 BrowserTabContent(tab: tab, model: model)
             } else {
-                VStack(spacing: 8) {
-                    Image(systemName: "globe").font(.system(size: 28))
-                    Text("No Browser Tabs").font(.headline)
-                    Text("Open a tab to browse in Lima.").font(.caption)
-                }
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                BrowserEmptyState(model: model)
             }
         }
-        .onAppear {
-            if model.tabs.isEmpty { _ = model.newTab() }
+    }
+}
+
+private struct BrowserEmptyState: View {
+    @ObservedObject var model: BrowserWorkspaceModel
+    @State private var address = ""
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "globe").font(.system(size: 28))
+            Text("Browser").font(.headline)
+            TextField("Search or enter an address…", text: $address)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 420)
+                .onSubmit {
+                    guard let url = BrowserRuntime.addressDestination(address) else { return }
+                    _ = model.newTab(url: url)
+                }
+                .accessibilityLabel("Browser address")
+            Text("A page starts only when you navigate.").font(.caption)
         }
+        .foregroundStyle(.secondary)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -1444,6 +1494,7 @@ private struct BrowserTabContent: View {
                 Button { try? model.forward(tab.id) } label: { Image(systemName: "chevron.right") }
                     .disabled(!(tab.activeWebView?.canGoForward ?? false))
                 Button { try? model.reload(tab.id) } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(tab.urlString.isEmpty)
                 HStack(spacing: 6) {
                     Image(systemName: tab.urlString.hasPrefix("https://") ? "lock.fill" : "globe")
                         .foregroundStyle(LimaTheme.textSecondary)
@@ -1462,6 +1513,9 @@ private struct BrowserTabContent: View {
                 .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(LimaTheme.fieldBorder, lineWidth: LimaDesign.hairlineWidth))
+                Button("Pause AI") { model.pauseAI(on: tab.id) }
+                    .disabled(model.pausedTabIDs.contains(tab.id))
+                    .accessibilityLabel("Pause AI for this tab")
                 if tab.isLoading {
                     ProgressView().controlSize(.mini).accessibilityLabel("Page loading")
                 } else if tab.navigationRevision > 0 &&
@@ -1487,7 +1541,7 @@ private struct BrowserTabContent: View {
             if model.pausedTabIDs.contains(tab.id) {
                 HStack(spacing: 8) {
                     Image(systemName: "pause.circle.fill")
-                    Text("AI paused · You changed this page.")
+                    Text("AI paused for this tab")
                     Spacer()
                     Button("Resume AI") { try? model.resumeAI(on: tab.id) }
                 }
@@ -1499,6 +1553,13 @@ private struct BrowserTabContent: View {
             ZStack(alignment: .topLeading) {
                 if let webView = tab.activeWebView {
                     BrowserWebView(webView: webView)
+                } else if tab.urlString.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "globe").font(.system(size: 28))
+                        Text("Search or enter an address above")
+                    }
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ProgressView("Resuming tab…")
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1593,7 +1654,9 @@ struct BrowserWorkspaceSettingsView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
-                Toggle("Pause AI when I interact with its tab", isOn: $browser.pauseOnUserInteraction)
+                Text("Page interactions invalidate stale AI targets. Use Pause AI on a tab to stop AI access until you resume it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("One mode governs reading, navigation, and interaction in Lima Browser tabs. Sensitive controls remain protected even with Full Control.")
                     .font(.caption)
                     .foregroundStyle(.secondary)

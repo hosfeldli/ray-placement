@@ -1711,12 +1711,11 @@ enum LimaAIToolRegistry {
                                    toolAccessMode requestedMode: LimaAIToolAccessMode? = nil) -> [LimaAIToolDefinition] {
         let toolAccessMode = requestedMode ?? LimaAIToolStore.shared.accessMode
         return validDefinitions.filter { definition in
-            guard ids.contains(definition.id),
-                  AIComputerActionPolicy.shared.allows(definition, toolAccessMode: toolAccessMode) else { return false }
-            if BrowserWorkspaceAITools.ids.contains(definition.id) {
-                return BrowserWorkspaceAITools.isAvailable(definition.id,
-                    mode: BrowserWorkspaceModel.shared.aiControlMode)
-            }
+            guard ids.contains(definition.id) else { return false }
+            // Schema exposure is a capability snapshot, not a live permission
+            // decision. Browser mode and action-category grants are rechecked
+            // immediately before execution.
+            if BrowserWorkspaceAITools.ids.contains(definition.id) { return true }
             if toolAccessMode == .fullControl { return true }
             return definition.actionCategory != nil || definition.risk == .read ||
                 AIContextTools.delegationIDs.contains(definition.id)
@@ -2346,7 +2345,7 @@ extension LimaAIToolDefinition {
     }
 }
 
-enum LimaAIToolAccessMode: String, CaseIterable, Identifiable {
+enum LimaAIToolAccessMode: String, CaseIterable, Identifiable, Sendable {
     case automatic
     case askForActions
     case fullControl
@@ -2514,7 +2513,7 @@ final class LimaAIToolStore: ObservableObject {
         switch accessMode {
         case .custom: return enabledToolIDs.union(BrowserWorkspaceAITools.ids)
         case .fullControl: return Set(LimaAIToolRegistry.validDefinitions.map(\.id))
-        case .automatic, .askForActions: return Set(LimaAIToolRegistry.availableDefinitions.map(\.id))
+        case .automatic, .askForActions: return Set(LimaAIToolRegistry.validDefinitions.map(\.id))
         }
     }
 

@@ -9,17 +9,17 @@ import Testing
     let presentation = AIStreamingPresentation()
 
     presentation.begin(assistantID: active.id)
-    let startedRevision = presentation.revision
+    let startedRevision = presentation.snapshot.revision
     presentation.append(text: "A batched answer", reasoning: "A brief summary")
 
-    #expect(presentation.revision == startedRevision + 1)
+    #expect(presentation.snapshot.revision == startedRevision + 1)
     #expect(presentation.visibleText(for: active.id, fallback: active.text) == "A batched answer")
     #expect(presentation.visibleReasoningSummary(for: active.id, fallback: nil) == "A brief summary")
     #expect(presentation.visibleText(for: completed.id, fallback: completed.text) == "Completed answer")
     #expect(presentation.visibleReasoningSummary(for: completed.id, fallback: "cached") == "cached")
 }
 
-@Test @MainActor func largeStreamingBatchPublishesOneRevisionWithoutObservingMessageStrings() {
+@Test @MainActor func largeStreamingBatchPublishesOneObservableSnapshot() {
     let presentation = AIStreamingPresentation()
     let messageID = UUID()
     var changeCount = 0
@@ -34,7 +34,7 @@ import Testing
 
     #expect(publishElapsed < .milliseconds(16), "Large stream batch publication exceeded one 60 FPS frame.")
     #expect(changeCount == 1)
-    #expect(presentation.revision == 2)
+    #expect(presentation.snapshot.revision == 2)
     #expect(presentation.visibleText(for: messageID, fallback: "") == response)
     _ = observation
 }

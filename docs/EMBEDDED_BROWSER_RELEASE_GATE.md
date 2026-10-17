@@ -10,6 +10,22 @@ On October 16, 2026, the requester directed publication even if all post-v3.14.2
 
 On October 16, 2026, after the assistant reported that the Browser/Terminal UI pass was not release-ready and that real-window interaction and broader Workbench scope remained unverified or incomplete, the requester explicitly instructed publication. This authorizes only the implemented incremental changes in `docs/releases/v3.14.26.md`; it does not close any unchecked gate. Preserve exact-commit CI, immutable tagging, signed artifact checks, and public-asset verification. Disclose the live-window, real-site, and performance limitations rather than treating offscreen fixtures or unit tests as full acceptance.
 
+## Explicit limited-release exception for v3.14.27
+
+On October 17, 2026, the requester directed completion of blocking development and publication while allowing remaining verification-only steps to be non-blocking. This authorizes only the implemented stabilization and AI response-presentation fixes in `docs/releases/v3.14.27.md`; it does not close the packaged-app repaint, real-site Browser, performance, or full Workbench-scope gates. Preserve exact-commit CI, immutable tagging, signed artifact checks, and public-asset verification. Do not represent unperformed checks as passed.
+
+## Stabilization self-test gate for future releases
+
+Release build, staging, and final publication run the deterministic `scripts/release_workbench_gate.sh`. It requires isolated WebKit semantic read/find/type/click/user-takeover checks, a sandboxed PTY round trip, registry and local-file fixtures, a fake Swift app-server structured-tool/streaming continuation test, and AI response-presentation regressions. `scripts/release_workbench_gate.sh --live` additionally checks a signed-in Codex app-server call to `lima_capabilities` with same-turn continuation on a developer Mac; the hosted runner does not depend on a personal signed-in CLI session. Settings → AI Chat → AI Workbench Diagnostics provides native/provider checks on demand. This automated gate does not close the broader real-page, accessibility, performance, or Workbench-scope checklist below.
+
+## Separate AI response-presentation gate for future releases
+
+The “Working…”-after-completion and stale reasoning-summary defects are separate from Browser/tool readiness. The automated Workbench release gate now includes final-answer terminalization and successive live-reasoning presentation regressions, plus a fake Codex app-server check for streamed and completed reasoning summaries. Production Codex chat uses the streamed app-server bridge, not the legacy buffered `codex exec` adapter; the latter remains only for legacy tests and is not a justification for claiming Codex chat still waits for process exit.
+
+- [ ] Verify in the packaged app that the answer and reasoning disclosure update without toggling, and that a completed run with a ready composer never displays an active placeholder.
+- [ ] Repeat with provider completion, cancellation, approval continuation, and a reasoning-heavy Codex turn. The automated tests cover state and protocol boundaries but do not replace a real-window repaint check.
+- [ ] Keep this presentation gate open until those checks pass on the final release candidate.
+
 ## Browser replacement
 
 - [ ] One shared Workspace Browser with Off, Read Only, Navigate, and Full Control; one live Browser AI-control authority across schema exposure, execution, settings, and approval continuation.

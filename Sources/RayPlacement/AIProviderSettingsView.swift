@@ -7,6 +7,9 @@ struct AIProviderSettingsView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
     @ObservedObject private var toolStore = LimaAIToolStore.shared
+    @ObservedObject private var browser = BrowserWorkspaceModel.shared
+    @ObservedObject private var terminal = AIWorkspaceTerminalCoordinator.shared
+    @ObservedObject private var workbench = AIWorkbenchSelfTest.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @ObservedObject private var legacyWebSearchCredentials = LegacyWebSearchCredentialStore.shared
     @State private var apiKey = ""
@@ -193,6 +196,36 @@ struct AIProviderSettingsView: View {
                 Text("Keys are shared by provider across AI Chat and Writing. Removing a key affects both; endpoints and model selections remain separate.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            }
+            Section("AI Workbench Diagnostics") {
+                LabeledContent("Provider", value: model.provider.title)
+                LabeledContent("Tools exposed", value: AIToolRuntime.shared.exposedDefinitions(store: toolStore).count.formatted())
+                LabeledContent("Browser", value: "\(browser.aiControlMode.rawValue) · \(browser.tabs.count) tabs")
+                LabeledContent("Terminal", value: "\(terminal.sessions.count) sessions")
+                LabeledContent("Recent tool failures", value: AIToolRuntime.shared.recentExecutions.filter { $0.state == .failed }.count.formatted())
+                Text("The self-test uses isolated, local Browser, PTY, and file fixtures. Its provider bridge check sends a short request to the selected model and asks it to call lima_capabilities; it does not modify the current conversation.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                HStack {
+                    Button("Run Self Test") {
+                        Task {
+                            await workbench.run(provider: model.provider, model: model.model,
+                                                endpoint: model.providerPreferences.openAICompatibleBaseURL)
+                        }
+                    }
+                    .disabled(workbench.isRunning || busy || !settings.aiEnabled || configurationChanged)
+                    if workbench.isRunning { ProgressView().controlSize(.small) }
+                }
+                ForEach(workbench.checks) { check in
+                    Label("\(check.title): \(check.detail)",
+                          systemImage: check.state == .passed ? "checkmark.circle.fill" : "xmark.circle.fill")
+                        .foregroundStyle(check.state == .passed ? LimaTheme.success : LimaTheme.warning)
+                        .font(.caption)
+                }
+                if workbench.lastRunAt != nil {
+                    Text(workbench.passed ? "All Workbench checks passed." : "Workbench checks did not all pass; do not release this build.")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(workbench.passed ? LimaTheme.success : LimaTheme.warning)
+                }
             }
             Section("Connection") {
                 HStack {

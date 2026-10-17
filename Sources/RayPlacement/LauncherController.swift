@@ -3028,11 +3028,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             enterGenericSurface(id: "permissions", title: "Permissions", kind: .inspector, height: 480, canPopOut: false, handler: .permissions)
 
         case .exportDiagnostics:
-            do {
-                let url = try DiagnosticsService.shared.export()
-                NSWorkspace.shared.activateFileViewerSelecting([url])
-            } catch {
-                presentError(title: "Diagnostics", message: error.localizedDescription)
+            Task { @MainActor in
+                do {
+                    let url = try await DiagnosticsService.shared.export()
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                } catch {
+                    presentError(title: "Diagnostics", message: error.localizedDescription)
+                }
             }
 
         case .openWorkflows:

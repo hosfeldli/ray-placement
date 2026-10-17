@@ -214,6 +214,7 @@ enum BrowserRuntimeError: LocalizedError {
     case missingTab
     case missingSnapshot
     case staleTarget
+    case pageChangedByUser
     case invalidDestination
     case controlDisabled
     case userPaused
@@ -227,9 +228,10 @@ enum BrowserRuntimeError: LocalizedError {
         case .missingTab: "The Lima browser tab is no longer open."
         case .missingSnapshot: "Read this tab before using a semantic target."
         case .staleTarget: "The page changed. Read it again before acting on this target."
+        case .pageChangedByUser: "The user changed this page. Read it again before acting on a target."
         case .invalidDestination: "Only HTTPS or loopback HTTP (localhost, 127.0.0.1, or [::1]) destinations without embedded credentials are supported."
         case .controlDisabled: "This action is not available in the current Browser AI Control mode."
-        case .userPaused: "AI is paused because you interacted with this tab. Resume AI in the Browser workspace, then read the page again."
+        case .userPaused: "AI was explicitly paused for this tab. Resume AI in the Browser workspace, then read the page again."
         case .sensitiveTarget: "Sensitive fields and forms are always protected."
         case .screenshotProtected: "This page contains sensitive controls or content the Browser could not account for; no screenshot was saved."
         case .unsupportedAction: "This semantic target does not support the requested action."

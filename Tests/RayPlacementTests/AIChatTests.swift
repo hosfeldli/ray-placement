@@ -81,7 +81,7 @@ import Testing
     #expect(AIProviderClientRegistry.client(for: .anthropic, openAICompatibleBaseURL: "") is AnthropicAIProviderClient)
     #expect(AIProviderClientRegistry.client(for: .gemini, openAICompatibleBaseURL: "") is GeminiAIProviderClient)
     #expect(AIProviderClientRegistry.client(for: .openAICompatible, openAICompatibleBaseURL: "http://127.0.0.1:1234/v1") is OpenAICompatibleAIProviderClient)
-    #expect(AIProviderClientRegistry.client(for: .codexCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
+    #expect(AIProviderClientRegistry.client(for: .codexCLI, openAICompatibleBaseURL: "") is CodexAppServerClient)
     #expect(AIProviderClientRegistry.client(for: .claudeCLI, openAICompatibleBaseURL: "") is CLIChatProviderClient)
 }
 
@@ -162,6 +162,77 @@ import Testing
     #expect(model.executionRun?.assistantMessageID == assistant?.id)
     #expect(model.executionRun?.completedAt != nil)
     #expect(!model.canEndTask)
+}
+
+@Test @MainActor func workbenchPresentationCompletedRunCannotRenderWorkingPlaceholder() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .textDelta("Hello"),
+            .completed("presentation-completed")
+        ])
+    )
+    model.draft = "Say hello"
+    model.send()
+    for _ in 0..<300 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+
+    let assistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(assistant.text == "Hello")
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.assistantPresentationState(for: assistant) == .completed)
+    #expect(model.streamingPresentation.snapshot.assistantID == nil)
+    #expect(!model.canEndTask)
+    #expect(AssistantResponsePresentationState.completed.emptyTextPlaceholder != "Working…")
+}
+
+@Test @MainActor func workbenchPresentationReasoningUpdatesWithoutDisclosureToggle() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let (events, feed) = AsyncThrowingStream<AIChatStreamEvent, Error>.makeStream()
+    defer { feed.finish() }
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in events }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    model.draft = "Reason briefly, then answer"
+    model.send()
+    feed.yield(.reasoningSummaryDelta("First "))
+    for _ in 0..<2000 where model.streamingPresentation.snapshot.reasoningSummary != "First " {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let first = model.streamingPresentation.snapshot
+    #expect(first.reasoningSummary == "First ")
+    let activeAssistant = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(model.assistantPresentationState(for: activeAssistant) == .reasoning)
+    #expect(first.text.isEmpty)
+
+    feed.yield(.reasoningSummaryDelta("second."))
+    for _ in 0..<2000 where model.streamingPresentation.snapshot.reasoningSummary != "First second." {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let second = model.streamingPresentation.snapshot
+    #expect(second.reasoningSummary == "First second.")
+    #expect(second.revision > first.revision)
+    #expect(model.provider.reasoningPresentationCapability == .streamingSummary)
+
+    feed.yield(.textDelta("Answer"))
+    feed.yield(.completed("reasoning-presentation"))
+    feed.finish()
+    for _ in 0..<2000 where model.canEndTask {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    let committed = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(committed.text == "Answer")
+    #expect(committed.reasoningSummary == "First second.")
+    #expect(model.streamingPresentation.snapshot.assistantID == nil)
 }
 
 @Test @MainActor func emptyProviderCompletionIsTerminalAndComposerReady() async throws {

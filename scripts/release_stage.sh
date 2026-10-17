@@ -52,6 +52,7 @@ release_assert_tag_matches_source "$TAG"
 release_assert_exact_tag_identity "$TAG"
 
 release_assert_clean_tree
+"$SCRIPT_DIRECTORY/release_workbench_gate.sh"
 gh auth status >/dev/null
 if gh release view "$TAG" >/dev/null 2>&1; then
     release_assert_draft "$TAG"

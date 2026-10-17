@@ -489,10 +489,11 @@ final class AIConversationStore: ObservableObject {
         return conversation
     }
 
-    func update(_ conversation: AIConversation) {
+    @discardableResult
+    func update(_ conversation: AIConversation) -> Bool {
         guard conversation.messages.reduce(0, { $0 + $1.text.count }) <= Self.maximumCharactersPerConversation else {
             lastError = "This chat has reached Lima’s local storage limit."
-            return
+            return false
         }
         // Publish once per meaningful message/tool boundary. Mutating this
         // @Published array three times invalidated the chat, sidebar, and
@@ -502,6 +503,7 @@ final class AIConversationStore: ObservableObject {
         conversationSummaries = Array(([AIConversationSummary(conversation)] +
             conversationSummaries.filter { $0.id != conversation.id }).prefix(Self.maximumConversations))
         scheduleSave()
+        return true
     }
 
     func delete(id: UUID) {
@@ -1047,62 +1049,118 @@ struct AIChatResponsesClient: AIChatTransport {
 
 }
 
+struct AIStreamingSnapshot: Equatable, Sendable {
+    var assistantID: UUID?
+    var text: String
+    var reasoningSummary: String
+    var textComplete: Bool
+    var revision: UInt64
+
+    static let empty = Self(
+        assistantID: nil, text: "", reasoningSummary: "",
+        textComplete: false, revision: 0
+    )
+}
+
 @MainActor
 final class AIStreamingPresentation: ObservableObject {
-    // Large changing strings are intentionally not @Published. Consumers observe
-    // one lightweight revision after each buffered UI batch, then read the latest
-    // snapshot on demand.
-    private(set) var text = ""
-    private(set) var reasoningSummary = ""
-    private(set) var assistantID: UUID?
-    private(set) var textComplete = false
-    @Published private(set) var revision: UInt64 = 0
+    // Publish the complete live state as one value. A revision-only notification
+    // can allow an Equatable child to keep an obsolete text or reasoning value.
+    @Published private(set) var snapshot = AIStreamingSnapshot.empty
+
+    var text: String { snapshot.text }
+    var reasoningSummary: String { snapshot.reasoningSummary }
+    var assistantID: UUID? { snapshot.assistantID }
+    var textComplete: Bool { snapshot.textComplete }
 
     func begin(assistantID: UUID) {
-        self.assistantID = assistantID
-        text = ""
-        reasoningSummary = ""
-        textComplete = false
-        revision &+= 1
+        snapshot = AIStreamingSnapshot(
+            assistantID: assistantID, text: "", reasoningSummary: "",
+            textComplete: false, revision: snapshot.revision &+ 1
+        )
     }
 
-    func append(text textDelta: String, reasoning: String) {
+    func append(text textDelta: String = "", reasoning: String = "") {
         guard !textDelta.isEmpty || !reasoning.isEmpty else { return }
-        text.append(contentsOf: textDelta)
-        reasoningSummary.append(contentsOf: reasoning)
-        if !textDelta.isEmpty { textComplete = false }
-        revision &+= 1
+        var next = snapshot
+        next.text.append(contentsOf: textDelta)
+        next.reasoningSummary.append(contentsOf: reasoning)
+        if !textDelta.isEmpty { next.textComplete = false }
+        next.revision &+= 1
+        snapshot = next
     }
 
     func markTextComplete() {
         guard assistantID != nil, !textComplete else { return }
-        textComplete = true
-        revision &+= 1
+        var next = snapshot
+        next.textComplete = true
+        next.revision &+= 1
+        snapshot = next
     }
 
     func restore(assistantID: UUID?, text: String, reasoningSummary: String) {
-        self.assistantID = assistantID
-        self.text = text
-        self.reasoningSummary = reasoningSummary
-        textComplete = false
-        revision &+= 1
+        snapshot = AIStreamingSnapshot(
+            assistantID: assistantID, text: text, reasoningSummary: reasoningSummary,
+            textComplete: false, revision: snapshot.revision &+ 1
+        )
     }
 
     func clear() {
         guard assistantID != nil || !text.isEmpty || !reasoningSummary.isEmpty else { return }
-        assistantID = nil
-        text = ""
-        reasoningSummary = ""
-        textComplete = false
-        revision &+= 1
+        snapshot = AIStreamingSnapshot(
+            assistantID: nil, text: "", reasoningSummary: "",
+            textComplete: false, revision: snapshot.revision &+ 1
+        )
     }
 
     func visibleText(for messageID: UUID, fallback: String) -> String {
-        assistantID == messageID ? text : fallback
+        assistantID == messageID ? snapshot.text : fallback
     }
 
     func visibleReasoningSummary(for messageID: UUID, fallback: String?) -> String? {
-        assistantID == messageID ? reasoningSummary : fallback
+        assistantID == messageID ? snapshot.reasoningSummary : fallback
+    }
+}
+
+enum AIReasoningPresentationCapability: Equatable {
+    case none
+    case completedSummary
+    case streamingSummary
+}
+
+extension AIProvider {
+    var reasoningPresentationCapability: AIReasoningPresentationCapability {
+        switch self {
+        // Responses SSE and Codex app-server both expose genuine summary deltas.
+        case .openAI, .codexCLI: .streamingSummary
+        default: .none
+        }
+    }
+}
+
+enum AssistantResponsePresentationState: Equatable {
+    case waiting
+    case reasoning
+    case streamingText
+    case finalizing
+    case completed
+    case failed
+
+    var isLive: Bool {
+        switch self {
+        case .waiting, .reasoning, .streamingText, .finalizing: true
+        case .completed, .failed: false
+        }
+    }
+
+    var emptyTextPlaceholder: String {
+        switch self {
+        case .waiting: "Preparing…"
+        case .reasoning: "Reasoning…"
+        case .streamingText: "Writing response…"
+        case .finalizing: "Finalizing response…"
+        case .completed, .failed: "No response text."
+        }
     }
 }
 
@@ -1121,11 +1179,17 @@ struct AIMessageHistoryWindow {
 
 @MainActor
 final class AIChatViewModel: ObservableObject {
-    @Published private(set) var selectedConversationID: UUID?
+    @Published private(set) var selectedConversationID: UUID? {
+        didSet { DiagnosticsService.shared.activeConversationID = selectedConversationID }
+    }
     @Published var conversationSearchQuery = ""
     @Published var draft = ""
-    @Published var provider: AIProvider = .openAI
-    @Published var model = "gpt-5"
+    @Published var provider: AIProvider = .openAI {
+        didSet { DiagnosticsService.shared.activeProvider = provider }
+    }
+    @Published var model = "gpt-5" {
+        didSet { DiagnosticsService.shared.activeModel = model }
+    }
     @Published var reasoningEffort: AIReasoningEffort = .medium
     @Published private(set) var availableModels: [AIModelOption] = AIProvider.openAI.chatModels
     @Published private(set) var isLoadingModels = false
@@ -1184,11 +1248,14 @@ final class AIChatViewModel: ObservableObject {
     private var cancelledAssistantIDs = Set<UUID>()
     private var registeredTaskID: UUID?
     private var performanceMeasurementID: UUID?
-    private var firstTokenPerformanceMeasurementID: UUID?
+    private var firstProviderOutputMeasurementID: UUID?
+    private var firstVisibleAnswerMeasurementID: UUID?
     private var pendingStreamTextChunks: [String] = []
     private var pendingStreamReasoningChunks: [String] = []
-    private var streamTextFlushTask: Task<Void, Never>?
+    private var answerFlushTask: Task<Void, Never>?
+    private var reasoningFlushTask: Task<Void, Never>?
     private var activeApprovalContinuationContext: AIApprovalContinuationContext?
+    private var activeToolEnvironment: AIToolEnvironmentSnapshot?
     #if DEBUG
     var approvalContinuationContextForTesting: AIApprovalContinuationContext? {
         activeApprovalContinuationContext
@@ -1283,6 +1350,9 @@ final class AIChatViewModel: ObservableObject {
             attachments = selected.attachments
         }
         ensureModelIsAvailable()
+        DiagnosticsService.shared.activeConversationID = selectedConversationID
+        DiagnosticsService.shared.activeProvider = provider
+        DiagnosticsService.shared.activeModel = model
         // Start with cached choices immediately, then refresh a saved provider
         // catalog in the background so opening AI Chat never requires a manual refresh.
         if !hasInjectedTransport {
@@ -1336,6 +1406,22 @@ final class AIChatViewModel: ObservableObject {
 
     func visibleReasoningSummary(for message: AIChatMessage) -> String? {
         streamingPresentation.visibleReasoningSummary(for: message.id, fallback: message.reasoningSummary)
+    }
+
+    func assistantPresentationState(for message: AIChatMessage) -> AssistantResponsePresentationState {
+        guard message.role == .assistant else { return .completed }
+        guard let run = executionRun, run.assistantMessageID == message.id else {
+            return message.failure == nil ? .completed : .failed
+        }
+        switch run.state {
+        case .preparing: return .waiting
+        case .reasoning, .runningTools, .waitingForApproval: return .reasoning
+        case .writing:
+            return streamingPresentation.textComplete || responseTextComplete
+                ? .finalizing : .streamingText
+        case .completed, .cancelled: return .completed
+        case .failed: return .failed
+        }
     }
 
     func select(_ id: UUID) {
@@ -1469,10 +1555,7 @@ final class AIChatViewModel: ObservableObject {
         // A removed or unknown saved agent is invalid configuration, not a new grant.
         if selectedAgentID != nil && selectedAgentConfiguration == nil { return [] }
         // Valid agents suggest a workflow; the user's access mode and live policy decide capability.
-        return LimaAIToolRegistry.enabledDefinitions(
-            nativeToolStore.effectiveEnabledToolIDs,
-            toolAccessMode: nativeToolStore.accessMode
-        )
+        return AIToolRuntime.shared.exposedDefinitions(store: nativeToolStore)
     }
 
     /// Every currently eligible schema is visible for the whole turn. Custom
@@ -1485,7 +1568,7 @@ final class AIChatViewModel: ObservableObject {
     /// Native tools are routed for the whole turn. CLI providers receive the
     /// same catalog plus their Lima-only discovery shim.
     func requestLocalTools(for prompt: String) -> [LimaAIToolDefinition] {
-        if provider.isCLI {
+        if provider == .claudeCLI {
             return CLIChatProviderClient.requestTools(localTools: enabledNativeTools)
         }
         return enabledNativeTools
@@ -2215,7 +2298,8 @@ final class AIChatViewModel: ObservableObject {
             onCancel: { [weak self] in self?.cancel() }
         )
         performanceMeasurementID = PerformanceMonitor.shared.begin(.aiRequest)
-        firstTokenPerformanceMeasurementID = PerformanceMonitor.shared.begin(.aiComposerToFirstToken)
+        firstProviderOutputMeasurementID = PerformanceMonitor.shared.begin(.aiComposerToFirstProviderOutput)
+        firstVisibleAnswerMeasurementID = PerformanceMonitor.shared.begin(.aiComposerToFirstVisibleAnswer)
         CrashRecoveryStore.shared.update { snapshot in
             snapshot.activeSurface = LimaSurfaceID.workspace.rawValue
             snapshot.activeWorkspaceModule = LimaWorkspaceModule.ai.rawValue
@@ -2223,7 +2307,15 @@ final class AIChatViewModel: ObservableObject {
         }
 
         let historyMessages = conversation.messages
-        let routedLocalTools = requestLocalTools(for: text)
+        let runID = UUID()
+        let toolEnvironment = AIToolRuntime.shared.resolveEnvironment(
+            runID: runID, store: nativeToolStore,
+            configurationValid: selectedAgentID == nil || selectedAgentConfiguration != nil
+        )
+        activeToolEnvironment = toolEnvironment
+        let routedLocalTools = conversation.provider == .claudeCLI
+            ? CLIChatProviderClient.requestTools(localTools: toolEnvironment.exposedTools)
+            : toolEnvironment.exposedTools
         let turnBudget = configuredSubagentBudget
         let turnInstructions = systemInstructions(for: routedLocalTools, subagentBudget: turnBudget)
         activeApprovalContinuationContext = AIApprovalContinuationContext(
@@ -2231,6 +2323,7 @@ final class AIChatViewModel: ObservableObject {
             systemInstructions: turnInstructions
         )
         executionRun = AIExecutionRun(
+            id: runID,
             conversationID: conversation.id,
             userMessageID: userMessageID,
             assistantMessageID: assistantID,
@@ -2470,6 +2563,7 @@ final class AIChatViewModel: ObservableObject {
         }
         streamTask?.cancel()
         streamTask = nil
+        stopCodexBridgeForActiveConversation()
         PerformanceMonitor.shared.stopMainThreadProbe()
         cancelAllSubagentApprovals()
         pendingApproval = nil
@@ -2516,6 +2610,7 @@ final class AIChatViewModel: ObservableObject {
 
         pendingApproval = nil
         pendingLocalFunctionCall = nil
+        stopCodexBridgeForActiveConversation()
         updateAssistant(conversationID: conversationID, assistantID: assistantID) { assistant in
             if assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 assistant.text = "Task ended before the requested tool was run."
@@ -2976,9 +3071,12 @@ final class AIChatViewModel: ObservableObject {
         guard let definition = LimaAIToolRegistry.definition(for: call.name) else {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool is not registered.")
         }
-        guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled,
-              enabledNativeTools.contains(where: { $0.id == definition.id }),
-              allowedTools.contains(where: { $0.id == definition.id }) else {
+        let environment = activeToolEnvironment ?? AIToolRuntime.shared.resolveEnvironment(
+            runID: executionRun?.id ?? UUID(), store: nativeToolStore
+        )
+        guard !Task.isCancelled,
+              allowedTools.contains(where: { $0.id == definition.id }),
+              AIToolRuntime.shared.canExecute(call, in: environment, store: nativeToolStore) else {
             return localToolFailureOutput(for: call, conversationID: conversationID, message: "The requested Lima tool was not routed for this request.")
         }
         guard let callID = call.callID else {
@@ -3002,22 +3100,24 @@ final class AIChatViewModel: ObservableObject {
             )
         }
         let toolStartedAt = Date()
-        let result: LimaAIToolExecution
-        if AIContextTools.capabilityIDs.contains(definition.id) {
-            result = AIContextTools.capabilities(call, routedTools: allowedTools, accessMode: nativeToolStore.accessMode)
-        } else if AIContextTools.memoryIDs.contains(definition.id) {
-            result = AIContextTools.memory(
-                call, store: workspaceStore,
-                projectID: store.conversation(id: conversationID)?.projectID,
-                approvalGranted: approvalGranted
-            )
-        } else if AIContextTools.delegationIDs.contains(definition.id) {
-            result = await executeDelegation(call, conversationID: conversationID, ordinal: subagentOrdinal)
-        } else {
-            result = await LimaAIToolRegistry.execute(
-                call,
-                approvalGranted: approvalGranted,
-                conversationID: conversationID
+        let result = await AIToolRuntime.shared.execute(
+            call, in: environment, store: nativeToolStore
+        ) {
+            if AIContextTools.capabilityIDs.contains(definition.id) {
+                return AIContextTools.capabilities(call, routedTools: allowedTools, accessMode: nativeToolStore.accessMode)
+            }
+            if AIContextTools.memoryIDs.contains(definition.id) {
+                return AIContextTools.memory(
+                    call, store: workspaceStore,
+                    projectID: store.conversation(id: conversationID)?.projectID,
+                    approvalGranted: approvalGranted
+                )
+            }
+            if AIContextTools.delegationIDs.contains(definition.id) {
+                return await executeDelegation(call, conversationID: conversationID, ordinal: subagentOrdinal)
+            }
+            return await LimaAIToolRegistry.execute(
+                call, approvalGranted: approvalGranted, conversationID: conversationID
             )
         }
         PerformanceMonitor.shared.record(
@@ -3174,6 +3274,7 @@ final class AIChatViewModel: ObservableObject {
             conversationID: conversationID
         )
         streamDiagnostics.append(AIChatDiagnostic(stage: .tool, toolName: call.name, message: message))
+        AIToolRuntime.shared.recordRejected(call, runID: executionRun?.id)
         guard let callID = call.callID else { return nil }
         let result = LimaAIToolExecution.json(["error": message], isError: true)
         return ["type": "function_call_output", "call_id": callID, "output": result.output]
@@ -3435,21 +3536,24 @@ final class AIChatViewModel: ObservableObject {
         case .textDelta(let delta):
             transitionExecutionRun(to: .writing, expectedAssistantID: assistantID)
             if responseTextComplete { responseTextComplete = false }
-            if let measurementID = firstTokenPerformanceMeasurementID {
+            markFirstProviderOutput()
+            if !delta.isEmpty, let measurementID = firstVisibleAnswerMeasurementID {
                 PerformanceMonitor.shared.end(measurementID)
-                firstTokenPerformanceMeasurementID = nil
+                firstVisibleAnswerMeasurementID = nil
             }
             appendStreamingText(delta, assistantID: assistantID)
         case .textDone:
             if streamingTextAssistantID == assistantID {
-                flushStreamingText()
+                flushAnswer()
                 streamingPresentation.markTextComplete()
                 if !responseTextComplete { responseTextComplete = true }
             }
         case .reasoningSummaryDelta(let delta):
+            markFirstProviderOutput()
             transitionExecutionRun(to: .reasoning, expectedAssistantID: assistantID)
             appendStreamingReasoning(delta, assistantID: assistantID)
         case .outputItem(let item):
+            markFirstProviderOutput()
             switch item.kind {
             case .functionCall:
                 // An added call is a proposed action, not an executing tool.
@@ -3479,6 +3583,7 @@ final class AIChatViewModel: ObservableObject {
         case .activity(let activity):
             appendTurnActivity(activity, conversationID: conversationID)
         case .approval(let request):
+            markFirstProviderOutput()
             pendingApproval = request
             transitionExecutionRun(to: .waitingForApproval, expectedAssistantID: assistantID)
             if let registeredTaskID {
@@ -3519,6 +3624,12 @@ final class AIChatViewModel: ObservableObject {
             appendTurnActivity(AIAgentActivity(kind: .error, title: "Request failed", detail: summary, completed: true), conversationID: conversationID)
         }
         return nil
+    }
+
+    private func markFirstProviderOutput() {
+        guard let measurementID = firstProviderOutputMeasurementID else { return }
+        PerformanceMonitor.shared.end(measurementID)
+        firstProviderOutputMeasurementID = nil
     }
 
     private func recordDiagnostic(_ diagnostic: AIChatDiagnostic) {
@@ -3680,7 +3791,10 @@ final class AIChatViewModel: ObservableObject {
 
     private func beginStreamingText(for assistantID: UUID) {
         if responseTextComplete { responseTextComplete = false }
-        streamTextFlushTask?.cancel()
+        answerFlushTask?.cancel()
+        reasoningFlushTask?.cancel()
+        answerFlushTask = nil
+        reasoningFlushTask = nil
         pendingStreamTextChunks.removeAll(keepingCapacity: true)
         pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
         streamingPresentation.begin(assistantID: assistantID)
@@ -3689,38 +3803,57 @@ final class AIChatViewModel: ObservableObject {
     private func appendStreamingText(_ delta: String, assistantID: UUID) {
         guard streamingTextAssistantID == assistantID, !delta.isEmpty else { return }
         pendingStreamTextChunks.append(delta)
-        scheduleStreamingFlush()
+        scheduleAnswerFlush()
     }
 
     private func appendStreamingReasoning(_ delta: String, assistantID: UUID) {
         guard streamingTextAssistantID == assistantID, !delta.isEmpty else { return }
         pendingStreamReasoningChunks.append(delta)
-        scheduleStreamingFlush()
+        scheduleReasoningFlush()
     }
 
-    private func scheduleStreamingFlush() {
-        guard streamTextFlushTask == nil else { return }
-        streamTextFlushTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(50))
+    private func scheduleAnswerFlush() {
+        guard answerFlushTask == nil else { return }
+        answerFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(32))
             guard !Task.isCancelled else { return }
-            self?.flushStreamingText()
+            self?.flushAnswer()
         }
     }
 
-    private func flushStreamingText() {
-        streamTextFlushTask?.cancel()
-        streamTextFlushTask = nil
-        let textBatch = pendingStreamTextChunks.joined()
-        let reasoningBatch = pendingStreamReasoningChunks.joined()
+    private func scheduleReasoningFlush() {
+        guard reasoningFlushTask == nil else { return }
+        reasoningFlushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(40))
+            guard !Task.isCancelled else { return }
+            self?.flushReasoning()
+        }
+    }
+
+    private func flushAnswer() {
+        answerFlushTask?.cancel()
+        answerFlushTask = nil
+        let batch = pendingStreamTextChunks.joined()
         pendingStreamTextChunks.removeAll(keepingCapacity: true)
+        if !batch.isEmpty { streamingPresentation.append(text: batch) }
+    }
+
+    private func flushReasoning() {
+        reasoningFlushTask?.cancel()
+        reasoningFlushTask = nil
+        let batch = pendingStreamReasoningChunks.joined()
         pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
-        guard !textBatch.isEmpty || !reasoningBatch.isEmpty else { return }
-        streamingPresentation.append(text: textBatch, reasoning: reasoningBatch)
+        if !batch.isEmpty { streamingPresentation.append(reasoning: batch) }
+    }
+
+    private func flushStreamingPresentation() {
+        flushAnswer()
+        flushReasoning()
     }
 
     private func commitStreamingText(conversationID: UUID, assistantID: UUID?) {
         guard let assistantID, streamingTextAssistantID == assistantID else { return }
-        flushStreamingText()
+        flushStreamingPresentation()
         // Cancellation must release the stream projection even if the
         // conversation or assistant message disappeared during execution.
         defer { clearStreamingPresentation(for: assistantID) }
@@ -3734,15 +3867,28 @@ final class AIChatViewModel: ObservableObject {
         store.update(conversation)
     }
 
+    private func stopCodexBridgeForActiveConversation() {
+        let activeProvider = (activeConversationID ?? selectedConversationID)
+            .flatMap { store.conversation(id: $0)?.provider } ?? provider
+        guard activeProvider == .codexCLI else { return }
+        // A turn may be waiting at a native tool or approval boundary after its
+        // stream segment has closed. Hard-stop that process on user cancellation
+        // so the next request cannot inherit a permanently busy Codex thread.
+        Task { await CodexAppServerClient.shared.shutdown() }
+    }
+
     private func clearActiveTurnRouting() {
         activeApprovalContinuationContext = nil
+        activeToolEnvironment = nil
     }
 
     private func clearStreamingPresentation(for assistantID: UUID) {
         guard streamingTextAssistantID == assistantID else { return }
         if responseTextComplete { responseTextComplete = false }
-        streamTextFlushTask?.cancel()
-        streamTextFlushTask = nil
+        answerFlushTask?.cancel()
+        reasoningFlushTask?.cancel()
+        answerFlushTask = nil
+        reasoningFlushTask = nil
         pendingStreamTextChunks.removeAll(keepingCapacity: true)
         pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
         streamingPresentation.clear()
@@ -3784,6 +3930,75 @@ final class AIChatViewModel: ObservableObject {
         finishStream(conversationID: conversationID, assistantID: assistantID, responseID: nil)
     }
 
+    private struct FinalAssistantCommit {
+        let failure: AIExecutionRunFailure?
+        let text: String
+    }
+
+    /// Publish the final answer and reasoning in one conversation-store update.
+    /// The live projection remains available until this synchronous update succeeds;
+    /// the store queues disk persistence separately.
+    private func commitFinalAssistantMessage(
+        conversationID: UUID,
+        assistantID: UUID,
+        responseID: String?,
+        wasCancelled: Bool
+    ) -> FinalAssistantCommit? {
+        flushStreamingPresentation()
+        guard var conversation = store.conversation(id: conversationID),
+              let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else {
+            return nil
+        }
+        var assistant = conversation.messages[index]
+        if streamingTextAssistantID == assistantID {
+            if !streamingText.isEmpty { assistant.text = streamingText }
+            if !streamingReasoningSummary.isEmpty {
+                assistant.reasoningSummary = streamingReasoningSummary
+            }
+        }
+        assistant.responseID = responseID
+        if pendingApproval == nil && !wasCancelled
+            && assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && streamError == nil {
+            streamError = "Provider returned no visible response."
+        }
+        let durableFailure = !wasCancelled && pendingApproval == nil && streamError != nil
+            ? makeExecutionRunFailure() : nil
+        assistant.failure = durableFailure
+        if pendingApproval == nil && assistant.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            assistant.text = wasCancelled
+                ? "Generation stopped."
+                : (streamError == nil
+                    ? "The AI service completed without returning visible text."
+                    : "Provider returned no visible response. Retry this request.")
+        }
+        if pendingApproval == nil && !wasCancelled {
+            let start = assistant.activities?.first?.startedAt ?? Date()
+            assistant.activities = (assistant.activities ?? []) + [
+                AIAgentActivity(
+                    kind: streamError == nil ? .completed : .error,
+                    title: streamError == nil ? "Completed" : "Request failed",
+                    detail: streamError,
+                    duration: Date().timeIntervalSince(start),
+                    completed: true
+                )
+            ]
+        }
+        conversation.messages[index] = assistant
+        if let responseID, durableFailure == nil { conversation.lastResponseID = responseID }
+        conversation.updatedAt = Date()
+        guard store.update(conversation) else {
+            streamError = store.lastError ?? "The response could not be saved."
+            return nil
+        }
+        guard let committed = store.conversation(id: conversationID)?
+            .messages.first(where: { $0.id == assistantID }),
+              committed.text == assistant.text else {
+            return nil
+        }
+        return FinalAssistantCommit(failure: durableFailure, text: committed.text)
+    }
+
     private func finishStream(conversationID: UUID, assistantID: UUID, responseID: String?) {
         // A canceled stream can finish after a newer send. It must never clear
         // that turn's task, UI state, or latency probe.
@@ -3801,83 +4016,52 @@ final class AIChatViewModel: ObservableObject {
                 assert(pendingStreamTextChunks.isEmpty && pendingStreamReasoningChunks.isEmpty,
                        "A terminal AI run must flush its stream buffers.")
                 assert(streamingTextAssistantID != assistantID, "A terminal AI run cannot retain its streaming presentation.")
+                if run.state == .completed {
+                    let saved = store.conversation(id: conversationID)?
+                        .messages.first(where: { $0.id == assistantID })?.text ?? ""
+                    assert(!saved.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                           "A completed AI run must retain its committed answer.")
+                }
             }
         }
-        flushStreamingText()
-        guard var conversation = store.conversation(id: conversationID) else {
+        guard let commit = commitFinalAssistantMessage(
+            conversationID: conversationID, assistantID: assistantID,
+            responseID: responseID, wasCancelled: wasCancelled
+        ) else {
             pendingApproval = nil
             pendingLocalFunctionCall = nil
             if !wasCancelled && streamError == nil {
-                streamError = "The conversation was removed before the response could be saved."
+                streamError = store.conversation(id: conversationID) == nil
+                    ? "The conversation was removed before the response could be saved."
+                    : "The response message was removed before it could be saved."
             }
-            clearStreamingPresentation(for: assistantID)
             let runState: AIExecutionRunState = wasCancelled ? .cancelled : .failed
-            let taskState: LimaTaskState = wasCancelled ? .cancelled : .failed
             transitionExecutionRun(
                 to: runState,
                 failure: runState == .failed ? makeExecutionRunFailure() : nil,
                 expectedAssistantID: assistantID
             )
-            finishSharedTask(state: taskState, detail: streamError == nil ? nil : "Request needs attention")
+            clearStreamingPresentation(for: assistantID)
+            finishSharedTask(state: wasCancelled ? .cancelled : .failed,
+                             detail: streamError == nil ? nil : "Request needs attention")
+            stopCodexBridgeForActiveConversation()
             clearActiveTurnRouting()
             return
         }
-        var durableFailure: AIExecutionRunFailure?
-        if let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) {
-            if streamingTextAssistantID == assistantID {
-                if !streamingText.isEmpty { conversation.messages[index].text = streamingText }
-                if !streamingReasoningSummary.isEmpty {
-                    conversation.messages[index].reasoningSummary = streamingReasoningSummary
-                }
-            }
-            conversation.messages[index].responseID = responseID
-            let visibleAnswer = streamingTextAssistantID == assistantID ? streamingText : conversation.messages[index].text
-            if pendingApproval == nil && !wasCancelled && visibleAnswer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && streamError == nil {
-                streamError = "Provider returned no visible response."
-            }
-            durableFailure = !wasCancelled && pendingApproval == nil && streamError != nil
-                ? makeExecutionRunFailure()
-                : nil
-            conversation.messages[index].failure = durableFailure
-            if pendingApproval == nil && conversation.messages[index].text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                conversation.messages[index].text = wasCancelled
-                    ? "Generation stopped."
-                    : (streamError == nil
-                        ? "The AI service completed without returning visible text."
-                        : "Provider returned no visible response. Retry this request.")
-            }
-            if pendingApproval == nil && !wasCancelled {
-                let start = conversation.messages[index].activities?.first?.startedAt ?? Date()
-                conversation.messages[index].activities = (conversation.messages[index].activities ?? []) + [
-                    AIAgentActivity(
-                        kind: streamError == nil ? .completed : .error,
-                        title: streamError == nil ? "Completed" : "Request failed",
-                        detail: streamError,
-                        duration: Date().timeIntervalSince(start),
-                        completed: true
-                    )
-                ]
-            }
-        } else {
-            pendingApproval = nil
-            pendingLocalFunctionCall = nil
-            if !wasCancelled {
-                streamError = "The response message was removed before it could be saved."
-                durableFailure = makeExecutionRunFailure()
-            }
-        }
-        if let responseID, durableFailure == nil { conversation.lastResponseID = responseID }
-        conversation.updatedAt = Date()
-        store.update(conversation)
-        if pendingApproval == nil {
-            let runState: AIExecutionRunState = wasCancelled ? .cancelled : (streamError == nil ? .completed : .failed)
-            let taskState: LimaTaskState = wasCancelled ? .cancelled : (streamError == nil ? .completed : .failed)
-            let failure = runState == .failed ? durableFailure : nil
-            clearStreamingPresentation(for: assistantID)
-            transitionExecutionRun(to: runState, failure: failure, expectedAssistantID: assistantID)
-            finishSharedTask(state: taskState, detail: streamError == nil ? nil : "Request needs attention")
-            clearActiveTurnRouting()
-        }
+        guard pendingApproval == nil else { return }
+        let runState: AIExecutionRunState = wasCancelled ? .cancelled : (streamError == nil ? .completed : .failed)
+        let taskState: LimaTaskState = wasCancelled ? .cancelled : (streamError == nil ? .completed : .failed)
+        assert(!commit.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+               || runState == .failed,
+               "Cannot discard the only visible copy of an assistant response.")
+        // Publish the committed transcript before the run becomes terminal. The
+        // UI switches to the completed row, then the live projection is removed.
+        transitionExecutionRun(to: runState, failure: runState == .failed ? commit.failure : nil,
+                               expectedAssistantID: assistantID)
+        clearStreamingPresentation(for: assistantID)
+        finishSharedTask(state: taskState, detail: streamError == nil ? nil : "Request needs attention")
+        if runState != .completed { stopCodexBridgeForActiveConversation() }
+        clearActiveTurnRouting()
     }
 
     private func finishSharedTask(state: LimaTaskState, detail: String? = nil) {
@@ -3889,12 +4073,13 @@ final class AIChatViewModel: ObservableObject {
             PerformanceMonitor.shared.end(performanceMeasurementID, succeeded: state == .completed)
             self.performanceMeasurementID = nil
         }
-        if let firstTokenPerformanceMeasurementID {
-            PerformanceMonitor.shared.end(
-                firstTokenPerformanceMeasurementID,
-                succeeded: false,
-            )
-            self.firstTokenPerformanceMeasurementID = nil
+        if let firstProviderOutputMeasurementID {
+            PerformanceMonitor.shared.end(firstProviderOutputMeasurementID, succeeded: false)
+            self.firstProviderOutputMeasurementID = nil
+        }
+        if let firstVisibleAnswerMeasurementID {
+            PerformanceMonitor.shared.end(firstVisibleAnswerMeasurementID, succeeded: false)
+            self.firstVisibleAnswerMeasurementID = nil
         }
     }
 
@@ -4788,21 +4973,21 @@ struct AIChatWorkspaceView: View {
                             .padding(.bottom, 4)
                         }
                         ForEach(visibleMessages) { message in
-                            let isStreamingMessage = model.isStreaming && model.streamingTextAssistantID == message.id
-                            let isWorking = model.canEndTask && allMessages.last(where: { $0.role == .assistant })?.id == message.id
-                            if isStreamingMessage {
+                            let presentationState = model.assistantPresentationState(for: message)
+                            let isLiveMessage = presentationState.isLive
+                                && model.streamingTextAssistantID == message.id
+                            if isLiveMessage {
                                 AIStreamingMessageRow(
                                     message: message,
                                     presentation: model.streamingPresentation,
-                                    isWorking: isWorking,
+                                    presentationState: presentationState,
+                                    reasoningCapability: model.provider.reasoningPresentationCapability,
                                     currentActionTitle: model.currentTaskState.title,
-                                    showActivity: model.showActivity,
-                                    onShorten: { model.appendDraftPrompt("Make this response shorter, preserving its key facts:\n\n" + message.text) },
-                                    canPrepareDraft: !model.canEndTask
+                                    showActivity: model.showActivity
                                 )
                                 .id(message.id)
                             } else {
-                                completedMessageRow(message, isWorking: isWorking)
+                                completedMessageRow(message, isWorking: presentationState.isLive)
                                     .id(message.id)
                             }
                         }
@@ -4828,7 +5013,7 @@ struct AIChatWorkspaceView: View {
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom) }
             }
-            .onReceive(model.streamingPresentation.$revision.dropFirst()) { _ in
+            .onReceive(model.streamingPresentation.$snapshot.dropFirst()) { _ in
                 guard model.isStreaming, scrollState.isNearBottom,
                       Date().timeIntervalSince(scrollState.lastStreamingScrollAt) >= 0.1 else { return }
                 scrollState.lastStreamingScrollAt = Date()
@@ -4841,11 +5026,10 @@ struct AIChatWorkspaceView: View {
 
     private func completedMessageRow(_ message: AIChatMessage, isWorking: Bool) -> some View {
         let renderModel = AIMessageRenderModel.cached(for: message)
-        return AIChatMessageRow(
+        return AICompletedMessageRow(
             renderModel: renderModel,
             visibleText: renderModel.text,
             reasoningSummary: renderModel.reasoningSummary,
-            isStreaming: false,
             isWorking: isWorking,
             currentActionTitle: model.currentTaskState.title,
             showActivity: model.showActivity,
@@ -5736,35 +5920,109 @@ private struct AIChatScrollPositionObserver: NSViewRepresentable {
 }
 
 @MainActor
-private struct AIStreamingMessageRow: View {
-    let message: AIChatMessage
+private struct AIStreamingReasoningView: View {
     @ObservedObject var presentation: AIStreamingPresentation
-    let isWorking: Bool
-    let currentActionTitle: String
-    let showActivity: Bool
-    let onShorten: () -> Void
-    let canPrepareDraft: Bool
+    let assistantID: UUID
+    let isReasoning: Bool
+    let capability: AIReasoningPresentationCapability
+    @State private var isExpanded = true
 
     var body: some View {
-        AIChatMessageRow(
-            renderModel: AIMessageRenderModel.cached(for: message),
-            visibleText: presentation.visibleText(for: message.id, fallback: message.text),
-            reasoningSummary: presentation.visibleReasoningSummary(for: message.id, fallback: message.reasoningSummary),
-            isStreaming: !presentation.textComplete,
-            isWorking: isWorking,
-            currentActionTitle: currentActionTitle,
-            showActivity: showActivity,
-            onShorten: onShorten,
-            canPrepareDraft: canPrepareDraft
-        )
+        let summary = presentation.snapshot.assistantID == assistantID
+            ? presentation.snapshot.reasoningSummary : ""
+        if !summary.isEmpty || (isReasoning && capability != .none) {
+            DisclosureGroup(isExpanded: $isExpanded) {
+                Text(summary.isEmpty ? "Reasoning…" : summary)
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("ai-streaming-reasoning-text")
+            } label: {
+                Label("Reasoning summary", systemImage: "brain.head.profile")
+                    .limaFont(.caption.weight(.semibold))
+            }
+            .accessibilityIdentifier("ai-streaming-reasoning")
+        }
     }
 }
 
-private struct AIChatMessageRow: View, Equatable {
+@MainActor
+private struct AIStreamingMessageRow: View {
+    let message: AIChatMessage
+    @ObservedObject var presentation: AIStreamingPresentation
+    let presentationState: AssistantResponsePresentationState
+    let reasoningCapability: AIReasoningPresentationCapability
+    let currentActionTitle: String
+    let showActivity: Bool
+
+    var body: some View {
+        let snapshot = presentation.snapshot
+        let visibleText = snapshot.assistantID == message.id ? snapshot.text : message.text
+        HStack(alignment: .top) {
+            LimaFeatureIcon(symbol: "sparkles", tint: .violet, size: 32)
+            VStack(alignment: .leading, spacing: 8) {
+                if presentationState.isLive || showActivity {
+                    ActivityDisclosureView(
+                        activities: message.activities ?? [],
+                        reasoningSummary: nil,
+                        isWorking: presentationState.isLive,
+                        currentActionTitle: currentActionTitle
+                    )
+                }
+                AIStreamingReasoningView(
+                    presentation: presentation,
+                    assistantID: message.id,
+                    isReasoning: presentationState == .reasoning,
+                    capability: reasoningCapability
+                )
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Lima AI")
+                        .limaFont(.caption.weight(.semibold))
+                        .foregroundStyle(LimaTheme.textSecondary)
+                    Group {
+                        if snapshot.textComplete && !visibleText.isEmpty {
+                            LimaMarkdownDocumentView(markdown: visibleText)
+                        } else {
+                            Text(visibleText.isEmpty
+                                 ? presentationState.emptyTextPlaceholder : visibleText)
+                                .foregroundStyle(LimaTheme.textPrimary)
+                                .textSelection(.enabled)
+                        }
+                    }
+                    .fixedSize(horizontal: false, vertical: true)
+                    if let attachments = message.attachments, !attachments.isEmpty {
+                        HStack(spacing: 6) {
+                            ForEach(attachments) { attachment in
+                                Label(attachment.displayName, systemImage: attachment.kind.symbol)
+                                    .limaFont(.caption)
+                            }
+                        }
+                        .accessibilityLabel("Sent context")
+                    }
+                    HStack {
+                        Text(message.createdAt, style: .time)
+                            .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
+                        Spacer()
+                        if snapshot.textComplete && !visibleText.isEmpty {
+                            AIChatCopyButton(text: visibleText, style: .icon,
+                                             accessibilityID: "ai-copy-message")
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 10)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Spacer(minLength: 12)
+        }
+        .accessibilityIdentifier("ai-streaming-assistant-row")
+    }
+}
+
+private struct AICompletedMessageRow: View, Equatable {
     let renderModel: AIMessageRenderModel
     let visibleText: String
     let reasoningSummary: String?
-    let isStreaming: Bool
     let isWorking: Bool
     let currentActionTitle: String
     let showActivity: Bool
@@ -5782,7 +6040,8 @@ private struct AIChatMessageRow: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.renderModel === rhs.renderModel
-            && lhs.isStreaming == rhs.isStreaming
+            && lhs.visibleText == rhs.visibleText
+            && lhs.reasoningSummary == rhs.reasoningSummary
             && lhs.isWorking == rhs.isWorking
             && (!lhs.isWorking || lhs.currentActionTitle == rhs.currentActionTitle)
             && lhs.showActivity == rhs.showActivity
@@ -5804,9 +6063,9 @@ private struct AIChatMessageRow: View, Equatable {
                             reasoningSummary: reasoningSummary,
                             isWorking: isWorking,
                             currentActionTitle: currentActionTitle,
-                            cachedSteps: !isStreaming && !isWorking ? renderModel.activitySteps : nil,
-                            cachedTerminalState: !isStreaming && !isWorking ? renderModel.activityTerminalState : nil,
-                            cachedCompletedActionCount: !isStreaming && !isWorking ? renderModel.completedActivityCount : nil
+                            cachedSteps: !isWorking ? renderModel.activitySteps : nil,
+                            cachedTerminalState: !isWorking ? renderModel.activityTerminalState : nil,
+                            cachedCompletedActionCount: !isWorking ? renderModel.completedActivityCount : nil
                         )
                     }
                     messageBody
@@ -5838,10 +6097,10 @@ private struct AIChatMessageRow: View, Equatable {
                 .foregroundStyle(LimaTheme.textSecondary)
             if renderModel.failure == nil || shouldDisplayFailureText {
                 Group {
-                    if renderModel.role == .assistant, !isStreaming, !visibleText.isEmpty {
+                    if renderModel.role == .assistant, !visibleText.isEmpty {
                         LimaMarkdownDocumentView(markdown: visibleText).equatable()
                     } else {
-                        Text(visibleText.isEmpty && renderModel.role == .assistant ? (isStreaming ? "Working…" : "No response text.") : visibleText)
+                        Text(visibleText.isEmpty && renderModel.role == .assistant ? "No response text." : visibleText)
                             .foregroundStyle(LimaTheme.textPrimary)
                             .textSelection(.enabled)
                     }
@@ -5882,7 +6141,7 @@ private struct AIChatMessageRow: View, Equatable {
                 Text(renderModel.createdAt, style: .time)
                     .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Spacer()
-                if !isStreaming, !visibleText.isEmpty {
+                if !visibleText.isEmpty {
                     AIChatCopyButton(text: visibleText, style: .icon, accessibilityID: "ai-copy-message")
                     if renderModel.role == .user {
                         if let onEditUser {

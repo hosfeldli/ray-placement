@@ -35,6 +35,7 @@ else
 fi
 lima_release_export_packaging_policy
 release_assert_exact_tag_identity "$TAG"
+"$SCRIPT_DIRECTORY/release_workbench_gate.sh"
 
 DIST="$PROJECT_DIRECTORY/dist"
 

@@ -436,7 +436,11 @@ private final class BrowserLoopbackFixture {
     model.aiControlMode = .fullControl
     let first = model.newTab()
     let originalView = first.webView
-    for _ in 0..<8 { _ = model.newTab() }
+    _ = try await model.read(first.id)
+    for _ in 0..<8 {
+        let tab = model.newTab()
+        _ = try await model.read(tab.id)
+    }
     #expect(model.tabs.count == 9)
     #expect(model.liveWebViewCount <= 6)
     #expect(first.isSuspended)
@@ -444,11 +448,12 @@ private final class BrowserLoopbackFixture {
     #expect(!model.isResultAccessible(on: first.id))
 
     try model.focus(first.id)
-    #expect(first.hasLiveWebView)
-    #expect(first.webView !== originalView)
-    #expect(model.liveWebViewCount <= 6)
+    #expect(!first.hasLiveWebView) // Focusing a blank tab does not instantiate WebKit.
     #expect(!model.isResultAccessible(on: first.id))
     _ = try await model.read(first.id)
+    #expect(first.hasLiveWebView)
+    #expect(first.activeWebView !== originalView)
+    #expect(model.liveWebViewCount <= 6)
     #expect(model.isResultAccessible(on: first.id))
     for tab in model.tabs.map(\.id) { try await model.close(tab) }
 }

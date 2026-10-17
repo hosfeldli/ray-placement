@@ -40,6 +40,7 @@ if (( DRY_RUN )); then
     print "Dry run: $TAG is verified and ready to publish."
     exit 0
 fi
+"$SCRIPT_DIRECTORY/release_workbench_gate.sh"
 gh release edit "$TAG" --draft=false
 # Confirm GitHub has promoted the exact release we verified.
 [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" == false ]] || { print -u2 "GitHub did not publish $TAG."; exit 1; }

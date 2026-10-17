@@ -8,7 +8,8 @@ enum LimaPerformanceMetric: String, CaseIterable, Codable, Sendable {
     case workspaceModuleSwitch
     case aiSendMainActorPreparation
     case aiRequest
-    case aiComposerToFirstToken
+    case aiComposerToFirstProviderOutput
+    case aiComposerToFirstVisibleAnswer
     case aiHistoryConstruction
     case aiToolDuration
     case aiTerminalCommand
@@ -29,7 +30,8 @@ enum LimaPerformanceMetric: String, CaseIterable, Codable, Sendable {
         case .workspaceModuleSwitch: return "Workspace module switch"
         case .aiSendMainActorPreparation: return "AI send main-actor preparation"
         case .aiRequest: return "AI request"
-        case .aiComposerToFirstToken: return "AI composer to first token"
+        case .aiComposerToFirstProviderOutput: return "AI composer to first provider output"
+        case .aiComposerToFirstVisibleAnswer: return "AI composer to first visible answer"
         case .aiHistoryConstruction: return "AI history construction"
         case .aiToolDuration: return "AI tool duration"
         case .aiTerminalCommand: return "AI terminal command"

@@ -237,7 +237,8 @@ enum BrowserWorkspaceAITools {
                 let focusedTab = try browser.tab(tab)
                 return .json(["requested": true, "performed": true, "selected_tab_id": tab.uuidString,
                               "browser_visible": browserVisible,
-                              "post_action_verified": browser.selectedTabID == tab && focusedTab.hasLiveWebView])
+                              "page_state_verified": focusedTab.hasLiveWebView,
+                              "post_action_verified": browser.selectedTabID == tab])
             case "browser_open_link":
                 let tab = try tabID(arguments)
                 let target = try requiredString("target", in: arguments)
@@ -398,6 +399,10 @@ enum BrowserWorkspaceAITools {
             case .missingSnapshot, .staleTarget:
                 return AIToolFailure(.staleTarget, message: message, recoverable: true,
                                      nextAction: "Call browser_read and resolve a fresh target.",
+                                     suggestedTools: ["browser_read"])
+            case .pageChangedByUser:
+                return AIToolFailure(.pageChangedByUser, message: message, recoverable: true,
+                                     nextAction: "Call browser_read again.",
                                      suggestedTools: ["browser_read"])
             case .invalidDestination:
                 return AIToolFailure(.invalidArguments, message: message, recoverable: true,

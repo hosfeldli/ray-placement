@@ -161,6 +161,9 @@ final class DiagnosticsService {
     static let shared = DiagnosticsService()
 
     private(set) var startedAt = Date()
+    var activeConversationID: UUID?
+    var activeProvider: AIProvider = .openAI
+    var activeModel = "gpt-5"
 
     private init() {}
 
@@ -200,9 +203,102 @@ final class DiagnosticsService {
         return result == KERN_SUCCESS ? info.resident_size : nil
     }
 
-    func export(to destination: URL? = nil) throws -> URL {
+    func workbenchSnapshot() async -> [String: Any] {
+        let selectedConversation = activeConversationID.flatMap(AIConversationStore.shared.conversation(id:))
+        let provider = selectedConversation?.provider ?? activeProvider
+        let browser = BrowserWorkspaceModel.shared.authoritySnapshot
+        let terminal = AIWorkspaceTerminalCoordinator.shared.sessions
+        let store = LimaAIToolStore.shared
+        let routed = AIToolRuntime.shared.lastResolved
+        let exposed = AIToolRuntime.shared.exposedDefinitions(store: store)
+        let recent = AIToolRuntime.shared.recentExecutions
+        let lastTool = recent.last
+        let browserFailure = recent.last {
+            BrowserWorkspaceAITools.ids.contains($0.tool) && $0.failureCode != nil
+        }
+        let terminalFailure = recent.last {
+            AIWorkspaceActionTools.ids.contains($0.tool) && $0.failureCode != nil
+        }
+        let codex = await CodexAppServerClient.shared.status()
+        let providerState: [String: Any] = [
+            "kind": provider.rawValue,
+            "model": selectedConversation?.model ?? activeModel,
+            "connected": provider == .codexCLI ? codex.connected : false,
+            "connectionState": provider == .codexCLI ? (codex.connected ? "connected" : "disconnected") : "checked_on_request",
+            "threadActive": provider == .codexCLI && codex.threadActive,
+            "continuations": provider == .codexCLI ? codex.continuationCount : 0,
+            "lastStartupMs": provider == .codexCLI ? codex.startupMilliseconds as Any? ?? NSNull() : NSNull(),
+            "lastFirstEventMs": provider == .codexCLI ? codex.firstEventMilliseconds as Any? ?? NSNull() : NSNull(),
+            "lastFirstTextMs": provider == .codexCLI ? codex.firstTextMilliseconds as Any? ?? NSNull() : NSNull(),
+            "lastErrorCode": provider == .codexCLI && codex.lastError != nil ? "provider_bridge_error" : NSNull() as Any
+        ]
+        let executionRecords: [[String: Any]] = recent.map { record in
+            [
+                "runID": record.runID.uuidString,
+                "tool": record.tool,
+                "startedAt": ISO8601DateFormatter().string(from: record.startedAt),
+                "durationMilliseconds": record.durationMilliseconds,
+                "state": record.state.rawValue,
+                "failureCode": record.failureCode as Any? ?? NSNull(),
+                "recoverable": record.recoverable
+            ]
+        }
+        let toolState: [String: Any] = [
+            "accessMode": store.accessMode.rawValue,
+            "registeredCount": LimaAIToolRegistry.validDefinitions.count,
+            "exposedCount": exposed.count,
+            "exposedToolIDs": exposed.map(\.id),
+            "routedToolIDs": routed?.exposedToolIDs ?? [],
+            "lastResolvedRunID": routed?.runID.uuidString as Any? ?? NSNull(),
+            "browserToolCount": exposed.filter { BrowserWorkspaceAITools.ids.contains($0.id) }.count,
+            "terminalToolCount": exposed.filter { AIWorkspaceActionTools.ids.contains($0.id) }.count,
+            "lastTool": lastTool?.tool as Any? ?? NSNull(),
+            "lastToolState": lastTool?.state.rawValue as Any? ?? NSNull(),
+            "recentFailedToolCount": recent.filter { $0.state == .failed }.count,
+            "recentExecutions": executionRecords
+        ]
+        let browserState: [String: Any] = [
+            "runtime": "embeddedWebKit",
+            "available": browser.available,
+            "controlMode": browser.controlMode.rawValue,
+            "tabCount": browser.tabCount,
+            "selectedTabID": browser.selectedTabID?.uuidString as Any? ?? NSNull(),
+            "selectedTabPresent": browser.selectedTabID != nil,
+            "explicitlyPaused": browser.explicitlyPaused,
+            "needsFreshRead": browser.needsFreshRead,
+            "pageRevision": browser.pageRevision as Any? ?? NSNull(),
+            "liveWebViews": browser.liveWebViews,
+            "lastReadiness": browser.lastReadiness?.rawValue as Any? ?? NSNull(),
+            "runtimeHealthy": browser.runtimeHealthy,
+            "lastErrorCode": browserFailure?.failureCode as Any? ?? NSNull()
+        ]
+        let terminalState: [String: Any] = [
+            "runtime": "pty",
+            "available": true,
+            "sessionCount": terminal.count,
+            "runningSessions": terminal.filter { $0.state == .running }.count,
+            "lastExitStatus": terminal.last(where: { $0.exitStatus != nil })?.exitStatus as Any? ?? NSNull(),
+            "lastErrorCode": terminalFailure?.failureCode as Any? ?? NSNull()
+        ]
+        let selfTest = AIWorkbenchSelfTest.shared
+        let selfTestState: [String: Any] = [
+            "lastRunAt": selfTest.lastRunAt.map { ISO8601DateFormatter().string(from: $0) } as Any? ?? NSNull(),
+            "running": selfTest.isRunning,
+            "passed": selfTest.passed,
+            "checks": selfTest.checks.map { ["id": $0.id, "state": $0.state.rawValue] }
+        ]
+        return [
+            "provider": providerState,
+            "tools": toolState,
+            "browser": browserState,
+            "terminal": terminalState,
+            "selfTest": selfTestState
+        ]
+    }
+
+    func export(to destination: URL? = nil) async throws -> URL {
         let target = destination ?? FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Diagnostics-\(Int(Date().timeIntervalSince1970)).json")
-        let selectedProvider = AIConversationStore.shared.conversations.first?.provider ?? .openAI
+        let selectedProvider = activeConversationID.flatMap(AIConversationStore.shared.conversation(id:))?.provider ?? activeProvider
         let credentialConfigured = selectedProvider == .openAICompatible
             || (selectedProvider.isCLI && CLIChatProviderClient.executableURL(for: selectedProvider) != nil)
             || AIProviderCredentialStore.shared.hasAPIKey(for: selectedProvider)
@@ -232,6 +328,7 @@ final class DiagnosticsService {
             "dictation": ["count": DictationConversationStore.shared.conversations.count, "persistenceError": DictationConversationStore.shared.lastError ?? ""],
             "clipboard": ["count": ClipboardHistoryService.shared.entries.count, "persistenceError": ClipboardHistoryService.shared.lastError ?? ""],
             "extensions": ["issues": extensionIssues.count],
+            "aiWorkbench": await workbenchSnapshot(),
             "runtime": [
                 "appUptimeSeconds": Int(runtime.appUptime),
                 "residentMemoryBytes": runtime.residentMemoryBytes.map { NSNumber(value: $0) } ?? NSNull(),

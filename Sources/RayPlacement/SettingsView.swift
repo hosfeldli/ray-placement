@@ -1499,8 +1499,14 @@ struct SettingsView: View {
                     do { try backups.importBackup(from: url) } catch { backups.report(error) }
                 }
                 Button("Export Diagnostics…") {
-                    do { let url = try DiagnosticsService.shared.export(); NSWorkspace.shared.activateFileViewerSelecting([url]) }
-                    catch { SettingsStore.shared.lastError = error.localizedDescription }
+                    Task { @MainActor in
+                        do {
+                            let url = try await DiagnosticsService.shared.export()
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        } catch {
+                            SettingsStore.shared.lastError = error.localizedDescription
+                        }
+                    }
                 }
                 if let error = backups.lastError { Text(error).foregroundStyle(.orange) }
             }
