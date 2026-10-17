@@ -541,6 +541,9 @@ import Testing
     #expect(model.isBrowserPrompt("Submit the form"))
     #expect(!model.isBrowserPrompt("Format this tabular data"))
 
+    #expect(model.systemInstructions.contains("Tool-first workflow"))
+    #expect(model.systemInstructions.contains("At the start of each request and after each tool result"))
+    #expect(model.systemInstructions.contains("Do not call tools merely to increase call count"))
     #expect(model.systemInstructions.contains("Distinguish search snippets"))
     #expect(model.systemInstructions.contains("independent verification"))
 }
@@ -880,6 +883,64 @@ import Testing
 
     #expect(textEvents == 6)
     #expect(completed)
+}
+
+@Test func textCompleteProviderStreamUsesShortTerminalDeadline() async throws {
+    let upstream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+        continuation.yield(.textDelta("# Finished answer"))
+        continuation.yield(.textDone)
+        // A provider connection that remains open without response.completed
+        // must not leave the chat in Writing response indefinitely.
+    }
+    var observedTextDone = false
+    var reachedDeadline = false
+    do {
+        for try await event in AIProviderStreamWatchdog.bounded(
+            upstream, after: .seconds(2), afterTextDone: .milliseconds(100)
+        ) {
+            if case .textDone = event { observedTextDone = true }
+        }
+    } catch is AIProviderStreamWatchdog.DeadlineExceeded {
+        reachedDeadline = true
+    }
+    #expect(observedTextDone)
+    #expect(reachedDeadline)
+}
+
+@Test @MainActor func textDoneEnablesFormattedStreamingPresentationBeforeRunCompletes() async throws {
+    let store = AIConversationStore(fixtures: [])
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in
+        AsyncThrowingStream { continuation in
+            continuation.yield(.textDelta("# Formatted answer"))
+            continuation.yield(.textDone)
+            Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                continuation.yield(.completed("formatted-answer"))
+                continuation.finish()
+            }
+        }
+    }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    model.draft = "Show a formatted answer"
+    model.send()
+    for _ in 0..<100 where !model.streamingPresentation.textComplete {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.isStreaming)
+    #expect(model.streamingPresentation.textComplete)
+    #expect(model.currentTaskState.title == "Finishing response")
+    #expect(model.streamingText == "# Formatted answer")
+    for _ in 0..<200 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(5))
+    }
+    #expect(model.executionRun?.state == .completed)
+    #expect(model.selectedConversation?.messages.last?.text == "# Formatted answer")
 }
 
 @Test @MainActor func silentProviderStreamTimesOutAndPreservesPartialAnswer() async throws {
@@ -1274,6 +1335,15 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
         return
     }
     #expect(text == "Hello")
+}
+
+@Test func responsesDecoderMarksCompletedAnswerTextBeforeResponseTerminal() {
+    let done = responseEvent("response.output_text.done", ["text": "# Answer"])
+    #expect(done.contains { if case .textDone = $0 { return true }; return false })
+    let message = outputItemEvent("response.output_item.done", item: [
+        "type": "message", "id": "message-1", "role": "assistant", "content": []
+    ])
+    #expect(message.contains { if case .textDone = $0 { return true }; return false })
 }
 
 @Test func responsesSSEParserReconstructsMultilineJSON() {

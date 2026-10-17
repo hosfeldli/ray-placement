@@ -29,10 +29,10 @@ import Testing
     #expect(LimaWorkspaceModule.context.shortcutAlias == "C")
     #expect(LimaWorkspaceModule.notes.shortcutAlias == nil)
     #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .notes, .ai, .browser, .context])
-    #expect(LimaWorkspaceModule.toolDestinations == [.clipboard, .workflows, .extensions, .terminal])
+    #expect(LimaWorkspaceModule.toolDestinations == [.clipboard, .workflows, .extensions, .terminal, .grammar])
     #expect(LimaWorkspaceModule.primaryDestinations == LimaWorkspaceModule.workspaceDestinations + LimaWorkspaceModule.toolDestinations)
-    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .browser, .context, .clipboard, .workflows, .extensions, .terminal])
-    #expect(LimaWorkspaceModule.hiddenDestinations == [.grammar, .dictation, .formatter])
+    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .notes, .ai, .browser, .context, .clipboard, .workflows, .extensions, .terminal, .grammar])
+    #expect(LimaWorkspaceModule.hiddenDestinations == [.dictation, .formatter])
     #expect(Set(LimaWorkspaceModule.primaryDestinations).isDisjoint(with: LimaWorkspaceModule.hiddenDestinations))
     #expect(modules.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
 }

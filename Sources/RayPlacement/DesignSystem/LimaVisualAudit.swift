@@ -46,6 +46,16 @@ enum LimaVisualAudit {
                         }
                     }
                 }
+                for width: CGFloat in [420, 1040] {
+                    let terminal = DeveloperTerminalView(
+                        model: DeveloperTerminalModel(), startPersonalShell: false
+                    )
+                    .environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(terminal, size: NSSize(width: width, height: 700), appearance: appearance,
+                                      url: directory.appendingPathComponent("workspace-terminal-\(Int(width))-\(dark ? "dark" : "light").png"))) {
+                        failures += 1
+                    }
+                }
                 for size: NSSize in [NSSize(width: 420, height: 138),
                                      NSSize(width: 720, height: 146),
                                      NSSize(width: 760, height: 158)] {
@@ -107,6 +117,32 @@ enum LimaVisualAudit {
                             failures += 1
                         }
                     }
+                }
+                let flowEvents = [
+                    AIAgentActivity(kind: .toolStarted, title: "read_file", correlationID: "read"),
+                    AIAgentActivity(kind: .toolCompleted, title: "read_file", correlationID: "read", completed: true),
+                    AIAgentActivity(kind: .toolStarted, title: "Subagent 2", detail: "Inspect Browser output",
+                                    correlationID: "child-b"),
+                    AIAgentActivity(kind: .toolStarted, title: "Subagent 1", detail: "Verify the build",
+                                    correlationID: "child-a"),
+                    AIAgentActivity(kind: .toolStarted, title: "terminal_read",
+                                    correlationID: "child-a/read", parentCorrelationID: "child-a"),
+                    AIAgentActivity(kind: .toolCompleted, title: "terminal_read",
+                                    correlationID: "child-a/read", parentCorrelationID: "child-a", completed: true),
+                    AIAgentActivity(kind: .toolApproval, title: "Approval needed", detail: "Browser action",
+                                    correlationID: "child-b/click/approval", parentCorrelationID: "child-b")
+                ]
+                let activityFlow = ActivityDisclosureView(
+                    activities: flowEvents, reasoningSummary: nil, isWorking: true,
+                    currentActionTitle: "Coordinating parallel work"
+                )
+                .padding(16)
+                .frame(width: 700, height: 540, alignment: .top)
+                .background(LimaTheme.surfacePrimary)
+                .environment(\.colorScheme, dark ? .dark : .light)
+                if !(await render(activityFlow, size: NSSize(width: 700, height: 540), appearance: appearance,
+                                  url: directory.appendingPathComponent("functional-ai-activity-flow-\(dark ? "dark" : "light").png"))) {
+                    failures += 1
                 }
                 for scenario: AIChatVisualScenario in [.memoryApproval, .terminalDirectoryApproval, .terminalRunning] {
                     let opaque = AIChatVisualPreview(scenario: scenario)

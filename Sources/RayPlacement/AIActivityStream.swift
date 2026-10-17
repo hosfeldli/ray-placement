@@ -17,6 +17,7 @@ struct AIActivityStreamStep: Identifiable, Equatable {
     var status: Status
     let isToolAction: Bool
     var correlationID: String? = nil
+    var parentCorrelationID: String? = nil
     var toolOutputReference: AIToolOutputReference? = nil
 
     var symbol: String {
@@ -28,6 +29,12 @@ struct AIActivityStreamStep: Identifiable, Equatable {
         case .interrupted: return "stop.circle"
         }
     }
+}
+
+struct AIActivityFlowNode: Identifiable, Equatable {
+    let step: AIActivityStreamStep
+    let children: [AIActivityStreamStep]
+    var id: UUID { step.id }
 }
 
 enum AIActivityTerminalState: Equatable {
@@ -46,7 +53,8 @@ enum AIActivityStream {
                 steps.append(AIActivityStreamStep(
                     id: activity.id, title: activity.displayTitle,
                     detail: meaningfulDetail(activity.detail), status: .running,
-                    isToolAction: true, correlationID: activity.correlationID
+                    isToolAction: true, correlationID: activity.correlationID,
+                    parentCorrelationID: activity.parentCorrelationID
                 ))
             case .toolCompleted, .toolFailed:
                 let status: AIActivityStreamStep.Status = activity.kind == .toolFailed ? .failed : .completed
@@ -63,27 +71,35 @@ enum AIActivityStream {
                         id: activity.id, title: activity.displayTitle,
                         detail: meaningfulDetail(activity.detail), status: status,
                         isToolAction: true, correlationID: activity.correlationID,
+                        parentCorrelationID: activity.parentCorrelationID,
                         toolOutputReference: activity.toolOutputReference
                     ))
                 }
             case .toolApproval:
                 if activity.completed {
-                    if let index = steps.indices.reversed().first(where: { steps[$0].status == .waiting }) {
-                        steps[index].status = activity.title == "Tool denied" ? .failed : .completed
+                    let status: AIActivityStreamStep.Status = approvalFailed(activity.title) ? .failed : .completed
+                    if let index = steps.indices.reversed().first(where: { candidate in
+                        steps[candidate].status == .waiting &&
+                        (activity.correlationID.map { steps[candidate].correlationID == $0 }
+                         ?? (steps[candidate].correlationID == nil))
+                    }) {
+                        steps[index].status = status
                         steps[index].title = activity.title
                         steps[index].detail = meaningfulDetail(activity.detail)
                     } else {
                         steps.append(AIActivityStreamStep(
                             id: activity.id, title: activity.title,
-                            detail: meaningfulDetail(activity.detail),
-                            status: activity.title == "Tool denied" ? .failed : .completed,
-                            isToolAction: false
+                            detail: meaningfulDetail(activity.detail), status: status,
+                            isToolAction: false, correlationID: activity.correlationID,
+                            parentCorrelationID: activity.parentCorrelationID
                         ))
                     }
                 } else {
                     steps.append(AIActivityStreamStep(
                         id: activity.id, title: activity.title,
-                        detail: meaningfulDetail(activity.detail), status: .waiting, isToolAction: false
+                        detail: meaningfulDetail(activity.detail), status: .waiting, isToolAction: false,
+                        correlationID: activity.correlationID,
+                        parentCorrelationID: activity.parentCorrelationID
                     ))
                 }
             case .error:
@@ -117,6 +133,27 @@ enum AIActivityStream {
         return steps
     }
 
+    /// Link child tool calls to the delegated agent that actually issued them.
+    /// Orphaned historical child events remain visible as root nodes.
+    static func flowNodes(from steps: [AIActivityStreamStep]) -> [AIActivityFlowNode] {
+        let parents = Set(steps.filter {
+            $0.title == "Subagent" || $0.title.hasPrefix("Subagent ")
+        }.compactMap(\.correlationID))
+        var childrenByParent: [String: [AIActivityStreamStep]] = [:]
+        for step in steps {
+            if let parent = step.parentCorrelationID, parents.contains(parent) {
+                childrenByParent[parent, default: []].append(step)
+            }
+        }
+        return steps.compactMap { step in
+            if let parent = step.parentCorrelationID, parents.contains(parent) { return nil }
+            return AIActivityFlowNode(
+                step: step,
+                children: step.correlationID.flatMap { childrenByParent[$0] } ?? []
+            )
+        }
+    }
+
     static func completedActionCount(_ steps: [AIActivityStreamStep]) -> Int {
         steps.filter { $0.isToolAction && ($0.status == .completed || $0.status == .failed) }.count
     }
@@ -127,6 +164,11 @@ enum AIActivityStream {
             $0.kind == .completed && ($0.title == "Stopped" || $0.title == "Task ended")
         }) { return .stopped }
         return .done
+    }
+
+    private static func approvalFailed(_ title: String) -> Bool {
+        title == "Tool denied" || title == "Workspace directory changed" ||
+            title == "Directory grant unavailable"
     }
 
     private static func subagentOrdinal(_ title: String) -> Int? {

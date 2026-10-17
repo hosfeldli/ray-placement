@@ -47,19 +47,19 @@ enum BrowserWorkspaceAITools {
               "kind": enumeration(["page_stable", "loading_finished", "new_tab", "url_changed", "text_present", "text_gone", "target_present", "target_gone"]),
               "value": optionalString("Text or target label for present/gone conditions."),
               "timeout_ms": optionalInteger("Timeout from 100 to 30000 milliseconds.", 100, 30000)]),
-        tool("browser_new_tab", "Create a Lima Browser tab with an optional verified HTTPS or loopback HTTP URL. Background pages may defer loading until read or focus.",
+        tool("browser_new_tab", "Create a Lima Browser tab with an optional verified HTTPS or loopback HTTP URL. Foreground tabs open the visible Lima Browser workspace; check browser_visible before claiming the window opened. Background pages may defer loading until read or focus.",
              ["url": optionalString("Optional HTTPS or loopback HTTP URL without embedded credentials."),
               "background": optionalBoolean("Keep the new tab in the background.")],
              risk: .navigation, required: []),
         tool("browser_close_tab", "Close one Lima Browser tab.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
-        tool("browser_focus_tab", "Select one existing Lima Browser tab without reading it.",
+        tool("browser_focus_tab", "Select one existing Lima Browser tab and open the visible Browser workspace. Check browser_visible before claiming the window opened; this does not read the page.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
-        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Uses its verified HTTPS or loopback HTTP destination; download, unknown, and sensitive links are not opened.",
+        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Foreground navigation waits for a stable page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A link target ID from the latest browser_read or browser_find."),
               "disposition": enumeration(["current_tab", "new_tab", "background_tab"])], risk: .navigation),
-        tool("browser_navigate", "Navigate a Lima Browser tab to an HTTPS or loopback HTTP URL without embedded credentials.",
+        tool("browser_navigate", "Navigate a Lima Browser tab to an HTTPS or loopback HTTP URL without embedded credentials and verify a newly loaded stable page.",
              ["tab_id": string("A Lima Browser tab ID."), "url": string("An HTTPS or loopback HTTP destination.")], risk: .navigation),
         tool("browser_back", "Go back in a Lima Browser tab.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
@@ -144,7 +144,10 @@ enum BrowserWorkspaceAITools {
     }
 
     static func execute(_ call: AIOutputItem) async -> LimaAIToolExecution {
-        let browser = BrowserWorkspaceModel.shared
+        await execute(call, browser: .shared)
+    }
+
+    static func execute(_ call: AIOutputItem, browser: BrowserWorkspaceModel) async -> LimaAIToolExecution {
         guard isAvailable(call.name ?? "", mode: browser.aiControlMode) else {
             return failure(for: BrowserRuntimeError.controlDisabled).toolExecution()
         }
@@ -212,18 +215,29 @@ enum BrowserWorkspaceAITools {
                 let url = try raw.map(safeURL)
                 let background = try optionalBool("background", in: arguments) ?? false
                 let tab = browser.newTab(url: url, foreground: !background)
+                let browserVisible = background ? false : browser.revealAIForegroundTab(tab.id)
+                if url != nil && !tab.isSuspended {
+                    return await verifiedNavigation(browser, tabID: tab.id, after: 0,
+                                                    browserVisible: browserVisible)
+                }
                 return .json(["requested": true, "performed": true, "tab_id": tab.id.uuidString,
-                              "loading_started": url != nil && !tab.isSuspended,
                               "loading_deferred": url != nil && tab.isSuspended,
-                              "post_action_verified": url == nil], browserTabID: tab.id)
+                              "page_state_verified": false, "browser_visible": browserVisible,
+                              "post_action_verified": browser.tabs.contains { $0.id == tab.id }],
+                             browserTabID: tab.id)
             case "browser_close_tab":
                 let tab = try tabID(arguments)
                 try await browser.close(tab)
-                return .json(["requested": true, "performed": true, "closed_tab_id": tab.uuidString])
+                return .json(["requested": true, "performed": true, "closed_tab_id": tab.uuidString,
+                              "post_action_verified": !browser.tabs.contains { $0.id == tab }])
             case "browser_focus_tab":
                 let tab = try tabID(arguments)
                 try browser.focus(tab)
-                return .json(["requested": true, "performed": true, "selected_tab_id": tab.uuidString])
+                let browserVisible = browser.revealAIForegroundTab(tab)
+                let focusedTab = try browser.tab(tab)
+                return .json(["requested": true, "performed": true, "selected_tab_id": tab.uuidString,
+                              "browser_visible": browserVisible,
+                              "post_action_verified": browser.selectedTabID == tab && focusedTab.hasLiveWebView])
             case "browser_open_link":
                 let tab = try tabID(arguments)
                 let target = try requiredString("target", in: arguments)
@@ -231,34 +245,51 @@ enum BrowserWorkspaceAITools {
                 guard let disposition = BrowserNavigationDisposition(rawValue: raw) else {
                     throw BrowserWorkspaceToolError.invalidArguments
                 }
+                let revision = try browser.tab(tab).navigationRevision
                 let opened = try await browser.openLink(tab, targetID: target, disposition: disposition)
+                let openedTab = try browser.tab(opened)
+                let browserVisible = raw == "background_tab" ? false : browser.revealAIForegroundTab(opened)
+                if !openedTab.isSuspended {
+                    return await verifiedNavigation(browser, tabID: opened,
+                                                    after: opened == tab ? revision : 0,
+                                                    disposition: raw, browserVisible: browserVisible)
+                }
                 return .json(["requested": true, "performed": true, "disposition": raw,
-                              "tab_id": opened.uuidString,
-                              "loading_started": (try? browser.tab(opened).isSuspended) == false,
-                              "loading_deferred": (try? browser.tab(opened).isSuspended) ?? false,
-                              "post_action_verified": false], browserTabID: opened)
+                              "tab_id": opened.uuidString, "loading_deferred": true,
+                              "page_state_verified": false, "browser_visible": browserVisible,
+                              "post_action_verified": browser.tabs.contains { $0.id == opened }],
+                             browserTabID: opened)
             case "browser_navigate":
                 let tab = try tabID(arguments)
                 let url = try safeURL(requiredString("url", in: arguments))
+                let revision = try browser.tab(tab).navigationRevision
                 try browser.navigate(tab, to: url)
-                return .json(["requested": true, "performed": true, "tab_id": tab.uuidString,
-                              "destination": url.absoluteString, "loading_started": true,
-                              "post_action_verified": false], browserTabID: tab)
+                try browser.focus(tab)
+                let browserVisible = browser.revealAIForegroundTab(tab)
+                return await verifiedNavigation(browser, tabID: tab, after: revision,
+                                                destination: url.absoluteString,
+                                                browserVisible: browserVisible)
             case "browser_back":
                 let tab = try tabID(arguments)
+                let revision = try browser.tab(tab).navigationRevision
                 try browser.back(tab)
-                return .json(["requested": true, "performed": true, "tab_id": tab.uuidString,
-                              "post_action_verified": false], browserTabID: tab)
+                try browser.focus(tab)
+                return await verifiedNavigation(browser, tabID: tab, after: revision,
+                                                browserVisible: browser.revealAIForegroundTab(tab))
             case "browser_forward":
                 let tab = try tabID(arguments)
+                let revision = try browser.tab(tab).navigationRevision
                 try browser.forward(tab)
-                return .json(["requested": true, "performed": true, "tab_id": tab.uuidString,
-                              "post_action_verified": false], browserTabID: tab)
+                try browser.focus(tab)
+                return await verifiedNavigation(browser, tabID: tab, after: revision,
+                                                browserVisible: browser.revealAIForegroundTab(tab))
             case "browser_reload":
                 let tab = try tabID(arguments)
+                let revision = try browser.tab(tab).navigationRevision
                 try browser.reload(tab)
-                return .json(["requested": true, "performed": true, "tab_id": tab.uuidString,
-                              "post_action_verified": false], browserTabID: tab)
+                try browser.focus(tab)
+                return await verifiedNavigation(browser, tabID: tab, after: revision,
+                                                browserVisible: browser.revealAIForegroundTab(tab))
             case "browser_scroll":
                 let tab = try tabID(arguments)
                 let rawDirection = try requiredString("direction", in: arguments)
@@ -302,10 +333,60 @@ enum BrowserWorkspaceAITools {
         }
     }
 
+    private static func verifiedNavigation(_ browser: BrowserWorkspaceModel, tabID: UUID,
+                                           after revision: Int, destination: String? = nil,
+                                           disposition: String? = nil,
+                                           browserVisible: Bool? = nil) async -> LimaAIToolExecution {
+        do {
+            let snapshot = try await browser.waitForNavigation(tabID, after: revision,
+                                                               timeoutMilliseconds: 15_000)
+            var result: [String: Any] = [
+                "state": AIToolResultState.completed.rawValue,
+                "requested": true, "performed": true,
+                "tab_id": tabID.uuidString,
+                "post_action_verified": true, "page_state_verified": true,
+                "observed_url": snapshot.identity.url,
+                "readiness": snapshot.readiness.rawValue
+            ]
+            if let destination { result["destination"] = destination }
+            if let disposition { result["disposition"] = disposition }
+            if let browserVisible { result["browser_visible"] = browserVisible }
+            return .json(result, browserTabID: tabID)
+        } catch {
+            let failure = failure(for: error)
+            var result: [String: Any] = [
+                "state": error is CancellationError
+                    ? AIToolResultState.cancelled.rawValue : AIToolResultState.partiallyCompleted.rawValue,
+                "requested": true, "performed": true,
+                "tab_id": tabID.uuidString,
+                "post_action_verified": false, "page_state_verified": false,
+                "error": failure.jsonObject
+            ]
+            if let destination { result["destination"] = destination }
+            if let disposition { result["disposition"] = disposition }
+            if let browserVisible { result["browser_visible"] = browserVisible }
+            return .json(result, isError: true, browserTabID: tabID)
+        }
+    }
+
     static func failure(for error: Error) -> AIToolFailure {
         if error is CancellationError {
             return AIToolFailure(.cancelled, message: "The Browser action was cancelled.",
                                  recoverable: false)
+        }
+        if let navigationError = error as? BrowserNavigationError {
+            switch navigationError {
+            case .failed:
+                return AIToolFailure(.navigationFailed, message: navigationError.localizedDescription,
+                                     recoverable: true,
+                                     nextAction: "Call browser_read to inspect the current page or navigate to another safe destination.",
+                                     suggestedTools: ["browser_read", "browser_navigate"])
+            case .timedOut:
+                return AIToolFailure(.pageUnstable, message: navigationError.localizedDescription,
+                                     recoverable: true,
+                                     nextAction: "Call browser_wait for page_stable or inspect the current page with browser_read.",
+                                     suggestedTools: ["browser_wait", "browser_read"])
+            }
         }
         if let browserError = error as? BrowserRuntimeError {
             let message = browserError.localizedDescription

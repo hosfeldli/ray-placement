@@ -6,6 +6,10 @@ The original target for the next publish was the site-agnostic, shared human/AI 
 
 On October 16, 2026, the requester directed publication even if all post-v3.14.24 asks cannot be fully verified. They chose to proceed and disclose that the earlier Search/Workspace proposal attachment was unavailable. This is an exception to the complete-scope gate, **not** a declaration that any unchecked item passed. Publish only the implemented subset, with the known gaps and performance uncertainty in `docs/releases/v3.14.25.md`. Preserve automated source checks, exact-commit CI, immutable tagging, signed artifact verification, and public-asset verification; do not bypass a failed integrity or distribution check.
 
+## Explicit limited-release exception for v3.14.26
+
+On October 16, 2026, after the assistant reported that the Browser/Terminal UI pass was not release-ready and that real-window interaction and broader Workbench scope remained unverified or incomplete, the requester explicitly instructed publication. This authorizes only the implemented incremental changes in `docs/releases/v3.14.26.md`; it does not close any unchecked gate. Preserve exact-commit CI, immutable tagging, signed artifact checks, and public-asset verification. Disclose the live-window, real-site, and performance limitations rather than treating offscreen fixtures or unit tests as full acceptance.
+
 ## Browser replacement
 
 - [ ] One shared Workspace Browser with Off, Read Only, Navigate, and Full Control; one live Browser AI-control authority across schema exposure, execution, settings, and approval continuation.

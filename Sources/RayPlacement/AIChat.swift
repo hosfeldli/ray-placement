@@ -584,6 +584,9 @@ final class AIConversationStore: ObservableObject {
 enum AIChatStreamEvent: Sendable {
     case responseCreated(String)
     case textDelta(String)
+    /// The current visible answer is complete, even if the provider has not yet
+    /// sent the response terminal event or closed its streaming connection.
+    case textDone
     case reasoningSummaryDelta(String)
     case outputItem(AIOutputItem)
     case activity(AIAgentActivity)
@@ -603,12 +606,21 @@ enum AIProviderStreamWatchdog {
     private final class Activity: @unchecked Sendable {
         private let lock = NSLock()
         private var lastEventUptime = ProcessInfo.processInfo.systemUptime
+        private var awaitingTerminalAfterText = false
         private var stopped = false
 
-        func markEvent() {
+        func markEvent(_ event: AIChatStreamEvent) {
             lock.withLock {
                 guard !stopped else { return }
                 lastEventUptime = ProcessInfo.processInfo.systemUptime
+                switch event {
+                case .textDone:
+                    awaitingTerminalAfterText = true
+                case .textDelta, .reasoningSummaryDelta, .outputItem, .approval:
+                    awaitingTerminalAfterText = false
+                default:
+                    break
+                }
             }
         }
 
@@ -616,29 +628,31 @@ enum AIProviderStreamWatchdog {
             lock.withLock { stopped = true }
         }
 
-        func isIdle(for deadline: Duration) -> Bool {
-            let seconds = Double(deadline.components.seconds)
-                + Double(deadline.components.attoseconds) / 1_000_000_000_000_000_000
-            return lock.withLock {
-                !stopped && ProcessInfo.processInfo.systemUptime - lastEventUptime >= seconds
+        func isIdle(for deadline: Duration, afterTextDone textDoneDeadline: Duration) -> Bool {
+            lock.withLock {
+                let effective = awaitingTerminalAfterText ? min(deadline, textDoneDeadline) : deadline
+                let seconds = Double(effective.components.seconds)
+                    + Double(effective.components.attoseconds) / 1_000_000_000_000_000_000
+                return !stopped && ProcessInfo.processInfo.systemUptime - lastEventUptime >= seconds
             }
         }
     }
 
     static func bounded(
         _ upstream: AsyncThrowingStream<AIChatStreamEvent, Error>,
-        after idleDeadline: Duration
+        after idleDeadline: Duration,
+        afterTextDone textDoneDeadline: Duration = .seconds(15)
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let activity = Activity()
             let timer = Task {
                 while !Task.isCancelled {
                     do {
-                        try await Task.sleep(for: min(idleDeadline, .seconds(5)))
+                        try await Task.sleep(for: min(min(idleDeadline, textDoneDeadline), .seconds(5)))
                     } catch {
                         break
                     }
-                    if activity.isIdle(for: idleDeadline) {
+                    if activity.isIdle(for: idleDeadline, afterTextDone: textDoneDeadline) {
                         continuation.finish(throwing: DeadlineExceeded())
                         break
                     }
@@ -652,7 +666,7 @@ enum AIProviderStreamWatchdog {
                 do {
                     for try await event in upstream {
                         guard !Task.isCancelled else { break }
-                        activity.markEvent()
+                        activity.markEvent(event)
                         continuation.yield(event)
                     }
                     continuation.finish()
@@ -1041,12 +1055,14 @@ final class AIStreamingPresentation: ObservableObject {
     private(set) var text = ""
     private(set) var reasoningSummary = ""
     private(set) var assistantID: UUID?
+    private(set) var textComplete = false
     @Published private(set) var revision: UInt64 = 0
 
     func begin(assistantID: UUID) {
         self.assistantID = assistantID
         text = ""
         reasoningSummary = ""
+        textComplete = false
         revision &+= 1
     }
 
@@ -1054,6 +1070,13 @@ final class AIStreamingPresentation: ObservableObject {
         guard !textDelta.isEmpty || !reasoning.isEmpty else { return }
         text.append(contentsOf: textDelta)
         reasoningSummary.append(contentsOf: reasoning)
+        if !textDelta.isEmpty { textComplete = false }
+        revision &+= 1
+    }
+
+    func markTextComplete() {
+        guard assistantID != nil, !textComplete else { return }
+        textComplete = true
         revision &+= 1
     }
 
@@ -1061,6 +1084,7 @@ final class AIStreamingPresentation: ObservableObject {
         self.assistantID = assistantID
         self.text = text
         self.reasoningSummary = reasoningSummary
+        textComplete = false
         revision &+= 1
     }
 
@@ -1069,6 +1093,7 @@ final class AIStreamingPresentation: ObservableObject {
         assistantID = nil
         text = ""
         reasoningSummary = ""
+        textComplete = false
         revision &+= 1
     }
 
@@ -1108,6 +1133,7 @@ final class AIChatViewModel: ObservableObject {
     @Published var attachments: [AIAttachment] = []
     @Published var showActivity = true
     @Published private(set) var executionRun: AIExecutionRun?
+    @Published private(set) var responseTextComplete = false
     var isStreaming: Bool { executionRun?.isStreaming == true }
     /// Stream state is observed only by the active assistant row; token batches
     /// do not invalidate the parent chat view or completed message history.
@@ -1140,6 +1166,7 @@ final class AIChatViewModel: ObservableObject {
         let id: UUID
         let call: AIOutputItem
         let conversationID: UUID
+        let parentCorrelationID: String?
         let continuation: CheckedContinuation<Bool, Never>
     }
     private var activeSubagentApproval: SubagentApprovalWaiter?
@@ -1709,8 +1736,8 @@ final class AIChatViewModel: ObservableObject {
                 )
             case .writing:
                 return AIChatTaskState(
-                    title: "Writing response",
-                    detail: "Streaming visible answer",
+                    title: responseTextComplete ? "Finishing response" : "Writing response",
+                    detail: responseTextComplete ? "Waiting for provider confirmation" : "Streaming visible answer",
                     symbol: "text.line.first.and.arrowtriangle.forward",
                     tone: .active,
                     isActive: true,
@@ -2719,7 +2746,8 @@ final class AIChatViewModel: ObservableObject {
         )
     }
 
-    private func requestSubagentApproval(_ call: AIOutputItem, conversationID: UUID) async -> Bool {
+    private func requestSubagentApproval(_ call: AIOutputItem, conversationID: UUID,
+                                         parentCorrelationID: String? = nil) async -> Bool {
         guard LimaAIToolRegistry.definition(for: call.name) != nil, call.callID != nil else { return false }
         let waiterID = UUID()
         return await withTaskCancellationHandler {
@@ -2727,7 +2755,7 @@ final class AIChatViewModel: ObservableObject {
                 guard !Task.isCancelled else { continuation.resume(returning: false); return }
                 queuedSubagentApprovals.append(SubagentApprovalWaiter(
                     id: waiterID, call: call, conversationID: conversationID,
-                    continuation: continuation
+                    parentCorrelationID: parentCorrelationID, continuation: continuation
                 ))
                 presentNextSubagentApproval()
             }
@@ -2762,6 +2790,8 @@ final class AIChatViewModel: ObservableObject {
             AIAgentActivity(
                 kind: .toolApproval, title: "Approval needed",
                 detail: "Subagent · Lima · \(definition.name)",
+                correlationID: waiter.parentCorrelationID.map { "\($0)/\(callID)/approval" } ?? "\(callID)/approval",
+                parentCorrelationID: waiter.parentCorrelationID,
                 requiresApproval: true
             ),
             conversationID: waiter.conversationID
@@ -2811,6 +2841,10 @@ final class AIChatViewModel: ObservableObject {
                         : (allow && !sameDirectory ? "Workspace directory changed"
                         : allow && grantDirectory ? "Directory grant unavailable" : "Tool denied"),
                     detail: "Subagent · Lima · \(approval?.toolName ?? "Tool")",
+                    correlationID: waiter.call.callID.map { callID in
+                        waiter.parentCorrelationID.map { "\($0)/\(callID)/approval" } ?? "\(callID)/approval"
+                    },
+                    parentCorrelationID: waiter.parentCorrelationID,
                     requiresApproval: true, completed: true
                 ),
                 conversationID: waiter.conversationID
@@ -2866,6 +2900,7 @@ final class AIChatViewModel: ObservableObject {
                 kind: .toolApproval,
                 title: "Approval needed",
                 detail: "Lima · \(definition.name)",
+                correlationID: "\(callID)/approval",
                 requiresApproval: true
             ),
             conversationID: conversationID
@@ -2921,7 +2956,8 @@ final class AIChatViewModel: ObservableObject {
         allowedTools: [LimaAIToolDefinition],
         conversationID: UUID,
         approvalGranted: Bool = false,
-        subagentOrdinal: Int? = nil
+        subagentOrdinal: Int? = nil,
+        parentCorrelationID: String? = nil
     ) async -> [String: Any]? {
         if call.name == CLIToolDiscovery.name {
             guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled,
@@ -2954,10 +2990,17 @@ final class AIChatViewModel: ObservableObject {
             return nil
         }
 
-        appendTurnActivity(
-            AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima", completed: false),
-            conversationID: conversationID
-        )
+        let activityCorrelationID = call.callID.map { id in
+            parentCorrelationID.map { "\($0)/\(id)" } ?? id
+        }
+        if definition.id != "agent_delegate" {
+            appendTurnActivity(
+                AIAgentActivity(kind: .toolStarted, title: definition.name, detail: "Lima",
+                    correlationID: activityCorrelationID, parentCorrelationID: parentCorrelationID,
+                    completed: false),
+                conversationID: conversationID
+            )
+        }
         let toolStartedAt = Date()
         let result: LimaAIToolExecution
         if AIContextTools.capabilityIDs.contains(definition.id) {
@@ -2986,16 +3029,20 @@ final class AIChatViewModel: ObservableObject {
         let prepared = await prepareToolOutput(result.output, toolName: definition.name,
                                                call: call, explicitBrowserTabID: result.browserTabID)
         let outputDetail = prepared.reference.map { "\($0.lineCount.formatted()) lines · \($0.byteCount.formatted()) bytes" }
-        appendTurnActivity(
-            AIAgentActivity(
-                kind: result.isError ? .toolFailed : .toolCompleted,
-                title: definition.name,
-                detail: outputDetail ?? (result.isError ? "Lima tool returned an error." : nil),
-                toolOutputReference: prepared.reference,
-                completed: true
-            ),
-            conversationID: conversationID
-        )
+        if definition.id != "agent_delegate" {
+            appendTurnActivity(
+                AIAgentActivity(
+                    kind: result.isError ? .toolFailed : .toolCompleted,
+                    title: definition.name,
+                    detail: outputDetail ?? (result.isError ? "Lima tool returned an error." : nil),
+                    toolOutputReference: prepared.reference,
+                    correlationID: activityCorrelationID,
+                    parentCorrelationID: parentCorrelationID,
+                    completed: true
+                ),
+                conversationID: conversationID
+            )
+        }
         var providerResult: [String: Any] = [
             "type": "function_call_output", "call_id": callID, "output": prepared.providerText
         ]
@@ -3082,7 +3129,9 @@ final class AIChatViewModel: ObservableObject {
             actionPolicy: AIComputerActionPolicy.shared,
             requestApproval: { [weak self] childCall in
                 guard let self, !Task.isCancelled else { return false }
-                return await self.requestSubagentApproval(childCall, conversationID: conversationID)
+                return await self.requestSubagentApproval(
+                    childCall, conversationID: conversationID, parentCorrelationID: childID
+                )
             },
             hasScopedGrant: { childCall in
                 AIWorkspaceActionTools.hasApplicableDirectoryGrant(
@@ -3095,7 +3144,8 @@ final class AIChatViewModel: ObservableObject {
                         childCall,
                         allowedTools: delegatedTools,
                         conversationID: conversationID,
-                        approvalGranted: approvalGranted
+                        approvalGranted: approvalGranted,
+                        parentCorrelationID: childID
                       ) else { return nil }
                 return output["output"] as? String
             }
@@ -3301,6 +3351,7 @@ final class AIChatViewModel: ObservableObject {
                     : (allow && !sameDirectory ? "Workspace directory changed"
                         : allow && grantDirectory ? "Directory grant unavailable" : "Tool denied"),
                 detail: "\(approval.serverLabel) · \(approval.toolName)",
+                correlationID: "\(approval.localCallID ?? approval.id.uuidString)/approval",
                 requiresApproval: true,
                 completed: true
             ),
@@ -3383,11 +3434,18 @@ final class AIChatViewModel: ObservableObject {
             responseID = id
         case .textDelta(let delta):
             transitionExecutionRun(to: .writing, expectedAssistantID: assistantID)
+            if responseTextComplete { responseTextComplete = false }
             if let measurementID = firstTokenPerformanceMeasurementID {
                 PerformanceMonitor.shared.end(measurementID)
                 firstTokenPerformanceMeasurementID = nil
             }
             appendStreamingText(delta, assistantID: assistantID)
+        case .textDone:
+            if streamingTextAssistantID == assistantID {
+                flushStreamingText()
+                streamingPresentation.markTextComplete()
+                if !responseTextComplete { responseTextComplete = true }
+            }
         case .reasoningSummaryDelta(let delta):
             transitionExecutionRun(to: .reasoning, expectedAssistantID: assistantID)
             appendStreamingReasoning(delta, assistantID: assistantID)
@@ -3436,6 +3494,7 @@ final class AIChatViewModel: ObservableObject {
                     kind: .toolApproval,
                     title: "Approval needed",
                     detail: "\(request.serverLabel) · \(request.toolName)",
+                    correlationID: "\(request.localCallID ?? request.id.uuidString)/approval",
                     requiresApproval: true
                 ),
                 conversationID: conversationID
@@ -3620,6 +3679,7 @@ final class AIChatViewModel: ObservableObject {
     }
 
     private func beginStreamingText(for assistantID: UUID) {
+        if responseTextComplete { responseTextComplete = false }
         streamTextFlushTask?.cancel()
         pendingStreamTextChunks.removeAll(keepingCapacity: true)
         pendingStreamReasoningChunks.removeAll(keepingCapacity: true)
@@ -3680,6 +3740,7 @@ final class AIChatViewModel: ObservableObject {
 
     private func clearStreamingPresentation(for assistantID: UUID) {
         guard streamingTextAssistantID == assistantID else { return }
+        if responseTextComplete { responseTextComplete = false }
         streamTextFlushTask?.cancel()
         streamTextFlushTask = nil
         pendingStreamTextChunks.removeAll(keepingCapacity: true)
@@ -4438,6 +4499,13 @@ struct AIChatWorkspaceView: View {
             }
             composer
         }
+        .onChange(of: model.selectedConversation?.messages.last?.id) { _ in
+            // A request can be sent while provider setup is open. Do not leave
+            // the successful reply hidden behind that panel.
+            if model.selectedConversation?.messages.last?.role == .assistant {
+                showingProviderSetup = false
+            }
+        }
     }
 
     private func conversationHeader(compact: Bool, hasChatSidebar: Bool) -> some View {
@@ -4690,7 +4758,6 @@ struct AIChatWorkspaceView: View {
 
     @StateObject private var scrollState = AIChatScrollState()
     @State private var visibleMessageLimit = AIMessageHistoryWindow.initialLimit
-    @State private var didEstablishInitialChatPosition = false
 
     private var messages: some View {
         ScrollViewReader { proxy in
@@ -4746,8 +4813,8 @@ struct AIChatWorkspaceView: View {
             }
             .background(AIChatScrollPositionObserver(scrollState: scrollState).allowsHitTesting(false))
             .onAppear {
-                guard !didEstablishInitialChatPosition else { return }
-                didEstablishInitialChatPosition = true
+                // Also run when history remounts after provider setup; a
+                // response may have arrived while that panel was displayed.
                 DispatchQueue.main.async { proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom) }
             }
             .onChange(of: model.selectedConversationID) { _ in
@@ -4755,7 +4822,8 @@ struct AIChatWorkspaceView: View {
                 DispatchQueue.main.async { proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom) }
             }
             .onChange(of: model.selectedConversation?.messages.last?.id) { _ in
-                guard scrollState.isNearBottom else { return }
+                let newAssistantTurn = model.selectedConversation?.messages.last?.role == .assistant
+                guard newAssistantTurn || scrollState.isNearBottom else { return }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
                 withTransaction(transaction) { proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom) }
@@ -5338,7 +5406,7 @@ private struct AIChatTaskStatusBar: View {
     }
 }
 
-private struct ActivityDisclosureView: View {
+struct ActivityDisclosureView: View {
     let activities: [AIAgentActivity]
     let reasoningSummary: String?
     let isWorking: Bool
@@ -5376,12 +5444,12 @@ private struct ActivityDisclosureView: View {
         steps.contains { $0.status == .running || $0.status == .waiting }
     }
 
-    private var subagentSteps: [AIActivityStreamStep] {
-        steps.filter { $0.title == "Subagent" || $0.title.hasPrefix("Subagent ") }
+    private var flowNodes: [AIActivityFlowNode] {
+        AIActivityStream.flowNodes(from: steps)
     }
 
-    private var otherSteps: [AIActivityStreamStep] {
-        steps.filter { $0.title != "Subagent" && !$0.title.hasPrefix("Subagent ") }
+    private var subagentSteps: [AIActivityStreamStep] {
+        flowNodes.map(\.step).filter { $0.title == "Subagent" || $0.title.hasPrefix("Subagent ") }
     }
 
     private var activeSubagentCount: Int {
@@ -5405,31 +5473,109 @@ private struct ActivityDisclosureView: View {
         }
     }
 
-    private func subagentCard(_ step: AIActivityStreamStep) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: step.symbol)
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(color(for: step.status))
-                .frame(width: 21, height: 21)
-                .background(LimaDesign.recessedFill, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-            VStack(alignment: .leading, spacing: 3) {
+    private func statusText(_ status: AIActivityStreamStep.Status) -> String {
+        switch status {
+        case .running: return "In progress"
+        case .waiting: return "Awaiting approval"
+        case .completed: return "Tool returned"
+        case .failed: return "Needs attention"
+        case .interrupted: return "Stopped"
+        }
+    }
+
+    private func flowStepCard(_ step: AIActivityStreamStep, child: Bool = false) -> some View {
+        let isAgent = step.title == "Subagent" || step.title.hasPrefix("Subagent ")
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(step.title)
                     .limaFont(.caption.weight(.semibold))
                     .lineLimit(1)
-                Text(step.detail ?? (step.status == .completed ? "Completed" : "Working"))
+                Spacer(minLength: 4)
+                Text(statusText(step.status))
+                    .limaFont(.caption2.weight(.semibold))
+                    .foregroundStyle(color(for: step.status))
+                    .lineLimit(1)
+            }
+            if let detail = step.detail {
+                Text(detail)
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
-                    .lineLimit(2)
+                    .lineLimit(child ? 2 : 3)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            if let reference = step.toolOutputReference {
+                Button("View output") {
+                    guard let url = AIToolOutputStore.fileURL(for: reference) else {
+                        outputUnavailable = true
+                        return
+                    }
+                    _ = NSWorkspace.shared.open(url)
+                }
+                .buttonStyle(.plain)
+                .limaFont(.caption.weight(.medium))
+                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                .accessibilityIdentifier("ai-view-tool-output")
+            }
         }
-        .frame(maxWidth: .infinity, minHeight: 42, alignment: .topLeading)
-        .padding(8)
-        .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, child ? 7 : 9)
+        .background(
+            color(for: step.status).opacity(child ? 0.035 : 0.055),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
         .overlay(RoundedRectangle(cornerRadius: 9, style: .continuous)
-            .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth))
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier(LimaQAIdentifiers.AI.subagentActivity)
+            .strokeBorder(color(for: step.status).opacity(0.22), lineWidth: LimaDesign.hairlineWidth))
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(step.title). \(statusText(step.status)). \(step.detail ?? "")")
+        .accessibilityIdentifier(isAgent ? LimaQAIdentifiers.AI.subagentActivity : "ai-activity-flow-step")
+    }
+
+    private func flowNode(_ node: AIActivityFlowNode, isLast: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: node.step.symbol)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(color(for: node.step.status))
+                    .frame(width: 24, height: 24)
+                    .background(color(for: node.step.status).opacity(0.12), in: Circle())
+                    .accessibilityHidden(true)
+                flowStepCard(node.step)
+            }
+            if !node.children.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Rectangle()
+                        .fill(LimaTheme.borderSubtle)
+                        .frame(width: LimaDesign.hairlineWidth)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(node.children) { child in
+                            HStack(alignment: .top, spacing: 7) {
+                                Image(systemName: child.symbol)
+                                    .font(.system(size: 10, weight: .semibold))
+                                    .foregroundStyle(color(for: child.status))
+                                    .frame(width: 16, height: 20)
+                                    .accessibilityHidden(true)
+                                flowStepCard(child, child: true)
+                            }
+                        }
+                    }
+                    .padding(.leading, 9)
+                    .overlay(alignment: .leading) {
+                        Rectangle().fill(LimaTheme.borderSubtle)
+                            .frame(width: LimaDesign.hairlineWidth)
+                    }
+                }
+                .padding(.top, 5)
+                .accessibilityIdentifier("ai-activity-agent-branch")
+            }
+            if !isLast {
+                Rectangle()
+                    .fill(LimaTheme.borderSubtle)
+                    .frame(width: LimaDesign.hairlineWidth, height: 10)
+                    .frame(width: 24)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     var body: some View {
@@ -5437,48 +5583,17 @@ private struct ActivityDisclosureView: View {
             LazyVStack(alignment: .leading, spacing: 8) {
                 if !subagentSteps.isEmpty {
                     HStack(spacing: 6) {
-                        Image(systemName: "person.2.fill")
-                        Text("Orchestrating \(subagentSteps.count) tasks")
+                        Image(systemName: "point.3.connected.trianglepath.dotted")
+                        Text("Parallel work · \(subagentSteps.count) agents")
                         Spacer(minLength: 4)
-                        Text("\(activeSubagentCount)/\(subagentSteps.count) running")
+                        Text("\(activeSubagentCount) active")
                             .foregroundStyle(LimaTheme.textSecondary)
                     }
                     .limaFont(.caption.weight(.semibold))
                     .accessibilityIdentifier("ai-subagent-overview")
-
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 170, maximum: 300), spacing: 8)], spacing: 8) {
-                        ForEach(subagentSteps) { step in
-                            subagentCard(step)
-                        }
-                    }
                 }
-                ForEach(otherSteps) { step in
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: step.symbol)
-                            .foregroundStyle(color(for: step.status))
-                            .frame(width: 16)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(step.title).limaFont(.caption.weight(.medium))
-                            if let detail = step.detail {
-                                Text(detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
-                            }
-                            if let reference = step.toolOutputReference {
-                                Button("View Output") {
-                                    guard let url = AIToolOutputStore.fileURL(for: reference) else {
-                                        outputUnavailable = true
-                                        return
-                                    }
-                                    _ = NSWorkspace.shared.open(url)
-                                }
-                                .buttonStyle(.plain)
-                                .limaFont(.caption.weight(.medium))
-                                .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                                .accessibilityIdentifier("ai-view-tool-output")
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .accessibilityElement(children: .contain)
+                ForEach(Array(flowNodes.enumerated()), id: \.element.id) { index, node in
+                    flowNode(node, isLast: index == flowNodes.count - 1)
                 }
                 if isWorking && !hasCurrentStep {
                     HStack(spacing: 8) {
@@ -5635,7 +5750,7 @@ private struct AIStreamingMessageRow: View {
             renderModel: AIMessageRenderModel.cached(for: message),
             visibleText: presentation.visibleText(for: message.id, fallback: message.text),
             reasoningSummary: presentation.visibleReasoningSummary(for: message.id, fallback: message.reasoningSummary),
-            isStreaming: true,
+            isStreaming: !presentation.textComplete,
             isWorking: isWorking,
             currentActionTitle: currentActionTitle,
             showActivity: showActivity,

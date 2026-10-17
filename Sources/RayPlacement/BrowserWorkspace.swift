@@ -24,6 +24,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     @Published private(set) var urlString = ""
     @Published private(set) var isLoading = false
     @Published private(set) var isSuspended = true
+    private(set) var navigationRevision = 0
+    private(set) var completedNavigationRevision = 0
+    private(set) var failedNavigationRevision = 0
+    private var navigationSequences: [ObjectIdentifier: Int] = [:]
     private(set) var isRestoring = false
     private(set) var restoreFailed = false
     var openPopup: ((WKWebViewConfiguration) -> WKWebView?)?
@@ -107,6 +111,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
         view.uiDelegate = nil
         view.removeFromSuperview()
         liveWebView = nil
+        navigationSequences.removeAll()
         isLoading = false
         isSuspended = true
         isRestoring = false
@@ -117,6 +122,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        navigationRevision &+= 1
+        if let navigation { navigationSequences[ObjectIdentifier(navigation)] = navigationRevision }
         isLoading = true
         restoreFailed = false
         frameInfoByID.removeAll()
@@ -125,6 +132,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        if let navigation, let sequence = navigationSequences.removeValue(forKey: ObjectIdentifier(navigation)) {
+            completedNavigationRevision = max(completedNavigationRevision, sequence)
+        }
         isLoading = false
         isRestoring = false
         requestedNavigationURL = nil
@@ -132,6 +142,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        if let navigation, let sequence = navigationSequences.removeValue(forKey: ObjectIdentifier(navigation)) {
+            failedNavigationRevision = max(failedNavigationRevision, sequence)
+        }
         isLoading = false
         restoreFailed = isRestoring
         isRestoring = false
@@ -140,6 +153,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        if let navigation, let sequence = navigationSequences.removeValue(forKey: ObjectIdentifier(navigation)) {
+            failedNavigationRevision = max(failedNavigationRevision, sequence)
+        }
         isLoading = false
         restoreFailed = isRestoring
         isRestoring = false
@@ -192,6 +208,15 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
 @MainActor
 final class BrowserWorkspaceModel: ObservableObject {
     static let shared = BrowserWorkspaceModel(persistPreferences: true)
+
+    /// Installed by the workspace window owner. Browser tools use this only for
+    /// foreground AI actions; background research never steals the user's focus.
+    var onAIForegroundTab: ((UUID) -> Bool)?
+
+    func revealAIForegroundTab(_ id: UUID) -> Bool {
+        guard selectedTabID == id else { return false }
+        return onAIForegroundTab?(id) ?? false
+    }
 
     @Published private(set) var tabs: [BrowserTab] = []
     @Published private(set) var selectedTabID: UUID?
@@ -942,6 +967,33 @@ final class BrowserWorkspaceModel: ObservableObject {
         throw BrowserWaitError.timedOut
     }
 
+    /// Require a post-action WebKit completion and a stable semantic page before
+    /// a navigation tool can claim that its destination loaded. A pre-action
+    /// revision prevents an old, already-loaded page from satisfying the check.
+    func waitForNavigation(_ id: UUID, after revision: Int,
+                           timeoutMilliseconds: Int = 10_000) async throws -> BrowserPageSnapshot {
+        guard (100...30_000).contains(timeoutMilliseconds) else { throw BrowserRuntimeError.unsupportedAction }
+        let started = ProcessInfo.processInfo.systemUptime
+        while (ProcessInfo.processInfo.systemUptime - started) * 1_000 < Double(timeoutMilliseconds) {
+            try Task.checkCancellation()
+            guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
+            try requireAIAccess(id)
+            let tab = try tab(id)
+            if tab.failedNavigationRevision > revision &&
+               tab.failedNavigationRevision >= tab.completedNavigationRevision {
+                throw BrowserNavigationError.failed
+            }
+            if tab.completedNavigationRevision > revision {
+                if !tab.isLoading, let snapshot = try? await read(id),
+                   snapshot.readiness == .readyWithContent || snapshot.readiness == .readyEmpty {
+                    return snapshot
+                }
+            }
+            try await Task.sleep(for: .milliseconds(150))
+        }
+        throw BrowserNavigationError.timedOut
+    }
+
     private func targetFrame(_ target: BrowserTarget, in tab: BrowserTab) throws -> WKFrameInfo? {
         if target.frameID == "main" { return nil }
         guard let frame = tab.frameInfo(for: target.frameID) else { throw BrowserRuntimeError.staleTarget }
@@ -1261,6 +1313,18 @@ enum BrowserWaitError: LocalizedError {
     var errorDescription: String? { "The page did not reach the requested condition before the timeout." }
 }
 
+enum BrowserNavigationError: LocalizedError {
+    case failed
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .failed: return "The Browser navigation failed before the destination loaded."
+        case .timedOut: return "The Browser navigation did not reach a stable page before the timeout."
+        }
+    }
+}
+
 private struct BrowserWebView: NSViewRepresentable {
     let webView: WKWebView
     func makeNSView(context: Context) -> WKWebView { webView }
@@ -1272,31 +1336,45 @@ struct BrowserWorkspaceView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 6) {
-                ForEach(model.tabs) { tab in
-                    BrowserTabButton(tab: tab, selected: tab.id == model.selectedTabID,
-                                     aiOpened: model.automation?.destinationTabID == tab.id,
-                                     focus: { try? model.focus(tab.id) },
-                                     close: { Task { try? await model.close(tab.id) } })
+            HStack(spacing: LimaSpacing.sm) {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: LimaSpacing.xs) {
+                        ForEach(model.tabs) { tab in
+                            BrowserTabButton(tab: tab, selected: tab.id == model.selectedTabID,
+                                             aiOpened: model.automation?.destinationTabID == tab.id,
+                                             focus: { try? model.focus(tab.id) },
+                                             close: { Task { try? await model.close(tab.id) } })
+                        }
+                        Button { _ = model.newTab() } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 11, weight: .semibold))
+                                .frame(width: 26, height: 26)
+                                .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 7))
+                        }
+                        .buttonStyle(.plain)
+                        .help("New Tab")
+                    }
                 }
-                Button { _ = model.newTab() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.plain)
-                    .help("New Tab")
-                Spacer(minLength: 8)
                 Menu {
                     ForEach(BrowserAIControlMode.allCases, id: \.self) { mode in
                         Button(mode.title) { model.aiControlMode = mode }
                     }
                 } label: {
-                    Label("AI Control · \(model.aiControlMode.title)", systemImage: "sparkles")
-                        .font(.system(size: 11, weight: .medium))
+                    Label(model.aiControlMode.title, systemImage: model.aiControlMode == .off ? "sparkles.slash" : "sparkles")
+                        .limaFont(.caption.weight(.semibold))
+                        .foregroundStyle(model.aiControlMode == .off ? LimaTheme.textSecondary : LimaTheme.accentInk)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(LimaTheme.accentSoft, in: Capsule())
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
+                .help("Browser AI Control")
             }
-            .padding(.horizontal, 10)
-            .frame(height: 38)
-            .background(.thinMaterial)
+            .padding(.horizontal, LimaSpacing.sm)
+            .frame(height: 42)
+            .background(LimaTheme.surfaceSecondary)
+            GlassHairline()
             if let tab = model.selectedTab {
                 BrowserTabContent(tab: tab, model: model)
             } else {
@@ -1331,7 +1409,7 @@ private struct BrowserTabButton: View {
                     Text(tab.title).lineLimit(1)
                     if aiOpened {
                         Image(systemName: "sparkles")
-                            .foregroundStyle(.cyan)
+                            .foregroundStyle(LimaTheme.accentInk)
                             .accessibilityLabel("AI opened this tab")
                     }
                 }
@@ -1342,11 +1420,14 @@ private struct BrowserTabButton: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel("Close \(tab.title)")
         }
-        .font(.system(size: 11))
+        .limaFont(.caption)
         .padding(.horizontal, 8)
-        .frame(height: 27)
-        .background(selected ? Color.accentColor.opacity(0.16) : Color.clear,
+        .frame(height: 28)
+        .background(selected ? LimaTheme.surfaceRaised : Color.clear,
                     in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8)
+            .strokeBorder(selected ? LimaTheme.accentInk.opacity(0.5) : LimaTheme.borderSubtle.opacity(0.4),
+                          lineWidth: LimaDesign.hairlineWidth))
     }
 }
 
@@ -1363,21 +1444,46 @@ private struct BrowserTabContent: View {
                 Button { try? model.forward(tab.id) } label: { Image(systemName: "chevron.right") }
                     .disabled(!(tab.activeWebView?.canGoForward ?? false))
                 Button { try? model.reload(tab.id) } label: { Image(systemName: "arrow.clockwise") }
-                TextField("HTTPS or localhost address", text: $address)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit {
-                        if let url = BrowserRuntime.addressDestination(address) {
-                            try? model.navigate(tab.id, to: url)
+                HStack(spacing: 6) {
+                    Image(systemName: tab.urlString.hasPrefix("https://") ? "lock.fill" : "globe")
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .accessibilityHidden(true)
+                    TextField("HTTPS or localhost address", text: $address)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            if let url = BrowserRuntime.addressDestination(address) {
+                                try? model.navigate(tab.id, to: url)
+                            }
                         }
-                    }
-                Image(systemName: model.aiControlMode == .off ? "sparkles.slash" : "sparkles")
-                    .foregroundStyle(model.aiControlMode == .off ? Color.secondary : Color.cyan)
+                        .accessibilityLabel("Browser address")
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 28)
+                .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(LimaTheme.fieldBorder, lineWidth: LimaDesign.hairlineWidth))
+                if tab.isLoading {
+                    ProgressView().controlSize(.mini).accessibilityLabel("Page loading")
+                } else if tab.navigationRevision > 0 &&
+                          tab.failedNavigationRevision >= tab.navigationRevision &&
+                          tab.failedNavigationRevision > tab.completedNavigationRevision {
+                    Image(systemName: "exclamationmark.circle")
+                        .foregroundStyle(LimaTheme.error)
+                        .accessibilityLabel("Page failed to load")
+                } else if !tab.isSuspended && tab.navigationRevision > 0 &&
+                          tab.completedNavigationRevision >= tab.navigationRevision {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundStyle(LimaTheme.textTertiary)
+                        .accessibilityLabel("Page ready")
+                }
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 10)
             .frame(height: 44)
+            .background(LimaTheme.surfacePrimary)
             .onAppear { address = tab.urlString }
             .onChange(of: tab.urlString) { address = $0 }
+            GlassHairline()
             if model.pausedTabIDs.contains(tab.id) {
                 HStack(spacing: 8) {
                     Image(systemName: "pause.circle.fill")

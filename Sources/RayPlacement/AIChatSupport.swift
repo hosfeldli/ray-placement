@@ -400,6 +400,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
     var detail: String?
     var toolOutputReference: AIToolOutputReference?
     var correlationID: String?
+    var parentCorrelationID: String?
     var startedAt: Date
     var endedAt: Date?
     var duration: TimeInterval?
@@ -414,6 +415,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         detail: String? = nil,
         toolOutputReference: AIToolOutputReference? = nil,
         correlationID: String? = nil,
+        parentCorrelationID: String? = nil,
         startedAt: Date = Date(),
         endedAt: Date? = nil,
         duration: TimeInterval? = nil,
@@ -427,6 +429,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         self.detail = detail
         self.toolOutputReference = toolOutputReference
         self.correlationID = correlationID
+        self.parentCorrelationID = parentCorrelationID
         self.startedAt = startedAt
         self.endedAt = endedAt
         self.duration = duration
@@ -1511,8 +1514,14 @@ struct LimaAIToolExecution: Sendable {
 }
 
 enum AIReadOnlyPolicy {
+    static let toolUseInstructions = """
+    Tool-first workflow: At the start of each request and after each tool result, look for a relevant routed Lima tool that can gather needed evidence, perform an authorized task step, or verify an outcome. Prefer calling it now over guessing, relying on stale knowledge, or asking the user to do work Lima can do. For research, inspect returned sources and follow useful leads. For build or repair tasks, inspect the target, act, run appropriate checks, and examine failures before concluding. Continue with targeted tool calls while the next call is likely to materially improve the answer or deliverable. Do not call tools merely to increase call count, when the supplied conversation already answers the request, or when no suitable routed tool exists. Do not initiate unrelated side effects or claim success without a confirming result.
+    """
+
     static let assistantInstructions = """
-    You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step. Use tools only for their declared purpose; do not bypass a missing tool, Browser AI Control mode, user-interaction pause, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. You may draft extension code or manifests in chat for review, but never install or run them.
+    You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step.
+    \(toolUseInstructions)
+    Use tools only for their declared purpose; do not bypass a missing tool, Browser AI Control mode, user-interaction pause, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. For Browser tools, distinguish a tab or loaded page from a visible window: claim that the user can see the Browser only when browser_visible is true. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
 }
@@ -2569,7 +2578,7 @@ enum AIResponsesEventDecoder {
         case "response.output_text.delta":
             return (value["delta"] as? String).map { [.textDelta($0)] } ?? []
         case "response.output_text.done":
-            return []
+            return [.textDone]
         case "response.reasoning_summary_text.delta", "response.reasoning_summary.delta":
             return (value["delta"] as? String).map { [.reasoningSummaryDelta($0)] } ?? []
         case "response.reasoning_summary_part.added":
@@ -2650,6 +2659,10 @@ enum AIResponsesEventDecoder {
         }
         let item = AIOutputItem(phase: phase, payload: payload)
         var events: [AIChatStreamEvent] = [.outputItem(item)]
+        if item.kind == .message && phase == .completed {
+            // Some providers omit output_text.done but complete the message item.
+            events.append(.textDone)
+        }
         if item.kind == .unknown {
             events.append(.diagnostic(AIChatDiagnostic(
                 stage: .outputItem,

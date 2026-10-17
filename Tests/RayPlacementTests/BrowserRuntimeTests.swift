@@ -100,6 +100,107 @@ private final class BrowserLoopbackFixture {
     try await model.close(tab.id)
 }
 
+@Test @MainActor func embeddedBrowserNavigationPostconditionRequiresNewWebKitCompletion() async throws {
+    let server = try BrowserLoopbackFixture()
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab(url: server.url)
+    _ = try await model.wait(tab.id, condition: .textPresent("Loopback Preview Ready"),
+                             timeoutMilliseconds: 15_000)
+    let revision = tab.navigationRevision
+    await #expect(throws: BrowserNavigationError.self) {
+        _ = try await model.waitForNavigation(tab.id, after: revision, timeoutMilliseconds: 300)
+    }
+    try model.reload(tab.id)
+    let page = try await model.waitForNavigation(tab.id, after: revision,
+                                                 timeoutMilliseconds: 15_000)
+    #expect(tab.completedNavigationRevision > revision)
+    #expect(page.identity.url.hasPrefix(server.url.absoluteString))
+    #expect(page.text.contains("Loopback Preview Ready"))
+    try await model.close(tab.id)
+}
+
+@Test @MainActor func embeddedBrowserToolsReportLoadedAndDeferredPostconditions() async throws {
+    let server = try BrowserLoopbackFixture()
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    func call(_ name: String, _ arguments: [String: Any]) throws -> AIOutputItem {
+        let data = try JSONSerialization.data(withJSONObject: arguments)
+        return AIOutputItem(phase: .completed, apiType: "function_call", name: name,
+                            arguments: String(decoding: data, as: UTF8.self))
+    }
+    func object(_ execution: LimaAIToolExecution) throws -> [String: Any] {
+        let data = try #require(execution.output.data(using: .utf8))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+    let navigation = await BrowserWorkspaceAITools.execute(try call("browser_navigate", [
+        "tab_id": tab.id.uuidString, "url": server.url.absoluteString
+    ]), browser: model)
+    #expect(!navigation.isError)
+    let loaded = try object(navigation)
+    #expect(loaded["post_action_verified"] as? Bool == true)
+    #expect(loaded["page_state_verified"] as? Bool == true)
+    #expect((loaded["observed_url"] as? String)?.hasPrefix(server.url.absoluteString) == true)
+
+    let background = await BrowserWorkspaceAITools.execute(try call("browser_new_tab", [
+        "url": server.url.absoluteString, "background": true
+    ]), browser: model)
+    #expect(!background.isError)
+    let deferred = try object(background)
+    #expect(deferred["post_action_verified"] as? Bool == true)
+    #expect(deferred["page_state_verified"] as? Bool == false)
+    #expect(deferred["loading_deferred"] as? Bool == true)
+    let backgroundIDString = try #require(deferred["tab_id"] as? String)
+    let backgroundID = try #require(UUID(uuidString: backgroundIDString))
+    try await model.close(backgroundID)
+    try await model.close(tab.id)
+}
+
+@Test @MainActor func aiBrowserToolsRevealForegroundTabsButNotBackgroundTabs() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    var revealed: [UUID] = []
+    model.onAIForegroundTab = { id in
+        revealed.append(id)
+        return true
+    }
+    func call(_ name: String, _ arguments: [String: Any]) throws -> AIOutputItem {
+        let data = try JSONSerialization.data(withJSONObject: arguments)
+        return AIOutputItem(phase: .completed, apiType: "function_call", name: name,
+                            arguments: String(decoding: data, as: UTF8.self))
+    }
+    func object(_ execution: LimaAIToolExecution) throws -> [String: Any] {
+        let data = try #require(execution.output.data(using: .utf8))
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    }
+
+    let foreground = try object(await BrowserWorkspaceAITools.execute(
+        try call("browser_new_tab", [:]), browser: model
+    ))
+    let foregroundIDString = try #require(foreground["tab_id"] as? String)
+    let foregroundID = try #require(UUID(uuidString: foregroundIDString))
+    #expect(foreground["browser_visible"] as? Bool == true)
+    #expect(revealed == [foregroundID])
+
+    let background = try object(await BrowserWorkspaceAITools.execute(
+        try call("browser_new_tab", ["background": true]), browser: model
+    ))
+    let backgroundIDString = try #require(background["tab_id"] as? String)
+    let backgroundID = try #require(UUID(uuidString: backgroundIDString))
+    #expect(background["browser_visible"] as? Bool == false)
+    #expect(revealed == [foregroundID])
+
+    let focused = try object(await BrowserWorkspaceAITools.execute(
+        try call("browser_focus_tab", ["tab_id": backgroundID.uuidString]), browser: model
+    ))
+    #expect(focused["browser_visible"] as? Bool == true)
+    #expect(focused["post_action_verified"] as? Bool == true)
+    #expect(revealed == [foregroundID, backgroundID])
+    try await model.close(backgroundID)
+    try await model.close(foregroundID)
+}
+
 @Test @MainActor func embeddedBrowserFailuresOfferMachineActionableRepair() throws {
     let stale = BrowserWorkspaceAITools.failure(for: BrowserRuntimeError.staleTarget)
     #expect(stale.code == .staleTarget)
@@ -121,6 +222,12 @@ private final class BrowserLoopbackFixture {
     let destination = BrowserWorkspaceAITools.failure(for: BrowserRuntimeError.invalidDestination)
     #expect(destination.code == .invalidArguments)
     #expect(destination.recoverable)
+    let failedNavigation = BrowserWorkspaceAITools.failure(for: BrowserNavigationError.failed)
+    #expect(failedNavigation.code == .navigationFailed)
+    #expect(failedNavigation.suggestedTools == ["browser_read", "browser_navigate"])
+    let stalledNavigation = BrowserWorkspaceAITools.failure(for: BrowserNavigationError.timedOut)
+    #expect(stalledNavigation.code == .pageUnstable)
+    #expect(stalledNavigation.suggestedTools == ["browser_wait", "browser_read"])
 }
 
 @Test func embeddedBrowserOpenLinkRejectsDownloadsUnknownAndSensitiveTargets() {

@@ -2,7 +2,7 @@
 
 Lima is Liam Hosfeld's fast, keyboard-first native macOS workbench. It combines global commands, a small capability-oriented extension platform, Markdown notes, a real developer terminal, and private local dictation conversations without accounts or analytics.
 
-Lima does not include or download a text-generation model. Writing correction runs locally by default through deterministic Python and Harper rules. Optional Enhanced Grammar can send the text being checked to a user-configured provider after protected URLs, names, acronyms, code-like text, and preserved terms are masked. Dictation remains local through Whisper.
+Lima does not include or download a text-generation model. Grammar correction defaults to a configured external AI provider; selecting Local uses bundled deterministic Python and Harper rules. Local fallback after an unavailable API is optional. Dictation remains local through Whisper.
 
 ## Distribution note
 
@@ -84,9 +84,9 @@ The bundled Writing Tools extension includes:
 - **Paste as Plain Text** — default `Control-Option-V`
 - **Check Spelling & Grammar** — default `Control-Option-G`
 
-Writing Check captures the exact current selection through a Copy transaction, immediately restores the previous clipboard when safe, and opens a review. Local correction runs the bundled pure-Python spelling pipeline followed by Harper grammar rules. When Enhanced Grammar is enabled, the protected selection is sent to the configured provider for structured edits before the same safety checks and review. Return or **Replace Selection** returns focus to the source app and replaces the original selection; a clipboard fallback is available if the source app blocks automation.
+Writing Check captures the exact current selection through a Copy transaction, immediately restores the previous clipboard when safe, and opens a review. External API is the default for new Grammar settings and uses the configured provider for structured edits; Local mode runs the bundled pure-Python spelling pipeline followed by Harper grammar rules. Return or **Replace Selection** returns focus to the source app and replaces the original selection; a clipboard fallback is available if the source app blocks automation.
 
-**Settings → Writing** accepts one preserved term per line for names, acronyms, brands, or domain-specific words that must not be changed. Local mode keeps the checked text on this Mac. Optional Enhanced Grammar sends the text being checked to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are masked; review the provider’s privacy policy before enabling it.
+**Settings → Writing** accepts one preserved term per line for names, acronyms, brands, or domain-specific words that must not be changed. Local mode keeps the checked text on this Mac. External API sends the checked text to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are masked; review the provider’s privacy policy before configuring it. If the API is unavailable, Lima uses Local only when local fallback is enabled.
 
 ## Other bundled extensions
 

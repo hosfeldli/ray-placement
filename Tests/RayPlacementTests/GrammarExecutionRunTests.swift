@@ -45,12 +45,13 @@ import Testing
     let registry = TaskRegistry()
     let taskID = registry.begin(
         kind: .grammar,
-        title: "Fixing writing",
+        title: "Grammar",
         detail: "Checking selected text",
         isCancellable: true
     )
 
     #expect(registry.activeTasks.first?.kind == .grammar)
+    #expect(registry.activeTasks.first?.title == "Grammar")
     #expect(registry.activeTasks.first?.kind.title == "Writing correction")
     #expect(registry.activeTasks.first?.detail == "Checking selected text")
 
@@ -61,4 +62,24 @@ import Testing
     #expect(registry.activeTasks.isEmpty)
     #expect(registry.recentTasks.first?.state == .completed)
     #expect(registry.recentTasks.first?.detail == "Correction applied")
+}
+
+@Test @MainActor func grammarHasItsOwnActivityShelfSlotBesideAIAndClosesOnCompletion() {
+    let registry = TaskRegistry()
+    let aiID = registry.begin(kind: .aiGeneration, title: "AI", detail: "Responding")
+    let grammarID = registry.begin(kind: .grammar, title: "Grammar", detail: "Checking selected text")
+
+    let activeSlots = ActivityShelfTaskSlots(registry.activeTasks)
+    #expect(activeSlots.count == 2)
+    #expect(activeSlots.primary?.id == aiID)
+    #expect(activeSlots.grammar?.id == grammarID)
+
+    registry.finish(grammarID, detail: "Correction applied")
+    let remainingSlots = ActivityShelfTaskSlots(registry.activeTasks)
+    #expect(remainingSlots.count == 1)
+    #expect(remainingSlots.primary?.id == aiID)
+    #expect(remainingSlots.grammar == nil)
+
+    registry.finish(aiID)
+    #expect(ActivityShelfTaskSlots(registry.activeTasks).count == 0)
 }

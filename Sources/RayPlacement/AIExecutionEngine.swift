@@ -185,17 +185,15 @@ actor AIExecutionEngine {
             let typedOutputs = indexedOutputs.compactMap { $0 }
             guard !Task.isCancelled, await callbacks.canContinue(), !typedOutputs.isEmpty else { break }
 
-            // Image pixels are loaded only after the tool completed and only
-            // while its tab/read authority still matches the capture. CLI
-            // continuations remain text-only; API providers receive a bounded
-            // ephemeral image input, never base64 in chat or activity state.
-            let supportsImageInput = !(client is CLIChatProviderClient)
+            // Pixels are loaded only while the tab and read authority match.
+            // Codex CLI and API providers receive ephemeral image input;
+            // Claude CLI remains text-only. Never expose private capture paths.
+            let supportsImageInput = (client as? CLIChatProviderClient)?.provider != .claudeCLI
             var continuationOutputs: [AIEngineToolOutput] = []
             var images: [AIEngineScreenshotInput] = []
             for output in typedOutputs {
-                if supportsImageInput, output.browserScreenshot != nil {
-                    if let image = await imageInput(for: output),
-                       let capture = output.browserScreenshot {
+                if let capture = output.browserScreenshot {
+                    if supportsImageInput, let image = await imageInput(for: output) {
                         // The model needs dimensions and pixels, not a private
                         // on-disk path or internal revision tokens.
                         continuationOutputs.append(AIEngineToolOutput(
@@ -203,10 +201,15 @@ actor AIExecutionEngine {
                             output: "{\"tab_id\":\"\(capture.tabID.uuidString)\",\"media_type\":\"image/jpeg\",\"pixel_width\":\(capture.pixelWidth),\"pixel_height\":\(capture.pixelHeight),\"image_attached\":true}"
                         ))
                         images.append(image)
-                    } else {
+                    } else if supportsImageInput {
                         continuationOutputs.append(AIEngineToolOutput(
                             callID: output.callID,
                             output: "{\"error\":\"The Browser screenshot changed or was removed before its pixels could be delivered. Capture it again.\"}"
+                        ))
+                    } else {
+                        continuationOutputs.append(AIEngineToolOutput(
+                            callID: output.callID,
+                            output: #"{"image_attached":false,"reason":"This CLI provider cannot inspect Browser screenshot pixels."}"#
                         ))
                     }
                 } else {

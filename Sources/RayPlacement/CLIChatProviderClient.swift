@@ -1,4 +1,5 @@
 import Foundation
+import RayPlacementCore
 
 /// Uses an existing local CLI login for chat. Tool requests are returned to
 /// Lima's normal routing and approval loop; the CLI never executes Lima tools.
@@ -58,6 +59,32 @@ struct CLIChatProviderClient: AIChatTransport {
     let provider: AIProvider
     private static let maximumOutputBytes = 2 * 1024 * 1024
 
+    struct TransientImage: Sendable, Equatable {
+        let mediaType: String
+        let base64: String
+    }
+
+    /// Only the newest tool-result turn can supply pixels to a continuation.
+    /// Older screenshots must not be silently reattached on later tool rounds.
+    static func transientImages(from history: [AIProviderMessage]) -> [TransientImage] {
+        guard let latest = history.last, latest.role == .user else { return [] }
+        return latest.content.compactMap { item in
+            guard case .image(let mediaType, let base64) = item else { return nil }
+            return TransientImage(mediaType: mediaType, base64: base64)
+        }
+    }
+
+    static func validatedJPEGData(for image: TransientImage) throws -> Data {
+        guard image.mediaType == "image/jpeg",
+              !image.base64.isEmpty, image.base64.utf8.count <= 5_400_000,
+              let data = Data(base64Encoded: image.base64),
+              data.count <= 4_000_000, data.count >= 3,
+              data[0] == 0xFF, data[1] == 0xD8, data[2] == 0xFF else {
+            throw Failure.unsupportedAttachment
+        }
+        return data
+    }
+
     static func executableURL(for provider: AIProvider) -> URL? {
         let name: String
         switch provider {
@@ -111,14 +138,16 @@ struct CLIChatProviderClient: AIChatTransport {
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         stream(
             model: model, input: "", history: history, attachments: [],
-            localTools: localTools, systemInstructions: systemInstructions
+            localTools: localTools, systemInstructions: systemInstructions,
+            transientImages: Self.transientImages(from: history)
         )
     }
 
     private func stream(
         model: String, input: String, history: [AIProviderMessage],
         attachments: [AIAttachment],
-        localTools: [LimaAIToolDefinition], systemInstructions: String
+        localTools: [LimaAIToolDefinition], systemInstructions: String,
+        transientImages: [TransientImage] = []
     ) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task.detached(priority: .userInitiated) {
@@ -133,6 +162,7 @@ struct CLIChatProviderClient: AIChatTransport {
                         provider: provider, model: model, prompt: prompt,
                         structuredResponse: !bridgedTools.isEmpty,
                         imageAttachments: attachments.filter { $0.kind == .image },
+                        transientImages: transientImages,
                         onStarted: {
                             continuation.yield(.activity(AIAgentActivity(kind: .thinking,
                                 title: "Thinking with " + provider.title, completed: false)))
@@ -173,11 +203,12 @@ struct CLIChatProviderClient: AIChatTransport {
         localTools: [LimaAIToolDefinition] = [], allowImages: Bool = false
     ) throws -> String {
         var header = [
-            "You are responding inside Lima. Answer the user's request using only the conversation and context below.",
-            "Use relevant Lima tools proactively. Do not use the CLI's own shell, browser, file, or network tools; request only the Lima tools listed below or returned by Lima tool discovery. Lima checks the active Tool Access mode and runtime boundaries before executing them; Full Control adds no Lima per-action prompt.",
+            "You are responding inside Lima. Use the conversation, supplied context, and available Lima tools to fulfill the user's request.",
+            "Do not use the CLI's own shell, browser, file, or network tools; request only the Lima tools listed below or returned by Lima tool discovery. Lima checks the active Tool Access mode and runtime boundaries before executing them; Full Control adds no Lima per-action prompt.",
             "Instructions:\n" + String(systemInstructions.prefix(20_000))
         ]
         if !localTools.isEmpty {
+            header.insert(AIReadOnlyPolicy.toolUseInstructions, at: 2)
             let catalog = try toolCatalog(localTools)
             header += ["""
             To use a Lima tool, return exactly one JSON object and no other text:
@@ -243,7 +274,9 @@ struct CLIChatProviderClient: AIChatTransport {
             return text.isEmpty ? nil : text
         }.first ?? input
         let requestAnchor = "CURRENT USER REQUEST:\n" + String(latestUserRequest.prefix(12_000))
-        let ending = "Reply to the current user request. Do not describe unavailable tools as if you used them."
+        let ending = localTools.isEmpty
+            ? "Reply to the current user request. Do not describe unavailable tools as if you used them."
+            : "Before the final reply, request a relevant Lima tool if it can materially advance or verify the current task. After each result, consider another useful tool call; stop when further calls would not help. Then reply to the current user request. Do not describe unavailable tools as if you used them."
         let fixed = (header + [requestAnchor] + context + [ending]).joined(separator: "\n\n")
         if fixed.count >= 120_000, localTools.count > 1 {
             return try prompt(input: input, history: history, attachments: attachments,
@@ -394,7 +427,8 @@ struct CLIChatProviderClient: AIChatTransport {
 
     private static func run(
         provider: AIProvider, model: String, prompt: String,
-        structuredResponse: Bool, imageAttachments: [AIAttachment], onStarted: @escaping @Sendable () -> Void
+        structuredResponse: Bool, imageAttachments: [AIAttachment],
+        transientImages: [TransientImage], onStarted: @escaping @Sendable () -> Void
     ) async throws -> Data {
         guard let executable = executableURL(for: provider) else { throw Failure.missingCLI(provider.title) }
         guard Self.isValidModelID(model) else { throw Failure.invalidModel }
@@ -411,6 +445,17 @@ struct CLIChatProviderClient: AIChatTransport {
                 guard let data = Data(base64Encoded: image.base64) else { throw Failure.unsupportedAttachment }
                 let imageURL = directory.appendingPathComponent("image-\(index)." + (image.mediaType == "image/png" ? "png" : image.mediaType == "image/jpeg" ? "jpg" : image.mediaType == "image/webp" ? "webp" : "gif"))
                 try data.write(to: imageURL, options: .atomic)
+                imageURLs.append(imageURL)
+            }
+        }
+        if !transientImages.isEmpty {
+            guard provider == .codexCLI, transientImages.count <= 8 else {
+                throw Failure.unsupportedAttachment
+            }
+            for (index, image) in transientImages.enumerated() {
+                let data = try validatedJPEGData(for: image)
+                let imageURL = directory.appendingPathComponent("browser-\(index).jpg")
+                try PrivateFileStore().write(data: data, to: imageURL, backupExisting: false)
                 imageURLs.append(imageURL)
             }
         }

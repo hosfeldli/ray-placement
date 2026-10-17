@@ -57,6 +57,63 @@ import Testing
     #expect(steps.allSatisfy { $0.status == .completed })
 }
 
+@Test func activityFlowNestsOnlyRecordedCallsUnderTheirActualParallelAgent() {
+    let events = [
+        AIAgentActivity(kind: .toolStarted, title: "Subagent 2",
+                        correlationID: "child-b"),
+        AIAgentActivity(kind: .toolStarted, title: "browser_read",
+                        correlationID: "child-b/read", parentCorrelationID: "child-b"),
+        AIAgentActivity(kind: .toolStarted, title: "Subagent 1",
+                        correlationID: "child-a"),
+        AIAgentActivity(kind: .toolStarted, title: "terminal_read",
+                        correlationID: "child-a/read", parentCorrelationID: "child-a"),
+        AIAgentActivity(kind: .toolCompleted, title: "terminal_read",
+                        correlationID: "child-a/read", parentCorrelationID: "child-a", completed: true),
+        AIAgentActivity(kind: .toolCompleted, title: "browser_read",
+                        correlationID: "child-b/read", parentCorrelationID: "child-b", completed: true),
+        AIAgentActivity(kind: .toolCompleted, title: "Subagent 1",
+                        correlationID: "child-a", completed: true),
+        AIAgentActivity(kind: .toolCompleted, title: "Subagent 2",
+                        correlationID: "child-b", completed: true),
+        AIAgentActivity(kind: .toolStarted, title: "orphan_tool",
+                        correlationID: "missing/read", parentCorrelationID: "missing")
+    ]
+    let steps = AIActivityStream.steps(from: events, isActive: true)
+    let nodes = AIActivityStream.flowNodes(from: steps)
+    #expect(nodes.map(\.step.correlationID) == ["child-a", "child-b", "missing/read"])
+    #expect(nodes[0].children.map(\.correlationID) == ["child-a/read"])
+    #expect(nodes[1].children.map(\.correlationID) == ["child-b/read"])
+    #expect(nodes[2].children.isEmpty)
+    #expect(nodes[0].children[0].status == .completed)
+    #expect(nodes[1].children[0].status == .completed)
+    #expect(nodes[2].step.status == .running)
+    #expect(AIActivityStream.completedActionCount(steps) == 4)
+}
+
+@Test func parallelApprovalsPairByCallAndStayOnTheirAgentBranches() {
+    let events = [
+        AIAgentActivity(kind: .toolStarted, title: "Subagent 1", correlationID: "child-a"),
+        AIAgentActivity(kind: .toolStarted, title: "Subagent 2", correlationID: "child-b"),
+        AIAgentActivity(kind: .toolApproval, title: "Approval needed",
+                        correlationID: "child-a/tool/approval", parentCorrelationID: "child-a"),
+        AIAgentActivity(kind: .toolApproval, title: "Approval needed",
+                        correlationID: "child-b/tool/approval", parentCorrelationID: "child-b"),
+        AIAgentActivity(kind: .toolApproval, title: "Tool allowed once",
+                        correlationID: "child-a/tool/approval", parentCorrelationID: "child-a", completed: true)
+    ]
+    let pending = AIActivityStream.flowNodes(from: AIActivityStream.steps(from: events, isActive: true))
+    #expect(pending.map(\.step.title) == ["Subagent 1", "Subagent 2"])
+    #expect(pending[0].children.map(\.status) == [.completed])
+    #expect(pending[1].children.map(\.status) == [.waiting])
+
+    let failedGrant = AIAgentActivity(kind: .toolApproval, title: "Directory grant unavailable",
+                                      correlationID: "child-b/tool/approval", parentCorrelationID: "child-b", completed: true)
+    let finished = AIActivityStream.flowNodes(from: AIActivityStream.steps(from: events + [failedGrant], isActive: false))
+    #expect(finished[0].children[0].title == "Tool allowed once")
+    #expect(finished[1].children[0].title == "Directory grant unavailable")
+    #expect(finished[1].children[0].status == .failed)
+}
+
 @Test func activityTerminalStateRespectsExplicitStopAndSuccess() {
     let stopped = AIAgentActivity(kind: .completed, title: "Stopped", completed: true)
     #expect(AIActivityStream.terminalState(from: [stopped], steps: []) == .stopped)

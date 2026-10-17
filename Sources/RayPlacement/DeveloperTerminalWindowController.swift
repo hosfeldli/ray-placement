@@ -187,6 +187,13 @@ struct DeveloperTerminalView: View {
     @ObservedObject private var aiSessions = AIWorkspaceTerminalCoordinator.shared
     @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     @State private var selectedSessionID: UUID?
+    private let startPersonalShell: Bool
+
+    init(model: DeveloperTerminalModel, startPersonalShell: Bool = true) {
+        self.model = model
+        self.startPersonalShell = startPersonalShell
+        _selectedSessionID = State(initialValue: AIWorkspaceTerminalCoordinator.shared.foregroundSessionID)
+    }
 
     private var selectedAISession: AIWorkspaceTerminalSnapshot? {
         guard let selectedSessionID else { return nil }
@@ -196,8 +203,14 @@ struct DeveloperTerminalView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: LimaSpacing.sm) {
-                Label("Terminal", systemImage: "terminal")
-                    .limaFont(.caption.weight(.semibold))
+                HStack(spacing: 6) {
+                    Image(systemName: "terminal.fill")
+                        .foregroundStyle(LimaTheme.accentInk)
+                    Text("TERMINAL")
+                        .limaFont(.caption.weight(.bold))
+                        .tracking(0.7)
+                }
+                .accessibilityLabel("Terminal")
                 if !aiSessions.sessions.isEmpty {
                     Picker("Session", selection: $selectedSessionID) {
                         Text("My Shell").tag(UUID?.none)
@@ -207,6 +220,7 @@ struct DeveloperTerminalView: View {
                     }
                     .labelsHidden()
                     .frame(maxWidth: 220)
+                    .accessibilityIdentifier("ai-terminal-session-picker")
                 }
                 Button {
                     if let session = selectedAISession {
@@ -237,8 +251,12 @@ struct DeveloperTerminalView: View {
                             }
                         } else {
                             Button("Close AI Session") {
-                                _ = try? aiSessions.close(sessionID: session.id)
-                                selectedSessionID = nil
+                                do {
+                                    try aiSessions.close(sessionID: session.id)
+                                    selectedSessionID = aiSessions.foregroundSessionID
+                                } catch {
+                                    // Keep the selected session visible if it could not close.
+                                }
                             }
                         }
                     } else {
@@ -265,23 +283,43 @@ struct DeveloperTerminalView: View {
             if let session = selectedAISession {
                 aiSessionView(session)
             } else {
-                TerminalSurface(model: model)
-                    .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
-                    .onTapGesture { model.focus() }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel("Terminal")
-                    .onAppear { model.startIfNeeded() }
+                ZStack(alignment: .topLeading) {
+                    TerminalSurface(model: model)
+                        .onTapGesture { model.focus() }
+                    if !model.isLive {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Label("Personal shell stopped", systemImage: "terminal.fill")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white)
+                            Text("AI-created sessions open here automatically. Start your shell to work alongside them.")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Color.white.opacity(0.72))
+                                .fixedSize(horizontal: false, vertical: true)
+                            Button("Start Shell") { model.startIfNeeded() }
+                                .buttonStyle(.borderedProminent)
+                                .tint(SettingsStore.shared.accentTheme.primary)
+                        }
+                        .frame(maxWidth: 300, alignment: .leading)
+                        .padding(16)
+                        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12)
+                            .strokeBorder(Color.white.opacity(0.16), lineWidth: LimaDesign.hairlineWidth))
+                        .padding(24)
+                    }
+                }
+                .background(Color(nsColor: model.terminalView.nativeBackgroundColor))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("Terminal")
+                .onAppear { if startPersonalShell { model.startIfNeeded() } }
             }
         }
         .onAppear {
-            if selectedSessionID == nil,
-               let running = aiSessions.sessions.last(where: { $0.state == .running }) {
-                selectedSessionID = running.id
-            }
+            selectedSessionID = aiSessions.foregroundSessionID
+                ?? aiSessions.sessions.last(where: { $0.state == .running })?.id
         }
-        .onChange(of: aiSessions.sessions.count) { _ in
-            if let newest = aiSessions.sessions.last { selectedSessionID = newest.id }
+        .onChange(of: aiSessions.foregroundSessionID) { id in
+            selectedSessionID = id
         }
     }
 
@@ -289,15 +327,24 @@ struct DeveloperTerminalView: View {
     private func aiSessionView(_ session: AIWorkspaceTerminalSnapshot) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: LimaSpacing.sm) {
-                Image(systemName: session.state == .running ? "circle.dotted" :
-                    session.state == .completed ? "checkmark.circle" :
-                    session.state == .idle ? "terminal" : "xmark.circle")
+                Circle()
+                    .fill(session.state == .running ? LimaTheme.accentInk :
+                          session.state == .completed ? LimaTheme.success :
+                          session.state == .idle ? LimaTheme.textTertiary : LimaTheme.error)
+                    .frame(width: 7, height: 7)
+                    .accessibilityHidden(true)
+                Text(session.isInteractivePTY ? "SHARED PTY" : "AI TASK")
+                    .limaFont(.caption2.weight(.bold))
+                    .tracking(0.6)
+                    .foregroundStyle(LimaTheme.accentInk)
                 Text(session.state.rawValue.capitalized)
+                    .foregroundStyle(LimaTheme.textSecondary)
                 Text(session.directory)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .foregroundStyle(LimaTheme.textSecondary)
-                Spacer()
+                    .help(session.directory)
+                Spacer(minLength: 4)
                 if session.directoryGrantActive {
                     Label("Directory allowed", systemImage: "checkmark.shield.fill")
                         .foregroundStyle(LimaColors.success)
@@ -319,6 +366,7 @@ struct DeveloperTerminalView: View {
             .padding(.horizontal, LimaSpacing.md)
             .frame(height: LimaDesign.toolbarHeight)
             .background(LimaTheme.surfaceSecondary)
+            GlassHairline()
             if session.isInteractivePTY, let pty = aiSessions.ptyView(sessionID: session.id) {
                 AIWorkspacePTYSurface(terminalView: pty)
                     .background(Color(nsColor: pty.nativeBackgroundColor))
@@ -328,7 +376,7 @@ struct DeveloperTerminalView: View {
                     ScrollView {
                         Text(session.output.isEmpty ? "AI Workspace session ready." : session.output)
                             .font(.system(size: 12, design: .monospaced))
-                            .foregroundStyle(LimaTheme.textPrimary)
+                            .foregroundStyle(Color(red: 0.89, green: 0.92, blue: 0.96))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(LimaSpacing.md)
@@ -342,6 +390,8 @@ struct DeveloperTerminalView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .contain)
         .accessibilityLabel("AI Workspace Terminal")
+        .accessibilityIdentifier("ai-workspace-terminal")
     }
 }

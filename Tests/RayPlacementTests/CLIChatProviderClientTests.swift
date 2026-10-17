@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 @testable import RayPlacement
@@ -54,6 +55,25 @@ import Testing
     #expect(answer.localizedCaseInsensitiveContains("blue"))
 }
 
+@Test func liveCodexCLISelectsUsefulToolWithoutExplicitInstruction() async throws {
+    guard ProcessInfo.processInfo.environment["LIMA_TEST_LIVE_CODEX"] == "1" else { return }
+    let tool = fixtureCLITool()
+    let client = CLIChatProviderClient(provider: .codexCLI)
+    let stream = client.streamReply(
+        apiKey: "", model: "default",
+        input: "What is the current fixture value for key sample? Report a value only if you can inspect it.",
+        history: [], previousResponseID: nil, reasoningEffort: .medium,
+        attachments: [], localTools: [tool],
+        systemInstructions: AIReadOnlyPolicy.assistantInstructions
+    )
+    var requestedTool: AIOutputItem?
+    for try await event in stream {
+        if case .outputItem(let item) = event { requestedTool = item }
+    }
+    #expect(requestedTool?.name == tool.name)
+    #expect(requestedTool?.arguments?.contains("sample") == true)
+}
+
 @Test @MainActor func liveCodexCLINativeToolExecutionSmoke() async throws {
     guard ProcessInfo.processInfo.environment["LIMA_TEST_LIVE_CODEX"] == "1",
           LimaTestEnvironment.allowsLiveAI else { return }
@@ -90,6 +110,43 @@ import Testing
     #expect(!model.canEndTask)
     #expect(!model.hasActiveStreamTaskForTesting)
     #expect(await model.inFlightExecutionLoopCountForTesting() == 0)
+}
+
+@Test @MainActor func liveCodexCLIBrowserScreenshotContinuationSmoke() async throws {
+    guard ProcessInfo.processInfo.environment["LIMA_TEST_LIVE_CODEX"] == "1" else { return }
+    let context = try #require(CGContext(
+        data: nil, width: 64, height: 64, bitsPerComponent: 8,
+        bytesPerRow: 64 * 4, space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ))
+    context.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+    context.fill(CGRect(x: 0, y: 0, width: 64, height: 64))
+    let rendered = try #require(context.makeImage())
+    let jpeg = try #require(NSBitmapImageRep(cgImage: rendered).representation(
+        using: .jpeg, properties: [:]
+    ))
+    let callID = "screenshot-smoke"
+    let history = [
+        AIProviderMessage(role: .user, text: "Identify the main color in the Browser screenshot."),
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: callID, name: "browser_screenshot", arguments: "{}")
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: callID, output: #"{"image_attached":true}"#),
+            .text("Browser screenshot from tool call screenshot-smoke. Identify its main color."),
+            .image(mediaType: "image/jpeg", base64: jpeg.base64EncodedString())
+        ])
+    ]
+    let stream = CLIChatProviderClient(provider: .codexCLI).streamToolOutputs(
+        apiKey: "", model: "default", previousResponseID: "screenshot-smoke",
+        history: history, outputs: [], reasoningEffort: .medium,
+        localTools: [], systemInstructions: ""
+    )
+    var answer = ""
+    for try await event in stream {
+        if case .textDelta(let text) = event { answer += text }
+    }
+    #expect(answer.localizedCaseInsensitiveContains("red"))
 }
 
 @Test func cliProviderArgumentsKeepPromptOffCommandLineAndConstrainTools() {
@@ -182,6 +239,25 @@ private func fixtureCLITool() -> LimaAIToolDefinition {
     #expect(prompt.count <= 140_000)
 }
 
+@Test func cliProviderPrefersUsefulToolsOnlyWhenRouted() throws {
+    let withTools = try CLIChatProviderClient.prompt(
+        input: "Research the current state", history: [], attachments: [],
+        systemInstructions: "", localTools: [fixtureCLITool()]
+    )
+    #expect(withTools.contains("Tool-first workflow"))
+    #expect(withTools.contains("At the start of each request and after each tool result"))
+    #expect(withTools.contains("Do not call tools merely to increase call count"))
+    #expect(withTools.contains("Do not use the CLI's own shell, browser, file, or network tools"))
+    #expect(withTools.contains("Before the final reply, request a relevant Lima tool"))
+    #expect(withTools.contains("stop when further calls would not help"))
+
+    let withoutTools = try CLIChatProviderClient.prompt(
+        input: "Explain this supplied text", history: [], attachments: [],
+        systemInstructions: "", localTools: []
+    )
+    #expect(!withoutTools.contains("Tool-first workflow"))
+}
+
 @Test func cliProviderSchemaArgumentIsIsolatedFromPrompt() {
     let directory = URL(fileURLWithPath: "/tmp/lima-cli-test")
     let schema = directory.appendingPathComponent("schema.json")
@@ -264,4 +340,43 @@ private func fixtureCLITool() -> LimaAIToolDefinition {
         systemInstructions: "", allowImages: true
     )
     #expect(codexPrompt.contains("VISIBLE IMAGE — Image (attached separately)"))
+}
+
+@Test func codexCLIContinuationAttachesOnlyCurrentBoundedScreenshot() throws {
+    let jpeg = Data([0xFF, 0xD8, 0xFF, 0xD9])
+    let base64 = jpeg.base64EncodedString()
+    let history = [
+        AIProviderMessage(role: .user, text: "Inspect the page"),
+        AIProviderMessage(role: .assistant, content: [
+            .toolUse(id: "capture", name: "browser_screenshot", arguments: "{}")
+        ]),
+        AIProviderMessage(role: .user, content: [
+            .toolResult(id: "capture", output: #"{"image_attached":true}"#),
+            .text("Browser screenshot from tool call capture."),
+            .image(mediaType: "image/jpeg", base64: base64)
+        ])
+    ]
+    let images = CLIChatProviderClient.transientImages(from: history)
+    #expect(images.count == 1)
+    #expect(try CLIChatProviderClient.validatedJPEGData(for: images[0]) == jpeg)
+    let prompt = try CLIChatProviderClient.prompt(
+        input: "", history: history, attachments: [], systemInstructions: "",
+        allowImages: true
+    )
+    #expect(prompt.contains("Browser screenshot from tool call capture."))
+    #expect(!prompt.contains(base64))
+    #expect(CLIChatProviderClient.transientImages(
+        from: history + [AIProviderMessage(role: .user, text: "Next turn")]
+    ).isEmpty)
+
+    #expect(throws: CLIChatProviderClient.Failure.self) {
+        _ = try CLIChatProviderClient.validatedJPEGData(for: .init(
+            mediaType: "image/png", base64: base64
+        ))
+    }
+    #expect(throws: CLIChatProviderClient.Failure.self) {
+        _ = try CLIChatProviderClient.validatedJPEGData(for: .init(
+            mediaType: "image/jpeg", base64: Data([0, 1, 2]).base64EncodedString()
+        ))
+    }
 }

@@ -135,6 +135,16 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     static let maximumOutputBytes = 256 * 1_024
 
     @Published private(set) var sessions: [AIWorkspaceTerminalSnapshot] = []
+    @Published private(set) var foregroundSessionID: UUID?
+    var onAIForegroundSession: ((UUID) -> Bool)?
+
+    /// Keep the requested AI session selected even when the Terminal view is
+    /// created by presenting the workspace after this call.
+    func revealAIForegroundSession(_ id: UUID) -> Bool {
+        guard sessionByID[id] != nil else { return false }
+        foregroundSessionID = id
+        return onAIForegroundSession?(id) ?? false
+    }
 
     func sessions(for conversationID: UUID?) -> [AIWorkspaceTerminalSnapshot] {
         guard let conversationID else { return [] }
@@ -563,6 +573,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         session.ptyView = nil
         sessionByID.removeValue(forKey: sessionID)
         sessionOrder.removeAll { $0 == sessionID }
+        if foregroundSessionID == sessionID { foregroundSessionID = sessionOrder.last }
         publish()
     }
 

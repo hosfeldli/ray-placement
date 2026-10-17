@@ -15,9 +15,9 @@ struct LimaWorkspaceNavigation: Equatable {
 
 extension LimaWorkspaceModule {
     static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .browser, .context]
-    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions, .terminal]
+    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions, .terminal, .grammar]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
-    static let hiddenDestinations: [LimaWorkspaceModule] = [.grammar, .dictation, .formatter]
+    static let hiddenDestinations: [LimaWorkspaceModule] = [.dictation, .formatter]
 
     var title: String {
         switch self {

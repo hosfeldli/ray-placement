@@ -56,8 +56,8 @@ import RayPlacementCore
 @Test func workspaceConfigurationCanHideRegroupAndReorderEveryModule() {
     var configuration = WorkspaceConfiguration.defaultConfiguration
     #expect(configuration.workspaceModules == [.home, .notes, .ai, .browser, .context])
-    #expect(configuration.toolModules == [.clipboard, .workflows, .extensions, .terminal])
-    #expect(configuration.hiddenModules == [.grammar, .dictation, .formatter])
+    #expect(configuration.toolModules == [.clipboard, .workflows, .extensions, .terminal, .grammar])
+    #expect(configuration.hiddenModules == [.dictation, .formatter])
 
     configuration.move(.notes, in: .workspace, by: 1)
     #expect(configuration.workspaceModules == [.home, .ai, .notes, .browser, .context])
@@ -73,12 +73,18 @@ import RayPlacementCore
     let legacy = Data(#"{"workspaceModules":["home","notes"],"toolModules":["terminal"]}"#.utf8)
     let layout = try JSONDecoder().decode(WorkspaceConfiguration.self, from: legacy)
     #expect(layout.workspaceModules == [.home, .notes])
-    #expect(layout.toolModules == [.terminal])
+    #expect(layout.toolModules == [.terminal, .grammar])
     #expect(layout.sections.count == 2)
     #expect(layout.railPresentation == .adaptive)
     #expect(layout.railWidth == .standard)
     #expect(layout.startupModule == .home)
     #expect(try JSONDecoder().decode(WorkspaceConfiguration.self, from: JSONEncoder().encode(layout)) == layout)
+
+    // Once written in the new format, deliberately hiding Grammar must stick.
+    var customized = layout
+    customized.hideModule(.grammar)
+    let restored = try JSONDecoder().decode(WorkspaceConfiguration.self, from: JSONEncoder().encode(customized))
+    #expect(restored.sectionID(for: .grammar) == nil)
 }
 
 @Test func workspaceCustomSectionsOwnOrderingVisibilityAndStartup() throws {

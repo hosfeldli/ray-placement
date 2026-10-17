@@ -309,6 +309,54 @@ private func waitForPTYText(
     #expect(coordinator.sessions.allSatisfy { $0.id != started.id })
 }
 
+@Test @MainActor func aiTerminalStartRequestsTheVisibleSharedSessionAndReportsItsObservation() async throws {
+    let manager = FileManager.default
+    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    let root = manager.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaTerminalRevealTests-\(UUID().uuidString)", isDirectory: true)
+    try manager.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? manager.removeItem(at: root) }
+
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
+    let earlier = try coordinator.start()
+    #expect(!coordinator.revealAIForegroundSession(earlier.id))
+    #expect(coordinator.foregroundSessionID == earlier.id)
+    var revealedID: UUID?
+    coordinator.onAIForegroundSession = { id in
+        revealedID = id
+        return true
+    }
+
+    let suite = "AITerminalRevealPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    let owner = UUID()
+    let call = AIOutputItem(phase: .completed, apiType: "function_call",
+                            callID: "visible-terminal-start", name: "terminal_start", arguments: "{}")
+    let result = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: true, actionPolicy: policy,
+        conversationID: owner, runtime: coordinator
+    )
+    #expect(!result.isError)
+    let data = try #require(result.output.data(using: .utf8))
+    let fields = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let rawID = try #require(fields["session_id"] as? String)
+    let id = try #require(UUID(uuidString: rawID))
+    #expect(fields["terminal_visible"] as? Bool == true)
+    #expect(fields["post_action_verified"] as? Bool == true)
+    #expect(revealedID == id)
+    #expect(coordinator.foregroundSessionID == id)
+    #expect(coordinator.sessions.contains { $0.id == id })
+
+    try coordinator.close(sessionID: id)
+    #expect(coordinator.foregroundSessionID == earlier.id)
+    try coordinator.close(sessionID: earlier.id)
+    #expect(coordinator.foregroundSessionID == nil)
+    #expect(!coordinator.revealAIForegroundSession(id))
+}
+
 @Test @MainActor func boundedExternalCommandStreamsIntoTheSharedVisibleTerminalSession() async throws {
     let manager = FileManager.default
     let root = manager.temporaryDirectory.resolvingSymlinksInPath()

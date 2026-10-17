@@ -54,6 +54,18 @@ enum ActivityShelfWidthChoice: Equatable {
     }
 }
 
+struct ActivityShelfTaskSlots {
+    let primary: LimaTask?
+    let grammar: LimaTask?
+
+    init(_ activeTasks: [LimaTask]) {
+        primary = activeTasks.last { $0.kind != .grammar }
+        grammar = activeTasks.last { $0.kind == .grammar }
+    }
+
+    var count: Int { (primary == nil ? 0 : 1) + (grammar == nil ? 0 : 1) }
+}
+
 @MainActor
 final class ActivityHUDController {
     private let panel: ActivityHUDPanel
@@ -123,21 +135,21 @@ final class ActivityHUDController {
     private func updateLayout(dictation: NoteDictationService) {
         let dictationVisible = shouldShowRecordingHUD(for: dictation.phase)
         let musicVisible = shouldShowMusicHUD(music.nowPlaying)
-        let taskVisible = !tasks.activeTasks.isEmpty
-        guard dictationVisible || musicVisible || taskVisible else {
+        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks)
+        guard dictationVisible || musicVisible || taskSlots.count > 0 else {
             panel.orderOut(nil)
             return
         }
 
         let requestedMusicWidth = requestedMusicPresentation(dictationVisible: dictationVisible).hudWidth
-        // One compact task segment represents all active work; its popover lists every task.
-        let taskWidth: CGFloat = taskVisible ? 254 : 0
+        // Grammar has its own segment beside other active work instead of a detached toast.
+        let taskWidth = CGFloat(taskSlots.count) * 254 + CGFloat(max(0, taskSlots.count - 1)) * 8
         let basePreferredWidth = dictationVisible && musicVisible
             ? 210 + 8 + requestedMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? requestedMusicWidth : 0))
         let preferredWidth = basePreferredWidth + (basePreferredWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
         let miniMusicWidth = MusicHUDPresentation.mini.hudWidth
-        let miniTaskWidth: CGFloat = taskVisible ? 180 : 0
+        let miniTaskWidth = CGFloat(taskSlots.count) * 180 + CGFloat(max(0, taskSlots.count - 1)) * 8
         let baseMiniWidth = dictationVisible && musicVisible
             ? 210 + 8 + miniMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? miniMusicWidth : 0))
@@ -448,6 +460,7 @@ private struct ActivityHUDView: View {
         let dictationVisible = dictation.phase == .recording || dictation.phase == .paused
         let musicVisible = music.nowPlaying.map { $0.isPlaying || settings.musicShowWhenPaused } ?? false
         let presentation = effectivePresentation(dictationVisible: dictationVisible)
+        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks)
 
         return HStack(spacing: 8) {
             if dictationVisible { dictationPill.frame(width: 210) }
@@ -455,7 +468,11 @@ private struct ActivityHUDView: View {
                 musicPill(track, presentation: presentation)
                     .frame(width: presentation.hudWidth)
             }
-            if let task = tasks.activeTasks.last {
+            if let task = taskSlots.primary {
+                taskSegment(task)
+                    .frame(width: hudState.collisionMini ? 180 : 254)
+            }
+            if let task = taskSlots.grammar {
                 taskSegment(task)
                     .frame(width: hudState.collisionMini ? 180 : 254)
             }
@@ -480,9 +497,7 @@ private struct ActivityHUDView: View {
                         Text(task.title)
                             .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                             .lineLimit(1)
-                        Text(tasks.activeTasks.count > 1
-                             ? "\(tasks.activeTasks.count) active · \(task.detail ?? "Working")"
-                             : (task.detail ?? (task.state == .waiting ? "Needs attention" : "Working")))
+                        Text(task.detail ?? (task.state == .waiting ? "Needs attention" : "Working"))
                             .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

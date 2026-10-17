@@ -264,7 +264,11 @@ enum AIWorkspaceActionTools {
                 }
                 let snapshot = try runtime.start(directory: directory, newWorkspace: newWorkspace,
                                                  conversationID: conversationID, interactive: interactive)
-                return .json(payload(snapshot, root: true))
+                let terminalVisible = runtime.revealAIForegroundSession(snapshot.id)
+                return .json(payload(snapshot, root: true).merging([
+                    "terminal_visible": terminalVisible,
+                    "post_action_verified": (try? runtime.status(sessionID: snapshot.id)) != nil
+                ] as [String: Any], uniquingKeysWith: { _, new in new }))
 
             case "terminal_run":
                 let id = try sessionID(arguments)

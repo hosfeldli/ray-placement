@@ -274,6 +274,27 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         present()
     }
 
+    /// A Browser tool must not equate selecting a model tab with showing it.
+    /// Present the existing workspace window and report what AppKit actually shows.
+    func presentAIBrowserTab(_ tabID: UUID) -> Bool {
+        guard BrowserWorkspaceModel.shared.selectedTabID == tabID else { return false }
+        present(module: .browser)
+        return window?.isVisible == true
+            && presentation.activeModule == .browser
+            && BrowserWorkspaceModel.shared.selectedTabID == tabID
+    }
+
+    /// AI-created sessions share the user's Terminal surface, not a hidden
+    /// command window. Report visibility only after AppKit presents it.
+    func presentAITerminalSession(_ sessionID: UUID) -> Bool {
+        guard AIWorkspaceTerminalCoordinator.shared.foregroundSessionID == sessionID,
+              AIWorkspaceTerminalCoordinator.shared.sessions.contains(where: { $0.id == sessionID }) else {
+            return false
+        }
+        present(module: .terminal)
+        return window?.isVisible == true && presentation.activeModule == .terminal
+    }
+
     func selectModule(_ module: LimaWorkspaceModule) {
         let measurementID = presentation.activeModule == module
             ? nil
@@ -283,7 +304,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             $0.activeWorkspace = LimaSurfaceID.workspace.rawValue
             $0.activeModule = module.rawValue
         }
-        if module == .terminal {
+        if module == .terminal,
+           AIWorkspaceTerminalCoordinator.shared.foregroundSessionID == nil {
             terminalModel.startIfNeeded()
         }
         if let measurementID {

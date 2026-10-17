@@ -126,6 +126,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
+        BrowserWorkspaceModel.shared.onAIForegroundTab = { [weak self] tabID in
+            self?.notesWindow.presentAIBrowserTab(tabID) ?? false
+        }
+        AIWorkspaceTerminalCoordinator.shared.onAIForegroundSession = { [weak self] sessionID in
+            self?.notesWindow.presentAITerminalSession(sessionID) ?? false
+        }
         viewModel.setSearchPresented(false)
         extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
         workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
@@ -501,7 +507,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             )
 
         case .replaceSelectedText(let text):
-            replaceSelectedText(text)
+            replaceSelectedText(text, isGrammarReview: item.id == "writing.replace")
 
         case .saveSelectionToQuickNote(let text):
             hide()
@@ -1114,6 +1120,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         guard writingOperationToken == token else { return }
         finishGrammarRun(for: state)
         if let writingTaskID {
+            toast.dismiss()
             TaskRegistry.shared.finish(writingTaskID, state: state, detail: detail)
         }
         writingTaskID = nil
@@ -1126,6 +1133,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         detail: String = "Writing operation stopped"
     ) {
         finishGrammarRun(for: .cancelled)
+        if writingTaskID != nil { toast.dismiss() }
         if finishTask, let writingTaskID {
             TaskRegistry.shared.finish(writingTaskID, state: .cancelled, detail: detail)
         }
@@ -1136,13 +1144,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func beginGrammarTask(for operationToken: UUID, detail: String) -> UUID {
+    private func beginGrammarTask(for operationToken: UUID, detail: String, title: String = "Grammar") -> UUID {
         var run = GrammarExecutionRun()
         precondition(run.transition(to: .checking), "A new Grammar run must enter checking")
         grammarExecutionRun = run
         let taskID = TaskRegistry.shared.begin(
             kind: .grammar,
-            title: "Fixing writing",
+            title: title,
             detail: detail,
             isCancellable: true,
             onCancel: { [weak self] in
@@ -1160,7 +1168,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func updateGrammarTask(_ taskID: UUID, detail: String) {
-        TaskRegistry.shared.update(taskID, title: "Fixing writing", detail: detail)
+        TaskRegistry.shared.update(taskID, detail: detail)
+    }
+
+    private func showWritingProgress(_ message: String, duration _: TimeInterval) {
+        guard let writingTaskID else { return }
+        updateGrammarTask(writingTaskID, detail: message)
     }
 
     private func transitionGrammarRun(to state: GrammarExecutionRunState) {
@@ -1933,13 +1946,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     private func captureWritingSelectionWithKeyboard(from application: NSRunningApplication, stealth: Bool = false) {
         let operationToken = beginWritingOperation()
+        _ = beginGrammarTask(for: operationToken, detail: "Reading selected text")
         let retainedAccessibilityContext = selectedTextContext.flatMap { context in
             context.processIdentifier == application.processIdentifier ? context : nil
-        }
-        if stealth {
-            toast.showStealth("Editing…")
-        } else {
-            toast.show("Reading the highlight with Copy…", style: .working, duration: 3_600)
         }
         KeyboardSelectionService.capture(from: application, clipboardHistory: clipboard) { [weak self] result in
             guard let self, self.isCurrentWritingOperation(operationToken) else { return }
@@ -1971,7 +1980,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                         self.showWritingReview(for: target.context.text, operationToken: operationToken)
                     }
                 } catch {
-                    self.completeWritingOperation(operationToken)
+                    self.completeWritingOperation(operationToken, state: .failed, detail: "Could not read selected text")
                     if stealth {
                         self.selectedTextContext = nil
                         self.keyboardSelectionContext = nil
@@ -2027,9 +2036,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func runStealthCorrection(for text: String, operationToken: UUID) {
-        guard isCurrentWritingOperation(operationToken) else { return }
-        let taskID = beginGrammarTask(for: operationToken, detail: "Checking selected text")
-        toast.showStealth("Editing…")
+        guard isCurrentWritingOperation(operationToken), let taskID = writingTaskID else { return }
+        updateGrammarTask(taskID, detail: "Checking selected text")
         // Explicit correction commands use the selected engine. Live Notes
         // underlining remains on the separate local-only path.
         writingChecker.checkStealth(text, progress: { [weak self] message in
@@ -2037,13 +2045,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
             self.updateGrammarTask(taskID, detail: message)
-            self.toast.showStealth(message)
         }) { [weak self] result in
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
             switch result {
             case .success(let corrected) where corrected == text:
+                self.toast.dismiss()
                 self.completeWritingOperation(operationToken, detail: "No changes needed")
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
@@ -2054,6 +2062,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 self.updateGrammarTask(taskID, detail: "Applying correction")
                 self.replaceStealthText(corrected, operationToken: operationToken)
             case .failure(let error):
+                self.toast.dismiss()
                 self.completeWritingOperation(operationToken, state: .failed, detail: "Correction failed")
                 self.selectedTextContext = nil
                 self.keyboardSelectionContext = nil
@@ -2143,8 +2152,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func showWritingReview(for text: String, operationToken: UUID) {
-        guard isCurrentWritingOperation(operationToken) else { return }
-        let taskID = beginGrammarTask(for: operationToken, detail: "Checking selected text")
+        guard isCurrentWritingOperation(operationToken), let taskID = writingTaskID else { return }
         hide()
         let engineDescription: String
         switch SettingsStore.shared.grammarEngineMode {
@@ -2153,19 +2161,19 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .externalAPI:
             engineDescription = "with External Grammar"
         }
-        toast.show("Checking \(text.count) characters \(engineDescription)…", style: .working, duration: 3_600)
+        updateGrammarTask(taskID, detail: "Checking \(text.count) characters \(engineDescription)…")
         writingChecker.check(text, progress: { [weak self] message in
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
             self.updateGrammarTask(taskID, detail: message)
-            self.toast.show(message, style: .working, duration: 3_600)
         }) { [weak self] result in
             guard let self,
                   self.isCurrentWritingOperation(operationToken),
                   self.writingTaskID == taskID else { return }
             switch result {
             case .success(let review):
+                self.toast.dismiss()
                 self.completeWritingOperation(operationToken, detail: "Review ready")
                 self.viewModel.showWritingReview(review)
                 if !self.panel.isVisible { self.presentPanel() }
@@ -2309,10 +2317,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
     }
 
-    private func replaceSelectedText(_ text: String) {
+    private func replaceSelectedText(_ text: String, isGrammarReview: Bool = false) {
         let operationToken = beginWritingOperation()
+        _ = beginGrammarTask(for: operationToken, detail: "Applying correction",
+                             title: isGrammarReview ? "Grammar" : "Writing")
+        transitionGrammarRun(to: .applying)
         hide()
-        toast.show("Reconnecting to the original highlight…", style: .working, duration: 12)
+        showWritingProgress("Reconnecting to the original highlight…", duration: 12)
         guard let previousApplication else {
             finishReplacementOutcome(
                 .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),
@@ -2347,7 +2358,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             do {
                 let context = try self.replacementContext(in: previousApplication)
                 self.selectedTextContext = context
-                self.toast.show("Selection found · replacing text…", style: .working, duration: 10)
+                self.showWritingProgress("Selection found · replacing text…", duration: 10)
                 try SelectedTextService.replaceSelectedText(text, using: context)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.32) { [weak self] in
                     guard let self, self.isCurrentWritingOperation(operationToken) else { return }
@@ -2465,7 +2476,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             )
             return
         }
-        toast.show("Returning to the source selection…", style: .working, duration: 5)
+        showWritingProgress("Returning to the source selection…", duration: 5)
         let originalText = keyboardSelectionContext?.text
         KeyboardSelectionService.paste(
             text,
@@ -2517,6 +2528,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             taskState = .failed
             taskDetail = "Selected text changed"
         }
+        toast.dismiss()
         completeWritingOperation(operationToken, state: taskState, detail: taskDetail)
         selectedTextContext = nil
         keyboardSelectionContext = nil
@@ -2597,7 +2609,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         do {
             let refreshed = (try? SelectedTextService.reconnectedContext(using: context)) ?? context
             try SelectedTextService.restoreSelection(using: refreshed)
-            toast.show("Direct edit was unavailable · pasting into the restored highlight…", style: .working, duration: 8)
+            showWritingProgress("Direct edit was unavailable · pasting into the restored highlight…", duration: 8)
             guard let application = NSRunningApplication(processIdentifier: refreshed.processIdentifier) else {
                 finishReplacementOutcome(
                     .failedBeforeDelivery(KeyboardSelectionService.CaptureError.applicationUnavailable),

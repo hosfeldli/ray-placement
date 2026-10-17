@@ -349,12 +349,13 @@ struct WorkspaceConfiguration: Codable, Equatable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case sections, startupModule, railPresentation, railWidth, showsSectionNames, showsKeyboardShortcuts, shortcutOverrides, home
+        case sections, startupModule, railPresentation, railWidth, showsSectionNames, showsKeyboardShortcuts, shortcutOverrides, home, layoutVersion
         case workspaceModules, toolModules
     }
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(sections, forKey: .sections)
+        try values.encode(2, forKey: .layoutVersion)
         try values.encode(startupModule, forKey: .startupModule)
         try values.encode(railPresentation, forKey: .railPresentation)
         try values.encode(railWidth, forKey: .railWidth)
@@ -365,7 +366,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        let sections: [WorkspaceSectionConfiguration]
+        var sections: [WorkspaceSectionConfiguration]
         if let saved = try values.decodeIfPresent([WorkspaceSectionConfiguration].self, forKey: .sections) {
             sections = saved
         } else {
@@ -379,6 +380,13 @@ struct WorkspaceConfiguration: Codable, Equatable {
                     modules: try values.decodeIfPresent([LimaWorkspaceModule].self, forKey: .toolModules) ?? LimaWorkspaceModule.toolDestinations
                 )
             ]
+        }
+        // Reveal Grammar in the lower Tools rail once for layouts saved before
+        // this placement change. Versioned layouts can still hide it deliberately.
+        if (try values.decodeIfPresent(Int.self, forKey: .layoutVersion) ?? 1) < 2,
+           !sections.contains(where: { $0.modules.contains(.grammar) }),
+           let toolsIndex = sections.firstIndex(where: { $0.id == WorkspaceSectionConfiguration.toolsID }) {
+            sections[toolsIndex].modules.append(.grammar)
         }
         self.init(
             sections: sections,
