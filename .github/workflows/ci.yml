@@ -48,7 +48,35 @@ jobs:
           actionlint
 
       - name: Run Swift tests
-        run: make test
+        shell: bash
+        run: |
+          set -uo pipefail
+          make test &
+          test_command_pid=$!
+          (
+            while kill -0 "$test_command_pid" 2>/dev/null; do
+              test_pid="$(pgrep -f '[R]ayPlacementPackageTests.xctest/Contents/MacOS/RayPlacementPackageTests' | head -n 1 || true)"
+              if [[ -n "$test_pid" ]]; then break; fi
+              sleep 1
+            done
+            [[ -n "${test_pid:-}" ]] || exit 0
+            sleep 90
+            if kill -0 "$test_pid" 2>/dev/null; then
+              echo 'Swift tests have not exited after 90 seconds; capturing diagnostic sample.'
+              ps -Ao pid,ppid,state,command | awk '/swiftpm-testing|RayPlacementPackageTests|fake-claude|fake-codex/ { print; if (++count == 80) exit }' || true
+              sample "$test_pid" 3 10 -file /tmp/lima-ci-test-stall.sample.txt || true
+              if [[ -f /tmp/lima-ci-test-stall.sample.txt ]]; then
+                cat /tmp/lima-ci-test-stall.sample.txt
+              fi
+              kill -TERM "$test_pid" 2>/dev/null || true
+              kill -TERM "$test_command_pid" 2>/dev/null || true
+            fi
+          ) &
+          monitor_pid=$!
+          wait "$test_command_pid"
+          result=$?
+          kill -TERM "$monitor_pid" 2>/dev/null || true
+          exit "$result"
 
       - name: Validate extension manifests against the public schema
         shell: bash
