@@ -522,19 +522,16 @@ struct CLIChatProviderClient: AIChatTransport {
             DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 180, execute: timeout)
             defer { timeout.cancel() }
             let stdoutReader = Task.detached(priority: .utility) {
-                readBounded(outputPipe.fileHandleForReading, limit: maximumOutputBytes)
+                await Self.readBoundedOffExecutor(outputPipe.fileHandleForReading, limit: maximumOutputBytes)
             }
             let stderrReader = Task.detached(priority: .utility) {
-                readBounded(errorPipe.fileHandleForReading, limit: 16 * 1024)
+                await Self.readBoundedOffExecutor(errorPipe.fileHandleForReading, limit: 16 * 1024)
             }
             let inputWriter = Task.detached(priority: .utility) {
                 try? inputPipe.fileHandleForWriting.write(contentsOf: Data(prompt.utf8))
                 try? inputPipe.fileHandleForWriting.close()
             }
-            let status = await Task.detached(priority: .utility) {
-                process.waitUntilExit()
-                return process.terminationStatus
-            }.value
+            let status = await Self.waitUntilExitOffExecutor(process)
             _ = await inputWriter.value
             let output = await stdoutReader.value
             _ = await stderrReader.value // Never surface stderr: it can contain prompt content.
@@ -546,6 +543,26 @@ struct CLIChatProviderClient: AIChatTransport {
             return output
         } onCancel: {
             if process.isRunning { process.terminate() }
+        }
+    }
+
+    /// Keep blocking pipe reads and process waits off Swift's cooperative task
+    /// executor. Concurrent CLI requests can otherwise occupy its worker threads
+    /// while waiting for subprocess I/O, starving the tasks that close stdin.
+    private static func readBoundedOffExecutor(_ handle: FileHandle, limit: Int) async -> Data {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(returning: readBounded(handle, limit: limit))
+            }
+        }
+    }
+
+    private static func waitUntilExitOffExecutor(_ process: Process) async -> Int32 {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Int32, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                process.waitUntilExit()
+                continuation.resume(returning: process.terminationStatus)
+            }
         }
     }
 

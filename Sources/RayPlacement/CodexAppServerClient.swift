@@ -263,7 +263,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             Task.detached(priority: .userInitiated) { [weak self] in
                 var bytes = Data()
                 while !Task.isCancelled {
-                    let chunk = reader.availableData
+                    let chunk = await Self.readAvailableDataOffExecutor(reader)
                     guard !chunk.isEmpty else { break }
                     bytes.append(chunk)
                     while let newline = bytes.firstIndex(of: 0x0A) {
@@ -281,6 +281,14 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                 "capabilities": ["experimentalApi": true]
             ])
             try send(["method": "initialized"])
+        }
+
+        private static func readAvailableDataOffExecutor(_ handle: FileHandle) async -> Data {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: handle.availableData)
+                }
+            }
         }
 
         private func receive(_ line: Data, generation receivedGeneration: Int) {
