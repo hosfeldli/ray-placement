@@ -935,10 +935,12 @@ import Testing
 
 @Test func activeProviderStreamCanOutliveItsIdleDeadline() async throws {
     let upstream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+        // Avoid making initial task scheduling look like provider silence.
+        continuation.yield(.textDelta("x"))
         Task {
-            for _ in 0..<6 {
+            for _ in 1..<20 {
+                try? await Task.sleep(for: .milliseconds(125))
                 continuation.yield(.textDelta("x"))
-                try? await Task.sleep(for: .milliseconds(150))
             }
             continuation.yield(.completed("active-stream"))
             continuation.finish()
@@ -947,12 +949,12 @@ import Testing
 
     var textEvents = 0
     var completed = false
-    for try await event in AIProviderStreamWatchdog.bounded(upstream, after: .milliseconds(500)) {
+    for try await event in AIProviderStreamWatchdog.bounded(upstream, after: .seconds(2)) {
         if case .textDelta = event { textEvents += 1 }
         if case .completed = event { completed = true }
     }
 
-    #expect(textEvents == 6)
+    #expect(textEvents == 20)
     #expect(completed)
 }
 

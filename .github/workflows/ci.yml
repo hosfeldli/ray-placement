@@ -16,6 +16,7 @@ concurrency:
 jobs:
   macos-validation:
     runs-on: macos-15
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -61,10 +62,12 @@ jobs:
             done
             [[ -n "${test_pid:-}" ]] || exit 0
             sleep 90
-            if kill -0 "$test_pid" 2>/dev/null; then
-              echo 'Swift tests have not exited after 90 seconds; capturing diagnostic sample.'
+            if kill -0 "$test_command_pid" 2>/dev/null; then
+              echo 'Swift test command has not exited 90 seconds after the test runner started; capturing diagnostic sample.'
               ps -Ao pid,ppid,state,command | awk '/swiftpm-testing|RayPlacementPackageTests|fake-claude|fake-codex/ { print; if (++count == 80) exit }' || true
-              sample "$test_pid" 3 10 -file /tmp/lima-ci-test-stall.sample.txt || true
+              if kill -0 "$test_pid" 2>/dev/null; then
+                sample "$test_pid" 3 10 -file /tmp/lima-ci-test-stall.sample.txt || true
+              fi
               if [[ -f /tmp/lima-ci-test-stall.sample.txt ]]; then
                 cat /tmp/lima-ci-test-stall.sample.txt
               fi
