@@ -16,8 +16,8 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
     static let shared = CodexAppServerClient()
     private let session: Session
 
-    init(executableURL: URL? = nil) {
-        session = Session(executableURL: executableURL)
+    init(executableURL: URL? = nil, toolFreeProcess: Bool = false) {
+        session = Session(executableURL: executableURL, toolFreeProcess: toolFreeProcess)
     }
 
     func shutdown() async { await session.shutdown() }
@@ -67,6 +67,52 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         }
     }
 
+    /// A fresh, ephemeral Grammar thread with no Lima tools or Chat history.
+    /// The caller owns candidate/adjudicator prompts and validates the result.
+    func inferToolFree(
+        model: String, input: String, instructions: String,
+        outputSchema: [String: Any], effort: AIReasoningEffort = .low
+    ) async throws -> String {
+        let stream = AsyncThrowingStream<AIChatStreamEvent, Error> { continuation in
+            let task = Task {
+                await session.startTurn(
+                    model: model, input: input, history: [], previousThreadID: nil,
+                    effort: effort, attachments: [], tools: [], instructions: instructions,
+                    outputSchema: outputSchema, stream: continuation
+                )
+            }
+            continuation.onTermination = { @Sendable termination in
+                task.cancel()
+                if case .cancelled = termination {
+                    Task { await self.session.interruptActiveTurn() }
+                }
+            }
+        }
+        var response = ""
+        var completed = false
+        for try await event in stream {
+            try Task.checkCancellation()
+            switch event {
+            case .textDelta(let delta):
+                response += delta
+                guard response.utf8.count <= 1_000_000 else { throw BridgeError.responseTooLarge }
+            case .completed:
+                completed = true
+            case .failed(let detail):
+                throw BridgeError.server(detail)
+            case .outputItem:
+                await session.interruptActiveTurn()
+                throw BridgeError.unexpectedToolRequest
+            default:
+                break
+            }
+        }
+        guard completed, !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BridgeError.invalidResponse
+        }
+        return response.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Safe, metadata-only provider bridge state for diagnostics.
     func status() async -> CodexAppServerStatus {
         await session.status()
@@ -74,8 +120,12 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
 
     private actor Session {
         private let executableURL: URL?
+        private let toolFreeProcess: Bool
 
-        init(executableURL: URL?) { self.executableURL = executableURL }
+        init(executableURL: URL?, toolFreeProcess: Bool) {
+            self.executableURL = executableURL
+            self.toolFreeProcess = toolFreeProcess
+        }
 
         private struct PendingTool {
             let rpcID: Any
@@ -165,12 +215,39 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             }
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("lima-app-server-" + UUID().uuidString, isDirectory: true)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            workingDirectory = directory
             let p = Process()
             p.executableURL = executable
-            p.arguments = ["app-server", "--stdio"]
+            // Grammar gets an empty Codex home instead of inheriting the user's
+            // MCP servers, plugins, skills, or instructions. Link only the existing
+            // CLI sign-in file; do not copy its contents into Lima's process state.
+            // AI Chat retains its ordinary process and configuration.
+            if toolFreeProcess {
+                let inheritedHome = ProcessInfo.processInfo.environment["CODEX_HOME"]
+                    .map { URL(fileURLWithPath: $0, isDirectory: true) }
+                    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
+                let auth = inheritedHome.appendingPathComponent("auth.json")
+                if FileManager.default.fileExists(atPath: auth.path) {
+                    try FileManager.default.createSymbolicLink(
+                        at: directory.appendingPathComponent("auth.json"), withDestinationURL: auth
+                    )
+                }
+                var environment = ProcessInfo.processInfo.environment
+                environment["CODEX_HOME"] = directory.path
+                p.environment = environment
+            }
+            p.arguments = toolFreeProcess
+                ? ["app-server", "--stdio", "--disable", "shell_tool",
+                   "--disable", "multi_agent", "--disable", "skill_search",
+                   "--disable", "view_image", "--disable", "image_generation",
+                   "--disable", "standalone_web_search",
+                   "--config", "web_search=\"disabled\""]
+                : ["app-server", "--stdio"]
             p.currentDirectoryURL = directory
-            workingDirectory = directory
             let input = Pipe()
             let output = Pipe()
             p.standardInput = input
@@ -320,6 +397,18 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         private func handleNotification(method: String, params: [String: Any]) {
             if let threadID = params["threadId"] as? String, threadID != activeThreadID { return }
             markFirstEvent()
+            if toolFreeProcess, method == "item/started" || method == "item/completed" {
+                let type = (params["item"] as? [String: Any])?["type"] as? String ?? ""
+                if !["userMessage", "agentMessage", "reasoning"].contains(type) {
+                    let detail = BridgeError.unexpectedToolRequest.localizedDescription
+                    lastError = detail
+                    interruptActiveTurn()
+                    emit(.failed(detail))
+                    currentStream?.finish()
+                    currentStream = nil
+                    return
+                }
+            }
             switch method {
             case "item/reasoning/summaryTextDelta":
                 // Forward only provider-supplied summary deltas. Raw reasoning
@@ -368,6 +457,9 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                 emit(.failed(lastError!))
                 currentStream?.finish()
                 currentStream = nil
+                activeTurnID = nil
+                pendingTools.removeAll()
+                streamedReasoningSummaryItemIDs.removeAll()
             default:
                 break
             }
@@ -408,8 +500,10 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             previousThreadID: String?, effort: AIReasoningEffort,
             attachments: [AIAttachment], tools: [LimaAIToolDefinition],
             instructions: String,
+            outputSchema: [String: Any]? = nil,
             stream: AsyncThrowingStream<AIChatStreamEvent, Error>.Continuation
         ) async {
+            var installedStream = false
             do {
                 lastTurnStartedAt = Date()
                 startupMilliseconds = nil
@@ -420,6 +514,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                 guard currentStream == nil, activeTurnID == nil else { throw BridgeError.busy }
                 lastError = nil
                 install(stream)
+                installedStream = true
                 sentText = false
                 streamedReasoningSummaryItemIDs.removeAll()
                 continuationCount = 0
@@ -459,19 +554,26 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                     let image = try AIFileAttachmentPolicy.image(for: attachment)
                     turnInput.append(["type": "image", "url": "data:\(image.mediaType);base64,\(image.base64)"])
                 }
-                let result = try await request("turn/start", [
+                var turnParams: [String: Any] = [
                     "threadId": threadID, "input": turnInput,
                     "effort": effort.rawValue, "model": model == "default" ? NSNull() : model as Any
-                ])
+                ]
+                if let outputSchema { turnParams["outputSchema"] = outputSchema }
+                let result = try await request("turn/start", turnParams)
                 if currentStream != nil || !pendingTools.isEmpty {
                     activeTurnID = (result["turn"] as? [String: Any])?["id"] as? String
                 }
             } catch {
-                lastError = error.localizedDescription
-                currentStream?.finish(throwing: error)
-                currentStream = nil
-                activeThreadID = nil
-                activeTurnID = nil
+                if installedStream {
+                    lastError = error.localizedDescription
+                    currentStream?.finish(throwing: error)
+                    currentStream = nil
+                    activeThreadID = nil
+                    activeTurnID = nil
+                    pendingTools.removeAll()
+                } else {
+                    stream.finish(throwing: error)
+                }
             }
         }
 
@@ -531,6 +633,8 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         case disconnected
         case busy
         case invalidResponse
+        case responseTooLarge
+        case unexpectedToolRequest
         case server(String)
 
         var errorDescription: String? {
@@ -539,6 +643,8 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             case .disconnected: return "Codex app-server disconnected."
             case .busy: return "Codex app-server is already handling a turn."
             case .invalidResponse: return "Codex app-server returned an invalid response."
+            case .responseTooLarge: return "Codex app-server returned too much Grammar data."
+            case .unexpectedToolRequest: return "Codex attempted a tool call in an isolated Grammar turn."
             case .server(let message): return message
             }
         }

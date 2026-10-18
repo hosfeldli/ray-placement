@@ -26,6 +26,9 @@ private typealias NotesSection = LimaWorkspaceModule
 private final class WorkspacePresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
+    @Published var aiSidecarVisible: Bool {
+        didSet { LimaTestEnvironment.userDefaults.set(aiSidecarVisible, forKey: "workspaceAISidecarVisible") }
+    }
     @Published private(set) var navigation = LimaWorkspaceNavigation()
     var activeModule: LimaWorkspaceModule {
         get { navigation.current }
@@ -38,6 +41,7 @@ private final class WorkspacePresentationModel: ObservableObject {
 
     init(mode: NotesWindowMode) {
         self.mode = mode
+        self.aiSidecarVisible = LimaTestEnvironment.userDefaults.object(forKey: "workspaceAISidecarVisible") as? Bool ?? true
         if let data = LimaTestEnvironment.userDefaults.data(forKey: "quickNotePinnedReferenceIDs"),
            let ids = try? JSONDecoder().decode([UUID].self, from: data) {
             pinnedReferenceIDs = ids
@@ -777,14 +781,31 @@ private struct WorkspaceShellView: View {
                         workspaceProfiles: content.switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
                         activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
                         selectWorkspaceProfile: content.switchWorkspaceProfile,
-                        createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() }
+                        createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() },
+                        aiSidecarVisible: presentation.aiSidecarVisible,
+                        toggleAISidecar: !presentation.mode.isDocked && proxy.size.width >= 1_120
+                            ? { presentation.aiSidecarVisible.toggle() } : nil
                     )
                     .padding(.leading, 8)
                     .padding(.vertical, 8)
                     content
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                        .padding(.trailing, presentation.aiSidecarVisible && presentation.activeModule != .ai &&
+                                 !presentation.mode.isDocked && proxy.size.width >= 1_120 ? 0 : 8)
+                        .padding(.vertical, 8)
+                    if presentation.aiSidecarVisible && presentation.activeModule != .ai &&
+                       !presentation.mode.isDocked && proxy.size.width >= 1_120 {
+                        WorkspaceAISidecar(
+                            model: content.aiChatModel,
+                            notes: content.store,
+                            dictation: content.dictation,
+                            expand: { content.selectModule(.ai) },
+                            close: { presentation.aiSidecarVisible = false }
+                        )
+                        .frame(width: min(400, max(340, proxy.size.width * 0.30)))
                         .padding(.trailing, 8)
                         .padding(.vertical, 8)
+                    }
                 }
             }
             .environment(\.limaWorkspaceSizeClass, sizeClass)
@@ -797,6 +818,57 @@ private struct WorkspaceShellView: View {
             minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
             minHeight: 500
         )
+    }
+}
+
+/// A second presentation of the same conversation, not a second chat runtime.
+private struct WorkspaceAISidecar: View {
+    @ObservedObject var model: AIChatViewModel
+    let notes: NotesStore
+    let dictation: NoteDictationService
+    let expand: () -> Void
+    let close: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
+                Text("AI")
+                    .limaFont(.headline)
+                if model.currentTaskState.isActive {
+                    Text(model.currentTaskState.title)
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Button(action: expand) {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                }
+                .buttonStyle(.borderless)
+                .help("Expand AI Chat")
+                .accessibilityLabel("Expand AI Chat")
+                Button(action: close) {
+                    Image(systemName: "sidebar.right")
+                }
+                .buttonStyle(.borderless)
+                .help("Hide AI sidecar · ⌘\\")
+                .accessibilityLabel("Hide AI sidecar")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            GlassHairline()
+            AIChatWorkspaceView(
+                model: model,
+                isEmbedded: true,
+                onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
+                contextNotes: notes
+            )
+            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .limaContentSurface(cornerRadius: LimaRadius.panel)
+        .accessibilityIdentifier("workspace.ai.sidecar")
     }
 }
 

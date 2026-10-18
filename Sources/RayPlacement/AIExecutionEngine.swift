@@ -44,7 +44,65 @@ struct AIExecutionCallbacks: Sendable {
     let toolFailure: @MainActor @Sendable (AIOutputItem, String) -> AIEngineToolOutput?
 }
 
-/// Owns provider-stream consumption, deduplication, bounded tool rounds,
+struct AIExecutionHealth {
+    enum Decision: Equatable {
+        case execute
+        case suggestRecovery
+        case blocked
+    }
+
+    private var failedFingerprint: String?
+    private var consecutiveEquivalentFailures = 0
+
+    func decision(for call: AIOutputItem) -> Decision {
+        guard fingerprint(call) == failedFingerprint else { return .execute }
+        if consecutiveEquivalentFailures >= 6 { return .blocked }
+        if consecutiveEquivalentFailures >= 3 { return .suggestRecovery }
+        return .execute
+    }
+
+    mutating func observe(_ call: AIOutputItem, output: AIEngineToolOutput) {
+        guard Self.isFailure(output.output) else {
+            failedFingerprint = nil
+            consecutiveEquivalentFailures = 0
+            return
+        }
+        let current = fingerprint(call)
+        if current == failedFingerprint { consecutiveEquivalentFailures += 1 }
+        else {
+            failedFingerprint = current
+            consecutiveEquivalentFailures = 1
+        }
+    }
+
+    private func fingerprint(_ call: AIOutputItem) -> String {
+        let arguments = call.arguments ?? "{}"
+        let canonical: String
+        if let data = arguments.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data),
+           let sorted = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]),
+           let text = String(data: sorted, encoding: .utf8) {
+            canonical = text
+        } else {
+            canonical = arguments
+        }
+        return (call.name ?? "") + "\n" + canonical
+    }
+
+    private static func isFailure(_ output: String) -> Bool {
+        guard let data = output.data(using: .utf8),
+              let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
+        let state = body["state"] as? String
+        return (body["error"] != nil && !(body["error"] is NSNull)) ||
+            body["is_error"] as? Bool == true || state == "failed" || state == "cancelled"
+    }
+
+    static func recoveryOutput(callID: String) -> AIEngineToolOutput {
+        AIEngineToolOutput(callID: callID, output: #"{"state":"failed","error":{"code":"repeated_action_without_progress","message":"The same action has failed repeatedly and was not executed again.","recoverable":true,"next_action":"Read fresh state, inspect the failure, or choose a different action before retrying."}}"#)
+    }
+}
+
+/// Owns provider-stream consumption, deduplication, task-driven tool continuation,
 /// child scheduling, and provider history assembly off the MainActor.
 /// Presentation and OS-bound tool adapters are invoked through narrow callbacks.
 actor AIExecutionEngine {
@@ -107,7 +165,7 @@ actor AIExecutionEngine {
         var currentHistory = history
         var latestResponseID = initialResponseID
         var handledCallIDs = Set<String>()
-        var toolRounds = 0
+        var health = AIExecutionHealth()
 
         while await shouldContinue(callbacks) {
             let cycle = await consume(
@@ -129,11 +187,6 @@ actor AIExecutionEngine {
                 return true
             }
             guard !calls.isEmpty else { break }
-            toolRounds += 1
-            guard toolRounds <= 12 else {
-                await callbacks.fail("The tool round limit was reached. Continue with a narrower request.", false)
-                break
-            }
 
             var approvalCall: AIOutputItem?
             for call in calls where approvalCall == nil {
@@ -148,13 +201,28 @@ actor AIExecutionEngine {
             // concurrently. Other calls keep their original sequential order.
             var indexedOutputs = Array<AIEngineToolOutput?>(repeating: nil, count: calls.count)
             var delegations: [(index: Int, call: AIOutputItem, ordinal: Int)] = []
+            var blocked = false
             for (index, call) in calls.enumerated() {
                 guard !Task.isCancelled, await callbacks.canContinue() else { break }
+                switch health.decision(for: call) {
+                case .execute:
+                    break
+                case .suggestRecovery:
+                    if let callID = call.callID {
+                        indexedOutputs[index] = AIExecutionHealth.recoveryOutput(callID: callID)
+                    }
+                    continue
+                case .blocked:
+                    await callbacks.fail("The task is blocked: the same action failed repeatedly without progress. Read fresh state or change approach before retrying.", false)
+                    blocked = true
+                    break
+                }
+                if blocked { break }
                 if call.name == "agent_delegate" {
                     guard let ordinal = await callbacks.reserveSubagent() else {
                         indexedOutputs[index] = await callbacks.toolFailure(
                             call,
-                            "Subagent run budget exhausted (\(subagentBudget.maximumPerRun) child requests). Continue with a narrower request."
+                            "The run is no longer active; no new subagent can be started."
                         )
                         continue
                     }
@@ -163,6 +231,7 @@ actor AIExecutionEngine {
                     indexedOutputs[index] = await callbacks.executeTool(call, nil)
                 }
             }
+            if blocked { break }
             let maximumConcurrent = max(1, subagentBudget.maximumConcurrent)
             for batchStart in stride(from: 0, to: delegations.count, by: maximumConcurrent) {
                 guard !Task.isCancelled, await callbacks.canContinue() else { break }
@@ -184,6 +253,9 @@ actor AIExecutionEngine {
             }
             let typedOutputs = indexedOutputs.compactMap { $0 }
             guard !Task.isCancelled, await callbacks.canContinue(), !typedOutputs.isEmpty else { break }
+            for (index, output) in indexedOutputs.enumerated() {
+                if let output { health.observe(calls[index], output: output) }
+            }
 
             // Pixels are loaded only while the tab and read authority match.
             // Codex CLI and API providers receive ephemeral image input;

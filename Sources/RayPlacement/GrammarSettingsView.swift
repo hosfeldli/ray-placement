@@ -4,12 +4,13 @@ import RayPlacementWriting
 @MainActor
 struct GrammarSettingsView: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject private var modelCatalog = AIModelCatalogStore.shared
     let openDebugger: () -> Void
     @State private var tab: GrammarTab = .overview
     @State private var testInput = "This are a grammer sentence."
     @State private var apiKey = ""
     @State private var isTestingConnection = false
-    @State private var connectionTask: URLSessionDataTask?
+    @State private var connectionTask: Task<Void, Never>?
     @State private var connectionTaskID: UUID?
     @State private var confirmRemoveKey = false
     @State private var connectionMessage: String?
@@ -26,6 +27,12 @@ struct GrammarSettingsView: View {
         case debugger = "Debugger"
         case analytics = "Analytics"
         var id: String { rawValue }
+    }
+
+    private var grammarModelOptions: [DeveloperGrammarModelOption] {
+        modelCatalog.models(for: settings.developerGrammarProvider,
+                            compatibleModelID: settings.developerGrammarModel)
+            .map { DeveloperGrammarModelOption(id: $0.id, title: $0.displayName) }
     }
 
     private var runs: [GrammarDebugRun] { GrammarDebugStore.shared.recentRuns(limit: 20) }
@@ -64,7 +71,7 @@ struct GrammarSettingsView: View {
         Form {
             Section("Grammar engine") {
                 HStack {
-                    Label(settings.grammarEngineMode == .externalAPI ? "External API" : "Local", systemImage: settings.grammarEngineMode == .externalAPI ? "cloud.fill" : "lock.shield.fill")
+                    Label(settings.grammarEngineMode == .externalAPI ? "AI provider" : "Local", systemImage: settings.grammarEngineMode == .externalAPI ? (settings.developerGrammarProvider.access == .localCLI ? "terminal" : "cloud.fill") : "lock.shield.fill")
                     Spacer()
                     statusBadge
                 }
@@ -214,8 +221,8 @@ struct GrammarSettingsView: View {
                     ForEach(DeveloperGrammarProvider.allCases) { Text($0.title).tag($0) }
                 }
                 Picker("Model", selection: $settings.developerGrammarModel) {
-                    ForEach(settings.developerGrammarProvider.modelOptions) { Text($0.title).tag($0.id) }
-                    if !settings.developerGrammarProvider.modelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
+                    ForEach(grammarModelOptions) { Text($0.title).tag($0.id) }
+                    if !grammarModelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
                         Text("Custom: \(settings.developerGrammarModel)").tag(settings.developerGrammarModel)
                     }
                 }
@@ -223,46 +230,58 @@ struct GrammarSettingsView: View {
                     .textFieldStyle(.roundedBorder)
                 Picker("Engine", selection: $settings.grammarEngineMode) {
                     Text("Local").tag(GrammarEngineMode.local)
-                    Text("External API").tag(GrammarEngineMode.externalAPI)
+                    Text("AI provider").tag(GrammarEngineMode.externalAPI)
                 }
                 .pickerStyle(.segmented)
             }
-            Section("API key") {
-                SecureField(settings.enhancedGrammarAPIKeyStored ? "Enter a replacement API key" : "API key", text: $apiKey)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button("Save API Key") {
-                        do {
-                            try settings.saveDeveloperGrammarAPIKey(apiKey)
-                            apiKey = ""
-                            connectionMessage = "Saved securely in macOS Keychain."
-                        } catch { connectionMessage = error.localizedDescription }
+            Section(settings.developerGrammarProvider.access == .localCLI ? "CLI connection" : "API key") {
+                if settings.developerGrammarProvider.access == .localCLI {
+                    let installed = CLIChatProviderClient.executableURL(for: settings.developerGrammarProvider) != nil
+                    Label(installed ? "CLI installed" : "CLI not installed",
+                          systemImage: installed ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .foregroundStyle(installed ? .green : .orange)
+                    Text("Uses this Mac's existing CLI sign-in. Test Connection checks authentication and the selected model. Grammar does not receive AI Chat tools or history.")
+                        .font(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    SecureField(settings.enhancedGrammarAPIKeyStored ? "Enter a replacement API key" : "API key", text: $apiKey)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("Save API Key") {
+                            do {
+                                try settings.saveDeveloperGrammarAPIKey(apiKey)
+                                apiKey = ""
+                                connectionMessage = "Saved securely in macOS Keychain."
+                            } catch { connectionMessage = error.localizedDescription }
+                        }
+                        .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button("Remove Shared Key", role: .destructive) { confirmRemoveKey = true }
+                            .disabled(isTestingConnection || !settings.enhancedGrammarAPIKeyStored)
+                        if settings.enhancedGrammarAPIKeyStored { Label("Stored", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                     }
-                    .disabled(apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button("Remove Shared Key", role: .destructive) { confirmRemoveKey = true }
-                        .disabled(isTestingConnection || !settings.enhancedGrammarAPIKeyStored)
-                    if settings.enhancedGrammarAPIKeyStored { Label("Stored", systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
                 }
-                if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
                 HStack {
-                    Button {
-                        testConnection()
-                    } label: {
-                        if isTestingConnection { ProgressView().controlSize(.small) } else { Text("Test Connection") }
+                    Button { testConnection() } label: {
+                        if isTestingConnection { ProgressView().controlSize(.small) }
+                        else { Text("Test Connection") }
                     }
                     .disabled(isTestingConnection || settings.developerGrammarConfigurationForTesting == nil)
                     if isTestingConnection {
                         Button("Stop") { if let connectionTaskID { TaskRegistry.shared.cancel(connectionTaskID) } }
                     }
-                    if let connectionMessage { Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
+                }
+                if let connectionMessage {
+                    Text(connectionMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
-            Section("Advanced provider settings") {
-                TextField("Base URL", text: $settings.developerGrammarBaseURL)
-                    .textFieldStyle(.roundedBorder)
-                Text("Use HTTPS, or HTTP for loopback servers. Compatible servers may omit the API key. The Harper fallback setting in Fix Writing controls local fallback.")
-                    .font(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
+            if settings.developerGrammarProvider.requiresGrammarBaseURL {
+                Section("Advanced provider settings") {
+                    TextField("Base URL", text: $settings.developerGrammarBaseURL)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Use HTTPS, or HTTP for loopback servers. Compatible servers may omit the API key. The Harper fallback setting in Fix Writing controls local fallback.")
+                        .font(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
             }
         }
         .formStyle(.grouped)
@@ -347,7 +366,7 @@ struct GrammarSettingsView: View {
             return
         }
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            connectionMessage = "Enter a model, valid endpoint, and any required provider key first."
+            connectionMessage = "Select a valid model and complete any required provider settings first."
             return
         }
         isTestingConnection = true
@@ -356,23 +375,27 @@ struct GrammarSettingsView: View {
         let taskID = TaskRegistry.shared.begin(kind: .aiTool, title: "Checking Writing provider", isCancellable: true,
             onCancel: { connectionTask?.cancel() })
         connectionTaskID = taskID
-        connectionTask = StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
+        connectionTask = Task { @MainActor in
+            do {
+                try await GrammarInferenceClient().testConnection(configuration: configuration)
+                TaskRegistry.shared.finish(taskID)
+                if settings.developerGrammarProvider == configuration.provider,
+                   settings.developerGrammarModel == configuration.model {
+                    let latency = Int(Date().timeIntervalSince(started) * 1_000)
+                    connectionMessage = "Connected · \(latency) ms"
+                }
+            } catch is CancellationError {
+                TaskRegistry.shared.finish(taskID, state: .cancelled)
+            } catch {
+                TaskRegistry.shared.finish(taskID, state: .failed)
+                if settings.developerGrammarProvider == configuration.provider,
+                   settings.developerGrammarModel == configuration.model {
+                    connectionMessage = "Failed: \(error.localizedDescription)"
+                }
+            }
             isTestingConnection = false
             connectionTask = nil
             connectionTaskID = nil
-            switch result {
-            case .success: TaskRegistry.shared.finish(taskID)
-            case .failure(let error):
-                TaskRegistry.shared.finish(taskID, state: (error as NSError).code == NSURLErrorCancelled ? .cancelled : .failed)
-            }
-            guard settings.developerGrammarProvider == configuration.provider,
-                  settings.developerGrammarBaseURL == configuration.baseURL,
-                  settings.developerGrammarModel == configuration.model else { return }
-            let latency = Int(Date().timeIntervalSince(started) * 1_000)
-            switch result {
-            case .success: connectionMessage = "Connected · \(latency) ms"
-            case .failure(let error): connectionMessage = "Failed: \(error.localizedDescription)"
-            }
         }
     }
 
@@ -397,7 +420,7 @@ struct GrammarSettingsView: View {
         }
 
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            testError = "Save a provider key, model, and base URL first."
+            testError = "Select a valid model and complete any required provider settings first."
             return
         }
         guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI else {
@@ -408,7 +431,7 @@ struct GrammarSettingsView: View {
         let protected = StealthGrammarService.protect(testInput, ignoreList: settings.writingInstructions)
         Task { @MainActor in
             do {
-                let result = try await GrammarEnsembleCoordinator(remoteClient: StealthGrammarRemoteClient()).run(
+                let result = try await GrammarEnsembleCoordinator().run(
                     contextText: protected.contextText,
                     source: testInput,
                     protected: protected,

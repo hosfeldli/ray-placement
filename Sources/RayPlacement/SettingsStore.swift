@@ -21,7 +21,7 @@ enum GrammarEngineMode: String, CaseIterable, Identifiable, Codable {
     case externalAPI
 
     var id: String { rawValue }
-    var title: String { self == .local ? "Local" : "External API" }
+    var title: String { self == .local ? "Local" : "AI provider" }
 }
 
 enum AppAppearance: String, CaseIterable, Identifiable {
@@ -418,25 +418,14 @@ final class SettingsStore: ObservableObject {
         didSet {
             aiMaximumConcurrentSubagents = min(
                 max(aiMaximumConcurrentSubagents, 1),
-                min(AIExecutionSubagentBudget.maximumConcurrentCeiling, aiMaximumSubagentsPerRun)
+                AIExecutionSubagentBudget.maximumConcurrentCeiling
             )
             defaults.set(aiMaximumConcurrentSubagents, forKey: Key.aiMaximumConcurrentSubagents)
         }
     }
 
-    @Published var aiMaximumSubagentsPerRun: Int {
-        didSet {
-            aiMaximumSubagentsPerRun = min(max(aiMaximumSubagentsPerRun, 1), AIExecutionSubagentBudget.maximumPerRunCeiling)
-            if aiMaximumConcurrentSubagents > aiMaximumSubagentsPerRun {
-                aiMaximumConcurrentSubagents = aiMaximumSubagentsPerRun
-            }
-            defaults.set(aiMaximumSubagentsPerRun, forKey: Key.aiMaximumSubagentsPerRun)
-        }
-    }
-
     private enum Key {
         static let aiMaximumConcurrentSubagents = "aiMaximumConcurrentSubagents"
-        static let aiMaximumSubagentsPerRun = "aiMaximumSubagentsPerRun"
         static let activationShortcut = "activationShortcut"
         static let activationHotkeyEnabled = "activationHotkeyEnabled"
         static let expandedWorkspaceShortcut = "expandedWorkspaceShortcut"
@@ -923,7 +912,7 @@ final class SettingsStore: ObservableObject {
     }
 
     var enhancedGrammarAPIKeyStored: Bool {
-        !developerGrammarAPIKey.isEmpty
+        developerGrammarProvider.access != .localCLI && !developerGrammarAPIKey.isEmpty
     }
 
     func grammarCandidateSettings(for profile: GrammarCandidateProfile) -> GrammarCandidateSettings {
@@ -960,7 +949,8 @@ final class SettingsStore: ObservableObject {
         // Preserve custom values when the user deliberately entered them, but
         // make provider switching immediately usable for preset selections.
         let wasPreset = previousProvider.modelOptions.contains { $0.id == previousModel }
-        if previousModel.isEmpty || wasPreset {
+            || (previousProvider.access == .localCLI && previousModel == "default")
+        if previousModel.isEmpty || wasPreset || provider.access == .localCLI {
             developerGrammarModel = provider.defaultModel
         }
         if previousBaseURL.isEmpty || previousBaseURL == previousProvider.defaultBaseURL {
@@ -973,30 +963,24 @@ final class SettingsStore: ObservableObject {
     }
 
     var developerGrammarConfigurationForModelDiscovery: DeveloperGrammarConfiguration? {
-        let key = developerGrammarAPIKey
+        let provider = developerGrammarProvider
+        let key = provider.access == .localCLI ? "" : developerGrammarAPIKey
         let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty),
-              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
+        guard (!provider.requiresGrammarAPIKey || !key.isEmpty),
+              (!provider.requiresGrammarBaseURL || AIProviderHTTP.validateBaseURL(baseURL) != nil) else { return nil }
         return DeveloperGrammarConfiguration(
-            provider: developerGrammarProvider,
-            apiKey: key,
+            provider: provider, apiKey: key,
             model: developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines),
-            baseURL: baseURL
+            baseURL: provider.requiresGrammarBaseURL ? baseURL : ""
         )
     }
 
     var developerGrammarConfigurationForTesting: DeveloperGrammarConfiguration? {
-        let key = developerGrammarAPIKey
-        let model = developerGrammarModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        let baseURL = developerGrammarBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard (developerGrammarProvider == .openAICompatible || !key.isEmpty), !model.isEmpty,
-              AIProviderHTTP.validateBaseURL(baseURL) != nil else { return nil }
-        return DeveloperGrammarConfiguration(
-            provider: developerGrammarProvider,
-            apiKey: key,
-            model: model,
-            baseURL: baseURL
-        )
+        guard let configuration = developerGrammarConfigurationForModelDiscovery else { return nil }
+        let model = configuration.model
+        guard !model.isEmpty,
+              (configuration.provider.access != .localCLI || CLIChatProviderClient.isValidModelID(model)) else { return nil }
+        return configuration
     }
 
     func saveDeveloperGrammarAPIKey(_ value: String) throws {
@@ -1091,15 +1075,10 @@ final class SettingsStore: ObservableObject {
 
     private init() {
         aiEnabled = AIRequestPolicy.shared.isEnabled
-        let storedSubagentRunLimit = defaults.integer(forKey: Key.aiMaximumSubagentsPerRun)
-        let maximumSubagentsPerRun = storedSubagentRunLimit == 0
-            ? 12
-            : min(max(storedSubagentRunLimit, 1), AIExecutionSubagentBudget.maximumPerRunCeiling)
-        aiMaximumSubagentsPerRun = maximumSubagentsPerRun
         let storedConcurrentSubagentLimit = defaults.integer(forKey: Key.aiMaximumConcurrentSubagents)
         aiMaximumConcurrentSubagents = min(
             storedConcurrentSubagentLimit == 0 ? 4 : max(storedConcurrentSubagentLimit, 1),
-            min(AIExecutionSubagentBudget.maximumConcurrentCeiling, maximumSubagentsPerRun)
+            AIExecutionSubagentBudget.maximumConcurrentCeiling
         )
         activationShortcut = defaults.string(forKey: Key.activationShortcut) ?? "option+space"
         activationHotkeyEnabled = defaults.object(forKey: Key.activationHotkeyEnabled) as? Bool ?? true

@@ -55,16 +55,11 @@ struct AIProviderSettingsView: View {
             }
             Section("Agent execution") {
                 Picker("Maximum simultaneous agents", selection: $settings.aiMaximumConcurrentSubagents) {
-                    ForEach(1...min(AIExecutionSubagentBudget.maximumConcurrentCeiling, settings.aiMaximumSubagentsPerRun), id: \.self) { count in
+                    ForEach(1...AIExecutionSubagentBudget.maximumConcurrentCeiling, id: \.self) { count in
                         Text("\(count)").tag(count)
                     }
                 }
-                Picker("Maximum agents per request", selection: $settings.aiMaximumSubagentsPerRun) {
-                    ForEach(1...AIExecutionSubagentBudget.maximumPerRunCeiling, id: \.self) { count in
-                        Text("\(count)").tag(count)
-                    }
-                }
-                Text("Applies to new AI runs; the run keeps its captured limits. Defaults are 4 simultaneous agents and 12 total children. Recursive delegation stays disabled, with an internal maximum of 32 children per run.")
+                Text("Applies to new AI runs; each run captures its simultaneous-agent limit. Sequential child requests have no total quota. Recursive delegation stays disabled.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Browser research") {

@@ -218,6 +218,68 @@ private struct ApprovalToolChildTransport: AIChatTransport {
     #expect(result.output.contains("fixture_read"))
 }
 
+private struct MultiRoundChildTransport: AIChatTransport {
+    func listModels(apiKey: String) async throws -> [AIModelOption] { [] }
+
+    private func stream(round: Int) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let responseID = "child-round-\(round)"
+            continuation.yield(.responseCreated(responseID))
+            if round <= 8 {
+                continuation.yield(.outputItem(AIOutputItem(
+                    phase: .completed, apiType: "function_call",
+                    callID: "call-\(round)", name: "fixture_read",
+                    arguments: "{\"round\":\(round)}"
+                )))
+            } else {
+                continuation.yield(.textDelta("Eight sequential reads completed."))
+            }
+            continuation.yield(.completed(responseID))
+            continuation.finish()
+        }
+    }
+
+    func streamReply(apiKey: String, model: String, input: String,
+                     history: [AIProviderMessage], previousResponseID: String?,
+                     reasoningEffort: AIReasoningEffort, attachments: [AIAttachment],
+                     localTools: [LimaAIToolDefinition],
+                     systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        #expect(history.isEmpty)
+        return stream(round: 1)
+    }
+
+    func streamToolOutputs(apiKey: String, model: String, previousResponseID: String,
+                           history: [AIProviderMessage], outputs: [[String: Any]],
+                           reasoningEffort: AIReasoningEffort,
+                           localTools: [LimaAIToolDefinition],
+                           systemInstructions: String) -> AsyncThrowingStream<AIChatStreamEvent, Error> {
+        let nextRound = history.count / 2 + 1
+        #expect(outputs.count == 1)
+        #expect(outputs.first?["call_id"] as? String == "call-\(nextRound - 1)")
+        return stream(round: nextRound)
+    }
+}
+
+@Test @MainActor func subagentCanContinueBeyondFiveUsefulToolRounds() async {
+    let readTool = LimaAIToolDefinition(
+        id: "fixture-read", name: "fixture_read",
+        description: "Read fixture data.", parameters: [:], risk: .read
+    )
+    var executions = 0
+    let result = await AISubagentRunner.run(
+        client: MultiRoundChildTransport(), apiKey: "fixture-only",
+        model: AIModelOption(id: "selected-analysis-model"),
+        task: "Read all eight pieces of evidence.", localTools: [readTool],
+        executeTool: { _, _ in
+            executions += 1
+            return #"{"state":"completed"}"#
+        }
+    )
+    #expect(!result.isError)
+    #expect(executions == 8)
+    #expect(result.output.contains("Eight sequential reads completed."))
+}
+
 @Test @MainActor func contextToolsRemainStrictAndRespectCapabilityOff() throws {
     for definition in AIContextTools.definitions {
         #expect(definition.responsePayload != nil)

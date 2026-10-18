@@ -12,7 +12,7 @@ enum BrowserWorkspaceAITools {
     ]
     nonisolated static let navigationIDs: Set<String> = [
         "browser_new_tab", "browser_close_tab", "browser_focus_tab",
-        "browser_open_link", "browser_navigate", "browser_back",
+        "browser_activate", "browser_open_link", "browser_navigate", "browser_back",
         "browser_forward", "browser_reload", "browser_scroll", "browser_scan"
     ]
     nonisolated static let interactionIDs: Set<String> = [
@@ -55,6 +55,11 @@ enum BrowserWorkspaceAITools {
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
         tool("browser_focus_tab", "Select one existing Lima Browser tab and open the visible Browser workspace. Check browser_visible before claiming the window opened; this does not read the page.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
+        tool("browser_activate", "Activate a fresh link or control target. Defaults to the current tab; verified ordinary links can also open in a new or background tab. JS-only links and controls require Browser Full Control and cannot open in another tab. Download, unsafe, and sensitive targets are refused.",
+             ["tab_id": string("A Lima Browser tab ID."),
+              "target": string("A target ID from the latest browser_read or browser_find."),
+              "disposition": enumeration(["current_tab", "new_tab", "background_tab"])],
+             risk: .navigation, required: ["tab_id", "target"]),
         tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Foreground navigation waits for a stable page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A link target ID from the latest browser_read or browser_find."),
@@ -148,6 +153,14 @@ enum BrowserWorkspaceAITools {
     }
 
     static func execute(_ call: AIOutputItem, browser: BrowserWorkspaceModel) async -> LimaAIToolExecution {
+        let requestedTab = (try? decodedArguments(for: call)).flatMap { try? tabID($0) }
+        let activityID = browser.beginAIActivity(call.name ?? "browser", tabID: requestedTab ?? browser.selectedTabID)
+        let result = await executeOperation(call, browser: browser)
+        browser.finishAIActivity(activityID, result: result)
+        return result
+    }
+
+    private static func executeOperation(_ call: AIOutputItem, browser: BrowserWorkspaceModel) async -> LimaAIToolExecution {
         guard isAvailable(call.name ?? "", mode: browser.aiControlMode) else {
             return failure(for: BrowserRuntimeError.controlDisabled).toolExecution()
         }
@@ -210,7 +223,6 @@ enum BrowserWorkspaceAITools {
                 let snapshot = try await browser.wait(tab, condition: condition, timeoutMilliseconds: timeout)
                 return try encoded(snapshot, browserTabID: snapshot.tabID)
             case "browser_new_tab":
-                guard browser.tabs.count < 20 else { throw BrowserWorkspaceToolError.tabLimit }
                 let raw = try optionalString("url", in: arguments)
                 let url = try raw.map(safeURL)
                 let background = try optionalBool("background", in: arguments) ?? false
@@ -239,6 +251,31 @@ enum BrowserWorkspaceAITools {
                               "browser_visible": browserVisible,
                               "page_state_verified": focusedTab.hasLiveWebView,
                               "post_action_verified": browser.selectedTabID == tab])
+            case "browser_activate":
+                let tab = try tabID(arguments)
+                let target = try requiredString("target", in: arguments)
+                let raw = try optionalString("disposition", in: arguments) ?? "current_tab"
+                guard let disposition = BrowserNavigationDisposition(rawValue: raw) else {
+                    throw BrowserWorkspaceToolError.invalidArguments
+                }
+                let revision = try browser.tab(tab).navigationRevision
+                switch try await browser.activate(tab, targetID: target, disposition: disposition) {
+                case .interacted(let outcome):
+                    return try encoded(outcome, browserTabID: tab)
+                case .navigated(let opened):
+                    let openedTab = try browser.tab(opened)
+                    let browserVisible = disposition == .backgroundTab ? false : browser.revealAIForegroundTab(opened)
+                    if !openedTab.isSuspended {
+                        return await verifiedNavigation(browser, tabID: opened,
+                                                        after: opened == tab ? revision : 0,
+                                                        disposition: raw, browserVisible: browserVisible)
+                    }
+                    return .json(["requested": true, "performed": true, "disposition": raw,
+                                  "tab_id": opened.uuidString, "loading_deferred": true,
+                                  "page_state_verified": false, "browser_visible": browserVisible,
+                                  "post_action_verified": browser.tabs.contains { $0.id == opened }],
+                                 browserTabID: opened)
+                }
             case "browser_open_link":
                 let tab = try tabID(arguments)
                 let target = try requiredString("target", in: arguments)
@@ -407,6 +444,10 @@ enum BrowserWorkspaceAITools {
             case .invalidDestination:
                 return AIToolFailure(.invalidArguments, message: message, recoverable: true,
                                      nextAction: "Use HTTPS, or HTTP on localhost, 127.0.0.1, or [::1], without credentials.")
+            case .noVerifiedDestination:
+                return AIToolFailure(.noVerifiedDestination, message: message, recoverable: true,
+                                     nextAction: "Activate it in the current tab and read the resulting page.",
+                                     suggestedTools: ["browser_activate", "browser_read"])
             case .controlDisabled, .userPaused:
                 return AIToolFailure(.permissionDenied, message: message, recoverable: false,
                                      nextAction: "Wait for the user to change or resume Browser AI Control.")
@@ -417,10 +458,6 @@ enum BrowserWorkspaceAITools {
                 return AIToolFailure(.unsupportedOperation, message: message, recoverable: true,
                                      nextAction: "Read the page again and choose a supported semantic action.",
                                      suggestedTools: ["browser_read"])
-            case .tabLimit:
-                return AIToolFailure(.resourceUnavailable, message: message, recoverable: true,
-                                     nextAction: "List tabs and close an unneeded tab before opening another.",
-                                     suggestedTools: ["browser_tabs", "browser_close_tab"])
             }
         }
         if let toolError = error as? BrowserWorkspaceToolError {
@@ -435,11 +472,6 @@ enum BrowserWorkspaceAITools {
                                      recoverable: true,
                                      nextAction: "List or open a Browser tab before reading the current tab.",
                                      suggestedTools: ["browser_tabs", "browser_new_tab"])
-            case .tabLimit:
-                return AIToolFailure(.resourceUnavailable, message: toolError.localizedDescription,
-                                     recoverable: true,
-                                     nextAction: "List tabs and close an unneeded tab before opening another.",
-                                     suggestedTools: ["browser_tabs", "browser_close_tab"])
             }
         }
         return AIToolFailure(.resourceUnavailable, message: "The Browser action failed unexpectedly.",
@@ -577,13 +609,11 @@ enum BrowserWorkspaceAITools {
 private enum BrowserWorkspaceToolError: LocalizedError {
     case invalidArguments
     case noSelectedTab
-    case tabLimit
 
     var errorDescription: String? {
         switch self {
         case .invalidArguments: "The Browser tool arguments were invalid."
         case .noSelectedTab: "No Lima Browser tab is selected."
-        case .tabLimit: "The Browser currently limits AI-created and page-opened logical tabs to 20; close a tab before opening another."
         }
     }
 }

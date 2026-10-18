@@ -207,20 +207,20 @@ struct GrammarDebuggerView: View {
     private func purge() { GrammarDebugStore.shared.prune(maxRuns: settings.grammarDebugMaximumRuns, retentionDays: settings.grammarDebugRetentionDays); reload(); status = "Retention policy applied." }
     private func rerun(_ run: GrammarDebugRun, strategy: GrammarEnsembleStrategy, judge: Bool) {
         guard let source = run.sourceText else { status = "Enable source capture to rerun this run."; return }
-        guard let configuration = settings.developerGrammarConfigurationForTesting else { status = "Save a provider key, model, and base URL first."; return }
+        guard let configuration = settings.developerGrammarConfigurationForTesting else { status = "Select a valid model and complete required provider settings first."; return }
         let protected = StealthGrammarService.protect(source, ignoreList: settings.writingInstructions)
         status = "Running again…"
         Task { @MainActor in
-            do { _ = try await GrammarEnsembleCoordinator(remoteClient: StealthGrammarRemoteClient()).run(contextText: protected.contextText, source: source, protected: protected, configuration: configuration, strategy: strategy, systemPrompt: StealthGrammarRemoteClient.systemPrompt, useJudgeOnDisagreement: judge); reload(); status = "Rerun completed." }
+            do { _ = try await GrammarEnsembleCoordinator().run(contextText: protected.contextText, source: source, protected: protected, configuration: configuration, strategy: strategy, systemPrompt: StealthGrammarRemoteClient.systemPrompt, useJudgeOnDisagreement: judge); reload(); status = "Rerun completed." }
             catch { status = error.localizedDescription }
         }
     }
 
     private func runBenchmark() {
-        guard let configuration = settings.developerGrammarConfigurationForTesting else { status = "Save a provider key, model, and base URL first."; return }
+        guard let configuration = settings.developerGrammarConfigurationForTesting else { status = "Select a valid model and complete required provider settings first."; return }
         isBenchmarking = true; status = nil
         Task { @MainActor in
-            let service = GrammarBenchmarkService(coordinator: GrammarEnsembleCoordinator(remoteClient: StealthGrammarRemoteClient()))
+            let service = GrammarBenchmarkService(coordinator: GrammarEnsembleCoordinator())
             benchmarkSummary = await service.run(configuration: configuration, strategy: settings.grammarEnsembleStrategy)
             benchmarkComparison = await service.compare(configuration: configuration, strategies: [.fast, .balanced, .thorough, settings.grammarEnsembleStrategy])
             isBenchmarking = false

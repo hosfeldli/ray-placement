@@ -13,6 +13,7 @@ enum AIToolFailureCode: String, Sendable {
     case invalidArguments = "invalid_arguments"
     case unsupportedOperation = "unsupported_operation"
     case staleTarget = "stale_target"
+    case noVerifiedDestination = "no_verified_destination"
     case pageChangedByUser = "page_changed_by_user"
     case staleFile = "stale_file"
     case targetNotVisible = "target_not_visible"

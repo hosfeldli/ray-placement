@@ -124,6 +124,8 @@ struct LimaWayfinderRail: View {
     var activeWorkspaceProfileID: UUID? = nil
     var selectWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
     var createWorkspaceProfile: (() -> Void)? = nil
+    var aiSidecarVisible: Bool = false
+    var toggleAISidecar: (() -> Void)? = nil
     @ObservedObject private var layout = WorkspaceLayoutStore.shared
     private let settings = SettingsStore.shared
     @State private var hovered: String?
@@ -234,6 +236,19 @@ struct LimaWayfinderRail: View {
                 .help("Open the same workspace in a resizable window")
                 .accessibilityLabel("Open in Window")
                 .onHover { hovered = $0 ? "window" : nil }
+            }
+
+            if current != .ai, let toggleAISidecar {
+                Button(action: toggleAISidecar) {
+                    railLabel(aiSidecarVisible ? "Hide AI" : "Show AI",
+                              symbol: "sidebar.right", selected: aiSidecarVisible,
+                              hovered: hovered == "ai-sidecar")
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("\\", modifiers: [.command])
+                .help(aiSidecarVisible ? "Hide AI sidecar · ⌘\\" : "Show AI sidecar · ⌘\\")
+                .accessibilityLabel(aiSidecarVisible ? "Hide AI sidecar" : "Show AI sidecar")
+                .onHover { hovered = $0 ? "ai-sidecar" : nil }
             }
 
             Button(action: openSettings) {

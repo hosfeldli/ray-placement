@@ -12,8 +12,26 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     case codexCLI
     case claudeCLI
 
-    var isCLI: Bool { self == .codexCLI || self == .claudeCLI }
-    static let writingProviders: [AIProvider] = allCases.filter { !$0.isCLI }
+    enum Access: Sendable {
+        case authenticatedEndpoint
+        case optionalKeyEndpoint
+        case localCLI
+    }
+
+    var access: Access {
+        switch self {
+        case .codexCLI, .claudeCLI: return .localCLI
+        case .openAICompatible: return .optionalKeyEndpoint
+        default: return .authenticatedEndpoint
+        }
+    }
+
+    var isCLI: Bool { access == .localCLI }
+    var requiresGrammarAPIKey: Bool { access == .authenticatedEndpoint }
+    var requiresGrammarBaseURL: Bool { access != .localCLI }
+    /// A failed local CLI must remain visible; only HTTP providers may opt into Harper fallback.
+    var allowsGrammarLocalFallback: Bool { access != .localCLI }
+    static let writingProviders: [AIProvider] = allCases
 
     var id: String { rawValue }
 
@@ -33,7 +51,8 @@ enum AIProvider: String, CaseIterable, Identifiable, Codable, Sendable {
     }
 
     var defaultModel: String {
-        modelOptions.first?.id ?? "local-model"
+        if access == .localCLI { return "default" }
+        return modelOptions.first?.id ?? "local-model"
     }
 
     var modelOptions: [AIModelDescriptor] {

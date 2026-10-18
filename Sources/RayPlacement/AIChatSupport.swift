@@ -849,7 +849,7 @@ enum AIChatConfigurationCatalog {
             id: "skill.research",
             name: "Research",
             instructions: "Research through Lima's embedded Browser tabs only. Check Browser AI Control and page readiness, inspect actual page content, distinguish snippets from opened sources, and cite URLs actually returned. Report inaccessible pages or login walls without bypassing them.",
-            preferredToolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scroll", "browser_open_link", "browser_wait"],
+            preferredToolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scroll", "browser_activate", "browser_open_link", "browser_wait"],
             recommendedProviderID: nil,
             recommendedModelID: nil
         )
@@ -886,7 +886,7 @@ enum AIChatConfigurationCatalog {
             modelID: nil,
             reasoningEffort: .medium,
             skillIDs: ["skill.research"],
-            toolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scan", "browser_open_link", "browser_wait"],
+            toolIDs: ["browser_capabilities", "browser_tabs", "browser_current", "browser_read", "browser_find", "browser_scan", "browser_activate", "browser_open_link", "browser_wait"],
             contextDefaults: []
         )
     ]
@@ -2295,6 +2295,7 @@ extension LimaAIToolDefinition {
         case "list_extensions": return "Catalog only, never runs"
         case "get_lima_status": return "Private app details"
         case "browser_focus_tab": return "Select a Lima Browser tab"
+        case "browser_activate": return "Activate a Browser link or control"
         case "browser_open_link": return "Open a verified semantic link"
         case "browser_navigate": return "Navigate a Lima Browser tab"
         case "browser_click": return "Click a nonsensitive Browser control"
@@ -2331,7 +2332,7 @@ extension LimaAIToolDefinition {
         case "read_file": return "doc.text"
         case "list_extensions": return "square.grid.2x2"
         case "get_lima_status": return "checkmark.shield"
-        case "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
+        case "browser_activate", "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
         case "create_text_file", "replace_text_file", "edit_text_file": return "doc.badge.plus"
         case "run_terminal_command", "terminal_run": return "terminal"
         case "terminal_start": return "terminal.fill"
@@ -3189,6 +3190,8 @@ struct AIToolApprovalView: View {
         switch toolID {
         case "browser_new_tab":
             return "Create a Lima Browser tab\(host(arguments["url"] as? String).map { " at \($0)" } ?? "")."
+        case "browser_activate":
+            return "Activate the requested Browser link or control."
         case "browser_open_link":
             return "Open a verified semantic link in the Lima Browser."
         case "browser_focus_tab":

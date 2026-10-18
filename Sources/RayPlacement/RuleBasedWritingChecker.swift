@@ -31,7 +31,7 @@ final class RuleBasedWritingChecker {
     }
 
     private let reviewer = WritingCheckService()
-    private let api = StealthGrammarRemoteClient()
+    private let api = GrammarInferenceClient()
     private var remoteTask: Task<Void, Never>?
     private var activeProcess: Process?
     private var operationID: UUID?
@@ -195,7 +195,9 @@ final class RuleBasedWritingChecker {
         }
 
         guard let configuration = SettingsStore.shared.developerGrammarConfiguration else {
-            if AIRequestPolicy.shared.isEnabled && SettingsStore.shared.grammarFallbackToLocal {
+            if AIRequestPolicy.shared.isEnabled
+                && SettingsStore.shared.developerGrammarProvider.allowsGrammarLocalFallback
+                && SettingsStore.shared.grammarFallbackToLocal {
                 completedEngineTitle = "Harper · AI fallback"
                 progress("AI unavailable · checking locally…")
                 correctIteratively(
@@ -244,16 +246,22 @@ final class RuleBasedWritingChecker {
                         guard Self.isValidCorrection(original: source, corrected: corrected) else {
                             throw StealthGrammarRemoteClient.ClientError.safetyRejected
                         }
+                        let normalized = self.reviewer.normalizeRewrite(corrected)
+                        guard Self.isValidCorrection(original: source, corrected: normalized) else {
+                            throw StealthGrammarRemoteClient.ClientError.safetyRejected
+                        }
                         guard self.operationID == operationID else { return }
-                        completion(.success(self.reviewer.normalizeRewrite(corrected)))
+                        completion(.success(normalized))
                         return
                     } catch {
-                        // One retry only; optional local fallback handles the
-                        // complete API failure without touching the selection.
+                        // One retry only; optional HTTP-provider local fallback handles
+                        // the complete failure without touching the selection.
                     }
                 }
                 guard self.operationID == operationID, !Task.isCancelled else { return }
-                if AIRequestPolicy.shared.isEnabled && SettingsStore.shared.grammarFallbackToLocal {
+                if AIRequestPolicy.shared.isEnabled
+                    && configuration.provider.allowsGrammarLocalFallback
+                    && SettingsStore.shared.grammarFallbackToLocal {
                     self.completedEngineTitle = "Harper · AI fallback"
                     progress("AI unavailable · checking locally…")
                     self.correctIteratively(

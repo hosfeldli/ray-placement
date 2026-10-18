@@ -151,7 +151,7 @@ private final class ParallelSubagentProbe: @unchecked Sendable {
         nativeToolStore: LimaAIToolStore(fixtures: ["agent_delegate"]),
         transport: transport,
         modelCatalog: catalog,
-        subagentBudgetOverride: AIExecutionSubagentBudget(maximumConcurrent: 2, maximumPerRun: 4)
+        subagentBudgetOverride: AIExecutionSubagentBudget(maximumConcurrent: 2)
     )
     model.draft = "Compare two sources"
     model.send()

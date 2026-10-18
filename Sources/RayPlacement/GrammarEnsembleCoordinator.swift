@@ -32,8 +32,8 @@ enum GrammarExecutionError: LocalizedError {
 }
 
 /// Runs the controlled candidate ensemble and assembles only locally safe,
-/// edit-level corrections. HTTP/provider details remain in
-/// StealthGrammarRemoteClient; this type owns consensus and adjudication.
+/// edit-level corrections. Provider details remain in GrammarInferenceClient;
+/// this type owns consensus and adjudication.
 @MainActor
 final class GrammarEnsembleCoordinator {
     struct CandidateResult: Identifiable, Sendable {
@@ -88,10 +88,10 @@ final class GrammarEnsembleCoordinator {
         let order: Int
     }
 
-    private let remoteClient: StealthGrammarRemoteClient
+    private let inferenceClient: GrammarInferenceClient
 
-    init(remoteClient: StealthGrammarRemoteClient) {
-        self.remoteClient = remoteClient
+    init(inferenceClient: GrammarInferenceClient? = nil) {
+        self.inferenceClient = inferenceClient ?? GrammarInferenceClient()
     }
 
     func run(
@@ -192,7 +192,7 @@ final class GrammarEnsembleCoordinator {
             let summary = Self.judgeSummary(buckets: buckets, candidates: eligible)
             do {
                 let decisions = try await withTimeout(executionBudget.judgeDeadline, deadline: deadline) {
-                    try await self.remoteClient.judgeDocument(
+                    try await self.inferenceClient.judgeDocument(
                         contextText: contextText,
                         candidateSummary: summary,
                         configuration: configuration
@@ -270,12 +270,12 @@ final class GrammarEnsembleCoordinator {
         var tasks: [Task<Void, Never>] = []
         let stream = AsyncStream<CandidateResult> { continuation in
             for profile in profiles {
-                let task = Task { [remoteClient] in
+                let task = Task { [inferenceClient] in
                     let started = Date()
                     let candidate: CandidateResult
                     do {
                         let changes = try await self.withTimeout(budget.hardCandidateDeadline, deadline: deadline) {
-                            try await remoteClient.correctDocument(
+                            try await inferenceClient.correctDocument(
                                 contextText,
                                 configuration: configuration,
                                 systemPrompt: await Self.prompt(base: systemPrompt, profile: profile),

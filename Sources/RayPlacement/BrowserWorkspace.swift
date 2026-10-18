@@ -236,6 +236,7 @@ final class BrowserWorkspaceModel: ObservableObject {
             }
             if aiControlMode != oldValue {
                 automation = nil
+                aiFocus = nil
                 for tab in tabs { revokeBrowserState(for: tab.id) }
             }
         }
@@ -251,12 +252,14 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
     @Published private(set) var pausedTabIDs: Set<UUID> = []
     @Published private(set) var automation: BrowserAutomationState?
+    @Published private(set) var aiFocus: BrowserAIFocusState?
+    @Published private(set) var aiActivity: [BrowserAIActivity] = []
+    private var lastAIPointerPosition: CGPoint?
     private var needsFreshReadTabIDs: Set<UUID> = []
     private var userChangedTabIDs: Set<UUID> = []
     private var authorityRevisions: [UUID: UInt64] = [:]
     private var readRevisions: [UUID: UInt64] = [:]
     private var lastReadinessByTabID: [UUID: BrowserReadiness] = [:]
-    private let maximumAICreatedTabs = 20
     private let maximumLiveWebViews = 6
     private var liveTabOrder: [UUID] = []
     private var activeOperationCounts: [UUID: Int] = [:]
@@ -295,6 +298,26 @@ final class BrowserWorkspaceModel: ObservableObject {
         if let userEventMonitor { NSEvent.removeMonitor(userEventMonitor) }
     }
 
+    func beginAIActivity(_ toolName: String, tabID: UUID?) -> UUID {
+        let id = UUID()
+        aiActivity.append(BrowserAIActivity(
+            id: id, tabID: tabID, title: BrowserAIActivity.title(for: toolName),
+            state: .working
+        ))
+        if aiActivity.count > 40 { aiActivity.removeFirst(aiActivity.count - 40) }
+        return id
+    }
+
+    func finishAIActivity(_ id: UUID, result: LimaAIToolExecution) {
+        guard let index = aiActivity.firstIndex(where: { $0.id == id }) else { return }
+        aiActivity[index].tabID = result.browserTabID ?? aiActivity[index].tabID
+        aiActivity[index].state = result.isError ? .failed : .completed
+    }
+
+    func activityState(for tabID: UUID) -> BrowserAIActivity.State? {
+        aiActivity.last(where: { $0.tabID == tabID })?.state
+    }
+
     private func handleUserEvent(_ event: NSEvent) {
         guard let tab = selectedTab,
               let webView = tab.activeWebView,
@@ -315,6 +338,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard tabs.contains(where: { $0.id == id }) else { return }
         userChangedTabIDs.insert(id)
         automation = nil
+        aiFocus = nil
         revokeBrowserState(for: id)
     }
 
@@ -322,6 +346,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard tabs.contains(where: { $0.id == id }), !pausedTabIDs.contains(id) else { return }
         pausedTabIDs.insert(id)
         automation = nil
+        aiFocus = nil
         revokeBrowserState(for: id)
     }
 
@@ -458,7 +483,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         let tab = BrowserTab(configuration: configuration)
         if let url { tab.deferNavigation(to: url) }
         tab.openPopup = { [weak self] configuration in
-            guard let self, self.tabs.count < self.maximumAICreatedTabs else { return nil }
+            guard let self else { return nil }
             let popup = self.newTab(foreground: true, configuration: configuration)
             return self.useLiveView(popup)
         }
@@ -716,6 +741,25 @@ final class BrowserWorkspaceModel: ObservableObject {
         return Array(snapshot.find(query).prefix(60))
     }
 
+    func activate(_ id: UUID, targetID: String,
+                  disposition: BrowserNavigationDisposition) async throws -> BrowserActivationOutcome {
+        guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
+        try requireFreshTarget(id)
+        let target = try await runtime.resolveAny(tabID: id, targetID: targetID)
+        if target.role == "link" {
+            if target.destination != nil {
+                return .navigated(try await openLink(id, targetID: targetID, disposition: disposition))
+            }
+            guard target.relationship == "scripted" else { throw BrowserRuntimeError.invalidDestination }
+        }
+        guard disposition == .currentTab else { throw BrowserRuntimeError.noVerifiedDestination }
+        guard target.availableActions?.contains("activate") != false else {
+            throw BrowserRuntimeError.unsupportedAction
+        }
+        guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
+        return .interacted(try await interact(id, targetID: targetID, action: .click))
+    }
+
     @discardableResult
     func openLink(_ id: UUID, targetID: String, disposition: BrowserNavigationDisposition) async throws -> UUID {
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
@@ -729,23 +773,18 @@ final class BrowserWorkspaceModel: ObservableObject {
         try await validateTarget(id, target: target, identity: identity)
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
-        if disposition != .currentTab && tabs.count >= maximumAICreatedTabs {
-            throw BrowserRuntimeError.tabLimit
-        }
         let dispositionDescription = disposition == .currentTab ? "" :
             (disposition == .newTab ? " in a new tab" : " in a background tab")
-        await showAutomation(on: id, "Opening “\(target.label)”\(dispositionDescription)",
-                             role: "link", target: target)
+        try await showAutomation(on: id, "Opening “\(target.label)”\(dispositionDescription)",
+                                 role: "link", target: target)
         // Geometry resolution suspends; a person can take over the tab while
         // the native pointer is prepared. Recheck both authority and target.
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
         try await validateTarget(id, target: target, identity: identity)
+        try Task.checkCancellation()
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
-        if disposition != .currentTab && tabs.count >= maximumAICreatedTabs {
-            throw BrowserRuntimeError.tabLimit
-        }
         switch disposition {
         case .currentTab:
             try navigate(id, to: destination)
@@ -781,7 +820,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
-        await showAutomation(on: id, action.description(for: target.label), role: action.rawValue, target: target)
+        try await showAutomation(on: id, action.description(for: target.label), role: action.rawValue, target: target)
         guard aiControlMode.canInteract, authorityRevisions[id, default: 0] == authorityRevision else {
             throw BrowserRuntimeError.staleTarget
         }
@@ -794,6 +833,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         let tab = try tab(id)
         let frame = try targetFrame(target, in: tab)
         guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
+        try Task.checkCancellation()
         let result = try await webView.callAsyncJavaScript(
             BrowserSemanticScript.action,
             arguments: [
@@ -925,8 +965,8 @@ final class BrowserWorkspaceModel: ObservableObject {
                 width: outcome.width, height: outcome.height, frameID: frameID,
                 sensitive: false
             )
-            await showAutomation(on: id, "Scrolling \(outcome.regionLabel)",
-                                 role: "scroll", target: target)
+            try await showAutomation(on: id, "Scrolling \(outcome.regionLabel)",
+                                     role: "scroll", target: target)
         }
         return outcome
     }
@@ -1065,7 +1105,8 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
 
     private func showAutomation(on tabID: UUID, _ title: String, role: String,
-                                target: BrowserTarget) async {
+                                target: BrowserTarget) async throws {
+        try Task.checkCancellation()
         guard let tab = try? tab(tabID), let webView = tab.activeWebView,
               !pausedTabIDs.contains(tabID) else { return }
         let frameGeometry: BrowserFrameGeometry?
@@ -1080,6 +1121,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         } else {
             frameGeometry = nil
         }
+        try Task.checkCancellation()
         guard !pausedTabIDs.contains(tabID), tabs.contains(where: { $0.id == tabID }) else { return }
         let bounds: CGRect?
         if target.frameID == "main" {
@@ -1089,16 +1131,53 @@ final class BrowserWorkspaceModel: ObservableObject {
         } else {
             bounds = frameGeometry?.visibleTargetBounds(target, viewport: webView.bounds)
         }
+        let start = lastAIPointerPosition ?? CGPoint(x: webView.bounds.midX, y: webView.bounds.midY)
         let state = BrowserAutomationState(
             id: UUID(), tabID: tabID, title: title, role: role,
-            target: target, overlayBounds: bounds
+            target: target, overlayBounds: bounds, pointerStart: start
+        )
+        aiFocus = BrowserAIFocusState(
+            id: state.id, tabID: tabID, targetID: target.id,
+            bounds: bounds, role: role, label: target.label, intent: title
         )
         automation = state
+        if let bounds {
+            lastAIPointerPosition = CGPoint(x: bounds.minX + 25, y: bounds.maxY + 12)
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+                guard automation?.id == state.id, !pausedTabIDs.contains(tabID) else { return }
+                automation?.phase = .moving
+                try await Task.sleep(for: .milliseconds(220))
+                guard automation?.id == state.id, !pausedTabIDs.contains(tabID) else { return }
+                try Task.checkCancellation()
+            } catch {
+                if automation?.id == state.id {
+                    automation = nil
+                    aiFocus = nil
+                }
+                throw error
+            }
+            automation?.phase = .acting
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .milliseconds(120))
+                if self?.automation?.id == state.id { self?.automation?.phase = .waiting }
+            }
+        } else {
+            automation?.phase = .waiting
+        }
         Task { @MainActor [weak self] in
             try? await Task.sleep(for: .seconds(3))
-            if self?.automation?.id == state.id { self?.automation = nil }
+            if self?.automation?.id == state.id {
+                self?.automation = nil
+                if self?.aiFocus?.id == state.id { self?.aiFocus = nil }
+            }
         }
     }
+}
+
+enum BrowserActivationOutcome: Sendable {
+    case navigated(UUID)
+    case interacted(BrowserActionOutcome)
 }
 
 enum BrowserNavigationDisposition: String, Codable, Sendable {
@@ -1297,13 +1376,64 @@ struct BrowserFrameGeometry: Decodable {
     }
 }
 
+struct BrowserAIActivity: Identifiable, Equatable {
+    enum State: Equatable {
+        case working
+        case completed
+        case failed
+    }
+
+    let id: UUID
+    var tabID: UUID?
+    let title: String
+    var state: State
+
+    static func title(for tool: String) -> String {
+        switch tool {
+        case "browser_read", "browser_result_read": return "Reading page"
+        case "browser_find": return "Finding on page"
+        case "browser_scan", "browser_scroll": return "Scanning page"
+        case "browser_activate", "browser_open_link": return "Opening result"
+        case "browser_new_tab": return "Opening tab"
+        case "browser_close_tab": return "Closing tab"
+        case "browser_focus_tab": return "Switching tab"
+        case "browser_navigate", "browser_back", "browser_forward", "browser_reload": return "Navigating"
+        case "browser_wait": return "Waiting for page"
+        case "browser_type": return "Typing into page"
+        case "browser_focus": return "Focusing control"
+        case "browser_click", "browser_submit", "browser_press_key": return "Interacting with page"
+        case "browser_screenshot": return "Inspecting page"
+        default: return "Checking Browser"
+        }
+    }
+}
+
+struct BrowserAIFocusState: Identifiable {
+    let id: UUID
+    let tabID: UUID
+    let targetID: String
+    let bounds: CGRect?
+    let role: String
+    let label: String
+    let intent: String
+}
+
 struct BrowserAutomationState: Identifiable {
+    enum Phase: Equatable {
+        case focusing
+        case moving
+        case acting
+        case waiting
+    }
+
     let id: UUID
     let tabID: UUID
     let title: String
     let role: String
     let target: BrowserTarget
     let overlayBounds: CGRect?
+    let pointerStart: CGPoint
+    var phase: Phase = .focusing
     var destinationTabID: UUID? = nil
 }
 
@@ -1369,6 +1499,7 @@ private struct BrowserWebView: NSViewRepresentable {
 
 struct BrowserWorkspaceView: View {
     @ObservedObject var model: BrowserWorkspaceModel = .shared
+    @State private var showingAITimeline = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1378,6 +1509,8 @@ struct BrowserWorkspaceView: View {
                         ForEach(model.tabs) { tab in
                             BrowserTabButton(tab: tab, selected: tab.id == model.selectedTabID,
                                              aiOpened: model.automation?.destinationTabID == tab.id,
+                                             aiState: model.activityState(for: tab.id),
+                                             aiPaused: model.pausedTabIDs.contains(tab.id),
                                              focus: { try? model.focus(tab.id) },
                                              close: { Task { try? await model.close(tab.id) } })
                         }
@@ -1416,6 +1549,51 @@ struct BrowserWorkspaceView: View {
             } else {
                 BrowserEmptyState(model: model)
             }
+            if !model.aiActivity.isEmpty {
+                GlassHairline()
+                Button { showingAITimeline = true } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "sparkles")
+                            .foregroundStyle(LimaTheme.accentInk)
+                        Text("AI · Browser")
+                            .fontWeight(.semibold)
+                        ForEach(Array(model.aiActivity.suffix(3))) { activity in
+                            Image(systemName: activity.state == .working ? "circle.fill" :
+                                  activity.state == .failed ? "exclamationmark.circle" : "checkmark")
+                                .font(.system(size: 9))
+                            Text(activity.title).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.up")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .padding(.horizontal, 12)
+                    .frame(height: 30)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showingAITimeline, arrowEdge: .bottom) {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 9) {
+                            Text("Browser AI activity").font(.headline)
+                            ForEach(Array(model.aiActivity.reversed())) { activity in
+                                HStack(spacing: 8) {
+                                    Image(systemName: activity.state == .working ? "circle.fill" :
+                                          activity.state == .failed ? "exclamationmark.circle" : "checkmark.circle")
+                                        .foregroundStyle(activity.state == .failed ? LimaTheme.error : LimaTheme.accentInk)
+                                    Text(activity.title)
+                                    Spacer()
+                                }
+                                .font(.caption)
+                            }
+                        }
+                        .padding(14)
+                    }
+                    .frame(width: 320, height: 300)
+                }
+            }
         }
     }
 }
@@ -1447,6 +1625,8 @@ private struct BrowserTabButton: View {
     @ObservedObject var tab: BrowserTab
     let selected: Bool
     let aiOpened: Bool
+    let aiState: BrowserAIActivity.State?
+    let aiPaused: Bool
     let focus: () -> Void
     let close: () -> Void
 
@@ -1461,6 +1641,19 @@ private struct BrowserTabButton: View {
                         Image(systemName: "sparkles")
                             .foregroundStyle(LimaTheme.accentInk)
                             .accessibilityLabel("AI opened this tab")
+                    }
+                    if aiPaused {
+                        Image(systemName: "pause.circle.fill")
+                            .foregroundStyle(.orange)
+                            .accessibilityLabel("AI paused on this tab")
+                    } else if let aiState {
+                        Image(systemName: aiState == .working ? "circle.fill" :
+                              aiState == .failed ? "exclamationmark.circle" : "checkmark.circle.fill")
+                            .font(.system(size: 9))
+                            .foregroundStyle(aiState == .failed ? LimaTheme.error : LimaTheme.accentInk)
+                            .accessibilityLabel(aiState == .working ? "AI working on this tab" :
+                                                aiState == .failed ? "AI action failed on this tab" :
+                                                "AI completed work on this tab")
                     }
                 }
                 .frame(maxWidth: 150)
@@ -1567,6 +1760,7 @@ private struct BrowserTabContent: View {
                 if let action = model.automation, action.tabID == tab.id {
                     BrowserAutomationOverlay(
                         state: action,
+                        focus: model.aiFocus,
                         showPointer: model.showAIPointer,
                         highlightTarget: model.highlightAITargets,
                         showDescription: model.showActionDescriptions
@@ -1597,6 +1791,7 @@ private struct BrowserTabContent: View {
 
 private struct BrowserAutomationOverlay: View {
     let state: BrowserAutomationState
+    let focus: BrowserAIFocusState?
     let showPointer: Bool
     let highlightTarget: Bool
     let showDescription: Bool
@@ -1607,20 +1802,37 @@ private struct BrowserAutomationOverlay: View {
             let bounds = state.overlayBounds
             let color: Color = state.role == "link" ? .cyan :
                 state.role == "type" ? .pink : .purple
-            if highlightTarget, let bounds {
+            if highlightTarget, let focus, focus.tabID == state.tabID,
+               let focusBounds = focus.bounds {
                 RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(color, lineWidth: 2)
-                    .frame(width: max(1, bounds.width), height: max(1, bounds.height))
-                    .position(x: bounds.midX, y: bounds.midY)
+                    .strokeBorder(LinearGradient(colors: [.cyan, .purple, .pink],
+                                                 startPoint: .topLeading, endPoint: .bottomTrailing),
+                                  lineWidth: 2)
+                    .frame(width: max(1, focusBounds.width), height: max(1, focusBounds.height))
+                    .position(x: focusBounds.midX, y: focusBounds.midY)
             }
             if showPointer, let bounds {
+                let destination = CGPoint(x: bounds.minX + 25, y: bounds.maxY + 12)
+                let cursor = state.phase == .focusing ? state.pointerStart : destination
                 Text("↖ AI")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundStyle(color)
                     .padding(5)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                    .position(x: min(geometry.size.width - 25, max(25, bounds.minX + 25)),
-                              y: min(geometry.size.height - 12, max(12, bounds.maxY + 12)))
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(LinearGradient(colors: [.cyan, .purple, .pink],
+                                                     startPoint: .topLeading, endPoint: .bottomTrailing),
+                                      lineWidth: 1))
+                    .position(x: min(geometry.size.width - 25, max(25, cursor.x)),
+                              y: min(geometry.size.height - 12, max(12, cursor.y)))
+                    .animation(.easeInOut(duration: 0.22), value: state.phase)
+                if state.phase == .acting {
+                    Circle()
+                        .strokeBorder(color.opacity(0.75), lineWidth: 2)
+                        .frame(width: 30, height: 30)
+                        .position(x: min(geometry.size.width - 15, max(15, destination.x)),
+                                  y: min(geometry.size.height - 15, max(15, destination.y)))
+                }
             }
             if showDescription {
                 Label(bounds == nil && target.frameID != "main"

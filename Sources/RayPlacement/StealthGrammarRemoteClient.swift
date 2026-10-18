@@ -207,6 +207,17 @@ final class StealthGrammarRemoteClient {
         return task
     }
 
+    func fetchModelsAsync(configuration: DeveloperGrammarConfiguration) async throws -> [DeveloperGrammarModelOption] {
+        let bridge = AsyncRequestBridge<[DeveloperGrammarModelOption]>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                bridge.setContinuation(continuation)
+                bridge.setTask(fetchModels(configuration: configuration) { bridge.finish($0) })
+                if Task.isCancelled { bridge.cancel() }
+            }
+        }, onCancel: { bridge.cancel() })
+    }
+
     @discardableResult
     func testConnection(
         configuration: DeveloperGrammarConfiguration,
@@ -238,6 +249,17 @@ final class StealthGrammarRemoteClient {
                 }
             })
         }
+    }
+
+    func testConnectionAsync(configuration: DeveloperGrammarConfiguration) async throws -> String {
+        let bridge = AsyncRequestBridge<String>()
+        return try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { continuation in
+                bridge.setContinuation(continuation)
+                bridge.setTask(testConnection(configuration: configuration) { bridge.finish($0) })
+                if Task.isCancelled { bridge.cancel() }
+            }
+        }, onCancel: { bridge.cancel() })
     }
 
     @discardableResult
@@ -698,7 +720,7 @@ final class StealthGrammarRemoteClient {
         let decisions: [Decision]
     }
 
-    private static func extractJudgeDecisions(from value: String) throws -> [JudgeDecision] {
+    static func extractJudgeDecisions(from value: String) throws -> [JudgeDecision] {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         var candidates = [trimmed]
         if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {
@@ -718,7 +740,7 @@ final class StealthGrammarRemoteClient {
         throw ClientError.invalidJSON
     }
 
-    private static func extractDocumentChanges(from value: String) throws -> [StealthGrammarDocumentChange] {
+    static func extractDocumentChanges(from value: String) throws -> [StealthGrammarDocumentChange] {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         var candidates = [trimmed]
         if let first = trimmed.firstIndex(of: "{"), let last = trimmed.lastIndex(of: "}"), first < last {

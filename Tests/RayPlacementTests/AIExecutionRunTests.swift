@@ -85,14 +85,12 @@ import Testing
     #expect(!rejectedPostFailureTransition)
 }
 
-@Test func subagentBudgetClampsLimitsAndReservesRequestsPerRun() {
-    let aboveCeilings = AIExecutionSubagentBudget(maximumConcurrent: 50, maximumPerRun: 50)
+@Test func subagentPolicyClampsConcurrencyWithoutLimitingTotalRequests() {
+    let aboveCeilings = AIExecutionSubagentBudget(maximumConcurrent: 50)
     #expect(aboveCeilings.maximumConcurrent == AIExecutionSubagentBudget.maximumConcurrentCeiling)
-    #expect(aboveCeilings.maximumPerRun == AIExecutionSubagentBudget.maximumPerRunCeiling)
 
-    let perRunLimited = AIExecutionSubagentBudget(maximumConcurrent: 8, maximumPerRun: 2)
-    #expect(perRunLimited.maximumConcurrent == 2)
-    #expect(perRunLimited.maximumPerRun == 2)
+    let concurrentPolicy = AIExecutionSubagentBudget(maximumConcurrent: 2)
+    #expect(concurrentPolicy.maximumConcurrent == 2)
 
     var run = AIExecutionRun(
         conversationID: UUID(),
@@ -105,16 +103,16 @@ import Testing
         ),
         toolConfigurationSnapshot: AIExecutionToolConfigurationSnapshot(
             localToolIDs: ["agent_delegate"],
-            subagentBudget: perRunLimited
+            subagentBudget: concurrentPolicy
         )
     )
     let first = run.reserveSubagentRequest()
     let second = run.reserveSubagentRequest()
-    let overBudget = run.reserveSubagentRequest()
+    let third = run.reserveSubagentRequest()
     #expect(first == 1)
     #expect(second == 2)
-    #expect(overBudget == nil)
-    #expect(run.subagentRequestsUsed == 2)
+    #expect(third == 3)
+    #expect(run.subagentRequestsUsed == 3)
 }
 
 @Test func aiExecutionRunRetainsStructuredActivityAndSubagentOutcomes() {

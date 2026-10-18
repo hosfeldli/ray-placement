@@ -51,6 +51,8 @@ struct BrowserTarget: Codable, Equatable, Sendable, Identifiable {
     let height: Double
     let frameID: String
     let sensitive: Bool
+    var kind: String? = nil
+    var availableActions: [String]? = nil
 }
 
 struct BrowserSemanticItem: Codable, Equatable, Sendable {
@@ -89,6 +91,8 @@ struct BrowserSemanticMatch: Codable, Equatable, Sendable {
     let stableKey: String?
     let frameID: String?
     let sensitive: Bool
+    var kind: String? = nil
+    var availableActions: [String]? = nil
 }
 
 struct BrowserPageSnapshot: Codable, Equatable, Sendable {
@@ -122,7 +126,8 @@ struct BrowserPageSnapshot: Codable, Equatable, Sendable {
         }.map {
             BrowserSemanticMatch(role: $0.role, text: $0.label, targetID: $0.id,
                                  url: $0.destination, stableKey: nil, frameID: $0.frameID,
-                                 sensitive: $0.sensitive)
+                                 sensitive: $0.sensitive, kind: $0.kind,
+                                 availableActions: $0.availableActions)
         }
         // Plain paragraph text is still discoverable even when it has no
         // heading, row, link, or control wrapper. Return bounded context, not
@@ -216,12 +221,12 @@ enum BrowserRuntimeError: LocalizedError {
     case staleTarget
     case pageChangedByUser
     case invalidDestination
+    case noVerifiedDestination
     case controlDisabled
     case userPaused
     case sensitiveTarget
     case screenshotProtected
     case unsupportedAction
-    case tabLimit
 
     var errorDescription: String? {
         switch self {
@@ -230,12 +235,12 @@ enum BrowserRuntimeError: LocalizedError {
         case .staleTarget: "The page changed. Read it again before acting on this target."
         case .pageChangedByUser: "The user changed this page. Read it again before acting on a target."
         case .invalidDestination: "Only HTTPS or loopback HTTP (localhost, 127.0.0.1, or [::1]) destinations without embedded credentials are supported."
+        case .noVerifiedDestination: "This link-like target has no verified destination; activate it in the current tab and read the resulting page."
         case .controlDisabled: "This action is not available in the current Browser AI Control mode."
         case .userPaused: "AI was explicitly paused for this tab. Resume AI in the Browser workspace, then read the page again."
         case .sensitiveTarget: "Sensitive fields and forms are always protected."
         case .screenshotProtected: "This page contains sensitive controls or content the Browser could not account for; no screenshot was saved."
         case .unsupportedAction: "This semantic target does not support the requested action."
-        case .tabLimit: "The Browser currently limits AI-created and page-opened logical tabs to 20; close a tab before opening another."
         }
     }
 }
@@ -287,6 +292,15 @@ actor BrowserRuntime {
             throw BrowserRuntimeError.staleTarget
         }
         return (identity, target)
+    }
+
+    func resolveAny(tabID: UUID, targetID: String) throws -> BrowserTarget {
+        guard let snapshot = snapshots[tabID] else { throw BrowserRuntimeError.missingSnapshot }
+        guard let target = (snapshot.links + snapshot.controls).first(where: { $0.id == targetID }) else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        guard !target.sensitive else { throw BrowserRuntimeError.sensitiveTarget }
+        return target
     }
 
     static func safeLinkDestination(_ target: BrowserTarget) -> URL? {
@@ -542,11 +556,22 @@ enum BrowserSemanticScript {
       const rect = element.getBoundingClientRect();
       const id = "t_" + state.frameID + "_" + state.snapshotRevision + "_" + state.targets.size;
       state.targets.set(id, element);
+      const protectedTarget = sensitive(element);
+      const textInput = element.matches("textarea,input:not([type]),input[type=text],input[type=search],input[type=email],input[type=url],input[type=tel],input[type=number]") || element.isContentEditable;
+      const submitControl = element.matches("button:not([type=button]):not([type=reset]),input[type=submit],input[type=image]") && Boolean(element.closest("form"));
+      const kind = role === "link" ? "link" : role === "tab" ? "tab" :
+        role === "menuitem" ? "menuItem" : textInput ? "textInput" :
+        role === "checkbox" || role === "radio" ? role :
+        role === "genericClickable" ? role : "button";
+      const availableActions = protectedTarget ? [] :
+        destination && relationship !== "download" ? ["activate", "open_current_tab", "open_new_tab", "open_background_tab"] :
+        relationship === "unverified" || relationship === "download" ? [] : textInput ? ["focus", "type"] :
+        submitControl ? ["submit"] : ["activate"];
       array.push({
-        id, role, label: label(element), destination: destination || null,
-        relationship: relationship || null,
+        id, role, kind, availableActions, label: label(element),
+        destination: destination || null, relationship: relationship || null,
         x: rect.x, y: rect.y, width: rect.width, height: rect.height,
-        frameID: state.frameID, sensitive: sensitive(element)
+        frameID: state.frameID, sensitive: protectedTarget
       });
     };
     const collectShadowText = root => {
@@ -591,20 +616,27 @@ enum BrowserSemanticScript {
           try {
             if (raw) {
               const url = new URL(raw, document.baseURI);
-              if (url.protocol === "https:") destination = url.href;
+              const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname.toLowerCase());
+              if (url.protocol === "https:" || (url.protocol === "http:" && loopback)) destination = url.href;
             }
           } catch {}
+          const relationship = element.hasAttribute("download") ? "download" :
+            element.getAttribute("target") === "_blank" ? "new_tab" : "normal";
           if (destination) {
-            const relationship = element.hasAttribute("download") ? "download" :
-              element.getAttribute("target") === "_blank" ? "new_tab" : "normal";
             add(links, element, "link", destination, relationship);
           } else {
-            add(controls, element, "button", null, null);
+            // Keep JS-driven links semantically link-like. An unsafe href is
+            // not equivalent to an absent href and must not be clicked around
+            // the verified-destination policy.
+            add(controls, element, "link", null, raw ? "unverified" : "scripted");
           }
         } else if (["button", "input", "textarea", "select"].includes(tag) ||
                    ["button", "textbox", "checkbox", "radio", "combobox", "tab", "menuitem"].includes(role) ||
                    element.getAttribute("contenteditable") === "true") {
           add(controls, element, role, null, null);
+        } else if (element.tabIndex >= 0 &&
+                   (element.onclick || element.hasAttribute("data-action"))) {
+          add(controls, element, "genericClickable", null, null);
         }
       }
     };
@@ -706,7 +738,7 @@ enum BrowserSemanticScript {
     const stateAttributes = ["aria-pressed", "aria-checked", "aria-expanded"];
     const initialStates = stateAttributes.map(name => element.getAttribute(name));
     if (action === "click") {
-      if (element.closest("a[href]") || element.localName === "a") throw new Error("use_open_link");
+      if (element.closest("a[href]") || element.hasAttribute("href")) throw new Error("use_open_link");
       if (form && submitButton) throw new Error("use_submit");
       if (!hint.trim()) throw new Error("unlabeled_target");
       element.click();

@@ -201,6 +201,38 @@ private final class BrowserLoopbackFixture {
     try await model.close(foregroundID)
 }
 
+@Test @MainActor func aiBrowserKeepsMoreThanTwentyLogicalResearchTabsWithBoundedLiveViews() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let foreground = model.newTab()
+    var opened: [UUID] = []
+    for index in 0..<25 {
+        let arguments: [String: Any] = [
+            "url": "https://example.com/research/\(index)", "background": true
+        ]
+        let data = try JSONSerialization.data(withJSONObject: arguments)
+        let call = AIOutputItem(
+            phase: .completed, apiType: "function_call",
+            name: "browser_new_tab", arguments: String(decoding: data, as: UTF8.self)
+        )
+        let result = await BrowserWorkspaceAITools.execute(call, browser: model)
+        #expect(!result.isError)
+        let payload = try #require(JSONSerialization.jsonObject(with: Data(result.output.utf8)) as? [String: Any])
+        let rawTabID = try #require(payload["tab_id"] as? String)
+        let tabID = try #require(UUID(uuidString: rawTabID))
+        opened.append(tabID)
+        #expect(model.activityState(for: tabID) == .completed)
+    }
+    #expect(model.tabs.count == 26)
+    #expect(model.selectedTabID == foreground.id)
+    #expect(model.liveWebViewCount <= 6)
+    #expect(opened.allSatisfy { id in model.tabs.first(where: { $0.id == id })?.isSuspended == true })
+    #expect(model.aiActivity.count == 25)
+    #expect(model.aiActivity.allSatisfy { $0.title == "Opening tab" && $0.state == .completed })
+    for id in opened { try await model.close(id) }
+    try await model.close(foreground.id)
+}
+
 @Test @MainActor func embeddedBrowserFailuresOfferMachineActionableRepair() throws {
     let stale = BrowserWorkspaceAITools.failure(for: BrowserRuntimeError.staleTarget)
     #expect(stale.code == .staleTarget)
@@ -404,7 +436,7 @@ private final class BrowserLoopbackFixture {
     #expect(resultRead?.risk == .read)
 }
 
-@Test @MainActor func embeddedBrowserOpenLinkMarksDeferredBackgroundTab() async throws {
+@Test @MainActor func embeddedBrowserActivateMarksDeferredBackgroundTab() async throws {
     let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
     model.aiControlMode = .fullControl
     let source = model.newTab()
@@ -417,9 +449,14 @@ private final class BrowserLoopbackFixture {
         source.id, condition: .targetPresent("Documentation"), timeoutMilliseconds: 15_000
     )
     let link = try #require(page.links.first { $0.label == "Documentation" })
-    let destinationID = try await model.openLink(
+    let outcome = try await model.activate(
         source.id, targetID: link.id, disposition: .backgroundTab
     )
+    guard case .navigated(let destinationID) = outcome else {
+        Issue.record("Verified link should navigate through generic activation.")
+        try await model.close(source.id)
+        return
+    }
     let destination = try model.tab(destinationID)
     #expect(model.selectedTabID == source.id)
     #expect(destination.isSuspended)
@@ -429,6 +466,119 @@ private final class BrowserLoopbackFixture {
     #expect(model.automation?.title.contains("background tab") == true)
     try await model.close(destinationID)
     try await model.close(source.id)
+}
+
+@Test @MainActor func embeddedBrowserStopDuringPointerTravelDoesNotOpenLink() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let source = model.newTab()
+    source.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+    source.webView.loadHTMLString(
+        "<a href='https://example.com/docs'>Documentation</a>",
+        baseURL: URL(string: "https://example.com")!
+    )
+    let page = try await model.wait(
+        source.id, condition: .targetPresent("Documentation"), timeoutMilliseconds: 15_000
+    )
+    let link = try #require(page.links.first { $0.label == "Documentation" })
+    let action = Task { @MainActor in
+        try await model.openLink(source.id, targetID: link.id, disposition: .backgroundTab)
+    }
+    for _ in 0..<200 {
+        if model.automation?.phase == .moving { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.automation?.phase == .moving)
+    action.cancel()
+    do {
+        _ = try await action.value
+        Issue.record("Stop during pointer travel must cancel Browser navigation.")
+    } catch is CancellationError {
+        // Expected: the user stopped the run before the action was dispatched.
+    }
+    #expect(model.tabs.count == 1)
+    #expect(model.aiFocus == nil)
+    #expect(model.automation == nil)
+    try await model.close(source.id)
+}
+
+@Test @MainActor func browserActivateDefaultsToCurrentTabForScriptedControls() async throws {
+    let definition = try #require(BrowserWorkspaceAITools.definitions.first { $0.id == "browser_activate" })
+    let required = try #require(definition.parameters["required"] as? [String])
+    #expect(Set(required) == Set(["tab_id", "target"]))
+
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+    tab.webView.loadHTMLString(
+        "<button onclick=\"document.getElementById('status').textContent='Activated'\">Open</button><p id='status'>Waiting</p>",
+        baseURL: URL(string: "https://example.com")!
+    )
+    let page = try await model.wait(tab.id, condition: .targetPresent("Open"), timeoutMilliseconds: 15_000)
+    let control = try #require(page.controls.first { $0.label == "Open" })
+    let arguments: [String: Any] = ["tab_id": tab.id.uuidString, "target": control.id]
+    let data = try JSONSerialization.data(withJSONObject: arguments)
+    let call = AIOutputItem(phase: .completed, apiType: "function_call",
+                            name: "browser_activate", arguments: String(decoding: data, as: UTF8.self))
+    let execution = await BrowserWorkspaceAITools.execute(call, browser: model)
+    #expect(!execution.isError)
+    let after = try await model.wait(tab.id, condition: .textPresent("Activated"), timeoutMilliseconds: 15_000)
+    #expect(after.text.contains("Activated"))
+    #expect(model.tabs.count == 1)
+    try await model.close(tab.id)
+}
+
+@Test @MainActor func embeddedBrowserActivateHandlesScriptedLinksWithoutInventingURLs() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+    tab.webView.loadHTMLString("""
+        <div role='link' tabindex='0'
+             onclick="document.getElementById('status').textContent='Opened'">
+             Open scripted result
+        </div>
+        <a href='javascript:alert(1)'>Unsafe result</a>
+        <p id='status'>Waiting</p>
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await model.wait(
+        tab.id, condition: .targetPresent("Open scripted result"),
+        timeoutMilliseconds: 15_000
+    )
+    let scripted = try #require(page.controls.first { $0.label == "Open scripted result" })
+    #expect(scripted.role == "link")
+    #expect(scripted.kind == "link")
+    #expect(scripted.destination == nil)
+    #expect(scripted.availableActions == ["activate"])
+    do {
+        _ = try await model.activate(tab.id, targetID: scripted.id, disposition: .backgroundTab)
+        Issue.record("A scripted link must not open an invented background URL.")
+    } catch {
+        #expect(String(describing: error).contains("noVerifiedDestination"))
+    }
+    let activated = try await model.activate(
+        tab.id, targetID: scripted.id, disposition: .currentTab
+    )
+    guard case .interacted = activated else {
+        Issue.record("Scripted link should be activated in the current tab.")
+        try await model.close(tab.id)
+        return
+    }
+    let after = try await model.wait(
+        tab.id, condition: .textPresent("Opened"), timeoutMilliseconds: 15_000
+    )
+    #expect(after.text.contains("Opened"))
+    #expect(model.tabs.count == 1)
+    let unsafe = try #require(after.controls.first { $0.label == "Unsafe result" })
+    #expect(unsafe.availableActions == [])
+    do {
+        _ = try await model.activate(tab.id, targetID: unsafe.id, disposition: .currentTab)
+        Issue.record("An unverified href must not be activated.")
+    } catch {
+        #expect(String(describing: error).contains("invalidDestination"))
+    }
+    try await model.close(tab.id)
 }
 
 @Test @MainActor func embeddedBrowserPoolsBackgroundViewsAndRevokesSuspendedTargets() async throws {

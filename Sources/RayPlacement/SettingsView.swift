@@ -143,6 +143,7 @@ struct SettingsView: View {
     @ObservedObject private var backups = DataBackupCoordinator.shared
     @ObservedObject private var secrets = LimaSecretStore.shared
     @ObservedObject private var actionPolicy = AIComputerActionPolicy.shared
+    @ObservedObject private var modelCatalog = AIModelCatalogStore.shared
     @State private var secretName = ""
     @State private var secretValue = ""
     @State private var secretKind: LimaSecretKind = .localSecret
@@ -454,7 +455,9 @@ struct SettingsView: View {
             SettingsCompactStatus(
                 title: "Correction Engine",
                 value: settings.grammarEngineMode == .externalAPI
-                    ? (settings.enhancedGrammarAPIKeyStored ? "External API · Connected" : "External API · Needs key")
+                    ? (settings.developerGrammarProvider.access == .localCLI
+                       ? (CLIChatProviderClient.executableURL(for: settings.developerGrammarProvider) == nil ? "CLI · Not installed" : "CLI · Ready to test")
+                       : (settings.enhancedGrammarAPIKeyStored ? "AI provider · Key stored" : "AI provider · Needs key"))
                     : "Local"
             )
             SettingsCompactStatus(title: "Extension commands", value: "\(viewModel.extensionCommands.count) loaded")
@@ -746,6 +749,11 @@ struct SettingsView: View {
         .accessibilityLabel("\(title) performance")
     }
 
+    private var grammarModelOptions: [AIModelOption] {
+        modelCatalog.models(for: settings.developerGrammarProvider,
+                            compatibleModelID: settings.developerGrammarModel)
+    }
+
     private var grammarEngineSection: some View {
         Section("Grammar Engine") {
             Picker("Writing mode", selection: $settings.grammarCorrectionMode) {
@@ -760,11 +768,11 @@ struct SettingsView: View {
 
             Picker("Correction engine", selection: $settings.grammarEngineMode) {
                 Text("Local").tag(GrammarEngineMode.local)
-                Text("External API").tag(GrammarEngineMode.externalAPI)
+                Text("AI provider").tag(GrammarEngineMode.externalAPI)
             }
             .pickerStyle(.segmented)
             if settings.grammarEngineMode == .externalAPI {
-                Text("External API sends the checked text to the selected provider after protected spans are masked. It never falls back to Local on failure.")
+                Text("The selected provider receives sanitized text after protected spans are masked. Grammar runs without AI Chat tools or conversation history.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
                 Picker("Ensemble", selection: $settings.grammarEnsembleStrategy) {
@@ -772,85 +780,76 @@ struct SettingsView: View {
                         Text("\(strategy.title) · \(strategy.detail)").tag(strategy)
                     }
                 }
-                Text("Candidates use fixed Lima diversity seeds and different proofreader profiles. Balanced is the default.")
-                    .limaFont(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
                 Picker("Provider", selection: Binding(
                     get: { settings.developerGrammarProvider },
                     set: { settings.selectDeveloperGrammarProvider($0) }
                 )) {
-                    ForEach(DeveloperGrammarProvider.allCases) { provider in
+                    ForEach(AIProvider.writingProviders) { provider in
                         Text(provider.title).tag(provider)
                     }
                 }
                 Picker("Model", selection: $settings.developerGrammarModel) {
-                    ForEach(settings.developerGrammarProvider.modelOptions) { option in
-                        Text(option.title).tag(option.id)
+                    ForEach(grammarModelOptions) { option in
+                        Text(option.displayName).tag(option.id)
                     }
-                    if !settings.developerGrammarProvider.modelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
+                    if !grammarModelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
                         Text("Custom: \(settings.developerGrammarModel)").tag(settings.developerGrammarModel)
                     }
                 }
                 TextField("Manual model ID", text: $settings.developerGrammarModel)
                     .textFieldStyle(.roundedBorder)
-                SecureField("New API key", text: $grammarAPIKey)
-                    .textFieldStyle(.roundedBorder)
-                HStack {
-                    Button("Save API Key") {
-                        do {
-                            try settings.saveDeveloperGrammarAPIKey(grammarAPIKey)
-                            grammarAPIKey = ""
-                            grammarConnectionMessage = "Stored securely in Keychain."
-                        } catch {
-                            grammarConnectionMessage = error.localizedDescription
+                if settings.developerGrammarProvider.access == .localCLI {
+                    let installed = CLIChatProviderClient.executableURL(for: settings.developerGrammarProvider) != nil
+                    Label(installed ? "CLI installed" : "CLI not installed",
+                          systemImage: installed ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .foregroundStyle(installed ? .green : .orange)
+                    Text("Uses this Mac's existing CLI sign-in. Test Connection checks authentication and the selected model.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    SecureField("New API key", text: $grammarAPIKey)
+                        .textFieldStyle(.roundedBorder)
+                    HStack {
+                        Button("Save API Key") {
+                            do {
+                                try settings.saveDeveloperGrammarAPIKey(grammarAPIKey)
+                                grammarAPIKey = ""
+                                grammarConnectionMessage = "Stored securely in Keychain."
+                            } catch {
+                                grammarConnectionMessage = error.localizedDescription
+                            }
+                        }
+                        .disabled(grammarAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        if settings.enhancedGrammarAPIKeyStored {
+                            Label("Stored securely in Keychain", systemImage: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
+                                .limaFont(.caption)
                         }
                     }
-                    .disabled(grammarAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if settings.enhancedGrammarAPIKeyStored {
-                        Label("Stored securely in Keychain", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .limaFont(.caption)
+                    DisclosureGroup("Advanced provider settings") {
+                        TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
+                            .textFieldStyle(.roundedBorder)
                     }
-                }
-                DisclosureGroup("Advanced provider settings") {
-                    TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
-                        .textFieldStyle(.roundedBorder)
-                    Text("Usually no change is needed. Use this for a custom or OpenAI-compatible provider.")
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                }
-                if let grammarConnectionMessage {
-                    Text(grammarConnectionMessage)
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 HStack(spacing: 10) {
-                    Button {
-                        testGrammarConnection()
-                    } label: {
-                        if isTestingGrammarConnection {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("Test Connection", systemImage: "bolt.horizontal.circle")
-                        }
+                    Button { testGrammarConnection() } label: {
+                        if isTestingGrammarConnection { ProgressView().controlSize(.small) }
+                        else { Label("Test Connection", systemImage: "bolt.horizontal.circle") }
                     }
-                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
-
-                    Button {
-                        testExternalGrammar()
-                    } label: {
-                        if isTestingGrammarCompatibility {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("Test External Grammar", systemImage: "text.badge.checkmark")
-                        }
+                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility ||
+                              settings.developerGrammarConfigurationForTesting == nil)
+                    Button { testExternalGrammar() } label: {
+                        if isTestingGrammarCompatibility { ProgressView().controlSize(.small) }
+                        else { Label("Test Grammar", systemImage: "text.badge.checkmark") }
                     }
-                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility || !settings.enhancedGrammarAPIKeyStored)
+                    .disabled(isTestingGrammarConnection || isTestingGrammarCompatibility ||
+                              settings.developerGrammarConfigurationForTesting == nil)
+                }
+                if let grammarConnectionMessage {
+                    Text(grammarConnectionMessage).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if let grammarCompatibilityMessage {
-                    Text(grammarCompatibilityMessage)
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
+                    Text(grammarCompatibilityMessage).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             } else {
                 Label("Everything stays on this Mac", systemImage: "lock.shield.fill")
@@ -861,30 +860,29 @@ struct SettingsView: View {
             }
         }
     }
-
     private func testGrammarConnection() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            grammarConnectionMessage = "Save an API key and model first."
+            grammarConnectionMessage = "Select a valid model and complete required provider settings first."
             return
         }
         isTestingGrammarConnection = true
         grammarConnectionMessage = nil
         let started = Date()
-        StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
-            let latency = Int(Date().timeIntervalSince(started) * 1_000)
-            isTestingGrammarConnection = false
-            switch result {
-            case .success:
+        Task { @MainActor in
+            do {
+                try await GrammarInferenceClient().testConnection(configuration: configuration)
+                let latency = Int(Date().timeIntervalSince(started) * 1_000)
                 grammarConnectionMessage = "Connected · \(configuration.provider.title) · \(configuration.model) · \(latency) ms"
-            case .failure(let error):
+            } catch {
                 grammarConnectionMessage = "Failed · \(error.localizedDescription)"
             }
+            isTestingGrammarConnection = false
         }
     }
 
     private func testExternalGrammar() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            grammarCompatibilityMessage = "Save an API key and model first."
+            grammarCompatibilityMessage = "Select a valid model and complete required provider settings first."
             return
         }
         isTestingGrammarCompatibility = true
@@ -892,20 +890,24 @@ struct SettingsView: View {
         let started = Date()
         let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
-        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
-            let latency = Int(Date().timeIntervalSince(started) * 1_000)
-            isTestingGrammarCompatibility = false
-            switch result {
-            case .success(let changes):
+        Task { @MainActor in
+            do {
+                let changes = try await GrammarInferenceClient().correctDocument(
+                    protected.contextText, configuration: configuration,
+                    systemPrompt: StealthGrammarRemoteClient.systemPrompt,
+                    temperature: nil, reasoningEffort: nil
+                )
+                let latency = Int(Date().timeIntervalSince(started) * 1_000)
                 let report = protected.applyingDocumentChanges(changes)
                 if ExternalGrammarCompatibility.validate(source: source, protected: protected, report: report) {
                     grammarCompatibilityMessage = "Compatible · applied \(report.appliedCount) · rejected \(report.rejectedCount) · \(latency) ms"
                 } else {
                     grammarCompatibilityMessage = "Failed · the provider did not return safe atomic document changes"
                 }
-            case .failure(let error):
+            } catch {
                 grammarCompatibilityMessage = "Failed · \(error.localizedDescription)"
             }
+            isTestingGrammarCompatibility = false
         }
     }
 
@@ -2172,9 +2174,11 @@ final class SettingsWindowController: NSWindowController {
 @MainActor
 private struct SimpleWritingSettingsView: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject private var modelCatalog = AIModelCatalogStore.shared
     @Binding var apiKey: String
     @Binding var shortcut: String
     @State private var message: String?
+    @State private var isTesting = false
     @State private var confirmRemove = false
 
     var body: some View {
@@ -2185,37 +2189,68 @@ private struct SimpleWritingSettingsView: View {
                     Text("AI correction").tag(GrammarEngineMode.externalAPI)
                     Text("Harper (local)").tag(GrammarEngineMode.local)
                 }.pickerStyle(.segmented)
-                Toggle("Use Harper if AI is unavailable", isOn: Binding(get: { settings.grammarFallbackToLocal }, set: { settings.grammarFallbackToLocal = $0 }))
+                if settings.developerGrammarProvider.allowsGrammarLocalFallback {
+                    Toggle("Use Harper if AI is unavailable", isOn: Binding(get: { settings.grammarFallbackToLocal }, set: { settings.grammarFallbackToLocal = $0 }))
+                } else {
+                    Text("CLI errors are shown directly; Fix Writing never switches to an API or Harper automatically.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                }
             }
             Section("AI connection") {
-                Picker("Provider", selection: Binding(get: { settings.developerGrammarProvider }, set: { settings.selectDeveloperGrammarProvider($0); apiKey = ""; message = nil })) {
+                Picker("Provider", selection: Binding(
+                    get: { settings.developerGrammarProvider },
+                    set: { settings.selectDeveloperGrammarProvider($0); apiKey = ""; message = nil }
+                )) {
                     ForEach(AIProvider.writingProviders) { Text($0.title).tag($0) }
                 }
-                SecureField("API key", text: $apiKey)
-                HStack {
-                    Label(settings.enhancedGrammarAPIKeyStored ? "API key stored in Keychain" : "No API key stored", systemImage: settings.enhancedGrammarAPIKeyStored ? "checkmark.circle.fill" : "key")
-                        .foregroundStyle(settings.enhancedGrammarAPIKeyStored ? .green : .secondary)
-                    Spacer()
-                    Button("Save") {
-                        do { try settings.saveDeveloperGrammarAPIKey(apiKey); apiKey = ""; message = "Saved securely in Keychain." }
-                        catch { message = error.localizedDescription }
-                    }.disabled(apiKey.isEmpty)
-                }
-                Picker("Model", selection: Binding(get: { settings.developerGrammarModel }, set: { settings.developerGrammarModel = $0 })) {
-                    ForEach(settings.developerGrammarProvider.modelOptions, id: \.id) { option in Text(option.title).tag(option.id) }
-                    if !settings.developerGrammarProvider.modelOptions.contains(where: { $0.id == settings.developerGrammarModel }) {
-                        Text(settings.developerGrammarModel.isEmpty ? "Choose a model" : settings.developerGrammarModel).tag(settings.developerGrammarModel)
+                Picker("Model", selection: $settings.developerGrammarModel) {
+                    ForEach(modelCatalog.models(for: settings.developerGrammarProvider,
+                                                compatibleModelID: settings.developerGrammarModel)) { option in
+                        Text(option.displayName).tag(option.id)
                     }
                 }
                 TextField("Custom model ID", text: $settings.developerGrammarModel)
-                TextField("Base URL", text: $settings.developerGrammarBaseURL)
-                Text("Use HTTPS, or HTTP for a loopback server. Compatible servers may omit the API key. Keys are shared with AI Chat; models and endpoints are separate. Connection testing and ensemble controls are in Writing Advanced.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                Button("Remove Shared Key", role: .destructive) { confirmRemove = true }
-                    .disabled(!settings.enhancedGrammarAPIKeyStored)
-                Text("Only the text being corrected is sent to the configured provider. Harper remains local.")
-                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                if settings.developerGrammarProvider.access == .localCLI {
+                    let installed = CLIChatProviderClient.executableURL(for: settings.developerGrammarProvider) != nil
+                    Label(installed ? "CLI installed" : "CLI not installed",
+                          systemImage: installed ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .foregroundStyle(installed ? .green : .orange)
+                    Text("Uses this Mac's existing CLI sign-in. Grammar receives no AI Chat tools or history.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    SecureField("API key", text: $apiKey)
+                    HStack {
+                        Label(settings.enhancedGrammarAPIKeyStored ? "API key stored in Keychain" : "No API key stored",
+                              systemImage: settings.enhancedGrammarAPIKeyStored ? "checkmark.circle.fill" : "key")
+                            .foregroundStyle(settings.enhancedGrammarAPIKeyStored ? .green : .secondary)
+                        Spacer()
+                        Button("Save") {
+                            do { try settings.saveDeveloperGrammarAPIKey(apiKey); apiKey = ""; message = "Saved securely in Keychain." }
+                            catch { message = error.localizedDescription }
+                        }.disabled(apiKey.isEmpty)
+                    }
+                    TextField("Base URL", text: $settings.developerGrammarBaseURL)
+                    Button("Remove Shared Key", role: .destructive) { confirmRemove = true }
+                        .disabled(!settings.enhancedGrammarAPIKeyStored)
+                }
+                Button("Test Connection") {
+                    guard let configuration = settings.developerGrammarConfigurationForTesting else { return }
+                    isTesting = true
+                    message = nil
+                    Task { @MainActor in
+                        do {
+                            try await GrammarInferenceClient().testConnection(configuration: configuration)
+                            message = "Connected · \(configuration.provider.title) · \(configuration.model)"
+                        } catch {
+                            message = "Failed · \(error.localizedDescription)"
+                        }
+                        isTesting = false
+                    }
+                }
+                .disabled(isTesting || settings.developerGrammarConfigurationForTesting == nil)
                 if let message { Text(message).font(.caption).foregroundStyle(LimaTheme.textSecondary) }
+                Text("Only sanitized correction text is sent to the selected provider. Harper remains local.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Shortcut") {
                 PrimaryShortcutRow(title: "Fix Writing", symbol: "text.badge.checkmark", enabled: Binding(get: { settings.stealthGrammarEnabled }, set: { settings.stealthGrammarEnabled = $0 }), shortcut: $shortcut)

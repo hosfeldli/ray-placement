@@ -8,16 +8,13 @@ struct AIExecutionProviderConfigurationSnapshot: Codable, Hashable, Sendable {
 
 struct AIExecutionSubagentBudget: Codable, Equatable, Sendable {
     static let maximumConcurrentCeiling = 12
-    static let maximumPerRunCeiling = 32
-    static let standard = AIExecutionSubagentBudget(maximumConcurrent: 4, maximumPerRun: 12)
+    static let standard = AIExecutionSubagentBudget(maximumConcurrent: 4)
 
+    /// Bounds simultaneous work, not the number of useful sequential children.
     let maximumConcurrent: Int
-    let maximumPerRun: Int
 
-    init(maximumConcurrent: Int, maximumPerRun: Int) {
-        let boundedTotal = min(max(maximumPerRun, 1), Self.maximumPerRunCeiling)
-        self.maximumPerRun = boundedTotal
-        self.maximumConcurrent = min(max(maximumConcurrent, 1), min(Self.maximumConcurrentCeiling, boundedTotal))
+    init(maximumConcurrent: Int) {
+        self.maximumConcurrent = min(max(maximumConcurrent, 1), Self.maximumConcurrentCeiling)
     }
 }
 
@@ -215,8 +212,7 @@ struct AIExecutionRun: Codable, Equatable, Identifiable, Sendable {
     var isStreaming: Bool { state.isStreaming }
 
     mutating func reserveSubagentRequest() -> Int? {
-        guard !state.isTerminal,
-              subagentRequestsUsed < toolConfigurationSnapshot.subagentBudget.maximumPerRun else { return nil }
+        guard !state.isTerminal else { return nil }
         subagentRequestsUsed += 1
         return subagentRequestsUsed
     }

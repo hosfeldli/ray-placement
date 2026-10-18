@@ -380,9 +380,10 @@ localTools: childTools,
         var handledCallIDs = Set<String>()
         var usedTools = Set<String>()
         var finalText = ""
+        var health = AIExecutionHealth()
 
         do {
-            for round in 0..<5 {
+            while true {
                 try Task.checkCancellation()
                 var responseID: String?
                 var calls: [AIOutputItem] = []
@@ -430,8 +431,8 @@ localTools: childTools,
                     finalText = cycleText.joined()
                     break
                 }
-                guard round < 4, calls.count <= 6, let responseID else {
-                    return .json(["error": "Subagent tool-round limit reached or response session missing."], isError: true)
+                guard let responseID else {
+                    return .json(["error": "Subagent response session missing."], isError: true)
                 }
 
                 let allowedNames = Set(localTools.map(\.name))
@@ -454,11 +455,21 @@ localTools: childTools,
                         return .json(["error": "The parent user denied or dismissed the Lima approval request."], isError: true)
                     }
                     try Task.checkCancellation()
-                    guard let result = await executeTool(call, approvalGranted) else {
-                        return .json(["error": Task.isCancelled ? "Subagent cancelled." : "The delegated tool could not complete."], isError: true)
+                    let result: String
+                    switch health.decision(for: call) {
+                    case .execute:
+                        guard let performed = await executeTool(call, approvalGranted) else {
+                            return .json(["error": Task.isCancelled ? "Subagent cancelled." : "The delegated tool could not complete."], isError: true)
+                        }
+                        result = performed
+                        usedTools.insert(name)
+                    case .suggestRecovery:
+                        result = AIExecutionHealth.recoveryOutput(callID: callID).output
+                    case .blocked:
+                        return .json(["error": "Subagent is blocked: the same action failed repeatedly without progress. Read fresh state or change approach."], isError: true)
                     }
                     let boundedResult = String(result.prefix(24_000))
-                    usedTools.insert(name)
+                    health.observe(call, output: AIEngineToolOutput(callID: callID, output: boundedResult))
                     outputs.append(["type": "function_call_output", "call_id": callID, "output": boundedResult])
                     toolUses.append(.toolUse(id: callID, name: name, arguments: call.arguments ?? "{}"))
                     toolResults.append(.toolResult(id: callID, output: boundedResult))

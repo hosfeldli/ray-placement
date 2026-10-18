@@ -5,6 +5,7 @@ import RayPlacementWriting
 @MainActor
 struct DeveloperGrammarSettingsView: View {
     @ObservedObject var settings: SettingsStore
+    @ObservedObject private var modelCatalog = AIModelCatalogStore.shared
     @State private var apiKey = ""
     @State private var saveMessage: String?
     @State private var isTesting = false
@@ -20,7 +21,9 @@ struct DeveloperGrammarSettingsView: View {
     }
 
     private var modelOptions: [DeveloperGrammarModelOption] {
-        var result = selectedProvider.modelOptions
+        var result = modelCatalog.models(for: selectedProvider,
+                                         compatibleModelID: settings.developerGrammarModel)
+            .map { DeveloperGrammarModelOption(id: $0.id, title: $0.displayName) }
         for model in discoveredModels where !result.contains(where: { $0.id == model.id }) {
             result.append(model)
         }
@@ -32,12 +35,12 @@ struct DeveloperGrammarSettingsView: View {
             Section("Grammar Engine") {
                 Picker("Correction engine", selection: $settings.grammarEngineMode) {
                     Text("Local").tag(GrammarEngineMode.local)
-                    Text("External API").tag(GrammarEngineMode.externalAPI)
+                    Text("AI provider").tag(GrammarEngineMode.externalAPI)
                 }
                 .pickerStyle(.segmented)
                 Text(settings.grammarEngineMode == .local
                      ? "Local keeps all text on this Mac."
-                     : "External API sends checked text to the selected provider after URLs, names, acronyms, code-like text, and preserved terms are protected. External failures are reported directly; there is no fallback.")
+                     : "The selected AI provider receives sanitized text after protected terms are masked. CLI providers use this Mac's existing sign-in and never receive AI Chat tools or history. Failures are reported directly.")
                     .font(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -98,7 +101,15 @@ struct DeveloperGrammarSettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
 
-                if selectedProvider == .openAICompatible {
+                if selectedProvider.access == .localCLI {
+                    let installed = CLIChatProviderClient.executableURL(for: selectedProvider) != nil
+                    Label(installed ? "CLI installed" : "CLI not installed",
+                          systemImage: installed ? "checkmark.circle.fill" : "exclamationmark.triangle")
+                        .foregroundStyle(installed ? .green : .orange)
+                    Text("Uses this Mac's existing CLI login. Test Connection verifies authentication and the selected model.")
+                        .font(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else if selectedProvider == .openAICompatible {
                     TextField("Provider Base URL", text: $settings.developerGrammarBaseURL)
                         .textFieldStyle(.roundedBorder)
                 } else {
@@ -117,10 +128,10 @@ struct DeveloperGrammarSettingsView: View {
                         if isLoadingModels {
                             ProgressView().controlSize(.small)
                         } else {
-                            Label("Load models using saved key", systemImage: "arrow.triangle.2.circlepath")
+                            Label(selectedProvider.access == .localCLI ? "Load CLI models" : "Load models", systemImage: "arrow.triangle.2.circlepath")
                         }
                     }
-                    .disabled(isLoadingModels || settings.developerGrammarAPIKey.isEmpty)
+                    .disabled(isLoadingModels || settings.developerGrammarConfigurationForModelDiscovery == nil)
                     if let modelsMessage {
                         Text(modelsMessage)
                             .font(.caption)
@@ -129,6 +140,7 @@ struct DeveloperGrammarSettingsView: View {
                 }
             }
 
+            if selectedProvider.access != .localCLI {
             Section("API key") {
                 SecureField("API key · stored securely in Keychain", text: $apiKey)
                     .textFieldStyle(.roundedBorder)
@@ -163,6 +175,7 @@ struct DeveloperGrammarSettingsView: View {
                     Text(saveMessage).font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
             }
+            }
 
             Section("Test Connection") {
                 HStack {
@@ -175,14 +188,14 @@ struct DeveloperGrammarSettingsView: View {
                             Label("Test Connection", systemImage: "bolt.horizontal.circle")
                         }
                     }
-                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
+                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarConfigurationForTesting == nil)
                     if let testMessage {
                         Text(testMessage)
                             .font(.caption)
                             .foregroundStyle(testMessage.hasPrefix("Connected") ? .green : .secondary)
                     }
                 }
-                Text("Tests authentication, the selected endpoint, and the selected model with a minimal request. It does not proofread text.")
+                Text("Tests the selected provider and model with a minimal request. For CLI providers, it checks this Mac's existing sign-in. It does not proofread text.")
                     .font(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
 
@@ -196,7 +209,7 @@ struct DeveloperGrammarSettingsView: View {
                             Label("Test External Grammar", systemImage: "text.badge.checkmark")
                         }
                     }
-                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarAPIKey.isEmpty)
+                    .disabled(isTesting || isTestingCompatibility || settings.developerGrammarConfigurationForTesting == nil)
                     if let compatibilityMessage {
                         Text(compatibilityMessage)
                             .font(.caption)
@@ -208,7 +221,7 @@ struct DeveloperGrammarSettingsView: View {
                     .foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Available providers") {
-                Text("OpenAI, Anthropic, Google Gemini, Mistral, xAI, DeepSeek, OpenRouter, and generic OpenAI-compatible endpoints are supported. Credentials are stored in macOS Keychain and are not written to UserDefaults, logs, usage records, or the source tree.")
+                Text("API providers and Codex/Claude CLI are supported. API credentials stay in macOS Keychain; CLI providers use existing local authentication. Grammar never borrows AI Chat tools or conversation history.")
                     .font(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -229,46 +242,46 @@ struct DeveloperGrammarSettingsView: View {
 
     private func loadModels() {
         guard let configuration = settings.developerGrammarConfigurationForModelDiscovery else {
-            modelsMessage = "Save a key and base URL first."
+            modelsMessage = "Complete the selected provider's required settings first."
             return
         }
         isLoadingModels = true
         modelsMessage = nil
-        StealthGrammarRemoteClient().fetchModels(configuration: configuration) { result in
-            isLoadingModels = false
-            switch result {
-            case .success(let models):
+        Task { @MainActor in
+            do {
+                let models = try await GrammarInferenceClient().models(configuration: configuration)
                 discoveredModels = models
-                modelsMessage = "Loaded \(models.count) text models. Choose one from Model."
-            case .failure(let error):
+                modelsMessage = "Loaded \(models.count) models. Choose one from Model."
+            } catch {
                 modelsMessage = "Could not load models: \(error.localizedDescription)"
             }
+            isLoadingModels = false
         }
     }
 
     private func testProvider() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            testMessage = "Save a key, model, and base URL first."
+            testMessage = "Select a valid model and complete any required provider settings first."
             return
         }
         isTesting = true
         testMessage = nil
         let started = Date()
-        StealthGrammarRemoteClient().testConnection(configuration: configuration) { result in
-            let latency = Int(Date().timeIntervalSince(started) * 1_000)
-            isTesting = false
-            switch result {
-            case .success:
-                testMessage = "Connected · \(selectedProvider.title) · \(settings.developerGrammarModel) · \(latency) ms"
-            case .failure(let error):
+        Task { @MainActor in
+            do {
+                try await GrammarInferenceClient().testConnection(configuration: configuration)
+                let latency = Int(Date().timeIntervalSince(started) * 1_000)
+                testMessage = "Connected · \(configuration.provider.title) · \(configuration.model) · \(latency) ms"
+            } catch {
                 testMessage = "Failed: \(error.localizedDescription)"
             }
+            isTesting = false
         }
     }
 
     private func testExternalGrammar() {
         guard let configuration = settings.developerGrammarConfigurationForTesting else {
-            compatibilityMessage = "Save a key, model, and base URL first."
+            compatibilityMessage = "Select a valid model and complete any required provider settings first."
             return
         }
         isTestingCompatibility = true
@@ -276,20 +289,24 @@ struct DeveloperGrammarSettingsView: View {
         let source = ExternalGrammarCompatibility.corpus
         let protected = StealthGrammarService.protect(source, ignoreList: "Lima")
         let started = Date()
-        StealthGrammarRemoteClient().correctDocument(protected.contextText, configuration: configuration) { result in
-            let latency = Int(Date().timeIntervalSince(started) * 1_000)
-            isTestingCompatibility = false
-            switch result {
-            case .success(let changes):
+        Task { @MainActor in
+            do {
+                let changes = try await GrammarInferenceClient().correctDocument(
+                    protected.contextText, configuration: configuration,
+                    systemPrompt: StealthGrammarRemoteClient.systemPrompt,
+                    temperature: nil, reasoningEffort: nil
+                )
+                let latency = Int(Date().timeIntervalSince(started) * 1_000)
                 let report = protected.applyingDocumentChanges(changes)
                 if ExternalGrammarCompatibility.validate(source: source, protected: protected, report: report) {
                     compatibilityMessage = "Compatible · applied \(report.appliedCount) · rejected \(report.rejectedCount) · \(latency) ms"
                 } else {
                     compatibilityMessage = "Failed · the provider did not return safe atomic document changes"
                 }
-            case .failure(let error):
+            } catch {
                 compatibilityMessage = "Failed: \(error.localizedDescription)"
             }
+            isTestingCompatibility = false
         }
     }
 
