@@ -12,7 +12,7 @@ build:
 	$(SWIFT_ENV) swift build --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)"
 
 test:
-	$(SWIFT_ENV) swift test --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)"
+	$(SWIFT_ENV) python3 scripts/run_swift_tests_batched.py
 
 package:
 	./scripts/package_liamflow_app.sh

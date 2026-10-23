@@ -254,6 +254,7 @@ private func contextJSON(_ result: LimaAIToolExecution) throws -> [String: Any] 
     else { Issue.record("Clipboard action must prepare full text.") }
     model.openActionPanel()
     model.query = "commands: notes"
+    await model.waitForLocalSearchForTesting()
     #expect(model.actionPanelItem == nil)
     #expect(!model.results.contains { $0.id.hasPrefix("clipboard.") })
 }

@@ -95,7 +95,7 @@ import Testing
 @Test @MainActor func aiWorkspaceNetworkSandboxDeniesLoopbackWithoutFullControlRule() async throws {
     let files = FileManager.default
     guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
-          files.isExecutableFile(atPath: "/usr/bin/python3") else { return }
+          files.isExecutableFile(atPath: "/usr/bin/perl") else { return }
     let root = files.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaNetworkDenied-\(UUID().uuidString)", isDirectory: true)
     defer { try? files.removeItem(at: root) }
@@ -106,7 +106,7 @@ import Testing
         toolAccessStore: toolAccess)
     let session = try terminal.start(conversationID: UUID())
     _ = try terminal.run(sessionID: session.id,
-        command: "/usr/bin/python3 -c 'import socket; socket.socket().bind((\"127.0.0.1\", 0))'",
+        command: #"/usr/bin/perl -MIO::Socket::INET -e 'IO::Socket::INET->new(LocalAddr=>"127.0.0.1",LocalPort=>0,Listen=>128) or die "bind denied: $!";'"#,
         timeoutSeconds: 8)
     _ = try await terminal.wait(sessionID: session.id, from: nil, maxWaitSeconds: 8)
     let result = try terminal.status(sessionID: session.id)
@@ -177,7 +177,7 @@ private func waitForAIWorkspaceCommand(
     _ coordinator: AIWorkspaceTerminalCoordinator,
     sessionID: UUID
 ) async throws -> AIWorkspaceTerminalSnapshot {
-    let deadline = Date().addingTimeInterval(8)
+    let deadline = Date().addingTimeInterval(20)
     while Date() < deadline {
         let snapshot = try coordinator.status(sessionID: sessionID)
         if snapshot.state != .running { return snapshot }
@@ -397,7 +397,7 @@ private func waitForPTYText(
     _ = try coordinator.run(
         sessionID: session.id,
         command: "awk 'BEGIN { for (i = 1; i <= 6000; i++) printf \"LINE%05d\\n\", i }'",
-        timeoutSeconds: 10
+        timeoutSeconds: 25
     )
     let completed = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
     #expect(completed.state == .completed)

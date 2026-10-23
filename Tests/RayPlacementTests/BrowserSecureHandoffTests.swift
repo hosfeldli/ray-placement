@@ -219,9 +219,25 @@ private func secureBrowserCall(_ name: String, _ arguments: [String: Any]) throw
     #expect(!entered.text.contains("123"))
     #expect(entered.text.contains("$96.12"))
     #expect(entered.find("4111111111111111").isEmpty)
-    let snapshotJSON = String(decoding: try JSONEncoder().encode(entered), as: UTF8.self)
+    let snapshotData = try JSONEncoder().encode(entered)
+    let snapshotJSON = String(decoding: snapshotData, as: UTF8.self)
     #expect(!snapshotJSON.contains("4111111111111111"))
-    #expect(!snapshotJSON.contains("123"))
+    // A three-digit code can occur by chance in geometry or a generated UUID.
+    // Inspect JSON string fields, but ignore opaque identifier values.
+    func nonIdentifierStrings(in value: Any) -> [String] {
+        if let object = value as? [String: Any] {
+            return object.flatMap { key, child in
+                key == "id" || key.hasSuffix("ID") ? [] : nonIdentifierStrings(in: child)
+            }
+        }
+        if let array = value as? [Any] {
+            return array.flatMap { nonIdentifierStrings(in: $0) }
+        }
+        return (value as? String).map { [$0] } ?? []
+    }
+    let snapshotFields = try JSONSerialization.jsonObject(with: snapshotData)
+    let containsSecurityCode = nonIdentifierStrings(in: snapshotFields).contains { $0.contains("123") }
+    #expect(!containsSecurityCode)
 
     for tool in ["browser_tabs", "browser_current", "browser_read"] {
         let result = await BrowserWorkspaceAITools.execute(

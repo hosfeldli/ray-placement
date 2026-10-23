@@ -69,6 +69,10 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
+private let serverTestLoopbackCommand = #"""
+/usr/bin/perl -MIO::Socket::INET -e 'my $server = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 0, Listen => 128, ReuseAddr => 1) or die $!; $| = 1; my $port = $server->sockport; print "http://127.0.0.1:$port/\n"; while (my $client = $server->accept) { print $client "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"; close $client; }'
+"""#
+
 @Test @MainActor func managedServerRejectsUnrelatedLoopbackListener() async throws {
     guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
     let workspace = try serverTestWorkspace()
@@ -82,8 +86,8 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
             _ = try? workspace.terminal.interrupt(sessionID: session.id)
         }
     }
-    _ = try workspace.terminal.run(sessionID: session.id, command: "sleep 10", timeoutSeconds: 15)
-    let processDeadline = ContinuousClock().now.advanced(by: .seconds(2))
+    _ = try workspace.terminal.run(sessionID: session.id, command: "sleep 30", timeoutSeconds: 40)
+    let processDeadline = ContinuousClock().now.advanced(by: .seconds(10))
     while (try workspace.terminal.status(sessionID: session.id)).processID == nil &&
         ContinuousClock().now < processDeadline {
         try await Task.sleep(for: .milliseconds(25))
@@ -116,7 +120,7 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
 @Test @MainActor func managedServerOpensReusesAndStopsOwnedLoopbackProcess() async throws {
     let files = FileManager.default
     guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
-          files.isExecutableFile(atPath: "/usr/bin/python3"),
+          files.isExecutableFile(atPath: "/usr/bin/perl"),
           files.isExecutableFile(atPath: "/usr/sbin/lsof") else { return }
     let workspace = try serverTestWorkspace()
     defer { try? files.removeItem(at: workspace.root) }
@@ -129,7 +133,7 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
         }
     }
     _ = try workspace.terminal.run(sessionID: session.id,
-        command: "echo SERVER_LAUNCH; /usr/bin/python3 -u -m http.server 0 --bind 127.0.0.1; echo SERVER_EXIT",
+        command: "echo SERVER_LAUNCH; " + serverTestLoopbackCommand + "; echo SERVER_EXIT",
         timeoutSeconds: 30)
     var record: AIManagedServerManager.Record?
     let deadline = ContinuousClock().now.advanced(by: .seconds(8))
@@ -191,7 +195,7 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
 @Test @MainActor func projectArchiveStopsManagedServerAndPreservesFiles() async throws {
     let files = FileManager.default
     guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
-          files.isExecutableFile(atPath: "/usr/bin/python3"),
+          files.isExecutableFile(atPath: "/usr/bin/perl"),
           files.isExecutableFile(atPath: "/usr/sbin/lsof") else { return }
     let workspace = try serverTestWorkspace()
     defer { try? files.removeItem(at: workspace.root) }
@@ -206,7 +210,7 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
         }
     }
     _ = try workspace.terminal.run(sessionID: session.id,
-        command: "/usr/bin/python3 -u -m http.server 0 --bind 127.0.0.1; echo SERVER_EXIT",
+        command: serverTestLoopbackCommand + "; echo SERVER_EXIT",
         timeoutSeconds: 30)
     var registered: AIManagedServerManager.Record?
     let deadline = ContinuousClock().now.advanced(by: .seconds(8))

@@ -238,7 +238,8 @@ private final class BrowserLoopbackFixture {
     let loaded = try object(navigation)
     #expect(loaded["post_action_verified"] as? Bool == true)
     #expect(loaded["page_state_verified"] as? Bool == true)
-    #expect((loaded["observed_url"] as? String)?.hasPrefix(server.url.absoluteString) == true)
+    let port = try #require(server.url.port)
+    #expect(loaded["observed_url"] as? String == "http://127.0.0.1:\(port)")
 
     let background = await BrowserWorkspaceAITools.execute(try call("browser_new_tab", [
         "url": server.url.absoluteString, "background": true
@@ -651,7 +652,7 @@ private final class BrowserLoopbackFixture {
     #expect(scripted.role == "link")
     #expect(scripted.kind == "link")
     #expect(scripted.destination == nil)
-    #expect(scripted.availableActions == ["activate"])
+    #expect(scripted.availableActions == ["activate", "focus"])
     do {
         _ = try await model.activate(tab.id, targetID: scripted.id, disposition: .backgroundTab)
         Issue.record("A scripted link must not open an invented background URL.")

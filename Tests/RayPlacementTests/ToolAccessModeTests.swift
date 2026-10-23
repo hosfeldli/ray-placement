@@ -146,7 +146,10 @@ import Testing
     #expect(navigation.actionCategory == nil)
     #expect(!policy.requiresApproval(for: navigation, toolAccessMode: .automatic))
     #expect(!policy.requiresApproval(for: navigation, toolAccessMode: .askForActions))
-    #expect(AIComputerActionCategory.allCases == [.localFiles, .savedMemory, .terminal])
+    #expect(AIComputerActionCategory.allCases == [
+        .localFiles, .savedMemory, .terminal, .screenshotHistory,
+        .screenCapture, .audioOutput, .networkQuality, .calendar, .reminders
+    ])
 }
 
 @Test @MainActor func validAgentDoesNotHidePermittedTools() {

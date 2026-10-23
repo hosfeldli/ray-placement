@@ -6259,15 +6259,22 @@ struct AIChatBottomFollowState {
     private var previousContentHeight: CGFloat?
     private var growthCorrectionPending = false
 
-    mutating func observe(contentHeight: CGFloat, distanceFromBottom: CGFloat) {
+    mutating func observe(contentHeight: CGFloat, distanceFromBottom: CGFloat, userInitiated: Bool = false) {
         defer { previousContentHeight = contentHeight }
+        if userInitiated {
+            growthCorrectionPending = false
+            isNearBottom = distanceFromBottom <= 72
+            return
+        }
         guard let previousContentHeight else { return }
         if contentHeight > previousContentHeight + 0.5 && isNearBottom {
             growthCorrectionPending = true
             return
         }
         if growthCorrectionPending { return }
-        isNearBottom = distanceFromBottom <= 72
+        // Programmatic scrolling and lazy layout can move the clip without a
+        // content-height change. Only explicit user input may turn follow off.
+        if distanceFromBottom <= 72 { isNearBottom = true }
     }
 
     mutating func finishGrowthCorrection() {
@@ -6280,9 +6287,16 @@ private final class AIChatScrollState: ObservableObject {
     private var bottomFollow = AIChatBottomFollowState()
     var isNearBottom: Bool { bottomFollow.isNearBottom }
     var lastStreamingScrollAt = Date.distantPast
+    private var lastUserScrollAt = Date.distantPast
+
+    func noteUserScroll() { lastUserScrollAt = Date() }
 
     func observe(contentHeight: CGFloat, distanceFromBottom: CGFloat) {
-        bottomFollow.observe(contentHeight: contentHeight, distanceFromBottom: distanceFromBottom)
+        bottomFollow.observe(
+            contentHeight: contentHeight,
+            distanceFromBottom: distanceFromBottom,
+            userInitiated: Date().timeIntervalSince(lastUserScrollAt) < 0.75
+        )
     }
 
     func finishGrowthCorrection() {
@@ -6327,6 +6341,7 @@ private struct AIChatScrollPositionObserver: NSViewRepresentable {
         var scrollState: AIChatScrollState
         private weak var clipView: NSClipView?
         private var boundsObserver: NSObjectProtocol?
+        private var inputMonitor: Any?
         private var attachAttempts = 0
 
         init(scrollState: AIChatScrollState) { self.scrollState = scrollState }
@@ -6352,12 +6367,22 @@ private struct AIChatScrollPositionObserver: NSViewRepresentable {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in self?.updatePosition() }
             }
+            inputMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDragged]) { [weak self] event in
+                guard let self, let clip = self.clipView,
+                      let scrollView = clip.enclosingScrollView,
+                      event.window === scrollView.window else { return event }
+                let point = scrollView.convert(event.locationInWindow, from: nil)
+                if scrollView.bounds.contains(point) { self.scrollState.noteUserScroll() }
+                return event
+            }
             updatePosition()
         }
 
         func detach() {
             if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+            if let inputMonitor { NSEvent.removeMonitor(inputMonitor) }
             boundsObserver = nil
+            inputMonitor = nil
             clipView = nil
         }
 

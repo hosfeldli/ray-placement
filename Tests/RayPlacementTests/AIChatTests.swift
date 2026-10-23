@@ -204,7 +204,9 @@ import Vision
     follow.observe(contentHeight: 500, distanceFromBottom: 0)
     #expect(follow.isNearBottom)
     follow.observe(contentHeight: 500, distanceFromBottom: 150)
-    #expect(!follow.isNearBottom) // Stable-height movement is a user scroll.
+    #expect(follow.isNearBottom) // A delayed programmatic scroll is not a user gesture.
+    follow.observe(contentHeight: 500, distanceFromBottom: 150, userInitiated: true)
+    #expect(!follow.isNearBottom) // Explicit user scrolling stops bottom-follow.
     follow.observe(contentHeight: 900, distanceFromBottom: 550)
     #expect(!follow.isNearBottom) // Do not drag a reader back down.
     follow.observe(contentHeight: 900, distanceFromBottom: 20)
