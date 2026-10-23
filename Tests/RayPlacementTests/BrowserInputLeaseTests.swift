@@ -31,6 +31,8 @@ private func browserInputFixture() -> (
     capture.inputAnchor = anchor
     capture.cropOriginX = 40
     capture.cropOriginY = 20
+    capture.viewportWidth = 800
+    capture.viewportHeight = 600
     return (capture, anchor, UUID(), identity)
 }
 
@@ -54,7 +56,8 @@ private func browserInputState(
         hasFilledSecureField: false,
         scrollX: scrollX ?? capture.scrollX,
         scrollY: scrollY ?? capture.scrollY,
-        scrollFingerprint: capture.scrollFingerprint
+        scrollFingerprint: capture.scrollFingerprint,
+        frameIDs: capture.frameIDs
     )
 }
 

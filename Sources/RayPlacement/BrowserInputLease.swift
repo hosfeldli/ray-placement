@@ -72,6 +72,7 @@ struct BrowserVisualInputState: Sendable {
     let scrollX: Double
     let scrollY: Double
     let scrollFingerprint: String
+    let frameIDs: [String]
 }
 
 struct BrowserVisualInputPoint: Equatable, Sendable {
@@ -92,7 +93,9 @@ struct BrowserInputLease: Sendable {
     init(taskID: UUID, capture: BrowserScreenshotResult) throws {
         guard let anchor = capture.inputAnchor,
               let pageIdentity = capture.pageIdentity,
-              capture.protectedRects.count == capture.redactionCount else {
+              capture.protectedRects.count == capture.redactionCount,
+              capture.viewportWidth == anchor.boundsWidth,
+              capture.viewportHeight == anchor.boundsHeight else {
             throw BrowserRuntimeError.screenshotProtected
         }
         self.taskID = taskID
@@ -119,6 +122,9 @@ struct BrowserInputLease: Sendable {
               capture.scrollX == state.scrollX,
               capture.scrollY == state.scrollY,
               capture.scrollFingerprint == state.scrollFingerprint,
+              capture.frameIDs == state.frameIDs,
+              capture.viewportWidth == anchor.boundsWidth,
+              capture.viewportHeight == anchor.boundsHeight,
               capture.protectedRects.count == capture.redactionCount,
               capture.protectedRects.count == state.protectedRects.count,
               zip(capture.protectedRects, state.protectedRects)

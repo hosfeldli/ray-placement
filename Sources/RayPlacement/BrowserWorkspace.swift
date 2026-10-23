@@ -940,7 +940,10 @@ final class BrowserWorkspaceModel: ObservableObject {
             cropOriginY: Double(configuration.rect.minY),
             protectedRects: masksBefore.rects,
             scrollX: masksAfter.scrollX, scrollY: masksAfter.scrollY,
-            scrollFingerprint: masksAfter.scrollFingerprint
+            scrollFingerprint: masksAfter.scrollFingerprint,
+            viewportWidth: Double(bounds.width),
+            viewportHeight: Double(bounds.height),
+            frameIDs: frameIDsAfter.sorted()
         )
         guard aiControlMode.canRead, !pausedTabIDs.contains(id),
               authorityRevisions[id, default: 0] == authorityRevision,
@@ -989,8 +992,12 @@ final class BrowserWorkspaceModel: ObservableObject {
             throw BrowserRuntimeError.staleTarget
         }
         let safety = try await screenshotRedaction(webView)
-        _ = try await screenshotFrameIDs(tab, webView: webView, main: safety)
+        let frameIDs = try await screenshotFrameIDs(tab, webView: webView, main: safety)
         try Task.checkCancellation()
+        try capture.verifyActionSafety(
+            safety, viewportWidth: Double(webView.bounds.width),
+            viewportHeight: Double(webView.bounds.height), frameIDs: frameIDs
+        )
         guard aiControlMode.canInteract, selectedTabID == lease.tabID,
               isScreenshotCurrent(capture) else {
             throw BrowserRuntimeError.staleTarget
@@ -1005,10 +1012,32 @@ final class BrowserWorkspaceModel: ObservableObject {
             protectedRects: safety.rects,
             hasFilledSecureField: safety.hasFilledSecureField,
             scrollX: safety.scrollX, scrollY: safety.scrollY,
-            scrollFingerprint: safety.scrollFingerprint
+            scrollFingerprint: safety.scrollFingerprint,
+            frameIDs: frameIDs.sorted()
         )
         return try lease.viewPoint(
             pixelX: pixelX, pixelY: pixelY, capture: capture, state: state
+        )
+    }
+
+    /// Reinspect the page just before a visual target or its reviewed action
+    /// uses screenshot coordinates. Availability of old pixels is not proof
+    /// that the viewport, masks, frames, or scroll position still match.
+    private func requireVisualActionCapture(_ capture: BrowserScreenshotResult,
+                                            tab: BrowserTab,
+                                            webView: WKWebView) async throws {
+        guard isScreenshotCurrent(capture), tab.activeWebView === webView else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let safety = try await screenshotRedaction(webView)
+        let frameIDs = try await screenshotFrameIDs(tab, webView: webView, main: safety)
+        try Task.checkCancellation()
+        guard isScreenshotCurrent(capture), tab.activeWebView === webView else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        try capture.verifyActionSafety(
+            safety, viewportWidth: Double(webView.bounds.width),
+            viewportHeight: Double(webView.bounds.height), frameIDs: frameIDs
         )
     }
 
@@ -1018,7 +1047,12 @@ final class BrowserWorkspaceModel: ObservableObject {
               let capture = await BrowserScreenshotStore.shared.capture(id: hit.captureID),
               isScreenshotCurrent(capture),
               let page = await runtime.snapshot(for: hit.tabID),
-              page.identity == hit.pageIdentity else { return nil }
+              page.identity == hit.pageIdentity,
+              let tab = tabs.first(where: { $0.id == hit.tabID }),
+              let webView = tab.activeWebView else { return nil }
+        guard (try? await requireVisualActionCapture(
+            capture, tab: tab, webView: webView
+        )) != nil else { return nil }
         return hit
     }
 
@@ -1041,8 +1075,11 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
         let tab = try tab(id)
         guard let webView = tab.activeWebView else { throw BrowserRuntimeError.missingSnapshot }
-        let pointX = pixelX * capture.pointWidth / Double(capture.pixelWidth)
-        let pointY = pixelY * capture.pointHeight / Double(capture.pixelHeight)
+        try await requireVisualActionCapture(capture, tab: tab, webView: webView)
+        let pointX = capture.cropOriginX +
+            pixelX * capture.pointWidth / Double(capture.pixelWidth)
+        let pointY = capture.cropOriginY +
+            pixelY * capture.pointHeight / Double(capture.pixelHeight)
         let hitID = UUID()
         let identity = page.identity
         let raw: Any?
@@ -1064,6 +1101,7 @@ final class BrowserWorkspaceModel: ObservableObject {
             if let mapped = semanticActionError(error) { throw mapped }
             throw error
         }
+        try await requireVisualActionCapture(capture, tab: tab, webView: webView)
         guard let json = raw as? String, let data = json.data(using: .utf8),
               let payload = try? JSONDecoder().decode(BrowserVisualHitPayload.self, from: data),
               payload.x.isFinite, payload.y.isFinite,
@@ -1131,6 +1169,9 @@ final class BrowserWorkspaceModel: ObservableObject {
               before.identity == hit.pageIdentity else {
             throw BrowserRuntimeError.staleTarget
         }
+        let tab = try tab(id)
+        guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
+        try await requireVisualActionCapture(capture, tab: tab, webView: webView)
         let target = BrowserTarget(
             id: hit.id.uuidString, role: hit.role, label: hit.label,
             destination: nil, relationship: nil,
@@ -1144,8 +1185,7 @@ final class BrowserWorkspaceModel: ObservableObject {
               current.identity == hit.pageIdentity else {
             throw BrowserRuntimeError.staleTarget
         }
-        let tab = try tab(id)
-        guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
+        try await requireVisualActionCapture(capture, tab: tab, webView: webView)
         try Task.checkCancellation()
         let raw: Any?
         do {

@@ -28,6 +28,30 @@ struct BrowserScreenshotResult: Codable, Sendable {
     var scrollX: Double = 0
     var scrollY: Double = 0
     var scrollFingerprint: String = ""
+    var viewportWidth: Double = 0
+    var viewportHeight: Double = 0
+    var frameIDs: [String] = []
+
+    /// A saved image can remain viewable after layout changes, but its old
+    /// coordinates must not be used to choose or execute an action.
+    func verifyActionSafety(_ current: BrowserScreenshotRedaction,
+                            viewportWidth: Double, viewportHeight: Double,
+                            frameIDs: Set<String>) throws {
+        guard self.viewportWidth > 0, self.viewportHeight > 0,
+              self.viewportWidth == viewportWidth,
+              self.viewportHeight == viewportHeight,
+              pageIdentity == current.identity,
+              scrollX == current.scrollX, scrollY == current.scrollY,
+              scrollFingerprint == current.scrollFingerprint else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        guard Set(self.frameIDs) == frameIDs,
+              protectedRects.count == redactionCount,
+              protectedRects.count == current.rects.count,
+              zip(protectedRects, current.rects).allSatisfy({ $0.isNear($1) }) else {
+            throw BrowserRuntimeError.screenshotProtected
+        }
+    }
 }
 
 /// Short-lived, process-local Browser captures. Never put image bytes in chat
@@ -55,7 +79,9 @@ actor BrowserScreenshotStore {
               cropOriginX: Double = 0, cropOriginY: Double = 0,
               protectedRects: [BrowserScreenshotMask] = [],
               scrollX: Double = 0, scrollY: Double = 0,
-              scrollFingerprint: String = "") throws -> BrowserScreenshotResult {
+              scrollFingerprint: String = "",
+              viewportWidth: Double, viewportHeight: Double,
+              frameIDs: [String]) throws -> BrowserScreenshotResult {
         guard !data.isEmpty, data.count <= 4_000_000,
               (1...1280).contains(width), (1...900).contains(height),
               pointWidth.isFinite, pointHeight.isFinite,
@@ -64,6 +90,10 @@ actor BrowserScreenshotStore {
               cropOriginX >= 0, cropOriginY >= 0,
               scrollX.isFinite, scrollY.isFinite,
               scrollFingerprint.utf8.count <= 8_000,
+              viewportWidth.isFinite, viewportHeight.isFinite,
+              viewportWidth >= pointWidth, viewportHeight >= pointHeight,
+              frameIDs.count <= 240, Set(frameIDs).count == frameIDs.count,
+              frameIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 100 }),
               (0...240).contains(redactionCount),
               protectedRects.count == redactionCount,
               protectedRects.allSatisfy(\.isValid) else {
@@ -84,7 +114,9 @@ actor BrowserScreenshotStore {
             inputAnchor: inputAnchor, cropOriginX: cropOriginX,
             cropOriginY: cropOriginY, protectedRects: protectedRects,
             scrollX: scrollX, scrollY: scrollY,
-            scrollFingerprint: scrollFingerprint
+            scrollFingerprint: scrollFingerprint,
+            viewportWidth: viewportWidth, viewportHeight: viewportHeight,
+            frameIDs: frameIDs
         )
         entries.append(capture)
         while entries.count > maximumCaptures {
