@@ -5393,13 +5393,20 @@ struct AIChatWorkspaceView: View {
             }
             .onChange(of: model.executionRun?.state) { state in
                 guard state?.isTerminal == true, scrollState.isNearBottom else { return }
-                // Wait for the completed row's first layout before correcting
-                // the bottom anchor. The message ID itself did not change.
-                DispatchQueue.main.async {
-                    var transaction = Transaction()
-                    transaction.disablesAnimations = true
-                    withTransaction(transaction) {
-                        proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom)
+                // The completed Markdown row can gain height over several
+                // off-main parse and SwiftUI layout passes. One next-tick
+                // scroll can land halfway through a long final answer.
+                let conversationID = model.selectedConversationID
+                for delayMS in [0, 80, 200, 500, 1_000, 2_000, 4_000] {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(delayMS)) {
+                        guard model.selectedConversationID == conversationID,
+                              model.executionRun?.state == state,
+                              scrollState.isNearBottom else { return }
+                        var transaction = Transaction()
+                        transaction.disablesAnimations = true
+                        withTransaction(transaction) {
+                            proxy.scrollTo(AIChatScrollAnchor.bottom, anchor: .bottom)
+                        }
                     }
                 }
             }
