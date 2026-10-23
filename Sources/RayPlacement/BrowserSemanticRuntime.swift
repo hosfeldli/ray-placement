@@ -1036,6 +1036,7 @@ enum BrowserSemanticScript {
     if (!state || state.lastURL !== location.href) throw new Error("stale_target");
     const rects = [];
     const secrets = [];
+    const scrolls = [];
     // Capture safety must not depend on a prior semantic snapshot. Visual-only
     // observation installs the isolated world but never calls snapshot().
     const secureKind = element => {
@@ -1070,6 +1071,10 @@ enum BrowserSemanticScript {
     const walk = root => {
       for (const node of root.querySelectorAll("*")) {
         if (++inspected > 20000) { complete = false; break; }
+        if (node.scrollLeft || node.scrollTop) {
+          if (scrolls.length >= 120) complete = false;
+          else scrolls.push(inspected + ':' + node.scrollLeft + ':' + node.scrollTop);
+        }
         if (node.shadowRoot) walk(node.shadowRoot);
         if (node.localName === "iframe" || node.localName === "frame") {
           frameCount++;
@@ -1132,7 +1137,9 @@ enum BrowserSemanticScript {
       identity: {documentID: state.documentID, routeGeneration: state.routeGeneration,
         mutationRevision: state.mutationRevision, userRevision: state.userRevision,
         snapshotRevision: state.snapshotRevision, url: location.href},
-      complete, frameCount, hasFilledSecureField: secrets.length > 0, rects
+      complete, frameCount, hasFilledSecureField: secrets.length > 0, rects,
+      scrollX: window.scrollX, scrollY: window.scrollY,
+      scrollFingerprint: scrolls.join('|')
     });
     """#
 

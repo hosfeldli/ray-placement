@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WebKit
 
-struct BrowserScreenshotMask: Codable, Equatable {
+struct BrowserScreenshotMask: Codable, Equatable, Sendable {
     let x: Double
     let y: Double
     let width: Double
@@ -25,6 +25,9 @@ struct BrowserScreenshotRedaction: Codable {
     let frameCount: Int
     var hasFilledSecureField: Bool = false
     let rects: [BrowserScreenshotMask]
+    var scrollX: Double = 0
+    var scrollY: Double = 0
+    var scrollFingerprint: String = ""
 
     /// Visual capture tolerates ordinary page-text mutations but fails closed
     /// when the document, user input, masking geometry, frames, or viewport
@@ -46,7 +49,9 @@ struct BrowserScreenshotRedaction: Codable {
               zip(rects, after.rects).allSatisfy({ $0.isNear($1) }) else {
             throw BrowserCaptureFailure.redactionUnresolved
         }
-        guard viewportUnchanged else {
+        guard viewportUnchanged,
+              scrollX == after.scrollX, scrollY == after.scrollY,
+              scrollFingerprint == after.scrollFingerprint else {
             throw BrowserCaptureFailure.invalidViewport
         }
     }
@@ -787,7 +792,9 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard let json = raw as? String, let data = json.data(using: .utf8),
               let result = try? JSONDecoder().decode(BrowserScreenshotRedaction.self, from: data),
               result.complete, (0...240).contains(result.frameCount),
-              result.rects.count <= 240, result.rects.allSatisfy(\.isValid) else {
+              result.rects.count <= 240, result.rects.allSatisfy(\.isValid),
+              result.scrollX.isFinite, result.scrollY.isFinite,
+              result.scrollFingerprint.utf8.count <= 8_000 else {
             throw BrowserCaptureFailure.redactionUnresolved
         }
         return result
@@ -848,6 +855,7 @@ final class BrowserWorkspaceModel: ObservableObject {
             tab, webView: webView, main: masksBefore
         )
         let bounds = webView.bounds
+        let inputAnchorBefore = BrowserVisualInputAnchor.foreground(for: webView)
         guard bounds.width.isFinite, bounds.height.isFinite,
               bounds.width >= 1, bounds.height >= 1 else {
             throw BrowserCaptureFailure.invalidViewport
@@ -893,6 +901,8 @@ final class BrowserWorkspaceModel: ObservableObject {
             navigationUnchanged: tab.navigationRevision == navigationRevision,
             viewportUnchanged: webView.bounds.size == bounds.size
         )
+        let inputAnchorAfter = BrowserVisualInputAnchor.foreground(for: webView)
+        let inputAnchor = inputAnchorBefore == inputAnchorAfter ? inputAnchorBefore : nil
         let pointBounds = CGRect(origin: .zero, size: configuration.rect.size)
         let pixelX = CGFloat(width) / configuration.rect.width
         let pixelY = CGFloat(height) / configuration.rect.height
@@ -924,7 +934,13 @@ final class BrowserWorkspaceModel: ObservableObject {
             readRevision: readRevision,
             navigationRevision: navigationRevision,
             redactionCount: masksBefore.rects.count,
-            pageIdentity: masksAfter.identity
+            pageIdentity: masksAfter.identity,
+            inputAnchor: inputAnchor,
+            cropOriginX: Double(configuration.rect.minX),
+            cropOriginY: Double(configuration.rect.minY),
+            protectedRects: masksBefore.rects,
+            scrollX: masksAfter.scrollX, scrollY: masksAfter.scrollY,
+            scrollFingerprint: masksAfter.scrollFingerprint
         )
         guard aiControlMode.canRead, !pausedTabIDs.contains(id),
               authorityRevisions[id, default: 0] == authorityRevision,
@@ -935,6 +951,65 @@ final class BrowserWorkspaceModel: ObservableObject {
             throw BrowserCaptureFailure.expired
         }
         return stored
+    }
+
+    /// Internal preparation only. A lease cannot post an event and is not an
+    /// authorization grant; Visual Only remains unavailable.
+    func makeVisualInputLease(taskID: UUID, tabID: UUID,
+                              captureID: UUID) async throws -> BrowserInputLease {
+        guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
+        try requireAIAccess(tabID)
+        guard selectedTabID == tabID,
+              let capture = await BrowserScreenshotStore.shared.capture(id: captureID),
+              capture.tabID == tabID, isScreenshotCurrent(capture),
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView,
+              let anchor = BrowserVisualInputAnchor.foreground(for: webView),
+              capture.inputAnchor == anchor else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        return try BrowserInputLease(taskID: taskID, capture: capture)
+    }
+
+    /// Reinspect safety geometry without a semantic snapshot. The eventual
+    /// native driver must call this again immediately before dispatch and then
+    /// apply its independent financial/protected-data gate.
+    func preflightVisualInputPoint(_ lease: BrowserInputLease,
+                                   taskID: UUID, pixelX: Double,
+                                   pixelY: Double) async throws -> BrowserVisualInputPoint {
+        try Task.checkCancellation()
+        guard aiControlMode.canInteract, selectedTabID == lease.tabID else {
+            throw BrowserRuntimeError.controlDisabled
+        }
+        try requireAIAccess(lease.tabID)
+        guard let capture = await BrowserScreenshotStore.shared.capture(id: lease.captureID),
+              isScreenshotCurrent(capture),
+              let tab = tabs.first(where: { $0.id == lease.tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let safety = try await screenshotRedaction(webView)
+        _ = try await screenshotFrameIDs(tab, webView: webView, main: safety)
+        try Task.checkCancellation()
+        guard aiControlMode.canInteract, selectedTabID == lease.tabID,
+              isScreenshotCurrent(capture) else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let state = BrowserVisualInputState(
+            taskID: taskID, selectedTabID: selectedTabID,
+            authorityRevision: authorityRevisions[lease.tabID, default: 0],
+            readRevision: readRevisions[lease.tabID, default: 0],
+            navigationRevision: tab.navigationRevision,
+            anchor: BrowserVisualInputAnchor.foreground(for: webView),
+            pageIdentity: safety.identity,
+            protectedRects: safety.rects,
+            hasFilledSecureField: safety.hasFilledSecureField,
+            scrollX: safety.scrollX, scrollY: safety.scrollY,
+            scrollFingerprint: safety.scrollFingerprint
+        )
+        return try lease.viewPoint(
+            pixelX: pixelX, pixelY: pixelY, capture: capture, state: state
+        )
     }
 
     func visualHitForReview(_ id: UUID) async -> BrowserVisualHit? {

@@ -19,6 +19,15 @@ struct BrowserScreenshotResult: Codable, Sendable {
     var redactionCount: Int = 0
     /// Private page identity for coherence checks; never include in provider text.
     var pageIdentity: BrowserPageIdentity? = nil
+    /// Input geometry is present only if capture occurred in Lima's foreground Browser.
+    var inputAnchor: BrowserVisualInputAnchor? = nil
+    var cropOriginX: Double = 0
+    var cropOriginY: Double = 0
+    /// Never serialize these private safety rectangles into provider output.
+    var protectedRects: [BrowserScreenshotMask] = []
+    var scrollX: Double = 0
+    var scrollY: Double = 0
+    var scrollFingerprint: String = ""
 }
 
 /// Short-lived, process-local Browser captures. Never put image bytes in chat
@@ -41,12 +50,23 @@ actor BrowserScreenshotStore {
               pointWidth: Double, pointHeight: Double,
               authorityRevision: UInt64, readRevision: UInt64,
               navigationRevision: Int, redactionCount: Int = 0,
-              pageIdentity: BrowserPageIdentity) throws -> BrowserScreenshotResult {
+              pageIdentity: BrowserPageIdentity,
+              inputAnchor: BrowserVisualInputAnchor? = nil,
+              cropOriginX: Double = 0, cropOriginY: Double = 0,
+              protectedRects: [BrowserScreenshotMask] = [],
+              scrollX: Double = 0, scrollY: Double = 0,
+              scrollFingerprint: String = "") throws -> BrowserScreenshotResult {
         guard !data.isEmpty, data.count <= 4_000_000,
               (1...1280).contains(width), (1...900).contains(height),
               pointWidth.isFinite, pointHeight.isFinite,
               pointWidth > 0, pointHeight > 0,
-              (0...240).contains(redactionCount) else {
+              cropOriginX.isFinite, cropOriginY.isFinite,
+              cropOriginX >= 0, cropOriginY >= 0,
+              scrollX.isFinite, scrollY.isFinite,
+              scrollFingerprint.utf8.count <= 8_000,
+              (0...240).contains(redactionCount),
+              protectedRects.count == redactionCount,
+              protectedRects.allSatisfy(\.isValid) else {
             throw BrowserRuntimeError.unsupportedAction
         }
         let captureID = UUID()
@@ -60,7 +80,11 @@ actor BrowserScreenshotStore {
             byteCount: data.count, authorityRevision: authorityRevision,
             readRevision: readRevision,
             navigationRevision: navigationRevision,
-            redactionCount: redactionCount, pageIdentity: pageIdentity
+            redactionCount: redactionCount, pageIdentity: pageIdentity,
+            inputAnchor: inputAnchor, cropOriginX: cropOriginX,
+            cropOriginY: cropOriginY, protectedRects: protectedRects,
+            scrollX: scrollX, scrollY: scrollY,
+            scrollFingerprint: scrollFingerprint
         )
         entries.append(capture)
         while entries.count > maximumCaptures {
