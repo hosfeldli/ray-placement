@@ -227,6 +227,12 @@ private func browserInputState(
             taskID: UUID(), tabID: tab.id, captureID: before.captureID
         )
     }
+    await #expect(throws: BrowserRuntimeError.self) {
+        try await model.moveNativePointer(
+            taskID: UUID(), tabID: tab.id, captureID: before.captureID,
+            pixelX: 100, pixelY: 100
+        )
+    }
     _ = try await tab.webView.evaluateJavaScript(
         "document.getElementById('scroller').scrollTop = 80; true"
     )
@@ -243,5 +249,73 @@ private func browserInputState(
     detached.inputAnchor = nil
     #expect(throws: BrowserRuntimeError.self) {
         _ = try BrowserInputLease(taskID: fixture.taskID, capture: detached)
+    }
+}
+
+@Test @MainActor func browserNativePointerMapsRetinaCropAndFlippedViewsToQuartz() throws {
+    let fixture = browserInputFixture()
+    let lease = try BrowserInputLease(taskID: fixture.taskID, capture: fixture.capture)
+    let state = browserInputState(
+        fixture.capture, taskID: fixture.taskID,
+        anchor: fixture.anchor, identity: fixture.identity
+    )
+    let point = try lease.viewPoint(
+        pixelX: 200, pixelY: 100, capture: fixture.capture, state: state
+    )
+    #expect(try BrowserNativePointerDriver.quartzPoint(
+        point, anchor: fixture.anchor, primaryScreenTop: 1_000
+    ) == CGPoint(x: 250, y: 250))
+
+    let flippedAnchor = BrowserVisualInputAnchor(
+        windowNumber: 24, screenNumber: 1, backingScale: 2,
+        windowX: 100, windowY: 200, windowWidth: 1100, windowHeight: 800,
+        viewX: 10, viewY: 20, viewWidth: 800, viewHeight: 600,
+        boundsX: 0, boundsY: 0, boundsWidth: 800, boundsHeight: 600,
+        isFlipped: true
+    )
+    var flippedCapture = fixture.capture
+    flippedCapture.inputAnchor = flippedAnchor
+    let flippedLease = try BrowserInputLease(taskID: fixture.taskID, capture: flippedCapture)
+    let flippedState = browserInputState(
+        flippedCapture, taskID: fixture.taskID,
+        anchor: flippedAnchor, identity: fixture.identity
+    )
+    let flippedPoint = try flippedLease.viewPoint(
+        pixelX: 200, pixelY: 100, capture: flippedCapture, state: flippedState
+    )
+    #expect(try BrowserNativePointerDriver.quartzPoint(
+        flippedPoint, anchor: flippedAnchor, primaryScreenTop: 1_000
+    ) == CGPoint(x: 250, y: 250))
+}
+
+@Test @MainActor func browserNativePointerRejectsInvalidAndOffscreenGeometry() throws {
+    let fixture = browserInputFixture()
+    let anchor = BrowserVisualInputAnchor(
+        windowNumber: 24, screenNumber: 2, backingScale: 1,
+        windowX: -1_300, windowY: 100, windowWidth: 900, windowHeight: 700,
+        viewX: 20, viewY: 30, viewWidth: 600, viewHeight: 500,
+        boundsX: 0, boundsY: 0, boundsWidth: 600, boundsHeight: 500,
+        isFlipped: false
+    )
+    #expect(try BrowserNativePointerDriver.quartzPoint(
+        BrowserVisualInputPoint(x: 300, y: 250),
+        anchor: anchor, primaryScreenTop: 1_000
+    ) == CGPoint(x: -980, y: 620))
+    for point in [
+        BrowserVisualInputPoint(x: 0, y: 250),
+        BrowserVisualInputPoint(x: 600, y: 250),
+        BrowserVisualInputPoint(x: .nan, y: 250)
+    ] {
+        #expect(throws: BrowserNativePointerError.self) {
+            _ = try BrowserNativePointerDriver.quartzPoint(
+                point, anchor: anchor, primaryScreenTop: 1_000
+            )
+        }
+    }
+    #expect(throws: BrowserNativePointerError.self) {
+        _ = try BrowserNativePointerDriver.quartzPoint(
+            BrowserVisualInputPoint(x: 300, y: 250),
+            anchor: fixture.anchor, primaryScreenTop: .nan
+        )
     }
 }

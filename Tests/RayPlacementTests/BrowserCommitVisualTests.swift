@@ -69,6 +69,28 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
             tabID: tabID, target: target(label), action: .click, page: page
         ) != nil)
     }
+    let visualHit = BrowserVisualHit(
+        id: UUID(), captureID: UUID(), tabID: tabID,
+        label: "Unlabelled booking control", role: "genericClickable",
+        x: 10, y: 10, width: 100, height: 30,
+        semanticTargetID: nil, pageIdentity: identity
+    )
+    let visualReview = try #require(BrowserCommitAuthorization.visualReview(
+        hit: visualHit, page: page
+    ))
+    #expect(visualReview.visibleTerms.contains { $0.contains("$50 deposit") })
+    #expect(visualReview.userSummary.contains("$50 deposit"))
+    let changedIdentity = BrowserPageIdentity(
+        documentID: "other-document", routeGeneration: 0, mutationRevision: 0,
+        userRevision: 0, snapshotRevision: 1, url: identity.url
+    )
+    let staleHit = BrowserVisualHit(
+        id: UUID(), captureID: UUID(), tabID: tabID,
+        label: "Unlabelled booking control", role: "genericClickable",
+        x: 10, y: 10, width: 100, height: 30,
+        semanticTargetID: nil, pageIdentity: changedIdentity
+    )
+    #expect(BrowserCommitAuthorization.visualReview(hit: staleHit, page: page) == nil)
 }
 
 @Test func browserFinancialGateReviewsAmbiguousCheckoutWithoutBlockingExploration() {

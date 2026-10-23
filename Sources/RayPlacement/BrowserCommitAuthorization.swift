@@ -17,7 +17,9 @@ struct BrowserCommitReview: Sendable, Equatable {
 
     var userSummary: String {
         if isVisual {
-            return "Review a visual click on “\(label)” at \(host). Lima identified this point in the current Browser screenshot, but page semantics cannot establish its consequences. Allow this exact click only if intended."
+            let terms = visibleTerms.isEmpty ? "" :
+                " Visible terms to review: " + visibleTerms.joined(separator: " · ")
+            return "Review a visual click on “\(label)” at \(host). Lima identified this point in the current Browser screenshot, but page semantics cannot establish its consequences.\(terms) Allow this exact click only if intended."
         }
         let actionText = label.isEmpty ? "a final web action" : "“\(label)”"
         let form = formLabel.map { " in the \($0) form" } ?? ""
@@ -31,12 +33,14 @@ enum BrowserCommitAuthorization {
     /// Discovery/search submissions are not final transactions. All other form
     /// submissions are reviewed unless their exact visible label is clearly a
     /// non-final search/navigation step. An ambiguous "Continue" remains gated.
-    static func visualReview(hit: BrowserVisualHit) -> BrowserCommitReview {
-        BrowserCommitReview(
+    static func visualReview(hit: BrowserVisualHit,
+                             page: BrowserPageSnapshot) -> BrowserCommitReview? {
+        guard page.identity == hit.pageIdentity else { return nil }
+        return BrowserCommitReview(
             tabID: hit.tabID, targetID: hit.id.uuidString, action: "pointerClick",
             label: String(hit.label.prefix(160)),
             host: URLComponents(string: hit.pageIdentity.url)?.host ?? "this site",
-            formLabel: nil, visibleTerms: [], isVisual: true,
+            formLabel: nil, visibleTerms: visibleTerms(in: page), isVisual: true,
             pageIdentity: hit.pageIdentity
         )
     }
@@ -70,7 +74,18 @@ enum BrowserCommitAuthorization {
              ["button", "link", "genericClickable"].contains(target.role))))
         guard isCommit else { return nil }
         let host = URLComponents(string: page.identity.url)?.host ?? "this site"
-        let terms = page.text
+        let terms = visibleTerms(in: page)
+        return BrowserCommitReview(
+            tabID: tabID, targetID: target.id, action: action.rawValue,
+            label: String(label.prefix(160)), host: host,
+            formLabel: target.formLabel.map { String($0.prefix(100)) },
+            visibleTerms: terms, isVisual: false,
+            pageIdentity: page.identity
+        )
+    }
+
+    private static func visibleTerms(in page: BrowserPageSnapshot) -> [String] {
+        page.text
             .split(whereSeparator: \.isNewline)
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter {
@@ -80,12 +95,5 @@ enum BrowserCommitAuthorization {
             }
             .prefix(3)
             .map { String($0.prefix(140)) }
-        return BrowserCommitReview(
-            tabID: tabID, targetID: target.id, action: action.rawValue,
-            label: String(label.prefix(160)), host: host,
-            formLabel: target.formLabel.map { String($0.prefix(100)) },
-            visibleTerms: Array(terms), isVisual: false,
-            pageIdentity: page.identity
-        )
     }
 }

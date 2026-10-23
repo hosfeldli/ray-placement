@@ -244,9 +244,9 @@ enum BrowserWorkspaceAITools {
         if call.name == "browser_pointer_click" {
             guard let rawHitID = try? requiredString("hit_id", in: arguments),
                   let hitID = UUID(uuidString: rawHitID),
-                  let hit = await browser.visualHitForReview(hitID),
-                  hit.tabID == id else { return nil }
-            return BrowserCommitAuthorization.visualReview(hit: hit)
+                  let review = await browser.visualCommitReview(hitID),
+                  review.tabID == id else { return nil }
+            return review
         }
         guard let target = try? requiredString("target", in: arguments) else { return nil }
         let action: BrowserInteractionAction

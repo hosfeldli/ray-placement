@@ -1020,6 +1020,30 @@ final class BrowserWorkspaceModel: ObservableObject {
         )
     }
 
+    /// Internal, non-committing native input path. It does not authorize a
+    /// visual click or make Visual Only available to the AI runtime.
+    func moveNativePointer(taskID: UUID, tabID: UUID, captureID: UUID,
+                           pixelX: Double, pixelY: Double) async throws {
+        let lease = try await makeVisualInputLease(
+            taskID: taskID, tabID: tabID, captureID: captureID
+        )
+        let point = try await preflightVisualInputPoint(
+            lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        try Task.checkCancellation()
+        guard aiControlMode.canInteract, selectedTabID == tabID,
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        try BrowserNativePointerDriver.move(
+            point, in: webView, expectedAnchor: lease.anchor
+        )
+        // Hover may alter menus or page geometry; require a new observation
+        // before any subsequent coordinate action.
+        revokeBrowserState(for: tabID)
+    }
+
     /// Reinspect the page just before a visual target or its reviewed action
     /// uses screenshot coordinates. Availability of old pixels is not proof
     /// that the viewport, masks, frames, or scroll position still match.
@@ -1054,6 +1078,12 @@ final class BrowserWorkspaceModel: ObservableObject {
             capture, tab: tab, webView: webView
         )) != nil else { return nil }
         return hit
+    }
+
+    func visualCommitReview(_ id: UUID) async -> BrowserCommitReview? {
+        guard let hit = await visualHitForReview(id),
+              let page = await runtime.snapshot(for: hit.tabID) else { return nil }
+        return BrowserCommitAuthorization.visualReview(hit: hit, page: page)
     }
 
     func hitTest(_ id: UUID, captureID: UUID, pixelX: Double,
