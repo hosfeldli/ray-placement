@@ -346,3 +346,35 @@ private func observationJSON(_ execution: LimaAIToolExecution) throws -> [String
     let error = try #require(payload["semantic_error"] as? [String: Any])
     #expect(error["code"] as? String == "page_unstable")
 }
+
+@Test @MainActor func browserVisualCaptureWorksWhenSemanticTraversalIsIncomplete() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .readOnly
+    let tab = model.newTab()
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let buttons = (0..<450).map { "<button>Choice \($0)</button>" }.joined()
+    tab.webView.loadHTMLString(
+        "<!doctype html><html><body><h1>Dense controls</h1>\(buttons)</body></html>",
+        baseURL: URL(string: "https://example.com")!
+    )
+    var incomplete = false
+    for _ in 0..<100 {
+        if let page = try? await model.read(tab.id), page.diagnostics.truncated {
+            incomplete = true
+            break
+        }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    #expect(incomplete)
+    let execution = await BrowserWorkspaceAITools.execute(
+        try observationCall("hybrid", tabID: tab.id), browser: model
+    )
+    #expect(!execution.isError)
+    #expect(execution.browserScreenshot != nil)
+    let payload = try observationJSON(execution)
+    #expect(payload["visual_available"] as? Bool == true)
+    #expect(payload["semantic_available"] as? Bool == false)
+    #expect(payload["page"] == nil)
+    #expect((payload["semantic_diagnostics"] as? [String: Any])?["semantic_truncated"] as? Bool == true)
+    try await model.close(tab.id)
+}

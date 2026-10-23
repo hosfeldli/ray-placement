@@ -22,12 +22,14 @@ SCRATCH = ROOT / ".build"
 TEST_ID = re.compile(r"^([A-Za-z][A-Za-z0-9_]*Tests)\.([A-Za-z_][A-Za-z0-9_]*)\(\)$")
 STARTED = re.compile(r"\bTest ([A-Za-z_][A-Za-z0-9_]*)\(\) started\.")
 SWIFT_TEST = ["swift", "test", "--disable-sandbox", "--scratch-path", str(SCRATCH)]
-# Hosted SwiftUI/AppKit fixtures pass alone but can deadlock teardown when
-# other tests use WebKit or AppKit in the same process.
+# Hosted SwiftUI/AppKit fixtures can deadlock teardown with WebKit/AppKit
+# peers. The OCR/Search fixture shares a SQLite index with screenshot-history
+# tests, so keep its database writes out of their concurrent batch.
 ISOLATED_TESTS = {
     "completedAnswerMountsInHostedChatWithoutScrollGesture",
     "completedLongMarkdownAnswerShowsItsTailWithoutScrollGesture",
     "embeddedBrowserSelectedTabMountsItsOwnPageOnRepeatedSwitches",
+    "screenshotOCRTextAppearsAsIndividualCentralSearchResult",
 }
 
 
