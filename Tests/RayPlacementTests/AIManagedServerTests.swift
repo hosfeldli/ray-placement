@@ -69,8 +69,11 @@ private func serverTestFields(_ result: LimaAIToolExecution) throws -> [String: 
     return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 }
 
+// Readiness probes connect and close without sending a request. The fixture must
+// survive a write to such a closed socket so subsequent server_open calls can
+// verify tab reuse rather than racing a fixture SIGPIPE.
 private let serverTestLoopbackCommand = #"""
-/usr/bin/perl -MIO::Socket::INET -e 'my $server = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 0, Listen => 128, ReuseAddr => 1) or die $!; $| = 1; my $port = $server->sockport; print "http://127.0.0.1:$port/\n"; while (my $client = $server->accept) { print $client "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"; close $client; }'
+/usr/bin/perl -MIO::Socket::INET -e 'my $server = IO::Socket::INET->new(LocalAddr => "127.0.0.1", LocalPort => 0, Listen => 128, ReuseAddr => 1) or die $!; $SIG{PIPE} = "IGNORE"; $| = 1; my $port = $server->sockport; print "http://127.0.0.1:$port/\n"; while (my $client = $server->accept) { print $client "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"; close $client; }'
 """#
 
 @Test @MainActor func managedServerRejectsUnrelatedLoopbackListener() async throws {
