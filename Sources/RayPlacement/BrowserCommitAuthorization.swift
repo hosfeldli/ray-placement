@@ -62,9 +62,12 @@ enum BrowserCommitAuthorization {
         ) != nil && !labelIsFinal
         // A form's name is context, not a final action: clicking its calendar
         // cells, combobox, or option must not be mistaken for submission.
-        let isCommit = !clearlyNonFinal && (action == .submit || labelIsFinal ||
+        let financialRisk = BrowserFinancialActionGate.requiresReview(
+            target: target, action: action, page: page
+        )
+        let isCommit = financialRisk || (!clearlyNonFinal && (action == .submit || labelIsFinal ||
             (transactionForm && ambiguousAction &&
-             ["button", "link", "genericClickable"].contains(target.role)))
+             ["button", "link", "genericClickable"].contains(target.role))))
         guard isCommit else { return nil }
         let host = URLComponents(string: page.identity.url)?.host ?? "this site"
         let terms = page.text

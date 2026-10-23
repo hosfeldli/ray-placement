@@ -71,6 +71,114 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     }
 }
 
+@Test func browserFinancialGateReviewsAmbiguousCheckoutWithoutBlockingExploration() {
+    let checkoutIdentity = BrowserPageIdentity(
+        documentID: "checkout", routeGeneration: 0, mutationRevision: 0,
+        userRevision: 0, snapshotRevision: 1,
+        url: "https://example.com/checkout/review"
+    )
+    let diagnostics = BrowserDiagnostics(
+        textLength: 12, linkCount: 0, controlCount: 0, headingCount: 0,
+        semanticRowCount: 0, shadowRootCount: 0, frameCount: 1,
+        quietMS: 500, truncated: false
+    )
+    let checkout = BrowserPageSnapshot(
+        identity: checkoutIdentity, readiness: .readyWithContent,
+        title: "Checkout", text: "Total $45.00", links: [], controls: [],
+        headings: [], rows: [], diagnostics: diagnostics
+    )
+    func target(_ label: String, isSubmit: Bool = false) -> BrowserTarget {
+        var value = BrowserTarget(
+            id: label.isEmpty ? "unlabelled" : label, role: "button", label: label,
+            destination: nil, relationship: nil, x: 10, y: 10,
+            width: 100, height: 30, frameID: "main", sensitive: false
+        )
+        value.isSubmit = isSubmit
+        return value
+    }
+    let continueButton = target("Continue")
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: continueButton, action: .click, page: checkout
+    ))
+    #expect(BrowserCommitAuthorization.review(
+        tabID: UUID(), target: continueButton, action: .click, page: checkout
+    ) != nil)
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: target("", isSubmit: true), action: .click, page: checkout
+    ))
+    #expect(!BrowserFinancialActionGate.requiresReview(
+        target: target("Show details"), action: .click, page: checkout
+    ))
+    #expect(BrowserCommitAuthorization.review(
+        tabID: UUID(), target: target("Search products"), action: .submit,
+        page: checkout
+    ) == nil)
+
+    let ordinaryIdentity = BrowserPageIdentity(
+        documentID: "catalog", routeGeneration: 0, mutationRevision: 0,
+        userRevision: 0, snapshotRevision: 1,
+        url: "https://example.com/products"
+    )
+    let ordinary = BrowserPageSnapshot(
+        identity: ordinaryIdentity, readiness: .readyWithContent,
+        title: "Product catalog", text: "Browse products", links: [],
+        controls: [], headings: [], rows: [], diagnostics: diagnostics
+    )
+    #expect(!BrowserFinancialActionGate.requiresReview(
+        target: continueButton, action: .click, page: ordinary
+    ))
+    let bookingIdentity = BrowserPageIdentity(
+        documentID: "reservation", routeGeneration: 0, mutationRevision: 0,
+        userRevision: 0, snapshotRevision: 1,
+        url: "https://example.com/reservations"
+    )
+    let booking = BrowserPageSnapshot(
+        identity: bookingIdentity, readiness: .readyWithContent,
+        title: "Dinner reservation", text: "A $50 deposit is required.",
+        links: [], controls: [], headings: [], rows: [], diagnostics: diagnostics
+    )
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: continueButton, action: .click, page: booking
+    ))
+}
+
+@Test @MainActor func browserAmbiguousCheckoutClickNeedsExactReview() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><html><head><title>Checkout</title></head><body>
+        <p>Total $45.00</p><button type='button' id='continue'>Continue</button>
+        <script>
+          document.getElementById('continue').addEventListener('click', () => {
+            document.body.dataset.committed = '1';
+          });
+        </script>
+        </body></html>
+        """, baseURL: URL(string: "https://example.com/checkout/review")!)
+    var page: BrowserPageSnapshot?
+    for _ in 0..<100 {
+        if let read = try? await model.read(tab.id),
+           read.controls.contains(where: { $0.label == "Continue" }) {
+            page = read
+            break
+        }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    let target = try #require(page?.controls.first { $0.label == "Continue" })
+    let call = try browserVisualCall("browser_click", [
+        "tab_id": tab.id.uuidString, "target": target.id
+    ])
+    #expect(await BrowserWorkspaceAITools.commitReview(for: call, browser: model) != nil)
+    let denied = await BrowserWorkspaceAITools.execute(call, browser: model)
+    #expect(denied.isError)
+    #expect(try await tab.webView.evaluateJavaScript(
+        "document.body.dataset.committed"
+    ) as? String == nil)
+    try await model.close(tab.id)
+}
+
 @Test @MainActor func browserCommitApprovalIsExactFreshAndNotConfirmation() async throws {
     let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
     model.aiControlMode = .fullControl
