@@ -1,29 +1,102 @@
 import Combine
 import Foundation
 
-/// A user-owned, local-only workspace for organizing AI chats and saving durable
-/// context. Enabled memory tools can maintain durable user-supplied preferences;
-/// all entries remain visible, editable, and removable in the workspace.
+/// Existing Project records are context-only until durable local work
+/// explicitly materializes a working tree.
+enum AIProjectWorkState: String, Codable, Hashable, Sendable {
+    case contextOnly
+    case materialized
+}
+
+enum AIProjectLifecycle: String, Codable, Hashable, Sendable {
+    case active
+    case archived
+}
+
+enum AIProjectOrigin: String, Codable, Hashable, Sendable {
+    case created
+    case cloned
+    case imported
+    case attached
+}
+
+struct AIRepositoryMetadata: Codable, Hashable, Sendable {
+    var remoteURL: String?
+    var branch: String?
+}
+
 struct AIProject: Codable, Identifiable, Hashable, Sendable {
     var id: UUID
     var name: String
     var instructions: String
+    var workState: AIProjectWorkState
+    var directoryName: String?
+    var origin: AIProjectOrigin?
+    var lifecycle: AIProjectLifecycle
+    var repository: AIRepositoryMetadata?
+    var detectedStack: [String]
     var createdAt: Date
     var updatedAt: Date
+    var lastOpenedAt: Date?
+    var archivedAt: Date?
 
     init(
         id: UUID = UUID(),
         name: String,
         instructions: String = "",
+        workState: AIProjectWorkState = .contextOnly,
+        directoryName: String? = nil,
+        origin: AIProjectOrigin? = nil,
+        lifecycle: AIProjectLifecycle = .active,
+        repository: AIRepositoryMetadata? = nil,
+        detectedStack: [String] = [],
         createdAt: Date = Date(),
-        updatedAt: Date = Date()
+        updatedAt: Date = Date(),
+        lastOpenedAt: Date? = nil,
+        archivedAt: Date? = nil
     ) {
         self.id = id
         self.name = name
         self.instructions = instructions
+        self.workState = workState
+        self.directoryName = directoryName
+        self.origin = origin
+        self.lifecycle = lifecycle
+        self.repository = repository
+        self.detectedStack = detectedStack
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+        self.lastOpenedAt = lastOpenedAt
+        self.archivedAt = archivedAt
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, instructions, workState, directoryName, origin, lifecycle
+        case repository, detectedStack, createdAt, updatedAt, lastOpenedAt, archivedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        instructions = try values.decode(String.self, forKey: .instructions)
+        workState = try values.decodeIfPresent(AIProjectWorkState.self, forKey: .workState) ?? .contextOnly
+        directoryName = try values.decodeIfPresent(String.self, forKey: .directoryName)
+        origin = try values.decodeIfPresent(AIProjectOrigin.self, forKey: .origin)
+        lifecycle = try values.decodeIfPresent(AIProjectLifecycle.self, forKey: .lifecycle) ?? .active
+        repository = try values.decodeIfPresent(AIRepositoryMetadata.self, forKey: .repository)
+        detectedStack = try values.decodeIfPresent([String].self, forKey: .detectedStack) ?? []
+        createdAt = try values.decode(Date.self, forKey: .createdAt)
+        updatedAt = try values.decode(Date.self, forKey: .updatedAt)
+        lastOpenedAt = try values.decodeIfPresent(Date.self, forKey: .lastOpenedAt)
+        archivedAt = try values.decodeIfPresent(Date.self, forKey: .archivedAt)
+    }
+}
+
+struct AIRemovedProject: Codable, Identifiable, Hashable, Sendable {
+    var project: AIProject
+    var removedAt: Date
+    var id: UUID { project.id }
 }
 
 struct AIMemory: Codable, Identifiable, Hashable, Sendable {
@@ -57,6 +130,22 @@ final class AIWorkspaceStore: ObservableObject {
     private struct Document: Codable {
         var projects: [AIProject]
         var memories: [AIMemory]
+        var removedProjects: [AIRemovedProject]
+
+        private enum CodingKeys: String, CodingKey { case projects, memories, removedProjects }
+
+        init(projects: [AIProject], memories: [AIMemory], removedProjects: [AIRemovedProject]) {
+            self.projects = projects
+            self.memories = memories
+            self.removedProjects = removedProjects
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            projects = try values.decode([AIProject].self, forKey: .projects)
+            memories = try values.decode([AIMemory].self, forKey: .memories)
+            removedProjects = try values.decodeIfPresent([AIRemovedProject].self, forKey: .removedProjects) ?? []
+        }
     }
 
     static let shared = AIWorkspaceStore()
@@ -69,6 +158,7 @@ final class AIWorkspaceStore: ObservableObject {
     static let maximumMemoryCharacters = 12_000
 
     @Published private(set) var projects: [AIProject] = []
+    @Published private(set) var removedProjects: [AIRemovedProject] = []
     @Published private(set) var memories: [AIMemory] = []
     @Published private(set) var lastError: String?
 
@@ -81,16 +171,25 @@ final class AIWorkspaceStore: ObservableObject {
         load()
     }
 
-    init(fixtures projects: [AIProject] = [], memories: [AIMemory] = []) {
+    init(fixtures projects: [AIProject] = [], memories: [AIMemory] = [],
+         removedProjects: [AIRemovedProject] = []) {
         persistsChanges = false
         self.projects = projects
         self.memories = memories
+        self.removedProjects = removedProjects
     }
 
     func project(id: UUID?) -> AIProject? {
         guard let id else { return nil }
         return projects.first { $0.id == id }
     }
+
+    func removedProject(id: UUID) -> AIRemovedProject? {
+        removedProjects.first { $0.id == id }
+    }
+
+    var activeProjects: [AIProject] { projects.filter { $0.lifecycle == .active } }
+    var archivedProjects: [AIProject] { projects.filter { $0.lifecycle == .archived } }
 
     /// Global memories are included with the selected project's memories. This
     /// keeps intentionally global preferences useful without making them hidden.
@@ -139,21 +238,61 @@ final class AIWorkspaceStore: ObservableObject {
         scheduleSave()
     }
 
-    /// Removing a project keeps its saved memories as global memories. Lima never
-    /// silently erases user-created context when a project is reorganized.
-    func deleteProject(_ id: UUID) {
-        guard projects.contains(where: { $0.id == id }) else { return }
-        projects.removeAll { $0.id == id }
-        memories = memories.map { memory in
-            var memory = memory
-            if memory.projectID == id {
-                memory.projectID = nil
-                memory.updatedAt = Date()
-            }
-            return memory
-        }
+    /// Replace one registry entry after the filesystem operation succeeds.
+    @discardableResult
+    func replaceProject(_ project: AIProject) -> Bool {
+        guard let index = projects.firstIndex(where: { $0.id == project.id }) else { return false }
+        projects[index] = project
         lastError = nil
         scheduleSave()
+        return true
+    }
+
+    @discardableResult
+    func insertManagedProject(_ project: AIProject) -> Bool {
+        guard project.workState == .materialized,
+              projects.count < Self.maximumProjects,
+              !projects.contains(where: { $0.id == project.id }),
+              !removedProjects.contains(where: { $0.id == project.id }) else { return false }
+        projects.insert(project, at: 0)
+        lastError = nil
+        scheduleSave()
+        return true
+    }
+
+    /// Remove from the normal registry without deleting files, memories, or
+    /// conversation associations. The separate recovery list survives restart.
+    @discardableResult
+    func removeProjectFromRegistry(_ id: UUID) -> AIRemovedProject? {
+        guard let index = projects.firstIndex(where: { $0.id == id }) else { return nil }
+        let record = AIRemovedProject(project: projects.remove(at: index), removedAt: Date())
+        removedProjects.insert(record, at: 0)
+        lastError = nil
+        scheduleSave()
+        return record
+    }
+
+    @discardableResult
+    func restoreRemovedProject(_ id: UUID) -> AIProject? {
+        guard projects.count < Self.maximumProjects,
+              let index = removedProjects.firstIndex(where: { $0.id == id }) else { return nil }
+        var project = removedProjects.remove(at: index).project
+        project.lifecycle = .active
+        project.archivedAt = nil
+        project.updatedAt = Date()
+        projects.insert(project, at: 0)
+        lastError = nil
+        scheduleSave()
+        return project
+    }
+
+    /// Compatibility entry point: never silently destroy Project data.
+    func deleteProject(_ id: UUID) {
+        guard project(id: id)?.workState != .materialized else {
+            lastError = "Use Project removal so managed files move into Recently Removed."
+            return
+        }
+        _ = removeProjectFromRegistry(id)
     }
 
     @discardableResult
@@ -232,7 +371,8 @@ final class AIWorkspaceStore: ObservableObject {
         do {
             let document = try JSONDecoder().decode(Document.self, from: data)
             projects = Array(document.projects.prefix(Self.maximumProjects))
-            let projectIDs = Set(projects.map(\.id))
+            removedProjects = Array(document.removedProjects.prefix(Self.maximumProjects))
+            let projectIDs = Set(projects.map(\.id)).union(removedProjects.map(\.id))
             memories = document.memories
                 .filter { $0.projectID == nil || projectIDs.contains($0.projectID!) }
                 .prefix(Self.maximumMemories)
@@ -245,7 +385,8 @@ final class AIWorkspaceStore: ObservableObject {
     private func scheduleSave() {
         guard persistsChanges else { return }
         pendingSave?.cancel()
-        let document = Document(projects: projects, memories: memories)
+        let document = Document(projects: projects, memories: memories,
+                                removedProjects: removedProjects)
         let url = storageURL
         let work = DispatchWorkItem { [weak self] in
             do {

@@ -19,6 +19,13 @@ public struct ExtensionManifest: Codable, Sendable {
         case processControl
         case systemControl
         case externalExecution
+        /// Native-service declarations only. A manifest declaration alone never
+        /// authorizes execution; the host must also verify the call and OS access.
+        case screenCapture
+        case audioOutput
+        case calendar
+        case reminders
+        case networkQuality
         /// Grants read-only access to the current Context Shelf through the host contract.
         case contextShelf
     }
@@ -596,6 +603,7 @@ public struct ExtensionAction: Codable, Sendable {
         case window
         case workspace
         case generator
+        case nativeCapability
     }
 
     public var type: ActionType
@@ -691,6 +699,8 @@ public struct ExtensionAction: Codable, Sendable {
             }
         case .generator:
             capabilities = []
+        case .nativeCapability:
+            capabilities = NativeCapabilityOperation(rawValue: operation ?? "").map { [$0.capability] } ?? []
         }
         for nested in chain ?? [] {
             capabilities.formUnion(nested.inferredCapabilities)
@@ -711,7 +721,7 @@ public struct ExtensionAction: Codable, Sendable {
             guard action.chain == nil else {
                 throw ChainValidationError.unsupportedAction(action.type)
             }
-            guard ![.shell, .form, .url, .file, .picker, .workspace, .generator].contains(action.type) else {
+            guard ![.shell, .form, .url, .file, .picker, .workspace, .generator, .nativeCapability].contains(action.type) else {
                 throw ChainValidationError.unsupportedAction(action.type)
             }
         }
@@ -830,6 +840,8 @@ public struct LoadedExtensionCommand: Sendable {
     public var extensionName: String
     public var directory: URL
     public var command: ExtensionCommand
+    /// Hash of the manifest as loaded; the host rechecks it before a native call.
+    public var manifestHash: String
     public var capabilities: Set<ExtensionManifest.Capability>
     public var trust: ExtensionManifest.Trust
     public var pack: String?
@@ -838,11 +850,12 @@ public struct LoadedExtensionCommand: Sendable {
     public var version: String?
     public var presentation: ExtensionManifest.Presentation
 
-    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand, capabilities: Set<ExtensionManifest.Capability> = [], trust: ExtensionManifest.Trust = .unsigned, pack: String? = nil, category: String? = nil, bundled: Bool = false, version: String? = nil, presentation: ExtensionManifest.Presentation = .inline) {
+    public init(extensionID: String, extensionName: String, directory: URL, command: ExtensionCommand, manifestHash: String = "", capabilities: Set<ExtensionManifest.Capability> = [], trust: ExtensionManifest.Trust = .unsigned, pack: String? = nil, category: String? = nil, bundled: Bool = false, version: String? = nil, presentation: ExtensionManifest.Presentation = .inline) {
         self.extensionID = extensionID
         self.extensionName = extensionName
         self.directory = directory
         self.command = command
+        self.manifestHash = manifestHash
         self.capabilities = capabilities
         self.trust = trust
         self.pack = pack

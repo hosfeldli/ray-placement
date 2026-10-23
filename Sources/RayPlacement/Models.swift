@@ -266,6 +266,9 @@ enum SystemAction {
     case openFormatter
     case openTerminal
     case openContextShelf
+    case openScreenshotStudio
+    case openAudioOutput
+    case openNetworkQuality
     case addSelectionToShelf
     case openPermissionCenter
     case exportDiagnostics

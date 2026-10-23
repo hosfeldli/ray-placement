@@ -23,11 +23,22 @@ enum LauncherPanelLayout {
     }
 
     static func idleSearchSize(density: AppInterfaceDensity) -> NSSize {
+        // Keep the input's horizontal position unchanged when results appear.
+        let width = searchSize(density: density).width
         switch density {
-        case .compact: return NSSize(width: 680, height: 138)
-        case .balanced: return NSSize(width: 720, height: 146)
-        case .comfortable: return NSSize(width: 760, height: 158)
+        case .compact: return NSSize(width: width, height: 146)
+        case .balanced: return NSSize(width: width, height: 150)
+        case .comfortable: return NSSize(width: width, height: 158)
         }
+    }
+
+    static func resizedFrame(_ current: NSRect, to size: NSSize,
+                             anchorTop: Bool) -> NSRect {
+        NSRect(
+            x: current.midX - size.width / 2,
+            y: anchorTop ? current.maxY - size.height : current.midY - size.height / 2,
+            width: size.width, height: size.height
+        )
     }
 
     static func size(
@@ -42,8 +53,8 @@ enum LauncherPanelLayout {
         if mode == .contextShelf { return NSSize(width: width, height: min(640, max(standardHeight, 520))) }
         switch mode {
         case .root:
-            // Empty Search is a compact input with explicit workspace controls.
-            // Typing expands into a stable results panel, even for zero matches.
+            // Empty Search stays vertically compact, but shares the results
+            // width. The controller anchors its top edge as it expands.
             return searchPhase == .idle
                 ? idleSearchSize(density: density) : searchSize(density: density)
         case .output, .writingReview:

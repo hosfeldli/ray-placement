@@ -80,9 +80,46 @@ import Testing
     #expect(text.contains("home-read-denied"))
 }
 
+@Test @MainActor func aiWorkspaceNetworkProfileRequiresExplicitFullControlSelection() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LimaNetworkProfileFixture")
+    let defaultProfile = AIWorkspaceTerminalCoordinator.sandboxProfile(root: root)
+    let fullControlProfile = AIWorkspaceTerminalCoordinator.sandboxProfile(root: root, networkEnabled: true)
+    #expect(!defaultProfile.contains("(allow network*)"))
+    #expect(fullControlProfile.contains("(allow network*)"))
+    #expect(defaultProfile.contains("(deny default)"))
+    #expect(fullControlProfile.contains("(deny default)"))
+    #expect(fullControlProfile.contains("(deny file-read*"))
+    #expect(fullControlProfile.contains("(allow file-write* (subpath"))
+}
+
+@Test @MainActor func aiWorkspaceNetworkSandboxDeniesLoopbackWithoutFullControlRule() async throws {
+    let files = FileManager.default
+    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
+          files.isExecutableFile(atPath: "/usr/bin/python3") else { return }
+    let root = files.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaNetworkDenied-\(UUID().uuidString)", isDirectory: true)
+    defer { try? files.removeItem(at: root) }
+    let paths = AIWorkspacePaths(root: root)
+    let store = AIWorkspaceStore(fixtures: [])
+    let toolAccess = LimaAIToolStore(fixtures: [], accessMode: .automatic)
+    let terminal = AIWorkspaceTerminalCoordinator(paths: paths, projectStore: store,
+        toolAccessStore: toolAccess)
+    let session = try terminal.start(conversationID: UUID())
+    _ = try terminal.run(sessionID: session.id,
+        command: "/usr/bin/python3 -c 'import socket; socket.socket().bind((\"127.0.0.1\", 0))'",
+        timeoutSeconds: 8)
+    _ = try await terminal.wait(sessionID: session.id, from: nil, maxWaitSeconds: 8)
+    let result = try terminal.status(sessionID: session.id)
+    #expect(result.networkEnabled == false)
+    #expect(result.state == .failed)
+    #expect(result.exitStatus != 0)
+    #expect(result.output.contains("Operation not permitted"))
+    try terminal.close(sessionID: session.id)
+}
+
 @Test @MainActor func aiWorkspaceToolDefinitionsKeepReadsSeparateFromActions() {
-    #expect(AIWorkspaceActionTools.actionIDs.count == 8)
-    #expect(AIWorkspaceActionTools.readIDs == ["terminal_status", "terminal_read", "terminal_wait"])
+    #expect(AIWorkspaceActionTools.actionIDs.count == 9)
+    #expect(AIWorkspaceActionTools.readIDs == ["terminal_sessions", "terminal_status", "terminal_read", "terminal_wait"])
     for definition in AIWorkspaceActionTools.definitions {
         if AIWorkspaceActionTools.actionIDs.contains(definition.id) {
             #expect(definition.actionCategory == .terminal)
@@ -92,6 +129,43 @@ import Testing
             #expect(definition.risk == .read)
         }
     }
+}
+
+@Test @MainActor func terminalKillOnlyStopsAnApprovedConversationOwnedSession() async throws {
+    let files = FileManager.default
+    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    let root = files.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaTerminalKill-\(UUID().uuidString)", isDirectory: true)
+    try files.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? files.removeItem(at: root) }
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root,
+        toolAccessStore: LimaAIToolStore(fixtures: [], accessMode: .automatic))
+    let suite = "AITerminalKillPolicy.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    policy.setAccess(.askEveryTime, for: .terminal)
+    let owner = UUID()
+    let session = try coordinator.start(conversationID: owner)
+    _ = try coordinator.run(sessionID: session.id, command: "/bin/sleep 30", timeoutSeconds: 40)
+    let call = AIOutputItem(phase: .completed, apiType: "function_call",
+        callID: "kill-owned", name: "terminal_kill",
+        arguments: "{\"session_id\":\"\(session.id.uuidString)\"}")
+    let foreign = await AIWorkspaceActionTools.execute(call, approvalGranted: true,
+        actionPolicy: policy, conversationID: UUID(), runtime: coordinator)
+    #expect(foreign.isError)
+    let unapproved = await AIWorkspaceActionTools.execute(call, approvalGranted: false,
+        actionPolicy: policy, conversationID: owner, runtime: coordinator)
+    #expect(unapproved.isError)
+    #expect(try coordinator.status(sessionID: session.id).state == .running)
+    let accepted = await AIWorkspaceActionTools.execute(call, approvalGranted: true,
+        actionPolicy: policy, conversationID: owner, runtime: coordinator)
+    #expect(!accepted.isError)
+    #expect(accepted.output.contains("\"kill_requested\":true"))
+    #expect(accepted.output.contains("\"verified_stopped\":false"))
+    let ended = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
+    #expect(ended.state == .cancelled)
+    try coordinator.close(sessionID: session.id)
 }
 
 private enum AIWorkspaceFixtureError: Error {
@@ -309,6 +383,31 @@ private func waitForPTYText(
     #expect(coordinator.sessions.allSatisfy { $0.id != started.id })
 }
 
+@Test @MainActor func aiWorkspaceOutputDrainPreservesOrderingBeforeCompletion() async throws {
+    let manager = FileManager.default
+    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    let root = manager.temporaryDirectory.resolvingSymlinksInPath()
+        .appendingPathComponent("LimaWorkspaceOutputDrainTests-\(UUID().uuidString)", isDirectory: true)
+    try manager.createDirectory(at: root, withIntermediateDirectories: false)
+    defer { try? manager.removeItem(at: root) }
+
+    let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
+    let session = try coordinator.start()
+    defer { try? coordinator.close(sessionID: session.id) }
+    _ = try coordinator.run(
+        sessionID: session.id,
+        command: "awk 'BEGIN { for (i = 1; i <= 6000; i++) printf \"LINE%05d\\n\", i }'",
+        timeoutSeconds: 10
+    )
+    let completed = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
+    #expect(completed.state == .completed)
+    #expect(completed.exitStatus == 0)
+    #expect(!completed.outputTruncated)
+    let expected = (1...6_000).map { String(format: "LINE%05d\n", $0) }.joined()
+    #expect(completed.output.contains(expected))
+    #expect(completed.output.hasSuffix("[AI command completed]\n"))
+}
+
 @Test @MainActor func aiTerminalStartRequestsTheVisibleSharedSessionAndReportsItsObservation() async throws {
     let manager = FileManager.default
     guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
@@ -471,6 +570,20 @@ private func waitForPTYText(
     #expect(coordinator.sessions(for: conversationA).map { $0.id } == [idA])
     #expect(coordinator.sessions(for: conversationB).isEmpty)
     #expect(coordinator.sessions(for: nil).isEmpty)
+    let list = AIOutputItem(phase: .completed, apiType: "function_call", callID: "list-a",
+                            name: "terminal_sessions", arguments: "{}")
+    let listedA = await AIWorkspaceActionTools.execute(list, approvalGranted: false,
+        actionPolicy: policy, conversationID: conversationA, runtime: coordinator)
+    let listedB = await AIWorkspaceActionTools.execute(list, approvalGranted: false,
+        actionPolicy: policy, conversationID: conversationB, runtime: coordinator)
+    #expect(!listedA.isError)
+    #expect(!listedB.isError)
+    let dataA = try #require(listedA.output.data(using: .utf8))
+    let dataB = try #require(listedB.output.data(using: .utf8))
+    let sessionsA = try #require((JSONSerialization.jsonObject(with: dataA) as? [String: Any])?["sessions"] as? [[String: Any]])
+    let sessionsB = try #require((JSONSerialization.jsonObject(with: dataB) as? [String: Any])?["sessions"] as? [[String: Any]])
+    #expect(sessionsA.map { $0["session_id"] as? String } == [idA.uuidString])
+    #expect(sessionsB.isEmpty)
 
     let status = AIOutputItem(phase: .completed, apiType: "function_call", callID: "status-a",
                               name: "terminal_status", arguments: "{\"session_id\":\"\(idA.uuidString)\"}")

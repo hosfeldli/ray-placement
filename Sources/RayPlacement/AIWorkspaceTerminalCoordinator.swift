@@ -15,8 +15,11 @@ struct AIWorkspaceTerminalSnapshot: Identifiable, Equatable {
     let id: UUID
     let conversationID: UUID?
     let directory: String
+    let workScope: AIWorkScope
     let isBoundedExternal: Bool
     let isInteractivePTY: Bool
+    let networkEnabled: Bool
+    let processID: Int32?
     let state: AIWorkspaceTerminalState
     let output: String
     let firstOutputByte: Int
@@ -62,14 +65,27 @@ private final class AIWorkspaceProcessBox: @unchecked Sendable {
     private var process: Process?
     private var finished = false
     private var cancellationRequested = false
+    private var forceKillRequested = false
     private var timeoutRequested = false
 
     func install(_ process: Process) {
         lock.lock()
         self.process = process
+        let killNow = forceKillRequested
         let stopNow = cancellationRequested || timeoutRequested
         lock.unlock()
-        if stopNow { terminate(process) }
+        if killNow {
+            if process.isRunning { _ = Darwin.kill(process.processIdentifier, SIGKILL) }
+        } else if stopNow {
+            terminate(process)
+        }
+    }
+
+    var processID: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let process, process.isRunning else { return nil }
+        return process.processIdentifier
     }
 
     func cancel() {
@@ -78,6 +94,17 @@ private final class AIWorkspaceProcessBox: @unchecked Sendable {
         let current = process
         lock.unlock()
         if let current { terminate(current) }
+    }
+
+    func killNow() {
+        lock.lock()
+        cancellationRequested = true
+        forceKillRequested = true
+        let current = process
+        lock.unlock()
+        if let current, current.isRunning {
+            _ = Darwin.kill(current.processIdentifier, SIGKILL)
+        }
     }
 
     func timeout() {
@@ -126,7 +153,9 @@ private struct AIWorkspaceCommandResult: Sendable {
 /// Owns AI command sessions displayed by the Terminal workspace. Bounded
 /// commands remain isolated one-shot processes; opt-in interactive sessions
 /// share one visible SwiftTerm PTY between user and AI. Both paths use the
-/// dedicated no-network macOS sandbox until workspace authority is redesigned.
+/// dedicated macOS sandbox. Production roots are managed Projects or per-run
+/// Scratch directories under Application Support; the legacy Desktop tree is
+/// never used for new AI work.
 @MainActor
 final class AIWorkspaceTerminalCoordinator: ObservableObject {
     static let shared = AIWorkspaceTerminalCoordinator()
@@ -151,12 +180,34 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return sessions.filter { $0.belongs(to: conversationID) }
     }
 
-    // Tests supply an isolated, preexisting physical root. Production always
-    // resolves the fixed Desktop workspace through workspaceRoot(create:).
-    private let testRoot: URL?
+    /// Leaving Full Control withdraws the authority that launched a networked
+    /// session. Stop those sessions rather than letting a persistent PTY retain
+    /// broader network access after the user changes modes.
+    func revokeNetworkSessions() {
+        for session in sessionByID.values where session.networkEnabled && session.state == .running {
+            if session.isInteractivePTY {
+                _ = try? terminate(sessionID: session.id)
+            } else {
+                session.box?.cancel()
+            }
+        }
+    }
 
-    init(testRoot: URL? = nil) {
+    // Tests supply an isolated, preexisting physical root. Production resolves
+    // the managed Application Support tree and scopes each session to a Project
+    // or an invisible Scratch run.
+    private let testRoot: URL?
+    private let paths: AIWorkspacePaths
+    private let projectStore: AIWorkspaceStore
+    private let toolAccessStore: LimaAIToolStore
+
+    init(testRoot: URL? = nil, paths: AIWorkspacePaths = AIWorkspacePaths(),
+         projectStore: AIWorkspaceStore? = nil,
+         toolAccessStore: LimaAIToolStore? = nil) {
         self.testRoot = testRoot
+        self.paths = paths
+        self.projectStore = projectStore ?? .shared
+        self.toolAccessStore = toolAccessStore ?? .shared
     }
 
     private func sessionRoot(create: Bool) throws -> URL {
@@ -168,12 +219,15 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return testRoot
     }
 
+    @MainActor
     private final class Session {
         let id: UUID
         let conversationID: UUID?
         let root: URL
+        let workScope: AIWorkScope
         let isBoundedExternal: Bool
         var isInteractivePTY = false
+        var networkEnabled = false
         var ptyView: AIWorkspacePTYTerminalView?
         var terminateRequested = false
         var directory: URL
@@ -189,10 +243,12 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         var taskID: UUID?
         var lastPublishedAt = 0.0
 
-        init(root: URL, directory: URL, isBoundedExternal: Bool = false, conversationID: UUID? = nil) {
+        init(root: URL, directory: URL, workScope: AIWorkScope = .none,
+             isBoundedExternal: Bool = false, conversationID: UUID? = nil) {
             id = UUID()
             self.conversationID = conversationID
             self.root = root
+            self.workScope = workScope
             self.directory = directory
             self.isBoundedExternal = isBoundedExternal
         }
@@ -202,8 +258,13 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                 id: id,
                 conversationID: conversationID,
                 directory: directory.path,
+                workScope: workScope,
                 isBoundedExternal: isBoundedExternal,
                 isInteractivePTY: isInteractivePTY,
+                networkEnabled: networkEnabled,
+                processID: state == .running
+                    ? (isInteractivePTY ? ptyView?.process.shellPid : box?.processID)
+                    : nil,
                 state: state,
                 output: String(decoding: output, as: UTF8.self),
                 firstOutputByte: firstOutputByte,
@@ -262,28 +323,58 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         }
     }
 
-    /// The fixed default is created only after an approved terminal_start call.
-    /// Refuse preexisting symlinks instead of following them into another tree.
+    /// Created only for approved local work. A path calculation alone never
+    /// materializes a Project or a Scratch run.
     static func workspaceRoot(create: Bool) throws -> URL {
-        let manager = FileManager.default
-        let home = manager.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath()
-        let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
-        let root = desktop.appendingPathComponent("Lima Workspace", isDirectory: true)
-        guard try directoryExistsWithoutSymlink(desktop) else { throw WorkspaceError.unavailable }
-        if !manager.fileExists(atPath: root.path) {
-            guard create else { throw WorkspaceError.unavailable }
-            try manager.createDirectory(at: root, withIntermediateDirectories: false)
-        }
-        guard try directoryExistsWithoutSymlink(root),
-              root.resolvingSymlinksInPath().path == root.path else {
-            throw WorkspaceError.symlink
-        }
+        let paths = AIWorkspacePaths()
+        let root = paths.root
+        if create { try paths.ensureDirectory(root) }
+        guard try directoryExistsWithoutSymlink(root) else { throw WorkspaceError.unavailable }
         return root
+    }
+
+    private func scopedRoot(projectID: UUID?) throws -> (url: URL, scope: AIWorkScope) {
+        if testRoot != nil { return (try sessionRoot(create: true), .none) }
+        if let projectID {
+            guard let project = projectStore.project(id: projectID),
+                  project.lifecycle == .active, project.workState == .materialized else {
+                throw WorkspaceError.invalidDirectory
+            }
+            let directory = paths.project(projectID)
+            guard try Self.directoryExistsWithoutSymlink(directory) else { throw WorkspaceError.invalidDirectory }
+            return (directory, .project(projectID))
+        }
+        let activeScratchIDs = Set(sessionByID.values.compactMap { session -> UUID? in
+            if case .scratch(let id) = session.workScope { return id }
+            return nil
+        })
+        // Scratch is temporary and invisible in Projects. Expire only old runs
+        // that are not still represented by a live Terminal session.
+        _ = try? paths.pruneScratch(olderThan: Date().addingTimeInterval(-7 * 24 * 60 * 60),
+                                    excluding: activeScratchIDs)
+        let id = UUID()
+        return (try paths.createScratchRun(id), .scratch(id))
+    }
+
+    private func isSessionRootValid(_ session: Session) -> Bool {
+        if testRoot != nil { return (try? sessionRoot(create: false).path) == session.root.path }
+        switch session.workScope {
+        case .project(let id):
+            guard session.root.standardizedFileURL == paths.project(id).standardizedFileURL,
+                  let project = projectStore.project(id: id),
+                  project.lifecycle == .active, project.workState == .materialized else { return false }
+        case .scratch(let id):
+            guard session.root.standardizedFileURL == paths.scratchRun(id).standardizedFileURL else { return false }
+        case .none:
+            return false
+        }
+        return (try? Self.validDirectory(".", root: session.root).path) == session.root.path
     }
 
     @discardableResult
     func start(directory relativeDirectory: String? = nil, newWorkspace: String? = nil,
-               conversationID: UUID? = nil, interactive: Bool = false) throws -> AIWorkspaceTerminalSnapshot {
+               conversationID: UUID? = nil, interactive: Bool = false,
+               projectID: UUID? = nil) throws -> AIWorkspaceTerminalSnapshot {
         guard sessionOrder.count < Self.maximumSessions else { throw WorkspaceError.tooManySessions }
         if interactive, sessionByID.values.filter({ $0.state == .running }).count >= Self.maximumConcurrentCommands {
             throw WorkspaceError.tooManyCommands
@@ -292,7 +383,12 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             throw WorkspaceError.unavailable
         }
         guard relativeDirectory == nil || newWorkspace == nil else { throw WorkspaceError.invalidDirectory }
-        let root = try sessionRoot(create: true)
+        guard testRoot != nil || newWorkspace == nil else { throw WorkspaceError.invalidWorkspaceName }
+        guard testRoot != nil || projectID != nil || relativeDirectory == nil || relativeDirectory == "." else {
+            throw WorkspaceError.invalidDirectory
+        }
+        let scoped = try scopedRoot(projectID: projectID)
+        let root = scoped.url
         let directory: URL
         if let newWorkspace {
             guard newWorkspace.utf8.count <= 64,
@@ -307,7 +403,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         } else {
             directory = try Self.validDirectory(relativeDirectory ?? ".", root: root)
         }
-        let session = Session(root: root, directory: directory, conversationID: conversationID)
+        let session = Session(root: root, directory: directory, workScope: scoped.scope,
+                              conversationID: conversationID)
         if interactive { try launchPTY(session) }
         sessionByID[session.id] = session
         sessionOrder.append(session.id)
@@ -350,9 +447,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             "TERM": "xterm-256color",
             "TERM_PROGRAM": "Lima"
         ]
+        session.networkEnabled = toolAccessStore.accessMode == .fullControl
         view.startProcess(
             executable: "/usr/bin/sandbox-exec",
-            args: ["-p", Self.sandboxProfile(root: session.directory), "/bin/zsh", "-f", "-i"],
+            args: ["-p", Self.sandboxProfile(root: session.directory, networkEnabled: session.networkEnabled), "/bin/zsh", "-f", "-i"],
             environment: environment.map { "\($0.key)=\($0.value)" },
             currentDirectory: session.directory.path
         )
@@ -376,6 +474,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         guard let session = sessionByID[sessionID], session.ptyView === view else { return }
         session.exitStatus = exitCode.map(Int.init)
         session.state = session.terminateRequested ? .cancelled : exitCode == 0 ? .completed : .failed
+        session.networkEnabled = false
         publish(session)
     }
 
@@ -427,6 +526,25 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             result["observed_rows"] = observedRows
         }
         return result
+    }
+
+    @discardableResult
+    func forceKill(sessionID: UUID) throws -> AIWorkspaceTerminalSnapshot {
+        let session = try find(sessionID)
+        guard !session.isBoundedExternal, session.state == .running else {
+            throw WorkspaceError.notRunning
+        }
+        if session.isInteractivePTY, let view = session.ptyView {
+            let pid = view.process.shellPid
+            guard view.process.running, pid > 0,
+                  Darwin.kill(pid, SIGKILL) == 0 else { throw WorkspaceError.unavailable }
+            session.terminateRequested = true
+        } else if let box = session.box {
+            box.killNow()
+        } else {
+            throw WorkspaceError.notRunning
+        }
+        return session.snapshot
     }
 
     @discardableResult
@@ -504,7 +622,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             throw WorkspaceError.notWorkspaceSession
         }
         guard session.state != .running else { throw WorkspaceError.alreadyRunning }
-        guard try sessionRoot(create: false).path == session.root.path,
+        guard isSessionRootValid(session),
               session.directory.path == expectedDirectory else { throw WorkspaceError.invalidDirectory }
         let relative = session.directory.path == session.root.path
             ? "." : String(session.directory.path.dropFirst(session.root.path.count + 1))
@@ -519,7 +637,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         guard let session = sessionByID[sessionID], !session.isBoundedExternal,
               session.conversationID == conversationID,
               session.directoryGrantPath == session.directory.path,
-              (try? sessionRoot(create: false).path) == session.root.path else { return false }
+              isSessionRootValid(session) else { return false }
         let relative = session.directory.path == session.root.path
             ? "." : String(session.directory.path.dropFirst(session.root.path.count + 1))
         return (try? Self.validDirectory(relative, root: session.root).path) == session.directory.path
@@ -642,7 +760,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             throw WorkspaceError.invalidCommand
         }
         // Revalidate the workspace root and path before every process launch.
-        guard try sessionRoot(create: false).path == session.root.path else {
+        guard isSessionRootValid(session) else {
             throw WorkspaceError.unavailable
         }
         let relativeDirectory = session.directory.path == session.root.path
@@ -652,7 +770,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         // Each command, including Allow Once, can write only in the current
         // directory. A parent Workspace root must not silently enlarge a
         // project-directory grant.
-        let profile = Self.sandboxProfile(root: session.directory)
+        session.networkEnabled = toolAccessStore.accessMode == .fullControl
+        let profile = Self.sandboxProfile(root: session.directory, networkEnabled: session.networkEnabled)
         let box = AIWorkspaceProcessBox()
         session.box = box
         session.state = .running
@@ -672,6 +791,15 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         let directory = session.directory
         let root = session.directory
         Task { [weak self] in
+            // Keep the blocking pipe reader independent of main-thread work.
+            // The serial stream preserves chunk order and drains before the
+            // completion marker is published, without DispatchQueue.main.sync.
+            let (stream, continuation) = AsyncStream<Data>.makeStream()
+            let drain = Task { @MainActor [weak self] in
+                for await chunk in stream {
+                    self?.appendStreamChunk(chunk, sessionID: sessionID, box: box)
+                }
+            }
             let result = await Self.execute(
                 command: command,
                 profile: profile,
@@ -679,14 +807,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                 directory: directory,
                 timeoutSeconds: timeoutSeconds,
                 box: box,
-                onChunk: { [weak self] chunk in
-                    DispatchQueue.main.sync {
-                        MainActor.assumeIsolated {
-                            self?.appendStreamChunk(chunk, sessionID: sessionID, box: box)
-                        }
-                    }
-                }
+                onChunk: { chunk in _ = continuation.yield(chunk) }
             )
+            continuation.finish()
+            await drain.value
             self?.finish(sessionID: sessionID, box: box, result: result)
         }
         return session.snapshot
@@ -721,6 +845,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         session.outputTruncated = session.outputTruncated || result.outputTruncated
         let success = result.exitStatus == 0 && !result.launchFailed && !result.cancelled && !result.timedOut
         session.state = result.cancelled ? .cancelled : result.timedOut ? .timedOut : success ? .completed : .failed
+        session.networkEnabled = false
         append(Data(("\n[AI command " + (success ? "completed" : session.state.rawValue) + "]\n").utf8), to: session)
         if let taskID = session.taskID {
             let taskState: LimaTaskState = result.cancelled ? .cancelled : success ? .completed : .failed
@@ -781,7 +906,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return candidate
     }
 
-    static func sandboxProfile(root: URL) -> String {
+    static func sandboxProfile(root: URL, networkEnabled: Bool = false) -> String {
+        let networkRule = networkEnabled ? "(allow network*)" : ""
         let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath()
         func quoted(_ value: String) -> String {
             "\"" + value.replacingOccurrences(of: "\\", with: "\\\\")
@@ -791,6 +917,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         (version 1)
         (deny default)
         (allow process*)
+        \(networkRule)
         (allow file-read*)
         (deny file-read* (subpath \(quoted(home.path))))
         (allow file-read* (subpath \(quoted(root.path))))
@@ -885,7 +1012,11 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                     let handle = output.fileHandleForReading
                     var total = 0
                     var truncated = false
-                    while let chunk = try? handle.read(upToCount: 8_192), !chunk.isEmpty {
+                    while true {
+                        // A fixed-length read can wait for EOF on a persistent server,
+                        // hiding its startup URL until the process is stopped.
+                        let chunk = handle.availableData
+                        guard !chunk.isEmpty else { break }
                         total += chunk.count
                         if total > 2 * 1_024 * 1_024 { truncated = true }
                         if !truncated { onChunk(chunk) }

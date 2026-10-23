@@ -129,6 +129,7 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     case runningTools
     case writing
     case waitingForApproval
+    case waitingForUserInput
     case completed
     case failed
     case cancelled
@@ -136,7 +137,7 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     var isTerminal: Bool {
         switch self {
         case .completed, .failed, .cancelled: true
-        case .preparing, .reasoning, .runningTools, .writing, .waitingForApproval: false
+        case .preparing, .reasoning, .runningTools, .writing, .waitingForApproval, .waitingForUserInput: false
         }
     }
 
@@ -146,7 +147,7 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     var isStreaming: Bool {
         switch self {
         case .preparing, .reasoning, .runningTools, .writing: true
-        case .waitingForApproval, .completed, .failed, .cancelled: false
+        case .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled: false
         }
     }
 
@@ -154,15 +155,17 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
         if self == next { return true }
         switch self {
         case .preparing:
-            return [.reasoning, .runningTools, .writing, .waitingForApproval, .completed, .failed, .cancelled].contains(next)
+            return [.reasoning, .runningTools, .writing, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .reasoning:
-            return [.runningTools, .writing, .waitingForApproval, .completed, .failed, .cancelled].contains(next)
+            return [.runningTools, .writing, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .runningTools:
-            return [.reasoning, .writing, .waitingForApproval, .completed, .failed, .cancelled].contains(next)
+            return [.reasoning, .writing, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .writing:
-            return [.reasoning, .runningTools, .waitingForApproval, .completed, .failed, .cancelled].contains(next)
+            return [.reasoning, .runningTools, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .waitingForApproval:
             return [.reasoning, .runningTools, .writing, .failed, .cancelled].contains(next)
+        case .waitingForUserInput:
+            return [.runningTools, .failed, .cancelled].contains(next)
         case .completed, .failed, .cancelled:
             return false
         }
@@ -183,6 +186,7 @@ struct AIExecutionRun: Codable, Equatable, Identifiable, Sendable {
     var activities: [AIAgentActivity]
     var subagents: [AIExecutionSubagent]
     private(set) var subagentRequestsUsed: Int
+    private(set) var pendingQuestion: AIUserQuestion?
 
     init(
         id: UUID = UUID(),
@@ -206,6 +210,49 @@ struct AIExecutionRun: Codable, Equatable, Identifiable, Sendable {
         activities = []
         subagents = []
         subagentRequestsUsed = 0
+        pendingQuestion = nil
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, conversationID, userMessageID, assistantMessageID
+        case providerConfigurationSnapshot, toolConfigurationSnapshot, startedAt
+        case state, completedAt, failure, activities, subagents, subagentRequestsUsed, pendingQuestion
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        conversationID = try values.decode(UUID.self, forKey: .conversationID)
+        userMessageID = try values.decode(UUID.self, forKey: .userMessageID)
+        assistantMessageID = try values.decode(UUID.self, forKey: .assistantMessageID)
+        providerConfigurationSnapshot = try values.decode(AIExecutionProviderConfigurationSnapshot.self, forKey: .providerConfigurationSnapshot)
+        toolConfigurationSnapshot = try values.decode(AIExecutionToolConfigurationSnapshot.self, forKey: .toolConfigurationSnapshot)
+        startedAt = try values.decode(Date.self, forKey: .startedAt)
+        state = try values.decode(AIExecutionRunState.self, forKey: .state)
+        completedAt = try values.decodeIfPresent(Date.self, forKey: .completedAt)
+        failure = try values.decodeIfPresent(AIExecutionRunFailure.self, forKey: .failure)
+        activities = try values.decodeIfPresent([AIAgentActivity].self, forKey: .activities) ?? []
+        subagents = try values.decodeIfPresent([AIExecutionSubagent].self, forKey: .subagents) ?? []
+        subagentRequestsUsed = try values.decodeIfPresent(Int.self, forKey: .subagentRequestsUsed) ?? 0
+        pendingQuestion = try values.decodeIfPresent(AIUserQuestion.self, forKey: .pendingQuestion)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(conversationID, forKey: .conversationID)
+        try values.encode(userMessageID, forKey: .userMessageID)
+        try values.encode(assistantMessageID, forKey: .assistantMessageID)
+        try values.encode(providerConfigurationSnapshot, forKey: .providerConfigurationSnapshot)
+        try values.encode(toolConfigurationSnapshot, forKey: .toolConfigurationSnapshot)
+        try values.encode(startedAt, forKey: .startedAt)
+        try values.encode(state, forKey: .state)
+        try values.encodeIfPresent(completedAt, forKey: .completedAt)
+        try values.encodeIfPresent(failure, forKey: .failure)
+        try values.encode(activities, forKey: .activities)
+        try values.encode(subagents, forKey: .subagents)
+        try values.encode(subagentRequestsUsed, forKey: .subagentRequestsUsed)
+        try values.encodeIfPresent(pendingQuestion, forKey: .pendingQuestion)
     }
 
     var isActive: Bool { state.isActive }
@@ -224,12 +271,36 @@ struct AIExecutionRun: Codable, Equatable, Identifiable, Sendable {
         at date: Date = Date()
     ) -> Bool {
         guard state.canTransition(to: nextState) else { return false }
+        // Only a matching structured answer may resume a suspended question.
+        // Incidental activity from another callback must not clear it.
+        if state == .waitingForUserInput, pendingQuestion != nil,
+           !nextState.isTerminal, nextState != .waitingForUserInput {
+            return false
+        }
         guard (nextState == .failed) == (nextFailure != nil) else { return false }
         if state == nextState { return true }
 
         state = nextState
+        if nextState != .waitingForUserInput { pendingQuestion = nil }
         failure = nextFailure
         completedAt = nextState.isTerminal ? date : nil
+        return true
+    }
+
+    mutating func beginQuestion(_ question: AIUserQuestion) -> Bool {
+        guard question.runID == id, pendingQuestion == nil,
+              transition(to: .waitingForUserInput) else { return false }
+        pendingQuestion = question
+        return true
+    }
+
+    mutating func resumeQuestion(_ questionID: UUID) -> Bool {
+        guard let question = pendingQuestion, question.id == questionID else { return false }
+        pendingQuestion = nil
+        guard transition(to: .runningTools) else {
+            pendingQuestion = question
+            return false
+        }
         return true
     }
 

@@ -18,6 +18,7 @@ enum AIToolFailureCode: String, Sendable {
     case staleFile = "stale_file"
     case targetNotVisible = "target_not_visible"
     case targetNotInteractable = "target_not_interactable"
+    case targetOccluded = "target_occluded"
     case pathNotFound = "path_not_found"
     case permissionDenied = "permission_denied"
     case commandNotFound = "command_not_found"

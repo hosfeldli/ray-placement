@@ -23,7 +23,13 @@ final class LauncherViewModel: ObservableObject {
                 let phase = LauncherSearchPhase(query: query)
                 if searchPhase != phase { searchPhase = phase }
                 closeActionPanel()
-                selectedIndex = 0
+                if mode == .root {
+                    if let item = selectedItem, item.id != "root.empty" {
+                        preferredRootSelectionID = item.id
+                    }
+                } else {
+                    selectedIndex = 0
+                }
                 if mode == .files {
                     SurfaceStateCache.shared.set(.string(query), for: "files", key: "query")
                 }
@@ -103,6 +109,10 @@ final class LauncherViewModel: ObservableObject {
     private var universalSearchTask: Task<Void, Never>?
     private var universalSearchGeneration = 0
     private var lastScheduledRootQuery = ""
+    /// Old results remain visible but inert until a response for the latest
+    /// query arrives. This prevents a placeholder flash and stale execution.
+    private var renderedRootQuery = ""
+    private var preferredRootSelectionID: String?
     private var clipboardSearchWorkItem: DispatchWorkItem?
     private var clipboardSearchGeneration = 0
     private var clipboardObserver: AnyCancellable?
@@ -264,6 +274,10 @@ final class LauncherViewModel: ObservableObject {
 
     func isActionable(_ item: LauncherItem) -> Bool {
         if case .noOp = item.action { return false }
+        if mode == .root, searchPhase == .active,
+           renderedRootQuery != query.trimmingCharacters(in: .whitespacesAndNewlines) {
+            return false
+        }
         return true
     }
 
@@ -304,6 +318,8 @@ final class LauncherViewModel: ObservableObject {
                 rootFileResults = []
                 results = []
                 selectedIndex = 0
+                renderedRootQuery = ""
+                preferredRootSelectionID = nil
             }
         }
     }
@@ -616,6 +632,7 @@ final class LauncherViewModel: ObservableObject {
         }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
+        if mode == .root { preferredRootSelectionID = nil }
         navigationGeneration += 1
     }
 
@@ -663,6 +680,7 @@ final class LauncherViewModel: ObservableObject {
         }
         guard results.indices.contains(index) else { return }
         selectedIndex = index
+        if mode == .root { preferredRootSelectionID = nil }
     }
 
     func openActionPanel(for item: LauncherItem? = nil) {
@@ -902,9 +920,12 @@ final class LauncherViewModel: ObservableObject {
         guard searchPresented else {
             lastScheduledRootQuery = ""
             results = []
+            renderedRootQuery = ""
+            preferredRootSelectionID = nil
             isSearching = false
             return
         }
+        let keepPreviousResults = results.contains { $0.id != "root.empty" }
         let cleanQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let parsed = UniversalSearchCoordinator.parse(cleanQuery)
         universalSearchGeneration += 1
@@ -922,6 +943,9 @@ final class LauncherViewModel: ObservableObject {
         guard !parsed.query.isEmpty else {
             lastScheduledRootQuery = ""
             results = []
+            renderedRootQuery = ""
+            preferredRootSelectionID = nil
+            selectedIndex = 0
             isSearching = false
             return
         }
@@ -934,7 +958,11 @@ final class LauncherViewModel: ObservableObject {
         rootUniversalSearchPending = true
         rootFileSearchPending = shouldSearchFiles
         isSearching = true
-        results = rootResults()
+        if !keepPreviousResults {
+            results = rootResults()
+            renderedRootQuery = cleanQuery
+            selectedIndex = 0
+        }
         localSearchTask = Task { [weak self] in
             // Yield one turn for first-keypress focus; debounce rapid edits.
             if debounceMilliseconds == 0 { await Task.yield() }
@@ -948,12 +976,10 @@ final class LauncherViewModel: ObservableObject {
             guard !Task.isCancelled, self.searchPresented, self.mode == .root,
                   response.generation == self.universalSearchGeneration,
                   self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
-            let selectedID = self.selectedItem?.id
             self.localSearchHits = response.hits
             self.rootLocalSearchPending = false
             self.isSearching = self.rootUniversalSearchPending || self.rootFileSearchPending
-            self.results = self.rootResults()
-            self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+            self.publishRootResults(for: cleanQuery)
         }
         if shouldSearchFiles {
             let request = DispatchWorkItem { [weak self] in
@@ -962,12 +988,10 @@ final class LauncherViewModel: ObservableObject {
                     guard let self, self.mode == .root,
                           self.universalSearchGeneration == generation,
                           self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
-                    let selectedID = self.selectedItem?.id
                     self.rootFileResults = Array(urls.prefix(12))
                     self.rootFileSearchPending = false
                     self.isSearching = self.rootLocalSearchPending || self.rootUniversalSearchPending
-                    self.results = self.rootResults()
-                    self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+                    self.publishRootResults(for: cleanQuery)
                 }
             }
             searchWorkItem = request
@@ -996,13 +1020,32 @@ final class LauncherViewModel: ObservableObject {
                       self.mode == .root,
                       self.universalSearchGeneration == generation,
                       self.query.trimmingCharacters(in: .whitespacesAndNewlines) == cleanQuery else { return }
-                let selectedID = self.selectedItem?.id
                 self.universalResults = found
                 self.rootUniversalSearchPending = false
                 self.isSearching = self.rootLocalSearchPending || self.rootFileSearchPending
-                self.results = self.rootResults()
-                self.selectedIndex = self.results.firstIndex { $0.id == selectedID } ?? 0
+                self.publishRootResults(for: cleanQuery)
             }
+        }
+    }
+
+    private func publishRootResults(for query: String) {
+        let fresh = rootResults()
+        let stillRanking = rootLocalSearchPending || rootFileSearchPending || rootUniversalSearchPending
+        if fresh.count == 1, fresh[0].id == "root.empty", stillRanking,
+           results.contains(where: { $0.id != "root.empty" }) {
+            // Do not replace useful prior rows with an interim placeholder.
+            return
+        }
+        let selectedID = preferredRootSelectionID ?? selectedItem?.id
+        results = fresh
+        renderedRootQuery = query
+        if let selectedID, let index = results.firstIndex(where: { $0.id == selectedID }) {
+            selectedIndex = index
+        } else {
+            selectedIndex = results.firstIndex(where: isActionable) ?? 0
+        }
+        if !rootLocalSearchPending && !rootFileSearchPending && !rootUniversalSearchPending {
+            preferredRootSelectionID = nil
         }
     }
 
@@ -1017,6 +1060,7 @@ final class LauncherViewModel: ObservableObject {
         case .workspace: icon = .system("square.stack.3d.up")
         case .context: icon = .system("tray.full")
         case .clipboard: icon = .system("clipboard")
+        case .screenshot: icon = .system("photo.on.rectangle")
         default: icon = .system("magnifyingglass")
         }
         return LauncherItem(
@@ -1027,7 +1071,7 @@ final class LauncherViewModel: ObservableObject {
             keywords: result.keywords,
             action: result.kind == .note && UUID(uuidString: String(result.id.dropFirst("note:".count))) != nil
                 ? .note(UUID(uuidString: String(result.id.dropFirst("note:".count)))!) : .universalSearch(result),
-            accessory: "Open"
+            accessory: result.kind == .screenshot ? "Copy Image" : "Open"
         )
     }
 
@@ -1650,6 +1694,9 @@ final class LauncherViewModel: ObservableObject {
             // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer", "term", ">"], action: .system(.openTerminal)),
             LauncherItem(id: "builtin.context-shelf", title: "Context Shelf", subtitle: "Temporary working memory for text, files, and tool output", icon: .system("tray.full"), keywords: ["shelf", "context", "working", "memory", "capture", "stash", "save selection"], action: .system(.openContextShelf)),
+            LauncherItem(id: "builtin.screenshot-studio", title: "Screenshot Studio", subtitle: "Choose a window or display to capture, or browse history", icon: .system("camera.viewfinder"), keywords: ["screenshot", "capture screen", "capture window", "screen recording", "image history"], action: .system(.openScreenshotStudio)),
+            LauncherItem(id: "builtin.audio-output", title: "Switch Audio Output", subtitle: "Choose speakers, headphones, or another system output", icon: .system("speaker.wave.2"), keywords: ["audio", "sound", "speaker", "headphones", "output device"], action: .system(.openAudioOutput)),
+            LauncherItem(id: "builtin.network-quality", title: "Internet Speed Test", subtitle: "Open network diagnostics; run a test only when you choose", icon: .system("speedometer"), keywords: ["speed", "internet", "network", "bandwidth", "latency", "connection"], action: .system(.openNetworkQuality)),
             LauncherItem(id: "builtin.add-selection-to-shelf", title: "Add Selection to Shelf", subtitle: "Capture highlighted text without opening Lima", icon: .system("text.badge.plus"), keywords: ["add", "selection", "capture", "shelf", "highlight"], action: .system(.addSelectionToShelf)),
             LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),

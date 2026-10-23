@@ -9,18 +9,23 @@ import RayPlacementCore
 enum AIWorkspaceActionTools {
     nonisolated static let actionIDs: Set<String> = [
         "terminal_start", "terminal_run", "terminal_write", "terminal_set_directory",
-        "terminal_interrupt", "terminal_resize", "terminal_terminate", "terminal_close"
+        "terminal_interrupt", "terminal_resize", "terminal_terminate", "terminal_kill", "terminal_close"
     ]
-    nonisolated static let readIDs: Set<String> = ["terminal_status", "terminal_read", "terminal_wait"]
+    nonisolated static let readIDs: Set<String> = ["terminal_sessions", "terminal_status", "terminal_read", "terminal_wait"]
     nonisolated static let ids = actionIDs.union(readIDs)
 
     static let definitions: [LimaAIToolDefinition] = [
         definition(
+            "terminal_sessions",
+            "List only the current conversation's AI-owned Terminal sessions, with state and work scope.",
+            properties: [:], required: [], action: false
+        ),
+        definition(
             "terminal_start",
-            "Start an AI-owned Terminal session in the dedicated Lima Workspace. Set interactive to true for a persistent, user-visible SwiftTerm PTY shared with terminal_write; otherwise use bounded terminal_run commands. Both modes are confined to the session directory by the no-network sandbox. Optionally select or create a project directory.",
+            "Start a Terminal session in an active materialized Project, or omit project_id for an invisible temporary Scratch run. Set interactive for a persistent visible PTY; otherwise use bounded terminal_run commands. Commands remain filesystem-sandboxed to the session directory. Network is available only for sessions or commands launched while Tool Access is Full Control; leaving that mode stops network-enabled sessions.",
             properties: [
-                "directory": ["type": "string", "description": "Optional existing relative directory inside the Lima Workspace. Omit for the root. Do not combine with new_workspace."],
-                "new_workspace": ["type": "string", "description": "Optional new, visible project folder name to create under the Lima Workspace. Do not combine with directory."],
+                "project_id": ["type": "string", "description": "Optional active materialized Project UUID. Omit for transient Scratch work."],
+                "directory": ["type": "string", "description": "Optional existing relative directory inside that Project. Omit for the Project or Scratch root."],
                 "interactive": ["type": "boolean", "description": "Start a persistent shared PTY shell instead of an idle one-shot command session."]
             ],
             required: [],
@@ -28,7 +33,7 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_run",
-            "Start one bounded command in a non-interactive AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes may use Allow Once or a live, revocable directory grant. The no-network sandbox confines writes to the session directory. Use terminal_wait to verify command exit. For persistent shells use terminal_start with interactive: true and terminal_write. Do not put credentials in commands.",
+            "Start one bounded command in a non-interactive AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes may use Allow Once or a live, revocable directory grant. The filesystem sandbox confines writes to the session directory; network is enabled only when this command launches in Full Control. Use terminal_wait to verify command exit. For persistent shells use terminal_start with interactive: true and terminal_write. Do not put credentials in commands.",
             properties: [
                 "session_id": ["type": "string", "description": "Opaque ID returned by terminal_start."],
                 "command": ["type": "string", "description": "One command, at most 4096 UTF-8 bytes."],
@@ -96,6 +101,13 @@ enum AIWorkspaceActionTools {
         definition(
             "terminal_terminate",
             "Request termination of a running shared PTY shell. Call terminal_wait or terminal_status to observe its exit before terminal_close. This does not delete workspace files.",
+            properties: ["session_id": ["type": "string"]],
+            required: ["session_id"],
+            action: true
+        ),
+        definition(
+            "terminal_kill",
+            "Immediately kill a running AI-owned Terminal session by session_id; never accept an arbitrary PID. Verify exit with terminal_status or terminal_wait, and inspect registered server ports separately.",
             properties: ["session_id": ["type": "string"]],
             required: ["session_id"],
             action: true
@@ -232,7 +244,7 @@ enum AIWorkspaceActionTools {
             // The compatibility command already returned its bounded, sanitized
             // result. Its visible output is for the user, not a second AI read
             // channel that could bypass the older 64 KB result limit.
-            if definition.id != "terminal_start" {
+            if definition.id != "terminal_start" && definition.id != "terminal_sessions" {
                 let id = try sessionID(arguments)
                 let existing = try runtime.status(sessionID: id)
                 guard !existing.isBoundedExternal else {
@@ -243,6 +255,9 @@ enum AIWorkspaceActionTools {
                 }
             }
             switch definition.id {
+            case "terminal_sessions":
+                return .json(["sessions": runtime.sessions(for: conversationID)
+                    .filter { !$0.isBoundedExternal }.map { payload($0) }])
             case "terminal_start":
                 let directory: String?
                 switch arguments["directory"] {
@@ -250,11 +265,13 @@ enum AIWorkspaceActionTools {
                 case .none, .some(.null): directory = nil
                 default: return invalidArguments("directory must be a relative path.")
                 }
-                let newWorkspace: String?
-                switch arguments["new_workspace"] {
-                case .some(.string(let value)): newWorkspace = value
-                case .none, .some(.null): newWorkspace = nil
-                default: return invalidArguments("new_workspace must be a new project folder name.")
+                let projectID: UUID?
+                switch arguments["project_id"] {
+                case .some(.string(let rawID)):
+                    guard let id = UUID(uuidString: rawID) else { return invalidArguments("project_id must be a Project UUID.") }
+                    projectID = id
+                case .none, .some(.null): projectID = nil
+                default: return invalidArguments("project_id must be a Project UUID.")
                 }
                 let interactive: Bool
                 switch arguments["interactive"] {
@@ -262,8 +279,8 @@ enum AIWorkspaceActionTools {
                 case .some(.bool(let value)): interactive = value
                 default: return invalidArguments("interactive must be a boolean.")
                 }
-                let snapshot = try runtime.start(directory: directory, newWorkspace: newWorkspace,
-                                                 conversationID: conversationID, interactive: interactive)
+                let snapshot = try runtime.start(directory: directory, conversationID: conversationID,
+                                                 interactive: interactive, projectID: projectID)
                 let terminalVisible = runtime.revealAIForegroundSession(snapshot.id)
                 return .json(payload(snapshot, root: true).merging([
                     "terminal_visible": terminalVisible,
@@ -356,6 +373,14 @@ enum AIWorkspaceActionTools {
                     "verified_stopped": false
                 ] as [String: Any], uniquingKeysWith: { _, new in new }))
 
+            case "terminal_kill":
+                let snapshot = try runtime.forceKill(sessionID: sessionID(arguments))
+                return .json(payload(snapshot).merging([
+                    "kill_requested": true,
+                    "verified_stopped": false,
+                    "next_step": "Use terminal_status and server_status to verify exit and port closure."
+                ] as [String: Any], uniquingKeysWith: { _, new in new }))
+
             case "terminal_set_directory":
                 guard case .string(let directory)? = arguments["directory"] else {
                     return invalidArguments("directory is required.")
@@ -441,15 +466,24 @@ enum AIWorkspaceActionTools {
             "working_directory": snapshot.directory,
             "state": snapshot.state.rawValue,
             "interactive_pty": snapshot.isInteractivePTY,
+            "network_enabled": snapshot.networkEnabled,
+            "process_id": snapshot.processID.map { $0 as Any } ?? NSNull(),
             "next_byte": snapshot.nextOutputByte,
             "first_available_byte": snapshot.firstOutputByte,
             "output_truncated": snapshot.outputTruncated,
             "exit_status": snapshot.exitStatus.map { $0 as Any } ?? NSNull(),
             "verified_success": !snapshot.isInteractivePTY && snapshot.state == .completed && snapshot.exitStatus == 0
         ]
-        if root {
-            output["workspace_root"] = try? AIWorkspaceTerminalCoordinator.workspaceRoot(create: false).path
+        switch snapshot.workScope {
+        case .none: output["scope"] = "none"
+        case .scratch(let id):
+            output["scope"] = "scratch"
+            output["scratch_run_id"] = id.uuidString
+        case .project(let id):
+            output["scope"] = "project"
+            output["project_id"] = id.uuidString
         }
+        if root { output["workspace_root"] = AIWorkspacePaths().root.path }
         if let failure = snapshot.toolFailure { output["failure"] = failure.jsonObject }
         return output
     }

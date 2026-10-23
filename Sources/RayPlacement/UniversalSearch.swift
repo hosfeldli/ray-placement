@@ -189,6 +189,7 @@ final class UniversalSearchCoordinator {
     private var snapshotRevision: UInt64 = 0
     private var snapshotDirty = true
     private var observers: [AnyCancellable] = []
+    private var screenshotLibrary: ScreenshotHistoryStore?
 
     private init() {
         // Collection-specific events invalidate the catalog. Search remains
@@ -212,7 +213,65 @@ final class UniversalSearchCoordinator {
             snapshotRevision &+= 1
             snapshotDirty = false
         }
-        return await engine.search(rawQuery, revision: snapshotRevision, snapshot: snapshot)
+        let indexed = await engine.search(rawQuery, revision: snapshotRevision, snapshot: snapshot)
+        let captures = await screenshotResults(for: rawQuery)
+        return Array((indexed + captures).sorted { $0.score > $1.score }.prefix(24))
+    }
+
+    func screenshotImageData(for id: UUID) async throws -> (Data, ScreenshotImageFormat) {
+        guard let library = try await openScreenshotLibrary() else {
+            throw ScreenshotHistoryError.notFound
+        }
+        return try await library.imageData(for: id)
+    }
+
+    private func openScreenshotLibrary() async throws -> ScreenshotHistoryStore? {
+        if let screenshotLibrary { return screenshotLibrary }
+        let root = ApplicationPaths.applicationSupport
+            .appendingPathComponent("Screenshots", isDirectory: true)
+        let index = root.appendingPathComponent("screenshot-index.sqlite")
+        guard FileManager.default.fileExists(atPath: index.path) else { return nil }
+        let opened = try await Task.detached(priority: .utility) {
+            try ScreenshotHistoryStore(rootURL: root)
+        }.value
+        screenshotLibrary = opened
+        return opened
+    }
+
+    private func screenshotResults(for rawQuery: String) async -> [LimaSearchResult] {
+        let parsed = Self.parse(rawQuery)
+        guard parsed.prefix == nil || parsed.prefix == "screenshot" else { return [] }
+        let raw = parsed.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = raw.lowercased()
+        let lookup: String
+        if parsed.prefix == "screenshot" || lower == "screenshot" || lower == "screenshots" {
+            lookup = parsed.prefix == "screenshot" ? raw : ""
+        } else if lower.hasPrefix("screenshot ") {
+            lookup = String(raw.dropFirst("screenshot ".count))
+        } else if lower.hasPrefix("screenshots ") {
+            lookup = String(raw.dropFirst("screenshots ".count))
+        } else {
+            lookup = raw
+        }
+        guard raw.count >= 2 else { return [] }
+        do {
+            guard let library = try await openScreenshotLibrary() else { return [] }
+            let records = try await library.search(lookup, limit: 12)
+            return records.map { record in
+                let title = record.windowTitle ?? record.sourceApplication ?? "Screenshot"
+                let metadata = "\(title) \(record.sourceApplication ?? "") \(record.category.rawValue) \(record.tags.joined(separator: " "))"
+                let score = lookup.isEmpty ? 0 : (FuzzyMatcher.score(metadata, query: lookup) ?? 500)
+                return LimaSearchResult(
+                    id: "screenshot:\(record.id.uuidString)", kind: .screenshot,
+                    title: title,
+                    subtitle: "Screenshot · \(record.sourceApplication ?? record.captureKind.rawValue.capitalized) · \(record.capturedAt.formatted(date: .abbreviated, time: .shortened))",
+                    keywords: ["screenshot", record.category.rawValue] + record.tags,
+                    score: score + (record.isPinned ? 15 : 0)
+                )
+            }
+        } catch {
+            return []
+        }
     }
 
     private func buildSnapshot() -> UniversalSearchSnapshot {
@@ -304,9 +363,9 @@ final class UniversalSearchCoordinator {
 
     nonisolated static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
         let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let known = ["note", "notes", "dictation", "terminal", "workflow", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files"]
+        let known = ["note", "notes", "dictation", "terminal", "workflow", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files", "screenshot", "screenshots"]
         for prefix in known where clean.lowercased().hasPrefix(prefix + ":") {
-            let canonical = ["notes": "note", "commands": "command", "workspaces": "workspace", "shelf": "context", "chats": "chat", "ai": "chat", "apps": "app", "files": "file"][prefix] ?? prefix
+            let canonical = ["notes": "note", "commands": "command", "workspaces": "workspace", "shelf": "context", "chats": "chat", "ai": "chat", "apps": "app", "files": "file", "screenshots": "screenshot"][prefix] ?? prefix
             return (canonical, String(clean.dropFirst(prefix.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return (nil, clean)

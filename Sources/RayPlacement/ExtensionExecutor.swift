@@ -154,6 +154,42 @@ final class ExtensionExecutor {
         case .form, .picker, .generator, .system, .window, .workspace:
             completion(.success(.native(for: loaded, action: action)))
 
+        case .nativeCapability:
+            guard let operation = NativeCapabilityOperation(rawValue: action.operation ?? ""),
+                  NativeCapabilityRouter.supportedOperations.contains(operation) else {
+                completion(.failure(NativeCapabilityRouter.RoutingError.unavailable))
+                return
+            }
+            let fields = action.parameters ?? [:]
+            let summary = fields.keys.sorted().map { "\($0): \(fields[$0] ?? "")" }.joined(separator: " · ")
+            guard LimaConfirmationService.confirm(
+                title: "Allow \(loaded.extensionName) Once?",
+                detail: "This extension requests \(operation.rawValue). \(summary.isEmpty ? "No arguments." : summary) Review this exact call before allowing it.",
+                confirmTitle: "Allow Once", deliberate: true
+            ) else {
+                completion(.failure(NativeCapabilityAuthorizationError.approvalRequired))
+                return
+            }
+            let call = NativeCapabilityCall(
+                origin: .extensionCommand(extensionID: loaded.extensionID,
+                                          manifestHash: loaded.manifestHash,
+                                          commandID: loaded.command.id),
+                operation: operation,
+                arguments: .object(fields.mapValues(JSONValue.string))
+            )
+            Task { @MainActor in
+                do {
+                    let approvalID = try await NativeCapabilityRouter.shared.recordReviewedCall(call)
+                    let result = try await NativeCapabilityRouter.shared.execute(
+                        call, approvalID: approvalID
+                    )
+                    let data = try JSONEncoder().encode(result)
+                    completion(.success(.text(for: loaded, value: String(decoding: data, as: UTF8.self))))
+                } catch {
+                    completion(.failure(error))
+                }
+            }
+
         case .shell:
             run(action, relativeTo: loaded.directory, capabilities: loaded.capabilities, reportCancellation: reportCancellation) { result in
                 completion(result.map { ExtensionExecutionOutput.text(for: loaded, value: $0) })

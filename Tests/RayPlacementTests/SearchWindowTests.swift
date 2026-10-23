@@ -5,13 +5,18 @@ import SwiftUI
 import Testing
 @testable import RayPlacement
 
-@Test func searchWindowIsCompactUntilTypingAndStableWhileSearching() {
+@Test func searchWindowKeepsWidthAndTopAnchorWhileResultsExpand() {
     for density in AppInterfaceDensity.allCases {
         let idle = LauncherPanelLayout.size(for: .root, density: density, searchPhase: .idle)
         let active = LauncherPanelLayout.size(for: .root, density: density, searchPhase: .active)
         #expect(idle == LauncherPanelLayout.idleSearchSize(density: density))
         #expect(active == LauncherPanelLayout.searchSize(density: density))
         #expect(idle.height < active.height)
+        #expect(idle.width == active.width)
+        let original = NSRect(x: 100, y: 400, width: idle.width, height: idle.height)
+        let expanded = LauncherPanelLayout.resizedFrame(original, to: active, anchorTop: true)
+        #expect(expanded.minX == original.minX)
+        #expect(expanded.maxY == original.maxY)
         #expect(LauncherSearchPhase(query: "note: ") == .idle)
         #expect(LauncherSearchPhase(query: "notes") == .active)
         let canShowInspector = LauncherSearchDesign.canShowInspector(at: active.width)
@@ -20,13 +25,27 @@ import Testing
             #expect(active.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
         }
         switch density {
-        case .compact: #expect(idle == NSSize(width: 680, height: 138))
-        case .balanced: #expect(idle == NSSize(width: 720, height: 146))
-        case .comfortable: #expect(idle == NSSize(width: 760, height: 158))
+        case .compact: #expect(idle == NSSize(width: 720, height: 146))
+        case .balanced: #expect(idle == NSSize(width: 760, height: 150))
+        case .comfortable: #expect(idle == NSSize(width: 840, height: 158))
         }
         #expect(LauncherPanelLayout.size(for: .files, density: density).width == density.launcherWidth)
         #expect(LauncherPanelLayout.size(for: .terminal, density: density) == LauncherPanelLayout.terminalSize)
     }
+}
+
+@Test func searchResultsOnlyScrollWhenKeyboardSelectionLeavesViewport() {
+    let viewport: CGFloat = 300
+    #expect(LauncherSearchDesign.scrollAnchor(
+        for: CGRect(x: 0, y: 40, width: 500, height: 64), viewportHeight: viewport
+    ) == nil)
+    #expect(LauncherSearchDesign.scrollAnchor(
+        for: CGRect(x: 0, y: -1, width: 500, height: 64), viewportHeight: viewport
+    ) == .top)
+    #expect(LauncherSearchDesign.scrollAnchor(
+        for: CGRect(x: 0, y: 250, width: 500, height: 64), viewportHeight: viewport
+    ) == .bottom)
+    #expect(LauncherSearchDesign.scrollAnchor(for: nil, viewportHeight: viewport) == .center)
 }
 
 @Test @MainActor func searchPhasePublishesOnlyIdleActiveTransitions() {
@@ -57,7 +76,7 @@ import Testing
     )
     let host = NSHostingView(rootView: view)
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 720, height: 146),
+        contentRect: NSRect(x: 0, y: 0, width: 760, height: 150),
         styleMask: [.borderless], backing: .buffered, defer: false
     )
     window.contentView = host
@@ -70,8 +89,14 @@ import Testing
         return current + view.subviews.flatMap { fields(in: $0) }
     }
 
+    func topLeft(of field: NSTextField) -> CGPoint {
+        let rect = field.convert(field.bounds, to: host)
+        return CGPoint(x: rect.minX, y: host.isFlipped ? rect.minY : host.bounds.maxY - rect.maxY)
+    }
+
     let before = fields(in: host)
     #expect(before.count == 1)
+    let idlePosition = before.first.map(topLeft)
     model.query = "notes"
     window.setContentSize(NSSize(width: 760, height: 520))
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
@@ -79,14 +104,67 @@ import Testing
     let active = fields(in: host)
     #expect(active.count == 1)
     #expect(active.first === before.first)
+    if let idlePosition, let activeField = active.first {
+        let activePosition = topLeft(of: activeField)
+        #expect(abs(activePosition.x - idlePosition.x) <= 1)
+        #expect(abs(activePosition.y - idlePosition.y) <= 1)
+    }
 
     model.query = ""
-    window.setContentSize(NSSize(width: 720, height: 146))
+    window.setContentSize(NSSize(width: 760, height: 150))
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     host.layoutSubtreeIfNeeded()
     let idleAgain = fields(in: host)
     #expect(idleAgain.count == 1)
     #expect(idleAgain.first === before.first)
+}
+
+@Test @MainActor func queryRefreshKeepsVisibleRowsInertAndSelectionByID() async throws {
+    let model = LauncherViewModel(
+        clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false
+    )
+    model.query = "notes"
+    await model.waitForLocalSearchForTesting()
+    let initialIndex = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
+    model.select(initialIndex)
+    #expect(model.selectedItem?.id == "builtin.notes")
+
+    model.query = "note"
+    let retained = try #require(model.results.first { $0.id == "builtin.notes" })
+    #expect(!model.isActionable(retained))
+    #expect(model.selectedItem?.id == "builtin.notes")
+    await model.waitForLocalSearchForTesting()
+    #expect(model.selectedItem?.id == "builtin.notes")
+    let refreshed = try #require(model.results.first { $0.id == "builtin.notes" })
+    #expect(model.isActionable(refreshed))
+}
+
+@Test @MainActor func screenshotStudioIsAnExplicitSearchAction() async throws {
+    let model = LauncherViewModel(
+        clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false
+    )
+    model.query = "screenshot"
+    await model.waitForLocalSearchForTesting()
+    let item = try #require(model.results.first { $0.id == "builtin.screenshot-studio" })
+    #expect(LauncherSearchDesign.primaryTitle(for: item) == "Open")
+    guard case .system(.openScreenshotStudio) = item.action else {
+        Issue.record("Screenshot Search must open a picker, not capture directly")
+        return
+    }
+}
+
+@Test @MainActor func audioOutputIsAnExplicitPickerAction() async throws {
+    let model = LauncherViewModel(
+        clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false
+    )
+    model.query = "audio"
+    await model.waitForLocalSearchForTesting()
+    let item = try #require(model.results.first { $0.id == "builtin.audio-output" })
+    #expect(LauncherSearchDesign.primaryTitle(for: item) == "Open")
+    guard case .system(.openAudioOutput) = item.action else {
+        Issue.record("Audio Search must open a picker, not switch devices directly")
+        return
+    }
 }
 
 @Test @MainActor func hiddenSearchDefersRankingUntilPresented() async {

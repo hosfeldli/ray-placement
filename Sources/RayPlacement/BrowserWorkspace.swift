@@ -2,6 +2,29 @@ import AppKit
 import SwiftUI
 import WebKit
 
+private struct BrowserScreenshotMask: Codable, Equatable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+
+    var isValid: Bool {
+        x.isFinite && y.isFinite && width.isFinite && height.isFinite &&
+            width > 0 && height > 0 && width <= 10_000 && height <= 10_000
+    }
+
+    func isNear(_ other: Self) -> Bool {
+        abs(x - other.x) <= 2 && abs(y - other.y) <= 2 &&
+            abs(width - other.width) <= 2 && abs(height - other.height) <= 2
+    }
+}
+
+private struct BrowserScreenshotRedaction: Codable {
+    let identity: BrowserPageIdentity
+    let complete: Bool
+    let rects: [BrowserScreenshotMask]
+}
+
 private final class BrowserFrameMessageHandler: NSObject, WKScriptMessageHandler {
     weak var tab: BrowserTab?
 
@@ -17,6 +40,18 @@ private final class BrowserFrameMessageHandler: NSObject, WKScriptMessageHandler
     }
 }
 
+enum BrowserTabPurpose: String, Sendable {
+    case research
+    case localServer
+    case userBrowsing
+}
+
+struct BrowserTabContext: Equatable, Sendable {
+    var projectID: UUID?
+    var serverID: UUID?
+    var purpose: BrowserTabPurpose
+}
+
 @MainActor
 final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate, WKUIDelegate {
     let id = UUID()
@@ -25,6 +60,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     @Published private(set) var isLoading = false
     @Published private(set) var isSuspended = true
     @Published private(set) var webProcessAlive = true
+    @Published var context: BrowserTabContext?
     private(set) var navigationRevision = 0
     private(set) var completedNavigationRevision = 0
     private(set) var failedNavigationRevision = 0
@@ -254,7 +290,8 @@ final class BrowserWorkspaceModel: ObservableObject {
     @Published private(set) var automation: BrowserAutomationState?
     @Published private(set) var aiFocus: BrowserAIFocusState?
     @Published private(set) var aiActivity: [BrowserAIActivity] = []
-    private var lastAIPointerPosition: CGPoint?
+    private var lastAIPointerPositionByTabID: [UUID: CGPoint] = [:]
+    private var visualHits: [UUID: BrowserVisualHit] = [:]
     private var needsFreshReadTabIDs: Set<UUID> = []
     private var userChangedTabIDs: Set<UUID> = []
     private var authorityRevisions: [UUID: UInt64] = [:]
@@ -374,6 +411,8 @@ final class BrowserWorkspaceModel: ObservableObject {
 
     func isScreenshotCurrent(_ capture: BrowserScreenshotResult) -> Bool {
         isResultAccessible(on: capture.tabID) &&
+            Date().timeIntervalSince(capture.capturedAt) >= 0 &&
+            Date().timeIntervalSince(capture.capturedAt) <= 120 &&
             authorityRevisions[capture.tabID, default: 0] == capture.authorityRevision &&
             readRevisions[capture.tabID, default: 0] == capture.readRevision
     }
@@ -418,6 +457,11 @@ final class BrowserWorkspaceModel: ObservableObject {
         authorityRevisions[id, default: 0] &+= 1
         needsFreshReadTabIDs.insert(id)
         lastReadinessByTabID.removeValue(forKey: id)
+        visualHits = visualHits.filter { $0.value.tabID != id }
+        if automation?.tabID == id, automation?.role == "visualReview" {
+            automation = nil
+            aiFocus = nil
+        }
         let previous = pendingRevocations[id]?.task
         let runtime = self.runtime
         let task = Task {
@@ -476,11 +520,13 @@ final class BrowserWorkspaceModel: ObservableObject {
 
     @discardableResult
     func newTab(url: URL? = nil, foreground: Bool = true,
+                context: BrowserTabContext? = nil,
                 configuration: WKWebViewConfiguration? = nil) -> BrowserTab {
         let isPopupConfiguration = configuration != nil
         let configuration = configuration ?? WKWebViewConfiguration()
         configuration.websiteDataStore = dataStore
         let tab = BrowserTab(configuration: configuration)
+        tab.context = context
         if let url { tab.deferNavigation(to: url) }
         tab.openPopup = { [weak self] configuration in
             guard let self else { return nil }
@@ -504,6 +550,31 @@ final class BrowserWorkspaceModel: ObservableObject {
         return tab
     }
 
+    func tab(projectID: UUID, serverID: UUID) -> BrowserTab? {
+        tabs.first { $0.context?.projectID == projectID && $0.context?.serverID == serverID &&
+            $0.context?.purpose == .localServer }
+    }
+
+    @discardableResult
+    func openServer(_ url: URL, projectID: UUID, serverID: UUID) throws -> BrowserTab {
+        guard let safe = BrowserRuntime.safeDestination(url.absoluteString),
+              safe.scheme?.lowercased() == "http",
+              let host = safe.host?.lowercased(),
+              ["localhost", "127.0.0.1", "::1"].contains(host),
+              safe.port != nil else { throw BrowserRuntimeError.invalidDestination }
+        if let existing = tab(projectID: projectID, serverID: serverID) {
+            try focus(existing.id)
+            if existing.urlString == safe.absoluteString {
+                try reload(existing.id)
+            } else {
+                try navigate(existing.id, to: safe)
+            }
+            return existing
+        }
+        return newTab(url: safe, foreground: true,
+                      context: BrowserTabContext(projectID: projectID, serverID: serverID, purpose: .localServer))
+    }
+
     func focus(_ id: UUID) throws {
         let tab = try tab(id)
         let wasSuspended = tab.isSuspended
@@ -522,6 +593,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         authorityRevisions.removeValue(forKey: id)
         readRevisions.removeValue(forKey: id)
         pausedTabIDs.remove(id)
+        lastAIPointerPositionByTabID.removeValue(forKey: id)
         needsFreshReadTabIDs.remove(id)
         userChangedTabIDs.remove(id)
         await runtime.remove(tabID: id)
@@ -581,6 +653,11 @@ final class BrowserWorkspaceModel: ObservableObject {
         let tab = try tab(id)
         let authorityRevision = authorityRevisions[id, default: 0]
         readRevisions[id, default: 0] &+= 1
+        visualHits = visualHits.filter { $0.value.tabID != id }
+        if automation?.tabID == id, automation?.role == "visualReview" {
+            automation = nil
+            aiFocus = nil
+        }
         let readRevision = readRevisions[id, default: 0]
         beginOperation(on: id)
         defer { endOperation(on: id) }
@@ -665,21 +742,36 @@ final class BrowserWorkspaceModel: ObservableObject {
         return snapshot
     }
 
+    private func screenshotRedaction(_ webView: WKWebView,
+                                     expected: BrowserPageIdentity) async throws -> BrowserScreenshotRedaction {
+        let raw = try await webView.callAsyncJavaScript(
+            BrowserSemanticScript.screenshotRedaction, arguments: [:], in: nil,
+            contentWorld: .world(name: BrowserSemanticScript.world)
+        )
+        guard let json = raw as? String, let data = json.data(using: .utf8),
+              let result = try? JSONDecoder().decode(BrowserScreenshotRedaction.self, from: data),
+              result.identity == expected, result.complete,
+              result.rects.count <= 240, result.rects.allSatisfy(\.isValid) else {
+            throw BrowserRuntimeError.screenshotProtected
+        }
+        return result
+    }
+
     func screenshot(_ id: UUID) async throws -> BrowserScreenshotResult {
         guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
         let authorityRevision = authorityRevisions[id, default: 0]
         beginOperation(on: id)
         defer { endOperation(on: id) }
         let snapshot = try await wait(id, condition: .pageStable, timeoutMilliseconds: 5_000)
-        // Do not persist captures when the semantic read cannot account for all
-        // visible frames or exposes a sensitive control. A screenshot would
-        // otherwise bypass the normal field-value redaction.
+        // An incomplete traversal or protected child frame cannot justify a
+        // pixel release: the parent may echo a child value outside its bounds.
         guard !snapshot.diagnostics.truncated,
-              !(snapshot.links + snapshot.controls).contains(where: \.sensitive) else {
+              !snapshot.secureFields.contains(where: { $0.filled && $0.frameID != "main" }) else {
             throw BrowserRuntimeError.screenshotProtected
         }
         let tab = try tab(id)
         guard let webView = tab.activeWebView else { throw BrowserRuntimeError.missingSnapshot }
+        let masksBefore = try await screenshotRedaction(webView, expected: snapshot.identity)
         let bounds = webView.bounds
         guard bounds.width >= 1, bounds.height >= 1 else { throw BrowserRuntimeError.unsupportedAction }
         let configuration = WKSnapshotConfiguration()
@@ -702,10 +794,6 @@ final class BrowserWorkspaceModel: ObservableObject {
         ) else { throw BrowserRuntimeError.unsupportedAction }
         context.interpolationQuality = .high
         context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
-        guard let scaled = context.makeImage(),
-              let jpeg = NSBitmapImageRep(cgImage: scaled).representation(
-                using: .jpeg, properties: [.compressionFactor: 0.72]
-              ) else { throw BrowserRuntimeError.unsupportedAction }
         try Task.checkCancellation()
         guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
         try requireAIAccess(id)
@@ -718,14 +806,40 @@ final class BrowserWorkspaceModel: ObservableObject {
               after.frameContexts?.map({ "\($0.id)|\($0.url)|\($0.origin)" }) ==
                 snapshot.frameContexts?.map({ "\($0.id)|\($0.url)|\($0.origin)" }),
               after.text == snapshot.text,
-              !after.diagnostics.truncated,
-              !(after.links + after.controls).contains(where: \.sensitive) else {
+              after.secureFields == snapshot.secureFields,
+              !after.diagnostics.truncated else {
             throw BrowserRuntimeError.screenshotProtected
         }
+        let masksAfter = try await screenshotRedaction(webView, expected: after.identity)
+        guard masksBefore.rects.count == masksAfter.rects.count,
+              zip(masksBefore.rects, masksAfter.rects).allSatisfy({ $0.isNear($1) }) else {
+            throw BrowserRuntimeError.screenshotProtected
+        }
+        let pointBounds = CGRect(origin: .zero, size: configuration.rect.size)
+        let pixelX = CGFloat(width) / configuration.rect.width
+        let pixelY = CGFloat(height) / configuration.rect.height
+        context.setFillColor(NSColor.black.cgColor)
+        for mask in masksBefore.rects {
+            let expanded = CGRect(x: mask.x - 6, y: mask.y - 6,
+                                  width: mask.width + 12, height: mask.height + 12)
+            let clipped = expanded.intersection(pointBounds)
+            guard !clipped.isNull, !clipped.isEmpty else { continue }
+            context.fill(CGRect(x: clipped.minX * pixelX,
+                                y: CGFloat(height) - clipped.maxY * pixelY,
+                                width: clipped.width * pixelX,
+                                height: clipped.height * pixelY))
+        }
+        guard let scaled = context.makeImage(),
+              let jpeg = NSBitmapImageRep(cgImage: scaled).representation(
+                using: .jpeg, properties: [.compressionFactor: 0.72]
+              ) else { throw BrowserRuntimeError.unsupportedAction }
         let stored = try await BrowserScreenshotStore.shared.save(
             jpeg, for: id, width: width, height: height,
+            pointWidth: Double(configuration.rect.width),
+            pointHeight: Double(configuration.rect.height),
             authorityRevision: authorityRevision,
-            readRevision: readRevisions[id, default: 0]
+            readRevision: readRevisions[id, default: 0],
+            redactionCount: masksBefore.rects.count
         )
         guard aiControlMode.canRead, !pausedTabIDs.contains(id),
               authorityRevisions[id, default: 0] == authorityRevision,
@@ -736,19 +850,192 @@ final class BrowserWorkspaceModel: ObservableObject {
         return stored
     }
 
+    func visualHitForReview(_ id: UUID) async -> BrowserVisualHit? {
+        guard aiControlMode.canInteract, let hit = visualHits[id],
+              hit.semanticTargetID == nil,
+              let capture = await BrowserScreenshotStore.shared.capture(id: hit.captureID),
+              isScreenshotCurrent(capture),
+              let page = await runtime.snapshot(for: hit.tabID),
+              page.identity == hit.pageIdentity else { return nil }
+        return hit
+    }
+
+    func hitTest(_ id: UUID, captureID: UUID, pixelX: Double,
+                 pixelY: Double) async throws -> BrowserVisualHit {
+        guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
+        try requireFreshTarget(id)
+        guard let capture = await BrowserScreenshotStore.shared.capture(id: captureID),
+              capture.tabID == id, isScreenshotCurrent(capture),
+              pixelX.isFinite, pixelY.isFinite,
+              pixelX >= 0, pixelY >= 0,
+              pixelX < Double(capture.pixelWidth),
+              pixelY < Double(capture.pixelHeight) else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        guard let page = await runtime.snapshot(for: id),
+              !page.diagnostics.truncated,
+              !(page.links + page.controls).contains(where: \.sensitive) else {
+            throw BrowserRuntimeError.screenshotProtected
+        }
+        let tab = try tab(id)
+        guard let webView = tab.activeWebView else { throw BrowserRuntimeError.missingSnapshot }
+        let pointX = pixelX * capture.pointWidth / Double(capture.pixelWidth)
+        let pointY = pixelY * capture.pointHeight / Double(capture.pixelHeight)
+        let hitID = UUID()
+        let identity = page.identity
+        let raw: Any?
+        do {
+            raw = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.visualHitTest,
+                arguments: [
+                    "documentID": identity.documentID,
+                    "routeGeneration": identity.routeGeneration,
+                    "mutationRevision": identity.mutationRevision,
+                    "userRevision": identity.userRevision,
+                    "snapshotRevision": identity.snapshotRevision,
+                    "hitID": hitID.uuidString,
+                    "x": pointX, "y": pointY
+                ],
+                in: nil, contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            if let mapped = semanticActionError(error) { throw mapped }
+            throw error
+        }
+        guard let json = raw as? String, let data = json.data(using: .utf8),
+              let payload = try? JSONDecoder().decode(BrowserVisualHitPayload.self, from: data),
+              payload.x.isFinite, payload.y.isFinite,
+              payload.width > 0, payload.height > 0,
+              payload.width.isFinite, payload.height.isFinite,
+              isScreenshotCurrent(capture),
+              aiControlMode.canRead, !pausedTabIDs.contains(id) else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let hit = BrowserVisualHit(
+            id: hitID, captureID: captureID, tabID: id,
+            label: payload.label, role: payload.role,
+            x: payload.x, y: payload.y, width: payload.width, height: payload.height,
+            semanticTargetID: payload.semanticTargetID, pageIdentity: identity
+        )
+        visualHits[hitID] = hit
+        if visualHits.count > 24, let first = visualHits.keys.first {
+            visualHits.removeValue(forKey: first)
+        }
+        // Preview the exact screenshot hit in the native, noninteractive
+        // overlay while the user considers the visual-click review.
+        if hit.semanticTargetID == nil {
+            let target = BrowserTarget(
+                id: hit.id.uuidString, role: hit.role, label: hit.label,
+                destination: nil, relationship: nil,
+                x: hit.x, y: hit.y, width: hit.width, height: hit.height,
+                frameID: "main", sensitive: false
+            )
+            let rawBounds = CGRect(x: hit.x, y: hit.y, width: hit.width, height: hit.height)
+            let clipped = rawBounds.intersection(webView.bounds)
+            let bounds = clipped.isNull || clipped.isEmpty ? nil : clipped
+            var preview = BrowserAutomationState(
+                id: UUID(), tabID: id, title: "Reviewing visual target “\(hit.label)”",
+                role: "visualReview", target: target, overlayBounds: bounds,
+                pointerStart: CGPoint(x: webView.bounds.midX, y: webView.bounds.midY)
+            )
+            preview.phase = .waiting
+            automation = preview
+            aiFocus = BrowserAIFocusState(
+                id: preview.id, tabID: id, targetID: hit.id.uuidString,
+                bounds: bounds, role: "visualReview", label: hit.label, intent: preview.title
+            )
+            let previewID = preview.id
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                if self?.automation?.id == previewID {
+                    self?.automation = nil
+                    self?.aiFocus = nil
+                }
+            }
+        }
+        return hit
+    }
+
+    func pointerClick(_ id: UUID, hitID: UUID,
+                      commitApproved: Bool = false) async throws -> BrowserActionOutcome {
+        guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
+        guard commitApproved else { throw BrowserRuntimeError.commitApprovalRequired }
+        try requireFreshTarget(id)
+        guard let hit = visualHits[hitID], hit.tabID == id,
+              hit.semanticTargetID == nil,
+              let capture = await BrowserScreenshotStore.shared.capture(id: hit.captureID),
+              isScreenshotCurrent(capture),
+              let before = await runtime.snapshot(for: id),
+              before.identity == hit.pageIdentity else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let target = BrowserTarget(
+            id: hit.id.uuidString, role: hit.role, label: hit.label,
+            destination: nil, relationship: nil,
+            x: hit.x, y: hit.y, width: hit.width, height: hit.height,
+            frameID: "main", sensitive: false
+        )
+        try await showAutomation(on: id, "Clicking visual target “\(hit.label)”",
+                                 role: "visual", target: target)
+        guard aiControlMode.canInteract, isScreenshotCurrent(capture),
+              let current = await runtime.snapshot(for: id),
+              current.identity == hit.pageIdentity else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let tab = try tab(id)
+        guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
+        try Task.checkCancellation()
+        let raw: Any?
+        do {
+            raw = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.visualPointerClick,
+                arguments: [
+                    "documentID": hit.pageIdentity.documentID,
+                    "routeGeneration": hit.pageIdentity.routeGeneration,
+                    "mutationRevision": hit.pageIdentity.mutationRevision,
+                    "userRevision": hit.pageIdentity.userRevision,
+                    "snapshotRevision": hit.pageIdentity.snapshotRevision,
+                    "hitID": hitID.uuidString
+                ],
+                in: nil, contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            if let mapped = semanticActionError(error) { throw mapped }
+            throw error
+        }
+        visualHits.removeValue(forKey: hitID)
+        guard let json = raw as? String, let data = json.data(using: .utf8),
+              let result = try? JSONDecoder().decode(BrowserScriptActionAcknowledgement.self, from: data),
+              result.requested, result.performed, result.action == "pointerClick" else {
+            throw BrowserRuntimeError.unsupportedAction
+        }
+        let effect = await verifyVisibleEffect(id, before: before)
+        return BrowserActionOutcome(
+            requested: true, performed: true,
+            postActionVerified: effect.pageChanged,
+            pageChanged: effect.pageChanged,
+            routeChangeDetected: effect.routeChanged,
+            detail: effect.pageChanged
+                ? "The page visibly changed after the visual click; this does not prove a transaction completed."
+                : "A pointer event was dispatched, but no visible result was verified. Read fresh page state."
+        )
+    }
+
     func find(_ id: UUID, query: String) async throws -> [BrowserSemanticMatch] {
         let snapshot = try await read(id)
         return Array(snapshot.find(query).prefix(60))
     }
 
     func activate(_ id: UUID, targetID: String,
-                  disposition: BrowserNavigationDisposition) async throws -> BrowserActivationOutcome {
+                  disposition: BrowserNavigationDisposition,
+                  commitApproved: Bool = false) async throws -> BrowserActivationOutcome {
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
         let target = try await runtime.resolveAny(tabID: id, targetID: targetID)
         if target.role == "link" {
             if target.destination != nil {
-                return .navigated(try await openLink(id, targetID: targetID, disposition: disposition))
+                return .navigated(try await openLink(id, targetID: targetID, disposition: disposition,
+                                                     commitApproved: commitApproved))
             }
             guard target.relationship == "scripted" else { throw BrowserRuntimeError.invalidDestination }
         }
@@ -757,11 +1044,13 @@ final class BrowserWorkspaceModel: ObservableObject {
             throw BrowserRuntimeError.unsupportedAction
         }
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
-        return .interacted(try await interact(id, targetID: targetID, action: .click))
+        return .interacted(try await interact(id, targetID: targetID, action: .click,
+                                              commitApproved: commitApproved))
     }
 
     @discardableResult
-    func openLink(_ id: UUID, targetID: String, disposition: BrowserNavigationDisposition) async throws -> UUID {
+    func openLink(_ id: UUID, targetID: String, disposition: BrowserNavigationDisposition,
+                  commitApproved: Bool = false) async throws -> UUID {
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         beginOperation(on: id)
         defer { endOperation(on: id) }
@@ -769,6 +1058,13 @@ final class BrowserWorkspaceModel: ObservableObject {
         let (identity, target) = try await runtime.resolve(tabID: id, targetID: targetID, link: true)
         guard let destination = BrowserRuntime.safeLinkDestination(target) else {
             throw BrowserRuntimeError.invalidDestination
+        }
+        guard let initialPage = await runtime.snapshot(for: id) else {
+            throw BrowserRuntimeError.missingSnapshot
+        }
+        if BrowserCommitAuthorization.review(tabID: id, target: target, action: .click,
+                                             page: initialPage) != nil && !commitApproved {
+            throw BrowserRuntimeError.commitApprovalRequired
         }
         try await validateTarget(id, target: target, identity: identity)
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
@@ -782,6 +1078,11 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
         try await validateTarget(id, target: target, identity: identity)
+        if let currentPage = await runtime.snapshot(for: id),
+           BrowserCommitAuthorization.review(tabID: id, target: target, action: .click,
+                                             page: currentPage) != nil && !commitApproved {
+            throw BrowserRuntimeError.commitApprovalRequired
+        }
         try Task.checkCancellation()
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
@@ -800,23 +1101,62 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
     }
 
+    func commitReview(_ id: UUID, targetID: String,
+                      action: BrowserInteractionAction) async throws -> BrowserCommitReview? {
+        try requireFreshTarget(id)
+        let target = try await runtime.resolveAny(tabID: id, targetID: targetID)
+        guard let page = await runtime.snapshot(for: id) else { throw BrowserRuntimeError.missingSnapshot }
+        return BrowserCommitAuthorization.review(tabID: id, target: target, action: action, page: page)
+    }
+
     func interact(_ id: UUID, targetID: String, action: BrowserInteractionAction,
-                  text: String? = nil) async throws -> BrowserActionOutcome {
+                  text: String? = nil, commitApproved: Bool = false) async throws -> BrowserActionOutcome {
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
         let authorityRevision = authorityRevisions[id, default: 0]
         beginOperation(on: id)
         defer { endOperation(on: id) }
         try requireFreshTarget(id)
         let (identity, target) = try await runtime.resolve(tabID: id, targetID: targetID, link: false)
-        if action == .type {
+        if action == .type || action == .setValue {
             guard let text, text.utf8.count <= 4_000,
                   !text.unicodeScalars.contains(where: { $0.value == 0 }) else {
+                throw BrowserRuntimeError.unsupportedAction
+            }
+        } else if action == .select {
+            guard let text, !text.isEmpty, text.count <= 160 else {
+                throw BrowserRuntimeError.unsupportedAction
+            }
+        } else if action == .toggle {
+            guard text == "true" || text == "false" else {
                 throw BrowserRuntimeError.unsupportedAction
             }
         } else if action == .pressKey {
             guard let text, BrowserInteractionAction.allowedKeys.contains(text) else {
                 throw BrowserRuntimeError.unsupportedAction
             }
+        }
+        if target.state?.blockedByModal == true {
+            throw BrowserRuntimeError.targetOccluded
+        }
+        guard let initialPage = await runtime.snapshot(for: id) else { throw BrowserRuntimeError.missingSnapshot }
+        if BrowserCommitAuthorization.review(tabID: id, target: target, action: action,
+                                             page: initialPage) != nil && !commitApproved {
+            throw BrowserRuntimeError.commitApprovalRequired
+        }
+        let advertisedAction: String? = switch action {
+        case .click: "activate"
+        case .focus: "focus"
+        case .type: "type"
+        case .setValue: "set_value"
+        case .clear: "clear"
+        case .select: "select"
+        case .toggle: "toggle"
+        case .submit: "submit"
+        case .pressKey: nil
+        }
+        if let advertisedAction, let available = target.availableActions,
+           !available.contains(advertisedAction) {
+            throw BrowserRuntimeError.unsupportedAction
         }
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
@@ -826,6 +1166,15 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
         try requireFreshTarget(id)
         let before = await runtime.snapshot(for: id)
+        if let before, BrowserCommitAuthorization.review(tabID: id, target: target,
+                                                         action: action, page: before) != nil,
+           !commitApproved {
+            throw BrowserRuntimeError.commitApprovalRequired
+        }
+        if let dialog = before?.activeDialog, dialog.modal,
+           target.frameID != dialog.frameID {
+            throw BrowserRuntimeError.targetOccluded
+        }
         guard aiControlMode.canInteract, authorityRevisions[id, default: 0] == authorityRevision else {
             throw BrowserRuntimeError.staleTarget
         }
@@ -834,21 +1183,27 @@ final class BrowserWorkspaceModel: ObservableObject {
         let frame = try targetFrame(target, in: tab)
         guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
         try Task.checkCancellation()
-        let result = try await webView.callAsyncJavaScript(
-            BrowserSemanticScript.action,
-            arguments: [
-                "documentID": identity.documentID,
-                "routeGeneration": identity.routeGeneration,
-                "mutationRevision": identity.mutationRevision,
-                "userRevision": identity.userRevision,
-                "snapshotRevision": identity.snapshotRevision,
-                "targetID": targetID,
-                "action": action.rawValue,
-                "text": text ?? ""
-            ],
-            in: frame,
-            contentWorld: .world(name: BrowserSemanticScript.world)
-        )
+        let result: Any?
+        do {
+            result = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.action,
+                arguments: [
+                    "documentID": identity.documentID,
+                    "routeGeneration": identity.routeGeneration,
+                    "mutationRevision": identity.mutationRevision,
+                    "userRevision": identity.userRevision,
+                    "snapshotRevision": identity.snapshotRevision,
+                    "targetID": targetID,
+                    "action": action.rawValue,
+                    "text": text ?? ""
+                ],
+                in: frame,
+                contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            if let mapped = semanticActionError(error) { throw mapped }
+            throw error
+        }
         guard let json = result as? String, let data = json.data(using: .utf8),
               let acknowledgement = try? JSONDecoder().decode(BrowserScriptActionAcknowledgement.self, from: data),
               acknowledgement.requested, acknowledgement.performed,
@@ -872,8 +1227,12 @@ final class BrowserWorkspaceModel: ObservableObject {
         let verified = aiControlMode.canInteract &&
             (acknowledgement.verified || effect.pageChanged) && action != .pressKey
         let detail: String
-        if action == .type && verified {
-            detail = "The entered text remains in the target after input events."
+        if [.type, .setValue, .clear].contains(action) && verified {
+            detail = "The requested value remains in the target after input events."
+        } else if action == .select && verified {
+            detail = "The requested native option remains selected after change events."
+        } else if action == .toggle && verified {
+            detail = "The target's checked state matches the requested state."
         } else if action == .focus && verified {
             detail = "The target became the active element."
         } else if effect.routeChanged && verified {
@@ -911,7 +1270,10 @@ final class BrowserWorkspaceModel: ObservableObject {
                     after.text != before.text || after.headings != before.headings ||
                     after.rows.map(\.text) != before.rows.map(\.text) ||
                     after.links.map(\.label) != before.links.map(\.label) ||
-                    after.controls.map(\.label) != before.controls.map(\.label)
+                    after.links.map(\.state) != before.links.map(\.state) ||
+                    after.controls.map(\.label) != before.controls.map(\.label) ||
+                    after.controls.map(\.state) != before.controls.map(\.state) ||
+                    after.activeDialog != before.activeDialog
                 )
                 if routeChanged || semanticChanged { return (true, routeChanged) }
             }
@@ -928,7 +1290,8 @@ final class BrowserWorkspaceModel: ObservableObject {
         beginOperation(on: id)
         defer { endOperation(on: id) }
         guard !frameID.isEmpty, frameID.count <= 100 else { throw BrowserRuntimeError.staleTarget }
-        _ = try await read(id)
+        let page = try await read(id)
+        guard !page.diagnostics.truncated else { throw BrowserRuntimeError.privatePageIncomplete }
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireAIAccess(id)
         let identity = try await runtime.identity(tabID: id, frameID: frameID)
@@ -944,7 +1307,9 @@ final class BrowserWorkspaceModel: ObservableObject {
             arguments: [
                 "documentID": identity.documentID,
                 "routeGeneration": identity.routeGeneration,
+                "mutationRevision": identity.mutationRevision,
                 "userRevision": identity.userRevision,
+                "snapshotRevision": identity.snapshotRevision,
                 "direction": direction.rawValue,
                 "fraction": fraction
             ],
@@ -1076,26 +1441,57 @@ final class BrowserWorkspaceModel: ObservableObject {
         return frame
     }
 
+    private func semanticActionError(_ error: Error) -> BrowserRuntimeError? {
+        let message = error.localizedDescription + " " + String(describing: error)
+        if message.contains("target_occluded") { return .targetOccluded }
+        if message.contains("stale_target") { return .staleTarget }
+        if message.contains("target_not_interactable") { return .targetNotInteractable }
+        if message.contains("sensitive_target") || message.contains("sensitive_form") {
+            return .sensitiveTarget
+        }
+        if message.contains("option_missing_or_ambiguous") ||
+           message.contains("not_text_input") ||
+           message.contains("not_single_select") ||
+           message.contains("not_toggle") ||
+           message.contains("radio_cannot_uncheck") ||
+           message.contains("unsupported_action") {
+            return .unsupportedAction
+        }
+        return nil
+    }
+
     private func validateTarget(_ id: UUID, target: BrowserTarget,
                                 identity: BrowserPageIdentity) async throws {
+        if target.state?.blockedByModal == true {
+            throw BrowserRuntimeError.targetOccluded
+        }
+        if let dialog = await runtime.snapshot(for: id)?.activeDialog,
+           dialog.modal, target.frameID != dialog.frameID {
+            throw BrowserRuntimeError.targetOccluded
+        }
         let tab = try tab(id)
         let frame = try targetFrame(target, in: tab)
         guard let webView = tab.activeWebView else { throw BrowserRuntimeError.staleTarget }
-        _ = try await webView.callAsyncJavaScript(
-            BrowserSemanticScript.action,
-            arguments: [
-                "documentID": identity.documentID,
-                "routeGeneration": identity.routeGeneration,
-                "mutationRevision": identity.mutationRevision,
-                "userRevision": identity.userRevision,
-                "snapshotRevision": identity.snapshotRevision,
-                "targetID": target.id,
-                "action": "validate",
-                "text": ""
-            ],
-            in: frame,
-            contentWorld: .world(name: BrowserSemanticScript.world)
-        )
+        do {
+            _ = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.action,
+                arguments: [
+                    "documentID": identity.documentID,
+                    "routeGeneration": identity.routeGeneration,
+                    "mutationRevision": identity.mutationRevision,
+                    "userRevision": identity.userRevision,
+                    "snapshotRevision": identity.snapshotRevision,
+                    "targetID": target.id,
+                    "action": "validate",
+                    "text": ""
+                ],
+                in: frame,
+                contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            if let mapped = semanticActionError(error) { throw mapped }
+            throw error
+        }
     }
 
     private func markAutomationDestination(sourceTabID: UUID, destinationTabID: UUID) {
@@ -1131,7 +1527,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         } else {
             bounds = frameGeometry?.visibleTargetBounds(target, viewport: webView.bounds)
         }
-        let start = lastAIPointerPosition ?? CGPoint(x: webView.bounds.midX, y: webView.bounds.midY)
+        let start = lastAIPointerPositionByTabID[tabID] ?? CGPoint(x: webView.bounds.midX, y: webView.bounds.midY)
         let state = BrowserAutomationState(
             id: UUID(), tabID: tabID, title: title, role: role,
             target: target, overlayBounds: bounds, pointerStart: start
@@ -1142,7 +1538,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         )
         automation = state
         if let bounds {
-            lastAIPointerPosition = CGPoint(x: bounds.minX + 25, y: bounds.maxY + 12)
+            lastAIPointerPositionByTabID[tabID] = CGPoint(x: bounds.minX + 25, y: bounds.maxY + 12)
             do {
                 try await Task.sleep(for: .milliseconds(80))
                 guard automation?.id == state.id, !pausedTabIDs.contains(tabID) else { return }
@@ -1314,6 +1710,10 @@ enum BrowserInteractionAction: String {
     case click
     case focus
     case type
+    case setValue
+    case clear
+    case select
+    case toggle
     case pressKey
     case submit
 
@@ -1329,6 +1729,10 @@ enum BrowserInteractionAction: String {
         case .click: "Clicking “\(target)”"
         case .focus: "Focusing “\(target)”"
         case .type: "Typing into “\(target)”"
+        case .setValue: "Setting “\(target)”"
+        case .clear: "Clearing “\(target)”"
+        case .select: "Selecting an option in “\(target)”"
+        case .toggle: "Toggling “\(target)”"
         case .pressKey: "Pressing key on “\(target)”"
         case .submit: "Submitting “\(target)”"
         }
@@ -1491,10 +1895,59 @@ enum BrowserNavigationError: LocalizedError {
     }
 }
 
+@MainActor
+final class BrowserWebViewHost: NSView {
+    private(set) weak var displayedWebView: WKWebView?
+    private(set) var displayedTabID: UUID?
+
+    override var isFlipped: Bool { true }
+
+    func show(_ webView: WKWebView, tabID: UUID) {
+        guard displayedWebView !== webView || displayedTabID != tabID || webView.superview !== self else { return }
+        detach()
+        webView.removeFromSuperview()
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            webView.topAnchor.constraint(equalTo: topAnchor),
+            webView.bottomAnchor.constraint(equalTo: bottomAnchor)
+        ])
+        displayedWebView = webView
+        displayedTabID = tabID
+        assert(displayedWebView === webView && displayedTabID == tabID)
+    }
+
+    func detach() {
+        // A tab may have been mounted in a new host before SwiftUI dismantles
+        // the old one. Never remove a view now owned by that new host.
+        if let displayedWebView, displayedWebView.superview === self {
+            displayedWebView.removeFromSuperview()
+        }
+        displayedWebView = nil
+        displayedTabID = nil
+    }
+}
+
 private struct BrowserWebView: NSViewRepresentable {
+    let tabID: UUID
     let webView: WKWebView
-    func makeNSView(context: Context) -> WKWebView { webView }
-    func updateNSView(_ nsView: WKWebView, context: Context) {}
+
+    func makeNSView(context: Context) -> BrowserWebViewHost {
+        let host = BrowserWebViewHost()
+        host.show(webView, tabID: tabID)
+        return host
+    }
+
+    func updateNSView(_ host: BrowserWebViewHost, context: Context) {
+        host.show(webView, tabID: tabID)
+        assert(host.displayedWebView === webView && host.displayedTabID == tabID)
+    }
+
+    static func dismantleNSView(_ host: BrowserWebViewHost, coordinator: Void) {
+        host.detach()
+    }
 }
 
 struct BrowserWorkspaceView: View {
@@ -1546,6 +1999,7 @@ struct BrowserWorkspaceView: View {
             GlassHairline()
             if let tab = model.selectedTab {
                 BrowserTabContent(tab: tab, model: model)
+                    .id(tab.id)
             } else {
                 BrowserEmptyState(model: model)
             }
@@ -1745,7 +2199,7 @@ private struct BrowserTabContent: View {
             }
             ZStack(alignment: .topLeading) {
                 if let webView = tab.activeWebView {
-                    BrowserWebView(webView: webView)
+                    BrowserWebView(tabID: tab.id, webView: webView)
                 } else if tab.urlString.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "globe").font(.system(size: 28))

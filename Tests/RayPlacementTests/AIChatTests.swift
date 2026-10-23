@@ -1,7 +1,9 @@
 import AppKit
 import Foundation
 import RayPlacementCore
+import SwiftUI
 import Testing
+import Vision
 @testable import RayPlacement
 
 @Test func testCredentialConfigurationUsesSeparateNamespaceAndExplicitEnvironmentValue() {
@@ -188,6 +190,143 @@ import Testing
     #expect(model.streamingPresentation.snapshot.assistantID == nil)
     #expect(!model.canEndTask)
     #expect(AssistantResponsePresentationState.completed.emptyTextPlaceholder != "Working…")
+}
+
+@Test func completedAnswerGrowthKeepsBottomFollowUntilTheUserScrolls() {
+    var follow = AIChatBottomFollowState()
+    follow.observe(contentHeight: 400, distanceFromBottom: 400)
+    #expect(follow.isNearBottom) // Initial geometry must not turn off the first scroll.
+    follow.observe(contentHeight: 500, distanceFromBottom: 100)
+    #expect(follow.isNearBottom) // Markdown grew; no user gesture occurred.
+    follow.observe(contentHeight: 500, distanceFromBottom: 100)
+    #expect(follow.isNearBottom) // A second layout notification precedes correction.
+    follow.finishGrowthCorrection()
+    follow.observe(contentHeight: 500, distanceFromBottom: 0)
+    #expect(follow.isNearBottom)
+    follow.observe(contentHeight: 500, distanceFromBottom: 150)
+    #expect(!follow.isNearBottom) // Stable-height movement is a user scroll.
+    follow.observe(contentHeight: 900, distanceFromBottom: 550)
+    #expect(!follow.isNearBottom) // Do not drag a reader back down.
+    follow.observe(contentHeight: 900, distanceFromBottom: 20)
+    #expect(follow.isNearBottom)
+}
+
+@Test @MainActor func completedAnswerMountsInHostedChatWithoutScrollGesture() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let (events, feed) = AsyncThrowingStream<AIChatStreamEvent, Error>.makeStream()
+    defer { feed.finish() }
+    var transport = FixtureAITransport(events: [])
+    transport.replyStream = { _, _ in events }
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: transport
+    )
+    #expect(model.hasProviderAPIKey)
+    var mounted: [UUID: [AssistantResponsePresentationState]] = [:]
+    let root = NSHostingView(rootView: AIChatWorkspaceView(
+        model: model, isEmbedded: true,
+        onMessageRowMount: { id, state in mounted[id, default: []].append(state) }
+    ))
+    root.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+    let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = root
+    defer { window.close() }
+    root.layoutSubtreeIfNeeded()
+
+    model.draft = "Show the answer"
+    model.send()
+    feed.yield(.textDelta("Visible answer marker"))
+    for _ in 0..<100 where model.streamingText != "Visible answer marker" {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.isStreaming)
+    let answerID = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant })?.id)
+    for _ in 0..<100 {
+        root.layoutSubtreeIfNeeded()
+        if mounted[answerID]?.contains(where: \.isLive) == true { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(mounted[answerID]?.contains(where: \.isLive) == true)
+
+    feed.yield(.completed("hosted-answer"))
+    feed.finish()
+    for _ in 0..<300 where model.isStreaming {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.executionRun?.state == .completed)
+    let answer = try #require(store.conversations.first?.messages.last(where: { $0.role == .assistant }))
+    #expect(answer.text == "Visible answer marker")
+    for _ in 0..<100 {
+        root.layoutSubtreeIfNeeded()
+        if mounted[answer.id]?.contains(.completed) == true { break }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(mounted[answer.id]?.contains(.completed) == true)
+
+    // Inspect the rendered viewport, not only the message model or SwiftUI
+    // mount callback. This catches answers that appear only after a scroll.
+    root.layoutSubtreeIfNeeded()
+    root.displayIfNeeded()
+    let bitmap = try #require(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+    root.cacheDisplay(in: root.bounds, to: bitmap)
+    let pixels = try #require(bitmap.representation(using: .png, properties: [:]))
+    let recognition = VNRecognizeTextRequest()
+    recognition.recognitionLevel = .accurate
+    try VNImageRequestHandler(data: pixels, options: [:]).perform([recognition])
+    let visibleWords = (recognition.results ?? [])
+        .compactMap { $0.topCandidates(1).first?.string }
+        .joined(separator: " ")
+    #expect(visibleWords.localizedCaseInsensitiveContains("Visible answer marker"),
+            "Rendered viewport text: \(visibleWords)")
+}
+
+@Test @MainActor func completedLongMarkdownAnswerShowsItsTailWithoutScrollGesture() async throws {
+    let store = AIConversationStore(fixtures: [])
+    let answerText = (0..<70).map { "- Verification detail \($0): the completed answer remains readable." }
+        .joined(separator: "\n") + "\n\n## Visible final marker\n"
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport(events: [
+            .textDelta(answerText), .completed("long-markdown-answer")
+        ])
+    )
+    let root = NSHostingView(rootView: AIChatWorkspaceView(model: model, isEmbedded: true))
+    root.frame = CGRect(x: 0, y: 0, width: 900, height: 700)
+    let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = root
+    defer { window.close() }
+    root.layoutSubtreeIfNeeded()
+
+    model.draft = "Give a detailed answer"
+    model.send()
+    for _ in 0..<300 where model.executionRun?.state != .completed {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.executionRun?.state == .completed)
+    #expect(store.conversations.first?.messages.last?.text == answerText)
+
+    var visibleWords = ""
+    for _ in 0..<5 {
+        root.layoutSubtreeIfNeeded()
+        root.displayIfNeeded()
+        let bitmap = try #require(root.bitmapImageRepForCachingDisplay(in: root.bounds))
+        root.cacheDisplay(in: root.bounds, to: bitmap)
+        let pixels = try #require(bitmap.representation(using: .png, properties: [:]))
+        let recognition = VNRecognizeTextRequest()
+        recognition.recognitionLevel = .accurate
+        try VNImageRequestHandler(data: pixels, options: [:]).perform([recognition])
+        visibleWords = (recognition.results ?? [])
+            .compactMap { $0.topCandidates(1).first?.string }
+            .joined(separator: " ")
+        if visibleWords.localizedCaseInsensitiveContains("Visible final marker") { break }
+        try await Task.sleep(for: .milliseconds(100))
+    }
+    #expect(visibleWords.localizedCaseInsensitiveContains("Visible final marker"),
+            "Rendered viewport text: \(visibleWords)")
 }
 
 @Test @MainActor func workbenchPresentationReasoningUpdatesWithoutDisclosureToggle() async throws {

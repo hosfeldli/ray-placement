@@ -15,7 +15,7 @@ enum AIContextTools {
     static let capabilityIDs: Set<String> = ["lima_capabilities"]
     static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs)
     static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; embedded Browser access rechecks live AI Control for each action; approval follows the active Tool Access mode outside Browser; recursiveDelegation=false."
-    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Embedded Browser actions recheck the live Browser AI Control mode and page safety at execution. In Full Control, actions do not need Lima per-action approval; in other modes, pause for the parent user when approval is required outside Browser. Recursive subagent delegation is unavailable."
+    static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Embedded Browser actions recheck the live Browser AI Control mode and page safety at execution. Final Browser actions and visual pointer clicks require exact-call parent-user review even in Full Control. Other Full Control actions do not need ordinary Lima per-action approval; in other modes, pause for the parent user when approval is required. Recursive subagent delegation is unavailable."
 
     @MainActor
     static func subagentToolBundle(
@@ -145,8 +145,9 @@ enum AIContextTools {
                 "edit_text": canEditFile,
                 "write_requires_approval": accessMode != .fullControl,
                 "write_reason": unavailableReason("create_text_file", category: .localFiles),
-                "create_directories": false,
-                "move": false
+                "create_directories": available("directory_create"),
+                "move": available("file_move"),
+                "project_relative_tools": available("file_read") && available("file_write")
             ] as [String: Any],
             "terminal": [
                 "available": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable),
@@ -180,7 +181,9 @@ enum AIContextTools {
             ] as [String: Any],
             "workspace": [
                 "ai_operable": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
-                "root": "~/Desktop/Lima Workspace",
+                "root": AIWorkspacePaths().root.path,
+                "project_scope": available("project_create") && available("project_open"),
+                "scratch_scope": canStartWorkspace && workspaceRuntimeAvailable,
                 "sandbox_available": workspaceRuntimeAvailable,
                 "reason": !workspaceRuntimeAvailable ? "macos_sandbox_unavailable" : (canStartWorkspace && canRunWorkspace && canReadWorkspace ? "available" : "workspace_tools_not_routed_or_terminal_disabled")
             ] as [String: Any],
@@ -448,8 +451,10 @@ localTools: childTools,
                     // A scoped grant skips the prompt but is never converted
                     // into a one-shot approval token. The Workspace tool checks
                     // the live grant again immediately before command launch.
-                    let needsApproval = actionPolicy.requiresApproval(for: definition) &&
-                        !hasScopedGrant(call)
+                    let browserCommitNeedsApproval = await BrowserWorkspaceAITools.commitReview(for: call) != nil
+                    let needsApproval = NativeCapabilityAITools.ids.contains(definition.id) ||
+                        browserCommitNeedsApproval ||
+                        (actionPolicy.requiresApproval(for: definition) && !hasScopedGrant(call))
                     let approvalGranted = needsApproval ? await requestApproval(call) : false
                     guard !needsApproval || approvalGranted else {
                         return .json(["error": "The parent user denied or dismissed the Lima approval request."], isError: true)

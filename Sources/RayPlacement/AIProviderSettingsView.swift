@@ -49,7 +49,7 @@ struct AIProviderSettingsView: View {
                 Text(toolStore.accessMode.detail)
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Text(toolStore.accessMode == .fullControl
-                    ? "Full Control exposes every implemented Lima tool and skips Lima per-action prompts. Saved category choices return when you leave this mode. Browser AI Control, macOS permissions, sandbox boundaries, and execution limits still apply."
+                    ? "Full Control exposes implemented Lima tools and skips ordinary per-action prompts. Final Browser actions and visual clicks still require exact-call review. Saved category choices return when you leave this mode. Browser AI Control, macOS permissions, sandbox boundaries, and execution limits still apply."
                     : "Changing modes does not erase existing tool selections. Outside Full Control, disabled computer-action categories remain unavailable and required Lima prompts remain in effect.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
@@ -113,7 +113,7 @@ struct AIProviderSettingsView: View {
                             .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     }
                 }
-                Text("Full Control makes the implemented computer action tools available without Lima prompts. Browser AI access remains governed by the separate Browser AI Control mode, and sensitive fields stay protected. Outside Full Control, the category choices above govern other computer actions.")
+                Text("Full Control makes implemented computer action tools available without ordinary Lima prompts. Final Browser actions and visual clicks still require exact-call review; Browser AI Control and sensitive-field protections remain separate. Outside Full Control, the category choices above govern other computer actions.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Text("All AI terminal commands appear in Terminal. AI Workspace commands use a no-network macOS sandbox with writes confined to the session's current working directory and unrelated home reads denied. Outside Full Control, Allow in Directory can cover one session until revoked or its directory changes. Full Control skips Lima prompts, including for the older unsandboxed Run Terminal Command compatibility tool. A timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -139,7 +139,7 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. Lima tools follow the active Tool Access mode; embedded Browser actions also follow Browser AI Control. Full Control skips Lima computer-action prompts. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
+                    Text("Uses your local CLI sign-in. Lima tools follow the active Tool Access mode; embedded Browser actions also follow Browser AI Control. Full Control skips ordinary Lima computer-action prompts, not exact-call final Browser or visual-click reviews. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {

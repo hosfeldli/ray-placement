@@ -495,6 +495,8 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     var serverLabel: String
     var toolName: String
     var arguments: String?
+    /// A bounded, fresh Browser review shown to the user before a final action.
+    var browserReviewSummary: String?
     /// Set only for a reviewed, owned AI Workspace terminal_run request.
     var directoryGrantPath: String?
     var decision: AIToolApprovalDecision
@@ -507,6 +509,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         serverLabel: String,
         toolName: String,
         arguments: String? = nil,
+        browserReviewSummary: String? = nil,
         directoryGrantPath: String? = nil,
         decision: AIToolApprovalDecision = .pending,
         createdAt: Date = Date()
@@ -517,6 +520,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         self.serverLabel = serverLabel
         self.toolName = toolName
         self.arguments = arguments
+        self.browserReviewSummary = browserReviewSummary
         self.directoryGrantPath = directoryGrantPath
         self.decision = decision
         self.createdAt = createdAt
@@ -1673,11 +1677,18 @@ enum LimaAIToolRegistry {
     private static var candidateDefinitions: [LimaAIToolDefinition] {
         definitions
             + AIWorkspaceReadTools.definitions
+            + AIProjectTools.definitions
+            + AIUserQuestionTools.definitions
+            + AIProjectFileTools.definitions
             + AIContextTools.definitions
             + AINotesTools.definitions
             + BrowserWorkspaceAITools.definitions
             + AILocalComputerActionTools.definitions
             + AIWorkspaceActionTools.definitions
+            + AIProcessTools.definitions
+            + AIManagedServerTools.definitions
+            + NativeCapabilityAITools.definitions
+            + AIWorkbenchUtilityTools.definitions
             + ExtensionToolHostAdapterRegistry.approvedBindings().map(extensionDefinition)
     }
 
@@ -1697,9 +1708,16 @@ enum LimaAIToolRegistry {
     static var defaultEnabledToolIDs: Set<String> {
         Set(definitions.map(\.id))
             .union(AIWorkspaceReadTools.ids)
+            .union(AIProjectTools.readIDs)
+            .union(AIUserQuestionTools.ids)
+            .union(AIProjectFileTools.readIDs)
             .union(AIContextTools.ids)
             .union(AINotesTools.ids)
             .union(AIWorkspaceActionTools.readIDs)
+            .union(AIProcessTools.readIDs)
+            .union(AIManagedServerTools.readIDs)
+            .union(NativeCapabilityAITools.ids)
+            .union(AIWorkbenchUtilityTools.ids)
     }
 
     static func definition(for name: String?) -> LimaAIToolDefinition? {
@@ -1722,9 +1740,12 @@ enum LimaAIToolRegistry {
         }
     }
 
-    static func requiresApproval(for name: String?) -> Bool {
+    static func requiresApproval(for name: String?,
+                                 toolAccessMode: LimaAIToolAccessMode? = nil) -> Bool {
         guard let definition = definition(for: name) else { return false }
-        return AIComputerActionPolicy.shared.requiresApproval(for: definition)
+        return AIComputerActionPolicy.shared.requiresApproval(
+            for: definition, toolAccessMode: toolAccessMode ?? LimaAIToolStore.shared.accessMode
+        )
     }
 
     private static func extensionDefinition(_ binding: ExtensionAIToolBinding) -> LimaAIToolDefinition {
@@ -1744,7 +1765,11 @@ enum LimaAIToolRegistry {
     static func execute(
         _ call: AIOutputItem,
         approvalGranted: Bool = false,
-        conversationID: UUID? = nil
+        conversationID: UUID? = nil,
+        runID: UUID? = nil,
+        projectManager: AIProjectManager? = nil,
+        conversationStore: AIConversationStore? = nil,
+        toolAccessMode: LimaAIToolAccessMode? = nil
     ) async -> LimaAIToolExecution {
         guard AIRequestPolicy.shared.isEnabled, !Task.isCancelled else {
             return .json(["error": AIRequestPolicy.disabledMessage], isError: true)
@@ -1757,7 +1782,10 @@ enum LimaAIToolRegistry {
         // terminal_run has an additional live, session-scoped grant gate in
         // AIWorkspaceActionTools; no other action may bypass this policy check.
         guard definition.id == "terminal_run" || definition.actionCategory == nil
-                || AIComputerActionPolicy.shared.permits(definition, approvalGranted: approvalGranted) else {
+                || AIComputerActionPolicy.shared.permits(
+                    definition, approvalGranted: approvalGranted,
+                    toolAccessMode: toolAccessMode ?? LimaAIToolStore.shared.accessMode
+                ) else {
             return .json(["error": "This computer action is disabled or still needs your approval in Lima Settings."], isError: true)
         }
         if let binding = definition.extensionBinding {
@@ -1780,11 +1808,20 @@ enum LimaAIToolRegistry {
         if AIWorkspaceReadTools.ids.contains(definition.id) {
             return await AIWorkspaceReadTools.execute(call)
         }
+        if AIProjectTools.ids.contains(definition.id) {
+            return await AIProjectTools.execute(call, approvalGranted: approvalGranted,
+                                                conversationID: conversationID,
+                                                manager: projectManager, conversationStore: conversationStore,
+                                                toolAccessMode: toolAccessMode, runID: runID)
+        }
+        if AIProjectFileTools.ids.contains(definition.id) {
+            return await AIProjectFileTools.execute(call, approvalGranted: approvalGranted)
+        }
         if AINotesTools.ids.contains(definition.id) {
             return await AINotesTools.execute(call)
         }
         if BrowserWorkspaceAITools.ids.contains(definition.id) {
-            return await BrowserWorkspaceAITools.execute(call)
+            return await BrowserWorkspaceAITools.execute(call, approvalGranted: approvalGranted)
         }
         if AILocalComputerActionTools.ids.contains(definition.id) {
             return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted,
@@ -1793,6 +1830,22 @@ enum LimaAIToolRegistry {
         if AIWorkspaceActionTools.ids.contains(definition.id) {
             return await AIWorkspaceActionTools.execute(call, approvalGranted: approvalGranted,
                                                        conversationID: conversationID)
+        }
+        if AIManagedServerTools.ids.contains(definition.id) {
+            return await AIManagedServerTools.execute(call, approvalGranted: approvalGranted,
+                                                      conversationID: conversationID)
+        }
+        if AIProcessTools.ids.contains(definition.id) {
+            return await AIProcessTools.execute(call, approvalGranted: approvalGranted,
+                                                conversationID: conversationID)
+        }
+        if AIWorkbenchUtilityTools.ids.contains(definition.id) {
+            return await AIWorkbenchUtilityTools.execute(call)
+        }
+        if NativeCapabilityAITools.ids.contains(definition.id) {
+            return await NativeCapabilityAITools.execute(
+                call, approvalGranted: approvalGranted, runID: runID
+            )
         }
         switch definition.id {
         case "read_screen_context":
@@ -2182,6 +2235,27 @@ struct LimaAIToolGroup: Identifiable, Hashable {
                       "search_workspace_text", "inspect_directory_tree"]
         ),
         .init(
+            id: "projects",
+            title: "Projects",
+            summary: "Create durable work only when needed; archive, restore, or remove without deleting files",
+            symbol: "folder.badge.gearshape",
+            toolIDs: AIProjectTools.ids
+        ),
+        .init(
+            id: "user-interaction",
+            title: "User interaction",
+            summary: "Pause the current AI run for a structured user decision, then resume it",
+            symbol: "questionmark.bubble",
+            toolIDs: AIUserQuestionTools.ids
+        ),
+        .init(
+            id: "project-files",
+            title: "Project files",
+            summary: "Read, search, create, patch, move, copy, and explicitly delete files in active Projects",
+            symbol: "doc.text.magnifyingglass",
+            toolIDs: AIProjectFileTools.ids
+        ),
+        .init(
             id: "local-files",
             title: "Local files",
             summary: "Create, precisely edit, or replace bounded text and source files",
@@ -2201,6 +2275,27 @@ struct LimaAIToolGroup: Identifiable, Hashable {
             summary: "Start and monitor visible sandboxed sessions under the active mode",
             symbol: "terminal.fill",
             toolIDs: AIWorkspaceActionTools.ids
+        ),
+        .init(
+            id: "ai-workspace-processes",
+            title: "AI Workspace processes",
+            summary: "Inspect and control only conversation-owned Terminal processes and registered ports",
+            symbol: "gearshape.2",
+            toolIDs: AIProcessTools.ids
+        ),
+        .init(
+            id: "managed-servers",
+            title: "Managed servers",
+            summary: "Register Project-owned localhost servers, wait for readiness, reuse Browser tabs, and verify shutdown",
+            symbol: "network",
+            toolIDs: AIManagedServerTools.ids
+        ),
+        .init(
+            id: "workbench-utility",
+            title: "Workbench utility",
+            summary: "Use a cancellable bounded pause only when no condition can be observed",
+            symbol: "clock",
+            toolIDs: AIWorkbenchUtilityTools.ids
         ),
         .init(
             id: "lima-workspace",
@@ -2366,7 +2461,7 @@ enum LimaAIToolAccessMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .automatic: return "Available tools follow your capability and action settings."
         case .askForActions: return "Use available tools, but ask before computer actions."
-        case .fullControl: return "Expose every implemented tool without Lima per-action prompts; Browser AI Control and system boundaries still apply."
+        case .fullControl: return "Expose implemented tools without ordinary Lima prompts; final Browser actions and visual clicks still require exact-call review. Browser AI Control and system boundaries apply."
         case .custom: return "Preserve your previous individual tool selections."
         }
     }
@@ -2467,6 +2562,51 @@ final class LimaAIToolStore: ObservableObject {
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: workspaceReadMigrationKey)
         }
+        let projectFilesMigrationKey = "lima.ai.project-files-v1"
+        if !defaults.bool(forKey: projectFilesMigrationKey) {
+            enabledToolIDs.formUnion(AIProjectTools.ids)
+            enabledToolIDs.formUnion(AIProjectFileTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: projectFilesMigrationKey)
+        }
+        // Expose discovery-first Project resolution and same-run questions once.
+        let projectDiscoveryMigrationKey = "lima.ai.project-discovery-questions-v1"
+        if !defaults.bool(forKey: projectDiscoveryMigrationKey) {
+            enabledToolIDs.insert("project_search")
+            enabledToolIDs.formUnion(AIUserQuestionTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: projectDiscoveryMigrationKey)
+        }
+        let terminalSessionsMigrationKey = "lima.ai.terminal-sessions-v1"
+        if !defaults.bool(forKey: terminalSessionsMigrationKey) {
+            enabledToolIDs.insert("terminal_sessions")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: terminalSessionsMigrationKey)
+        }
+        let workspaceKillMigrationKey = "lima.ai.workspace-terminal-kill-v1"
+        if !defaults.bool(forKey: workspaceKillMigrationKey) {
+            enabledToolIDs.insert("terminal_kill")
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceKillMigrationKey)
+        }
+        let workspaceProcessesMigrationKey = "lima.ai.workspace-processes-v1"
+        if !defaults.bool(forKey: workspaceProcessesMigrationKey) {
+            enabledToolIDs.formUnion(AIProcessTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceProcessesMigrationKey)
+        }
+        let workbenchUtilityMigrationKey = "lima.ai.workbench-utility-v1"
+        if !defaults.bool(forKey: workbenchUtilityMigrationKey) {
+            enabledToolIDs.formUnion(AIWorkbenchUtilityTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workbenchUtilityMigrationKey)
+        }
+        let managedServersMigrationKey = "lima.ai.managed-servers-v1"
+        if !defaults.bool(forKey: managedServersMigrationKey) {
+            enabledToolIDs.formUnion(AIManagedServerTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: managedServersMigrationKey)
+        }
         // Retain the old migration marker without adding a second Browser switch.
         let capabilityMigrationKey = "lima.ai.browser-capabilities-v1"
         if !defaults.bool(forKey: capabilityMigrationKey) {
@@ -2520,8 +2660,12 @@ final class LimaAIToolStore: ObservableObject {
 
     func setAccessMode(_ mode: LimaAIToolAccessMode) {
         guard accessMode != mode else { return }
+        let leavingFullControl = accessMode == .fullControl && mode != .fullControl
         accessMode = mode
         defaults?.set(mode.rawValue, forKey: accessModeKey)
+        if leavingFullControl && self === Self.shared {
+            AIWorkspaceTerminalCoordinator.shared.revokeNetworkSessions()
+        }
     }
 
     func isEnabled(_ definition: LimaAIToolDefinition) -> Bool {
@@ -3129,7 +3273,7 @@ struct AIToolApprovalView: View {
                 Spacer()
             }
 
-            Text(requestSummary)
+            Text(request.browserReviewSummary ?? requestSummary)
                 .limaFont(.caption)
                 .foregroundStyle(LimaColors.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3180,13 +3324,18 @@ struct AIToolApprovalView: View {
         .limaGlassContainer(region: .hud, cornerRadius: 10)
         .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(LimaColors.warning.opacity(0.55), lineWidth: 1))
         .onAppear {
-            showingFullRequest = AIContextTools.memoryWriteIDs.contains(request.localToolID ?? request.toolName)
+            let toolID = request.localToolID ?? request.toolName
+            showingFullRequest = AIContextTools.memoryWriteIDs.contains(toolID) ||
+                NativeCapabilityAITools.ids.contains(toolID)
         }
     }
 
     private var requestSummary: String {
         let arguments = decodedArguments
         let toolID = request.localToolID ?? request.toolName
+        if NativeCapabilityAITools.ids.contains(toolID) {
+            return nativeCapabilitySummary(toolID, arguments: arguments)
+        }
         switch toolID {
         case "browser_new_tab":
             return "Create a Lima Browser tab\(host(arguments["url"] as? String).map { " at \($0)" } ?? "")."
@@ -3230,13 +3379,11 @@ struct AIToolApprovalView: View {
             return directory.map { "Run \(command) in \(compactQuoted($0) ?? "the selected directory") and show output in Terminal. This compatibility command is not sandboxed." }
                 ?? "Run \(command) and show output in Terminal. This compatibility command is not sandboxed."
         case "terminal_start":
-            if let name = compactQuoted(arguments["new_workspace"] as? String) {
-                return "Create AI Workspace project \(name) and start a visible sandboxed terminal session."
+            let directory = compactQuoted(arguments["directory"] as? String)
+            if let projectID = compactQuoted(arguments["project_id"] as? String) {
+                return "Start a visible sandboxed AI terminal session in Project \(projectID)\(directory.map { " at \($0)" } ?? "")."
             }
-            if let directory = compactQuoted(arguments["directory"] as? String) {
-                return "Start a visible sandboxed AI terminal session in \(directory)."
-            }
-            return "Start a visible sandboxed AI terminal session at the Lima Workspace root."
+            return "Start a visible sandboxed AI terminal session in temporary Scratch work."
         case "terminal_run":
             let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
             if let directory = request.directoryGrantPath {
@@ -3251,6 +3398,30 @@ struct AIToolApprovalView: View {
             return "Close the idle AI terminal session. Workspace files are not deleted."
         default:
             return "Review the complete request before allowing this tool to run."
+        }
+    }
+
+    private func nativeCapabilitySummary(_ toolID: String,
+                                         arguments: [String: Any]) -> String {
+        switch toolID {
+        case "screenshot_list": return "List saved screenshot metadata, not image pixels."
+        case "screenshot_search":
+            return "Search saved screenshots for \(compactQuoted(arguments["query"] as? String) ?? "the requested text"), including local OCR text."
+        case "screenshot_info":
+            return "Read metadata for saved screenshot \(compactQuoted(arguments["id"] as? String) ?? "the requested ID")."
+        case "screenshot_copy":
+            return "Copy saved screenshot \(compactQuoted(arguments["id"] as? String) ?? "the requested ID") as image data to the clipboard."
+        case "screenshot_delete":
+            return "Permanently delete saved screenshot \(compactQuoted(arguments["id"] as? String) ?? "the requested ID") and its thumbnail."
+        case "audio_list_outputs": return "List connected system audio output devices."
+        case "audio_get_output": return "Read the current system default audio output."
+        case "audio_set_output":
+            return "Switch the system default audio output to UID \(compactQuoted(arguments["uid"] as? String) ?? "the requested device") and verify it."
+        case "audio_get_volume": return "Read the current system output volume."
+        case "audio_set_volume":
+            return "Set the system output volume to \(arguments["percent"] ?? "the requested value")% and verify it."
+        case "audio_toggle_mute": return "Toggle the system output mute state and verify it."
+        default: return "Review this exact native service call before allowing it."
         }
     }
 

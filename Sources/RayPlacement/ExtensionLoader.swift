@@ -311,6 +311,11 @@ final class ExtensionLoader {
                         issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Duplicate command id: \(command.id)"))
                         continue
                     }
+                    if command.action.type == .nativeCapability,
+                       NativeCapabilityOperation(rawValue: command.action.operation ?? "") == nil {
+                        issues.append(ExtensionIssue(file: file.lastPathComponent, message: "Command \(command.id) names an unsupported native capability operation."))
+                        continue
+                    }
                     var required = requiredCapabilities(for: command.action)
                     if command.action.type == .shell, command.action.value.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") {
                         required.insert(.externalExecution)
@@ -373,6 +378,7 @@ final class ExtensionLoader {
                         extensionName: manifest.name,
                         directory: directory,
                         command: command,
+                        manifestHash: manifestHash,
                         capabilities: manifest.capabilities,
                         trust: manifest.trust,
                         pack: manifest.pack,
@@ -425,6 +431,8 @@ final class ExtensionLoader {
             return required
         case .generator:
             return []
+        case .nativeCapability:
+            return NativeCapabilityOperation(rawValue: action.operation ?? "").map { [$0.capability] } ?? []
         }
     }
 

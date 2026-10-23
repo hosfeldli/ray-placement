@@ -729,10 +729,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             size = desiredSize
         }
 
-        var frame = panel.frame
-        let center = NSPoint(x: frame.midX, y: frame.midY)
-        frame.size = size
-        frame.origin = NSPoint(x: center.x - size.width / 2, y: center.y - size.height / 2)
+        let frame = LauncherPanelLayout.resizedFrame(
+            panel.frame, to: size, anchorTop: viewModel.mode == .root
+        )
 
         guard animated, panel.isVisible else {
             panel.setFrame(frame, display: panel.isVisible)
@@ -757,8 +756,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             let x = visibleFrame.midX - size.width / 2
             let y: CGFloat
             if viewModel.mode == .root {
-                // Center the compact command surface like a palette. When typing
-                // expands it, resizePanel preserves this visual center.
+                // Present the compact command surface like a palette. Search
+                // expansion preserves its top edge, so the input does not move.
                 y = visibleFrame.midY - size.height / 2 - 36
             } else {
                 let topInset = max(64, visibleFrame.height * 0.12)
@@ -1597,7 +1596,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .system:
             dispatchSystemAction(action, completion: completion)
 
-        case .form, .generator, .shell, .url, .file:
+        case .form, .generator, .shell, .url, .file, .nativeCapability:
             // These action types are completed by ExtensionExecutor and should
             // never arrive here. Keep the fallback explicit for safety.
             completion()
@@ -2822,6 +2821,26 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             hide()
             toast.show("Copied from clipboard history")
 
+        case .screenshot:
+            guard result.id.hasPrefix("screenshot:"),
+                  let id = UUID(uuidString: String(result.id.dropFirst("screenshot:".count))) else {
+                presentError(title: result.title, message: "The screenshot identifier is invalid.")
+                return
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let (data, format) = try await UniversalSearchCoordinator.shared.screenshotImageData(for: id)
+                    guard ScreenshotClipboard.copy(data, format: format) else {
+                        throw ScreenshotCaptureError.clipboardUnavailable
+                    }
+                    self.hide()
+                    self.toast.show("Copied screenshot image")
+                } catch {
+                    self.presentError(title: result.title, message: error.localizedDescription)
+                }
+            }
+
         case .command:
             if result.id.hasPrefix("workflow:"),
                let id = UUID(uuidString: String(result.id.dropFirst("workflow:".count))),
@@ -3019,6 +3038,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openContextShelf:
             viewModel.enter(.contextShelf)
+
+        case .openScreenshotStudio:
+            let source = previousApplication ?? lastExternalApplication
+            hide()
+            ScreenshotStudioWindowController.shared.present(returningTo: source)
+
+        case .openAudioOutput:
+            let source = previousApplication ?? lastExternalApplication
+            hide()
+            AudioOutputWindowController.shared.present(returningTo: source)
+
+        case .openNetworkQuality:
+            let source = previousApplication ?? lastExternalApplication
+            hide()
+            NetworkQualityWindowController.shared.present(returningTo: source)
 
         case .addSelectionToShelf:
             captureSelectionToShelf(from: previousApplication ?? lastExternalApplication)

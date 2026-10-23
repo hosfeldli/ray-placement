@@ -1,5 +1,7 @@
+import AppKit
 import Foundation
 import Network
+import SwiftUI
 import Testing
 import WebKit
 @testable import RayPlacement
@@ -44,6 +46,101 @@ private final class BrowserLoopbackFixture {
     }
 
     deinit { listener.cancel() }
+}
+
+@Test @MainActor func browserWebViewHostTeardownPreservesAViewRemountedElsewhere() {
+    let tabID = UUID()
+    let webView = WKWebView(frame: .zero, configuration: WKWebViewConfiguration())
+    let first = BrowserWebViewHost(frame: .zero)
+    let second = BrowserWebViewHost(frame: .zero)
+
+    first.show(webView, tabID: tabID)
+    #expect(first.displayedWebView === webView)
+    #expect(webView.superview === first)
+    second.show(webView, tabID: tabID)
+    #expect(second.displayedWebView === webView)
+    #expect(webView.superview === second)
+
+    // SwiftUI may dismantle the original host after remounting the same tab.
+    first.detach()
+    #expect(webView.superview === second)
+    #expect(second.displayedTabID == tabID)
+    second.detach()
+    #expect(webView.superview == nil)
+}
+
+@Test @MainActor func embeddedBrowserSelectedTabMountsItsOwnPageOnRepeatedSwitches() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let markers = ["PAGE A", "PAGE B", "PAGE C"]
+    var tabs: [BrowserTab] = []
+    for marker in markers {
+        let tab = model.newTab()
+        let url = URL(string: "https://example.com/\(marker.replacingOccurrences(of: " ", with: "-"))")!
+        tab.webView.loadHTMLString("<html><title>\(marker)</title><body><h1>\(marker)</h1></body></html>",
+                                   baseURL: url)
+        _ = try await model.wait(tab.id, condition: .textPresent(marker), timeoutMilliseconds: 15_000)
+        tabs.append(tab)
+    }
+
+    let root = NSHostingView(rootView: BrowserWorkspaceView(model: model))
+    root.frame = CGRect(x: 0, y: 0, width: 1100, height: 760)
+    let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
+    window.contentView = root
+    defer { window.close() }
+
+    func displayedHost(in view: NSView) -> BrowserWebViewHost? {
+        if let host = view as? BrowserWebViewHost { return host }
+        for subview in view.subviews {
+            if let host = displayedHost(in: subview) { return host }
+        }
+        return nil
+    }
+
+    for index in [0, 1, 2, 0] {
+        let tab = tabs[index]
+        try model.focus(tab.id)
+        var host: BrowserWebViewHost?
+        for _ in 0..<100 {
+            root.layoutSubtreeIfNeeded()
+            host = displayedHost(in: root)
+            if host?.displayedWebView === tab.activeWebView { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(model.selectedTabID == tab.id)
+        let mounted = try #require(host?.displayedWebView)
+        #expect(mounted === tab.activeWebView)
+        #expect(host?.displayedTabID == tab.id)
+        #expect(mounted.superview === host)
+        #expect(tab.urlString.contains(markers[index].replacingOccurrences(of: " ", with: "-")))
+        let visibleMarker = try await mounted.evaluateJavaScript("document.querySelector('h1')?.textContent") as? String
+        #expect(visibleMarker == markers[index])
+    }
+    for tab in tabs { try await model.close(tab.id) }
+}
+
+@Test @MainActor func embeddedBrowserReusesProjectServerTab() async throws {
+    let fixture = try BrowserLoopbackFixture()
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    let projectID = UUID()
+    let serverID = UUID()
+    let first = try model.openServer(fixture.url, projectID: projectID, serverID: serverID)
+    #expect(first.context == BrowserTabContext(projectID: projectID, serverID: serverID, purpose: .localServer))
+    #expect(model.selectedTabID == first.id)
+    let second = try model.openServer(fixture.url, projectID: projectID, serverID: serverID)
+    #expect(second === first)
+    #expect(model.tabs.count == 1)
+    let changedURL = fixture.url.appendingPathComponent("fresh")
+    let redirected = try model.openServer(changedURL, projectID: projectID, serverID: serverID)
+    #expect(redirected === first)
+    #expect(first.urlString == changedURL.absoluteString)
+    #expect(model.tabs.count == 1)
+    let other = try model.openServer(fixture.url, projectID: projectID, serverID: UUID())
+    #expect(other.id != first.id)
+    #expect(model.tabs.count == 2)
+    #expect(model.selectedTabID == other.id)
+    try await model.close(other.id)
+    try await model.close(first.id)
 }
 
 @Test func embeddedBrowserDestinationRejectsUnsafeSchemesAndCredentials() {
@@ -423,11 +520,15 @@ private final class BrowserLoopbackFixture {
     for mode in BrowserAIControlMode.allCases {
         #expect(BrowserWorkspaceAITools.isAvailable("browser_capabilities", mode: mode))
         #expect(BrowserWorkspaceAITools.isAvailable("browser_read", mode: mode) == mode.canRead)
+        #expect(BrowserWorkspaceAITools.isAvailable("browser_form_read", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_screenshot", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_result_read", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_open_link", mode: mode) == mode.canNavigate)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_scan", mode: mode) == mode.canNavigate)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_focus", mode: mode) == mode.canInteract)
+        for id in ["browser_set_value", "browser_clear", "browser_select", "browser_toggle"] {
+            #expect(BrowserWorkspaceAITools.isAvailable(id, mode: mode) == mode.canInteract)
+        }
         #expect(BrowserWorkspaceAITools.isAvailable("browser_press_key", mode: mode) == mode.canInteract)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_submit", mode: mode) == mode.canInteract)
     }
@@ -905,7 +1006,7 @@ private final class BrowserLoopbackFixture {
     #expect(page.diagnostics.semanticRowCount >= 1)
     #expect(page.controls.contains { $0.label == "Continue" && !$0.sensitive })
     #expect(page.controls.filter { $0.label == "Continue" && $0.sensitive }.count == 2)
-    #expect(page.controls.contains { $0.label == "Password" && $0.sensitive })
+    #expect(page.controls.contains { $0.label == "Password or secret" && $0.sensitive && $0.confidential })
     #expect(page.controls.contains { $0.label == "Delete account" && $0.sensitive })
     #expect(page.controls.contains { $0.label == "Confirm" && $0.sensitive })
     #expect(page.controls.contains { $0.label == "Proceed" && $0.sensitive })
@@ -925,7 +1026,7 @@ private final class BrowserLoopbackFixture {
         "action": "click",
         "text": ""
     ]
-    let password = try #require(page.controls.first { $0.label == "Password" })
+    let password = try #require(page.controls.first { $0.label == "Password or secret" })
     var passwordArgs = args
     passwordArgs["targetID"] = password.id
     passwordArgs["action"] = "type"
@@ -1053,7 +1154,7 @@ private final class BrowserLoopbackFixture {
     await #expect(throws: BrowserRuntimeError.self) {
         _ = try await model.interact(tab.id, targetID: menu.id, action: .pressKey, text: "Enter")
     }
-    let password = try #require(snapshot.controls.first { $0.label == "Password" })
+    let password = try #require(snapshot.controls.first { $0.label == "Password or secret" })
     await #expect(throws: BrowserRuntimeError.self) {
         _ = try await model.interact(tab.id, targetID: password.id, action: .pressKey, text: "Escape")
     }
@@ -1066,7 +1167,7 @@ private final class BrowserLoopbackFixture {
     try await model.close(tab.id)
 }
 
-@Test @MainActor func embeddedBrowserScreenshotIsPrivateBoundedAndRejectsSensitivePage() async throws {
+@Test @MainActor func embeddedBrowserScreenshotIsPrivateBoundedAndMasksSensitivePage() async throws {
     let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
     model.aiControlMode = .readOnly
     let tab = model.newTab()
@@ -1095,10 +1196,18 @@ private final class BrowserLoopbackFixture {
     #expect(FileManager.default.fileExists(atPath: capture.fileURL.path))
     let attributes = try FileManager.default.attributesOfItem(atPath: capture.fileURL.path)
     #expect((attributes[.posixPermissions] as? NSNumber)?.intValue == 0o600)
-    _ = try await tab.webView.evaluateJavaScript("document.body.insertAdjacentHTML('beforeend', '<input type=\"password\" aria-label=\"Password\">')")
-    await #expect(throws: BrowserRuntimeError.self) {
-        _ = try await model.screenshot(tab.id)
-    }
+    _ = try await tab.webView.evaluateJavaScript("document.body.insertAdjacentHTML('beforeend', '<input type=\"password\" aria-label=\"Password\" value=\"private-test-value\">')")
+    let masked = try await model.screenshot(tab.id)
+    #expect(masked.redactionCount >= 1)
+    let point = try #require(try await tab.webView.evaluateJavaScript("""
+        const rect = document.querySelector('input[type=password]').getBoundingClientRect();
+        [rect.x + rect.width / 2, rect.y + rect.height / 2];
+        """) as? [Double])
+    let raster = try #require(NSBitmapImageRep(data: Data(contentsOf: masked.fileURL)))
+    let x = Int(point[0] * Double(masked.pixelWidth) / masked.pointWidth)
+    let y = Int(point[1] * Double(masked.pixelHeight) / masked.pointHeight)
+    let color = try #require(raster.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+    #expect(color.redComponent < 0.2 && color.greenComponent < 0.2 && color.blueComponent < 0.2)
     try await model.close(tab.id)
     #expect(!model.isScreenshotCurrent(capture))
     #expect(!FileManager.default.fileExists(atPath: capture.fileURL.path))
@@ -1212,7 +1321,9 @@ private final class BrowserLoopbackFixture {
         arguments: [
             "documentID": snapshot.identity.documentID,
             "routeGeneration": snapshot.identity.routeGeneration,
+            "mutationRevision": snapshot.identity.mutationRevision,
             "userRevision": snapshot.identity.userRevision,
+            "snapshotRevision": snapshot.identity.snapshotRevision,
             "direction": "down",
             "fraction": 0.8
         ],

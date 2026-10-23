@@ -184,9 +184,12 @@ enum AIChatVisualFixtures {
         return [AIWorkspaceTerminalSnapshot(
             id: UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000004")!,
             conversationID: nil,
-            directory: "/Users/fixture/Desktop/Lima Workspace/Prism Demo",
+            directory: "/Users/fixture/Library/Application Support/Lima/AI/Workspace/Projects/C0FFEE00-0000-4000-8000-000000000001",
+            workScope: .project(UUID(uuidString: "C0FFEE00-0000-4000-8000-000000000001")!),
             isBoundedExternal: false,
             isInteractivePTY: false,
+            networkEnabled: false,
+            processID: nil,
             state: scenario == .terminalRunning ? .running : .completed,
             output: output,
             firstOutputByte: 0,
@@ -249,7 +252,7 @@ enum AIChatVisualFixtures {
                     serverLabel: "Lima",
                     toolName: "terminal_run",
                     arguments: #"{"session_id":"C0FFEE00-0000-4000-8000-000000000004","command":"swift test"}"#,
-                    directoryGrantPath: "/Users/fixture/Desktop/Lima Workspace/Prism Demo"
+                    directoryGrantPath: "/Users/fixture/Library/Application Support/Lima/AI/Workspace/Projects/C0FFEE00-0000-4000-8000-000000000001"
                 )
             )
         case .memoryApproval:

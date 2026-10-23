@@ -7,6 +7,15 @@ enum LauncherSearchDesign {
     static func canShowInspector(at width: CGFloat) -> Bool { width >= 780 }
     static let inspectorWidth: CGFloat = 250
 
+    /// Keyboard navigation only scrolls when the selected row is outside the
+    /// visible results viewport. A lazy row with no frame is off-screen.
+    static func scrollAnchor(for rowFrame: CGRect?, viewportHeight: CGFloat) -> UnitPoint? {
+        guard viewportHeight > 0, let rowFrame else { return .center }
+        if rowFrame.minY < 0 { return .top }
+        if rowFrame.maxY > viewportHeight { return .bottom }
+        return nil
+    }
+
     static func title(for item: LauncherItem) -> String {
         item.id == "builtin.notes" ? "Open Notes" : item.title
     }
@@ -35,11 +44,25 @@ enum LauncherSearchDesign {
         case .enterMode: return "Open"
         case .system(let action):
             switch action {
-            case .openNotes, .openAIChat, .openQuickNote, .openSettings, .openContextShelf: return "Open"
+            case .openNotes, .openAIChat, .openQuickNote, .openSettings, .openContextShelf, .openScreenshotStudio, .openAudioOutput: return "Open"
             default: return "Run"
             }
         default: return "Run"
         }
+    }
+}
+
+private struct SearchResultFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+private struct SearchResultsViewportHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -55,6 +78,8 @@ struct LauncherSearchWorkspace: View {
     @State private var hoveredID: String?
     @State private var showingDetails = false
     @State private var showingInspector = false
+    @State private var resultRowFrames: [String: CGRect] = [:]
+    @State private var resultsViewportHeight: CGFloat = 0
     @ObservedObject private var settings = SettingsStore.shared
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -73,11 +98,9 @@ struct LauncherSearchWorkspace: View {
             let hasInspector = canShowInspector && showingInspector
             let wide = geometry.size.width >= 680
             VStack(spacing: 0) {
-                if !idle {
-                    LimaWindowDragRegion()
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 12)
-                }
+                LimaWindowDragRegion()
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 12)
                 VStack(spacing: idle ? 8 : 12) {
                     // This control stays in the same structural position while
                     // the controls and results around it change phase.
@@ -99,8 +122,8 @@ struct LauncherSearchWorkspace: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
-                .padding(.horizontal, idle ? 1 : (wide ? 16 : 12))
-                .padding(.top, idle ? 1 : 0)
+                .padding(.horizontal, wide ? 16 : 12)
+                .padding(.top, 0)
                 .padding(.bottom, idle ? 1 : (wide ? 16 : 12))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 if !idle {
@@ -175,11 +198,11 @@ struct LauncherSearchWorkspace: View {
 
     private func searchField(wide: Bool) -> some View {
         VStack(spacing: 7) {
-            HStack(spacing: idle ? 11 : 12) {
+            HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass")
-                    .font(.system(size: idle ? 20 : 21, weight: .medium))
+                    .font(.system(size: 21, weight: .medium))
                     .foregroundStyle(idle ? LimaTheme.textPrimary : LimaTheme.accentInk)
-                    .frame(width: idle ? 23 : nil)
+                    .frame(width: 23)
                     .accessibilityHidden(true)
                 ZStack(alignment: .leading) {
                     if model.query.isEmpty {
@@ -196,7 +219,7 @@ struct LauncherSearchWorkspace: View {
                         .accessibilityLabel("Search commands, apps, and local content")
                         .accessibilityIdentifier("lima-search-input")
                 }
-                .limaFont(.system(size: idle ? 16 : 17))
+                .limaFont(.system(size: 17))
                 if !idle && model.isSearching {
                     ProgressView().controlSize(.small)
                 }
@@ -213,7 +236,7 @@ struct LauncherSearchWorkspace: View {
                     .accessibilityLabel("Clear search")
                 }
             }
-            .frame(height: idle ? 34 : 56)
+            .frame(height: 50)
             if idle {
                 HStack(spacing: 8) {
                     quickActions(wide: wide)
@@ -224,8 +247,8 @@ struct LauncherSearchWorkspace: View {
                 .frame(height: 39)
             }
         }
-        .padding(.horizontal, idle ? (wide ? 16 : 12) : 17)
-        .padding(.vertical, idle ? 12 : 0)
+        .padding(.horizontal, 17)
+        .padding(.vertical, 0)
         .limaGlassContainer(region: .composer, cornerRadius: idle ? 20 : LimaRadius.searchField)
         .overlay {
             if idle {
@@ -402,19 +425,37 @@ struct LauncherSearchWorkspace: View {
                             .frame(maxWidth: .infinity, minHeight: 100)
                     }
                     ForEach(Array(model.results.enumerated()), id: \.element.id) { index, item in
-                        resultRow(item, index: index).id(item.id)
+                        resultRow(item, index: index)
+                            .background {
+                                GeometryReader { row in
+                                    Color.clear.preference(
+                                        key: SearchResultFramePreferenceKey.self,
+                                        value: [item.id: row.frame(in: .named("lima-search-results"))]
+                                    )
+                                }
+                            }
+                            .id(item.id)
                     }
                 }
                 .padding(.bottom, 12)
             }
-            .onChange(of: model.navigationGeneration) { _ in
-                guard let item = model.selectedItem else { return }
-                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
-                    scroll.scrollTo(item.id, anchor: .center)
+            .coordinateSpace(name: "lima-search-results")
+            .background {
+                GeometryReader { viewport in
+                    Color.clear.preference(key: SearchResultsViewportHeightPreferenceKey.self,
+                                           value: viewport.size.height)
                 }
             }
-            .onChange(of: model.query) { _ in
-                if let first = model.results.first { scroll.scrollTo(first.id, anchor: .top) }
+            .onPreferenceChange(SearchResultFramePreferenceKey.self) { resultRowFrames = $0 }
+            .onPreferenceChange(SearchResultsViewportHeightPreferenceKey.self) { resultsViewportHeight = $0 }
+            .onChange(of: model.navigationGeneration) { _ in
+                guard let item = model.selectedItem, model.isActionable(item),
+                      let anchor = LauncherSearchDesign.scrollAnchor(
+                        for: resultRowFrames[item.id], viewportHeight: resultsViewportHeight
+                      ) else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.12)) {
+                    scroll.scrollTo(item.id, anchor: anchor)
+                }
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
@@ -429,9 +470,11 @@ struct LauncherSearchWorkspace: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(LauncherSearchDesign.title(for: item))
                             .limaFont(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(LimaTheme.textPrimary).lineLimit(2)
+                            .foregroundStyle(LimaTheme.textPrimary).lineLimit(1)
+                            .frame(height: 18, alignment: .leading)
                         Text(item.subtitle).limaFont(.caption)
-                            .foregroundStyle(LimaTheme.textSecondary).lineLimit(2)
+                            .foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
+                            .frame(height: 16, alignment: .leading)
                     }
                     Spacer(minLength: 3)
                     if item.accessory == "Recent" || item.accessory == "Favorite" {
@@ -457,6 +500,7 @@ struct LauncherSearchWorkspace: View {
                 .accessibilityLabel(LauncherSearchDesign.primaryTitle(for: item) + " " + item.title)
             }
         }
+        .frame(height: 64)
         .background(selected ? LimaTheme.surfaceSelected : (hoveredID == item.id ? LimaTheme.surfaceSecondary : .clear),
                     in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? LimaTheme.borderStrong : .clear, lineWidth: 0.5))

@@ -37,8 +37,8 @@ struct AIExecutionCallbacks: Sendable {
     let canContinue: @MainActor @Sendable () -> Bool
     let persistResponseID: @MainActor @Sendable (String) -> Void
     let fail: @MainActor @Sendable (String, Bool) -> Void
-    let approvalRequired: @MainActor @Sendable (AIOutputItem) -> Bool
-    let queueApproval: @MainActor @Sendable (AIOutputItem) -> Void
+    let approvalRequired: @MainActor @Sendable (AIOutputItem) async -> Bool
+    let queueApproval: @MainActor @Sendable (AIOutputItem) async -> Void
     let reserveSubagent: @MainActor @Sendable () -> Int?
     let executeTool: @MainActor @Sendable (AIOutputItem, Int?) async -> AIEngineToolOutput?
     let toolFailure: @MainActor @Sendable (AIOutputItem, String) -> AIEngineToolOutput?
