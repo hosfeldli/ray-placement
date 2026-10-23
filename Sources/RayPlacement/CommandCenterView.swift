@@ -665,6 +665,8 @@ struct CommandCenterView: View {
         case "builtin.dictation": value = settings.dictationShortcut
         case "builtin.terminal": value = settings.terminalShortcut
         case "builtin.context-shelf.capture-selection": value = settings.contextShelfCaptureShortcut
+        case "builtin.quick-capture-region": value = settings.quickCaptureRegionShortcut
+        case "builtin.text-reader-region": value = settings.textReaderRegionShortcut
         default: return ""
         }
         return ShortcutSpec(string: value)?.displayString ?? value
@@ -677,7 +679,9 @@ struct CommandCenterView: View {
             "builtin.quick-note",
             "builtin.note-dictation",
             "builtin.terminal",
-            "builtin.add-selection-to-shelf"
+            "builtin.add-selection-to-shelf",
+            "builtin.quick-capture-region",
+            "builtin.text-reader-region"
         ].contains(entry.id)
     }
 

@@ -444,6 +444,10 @@ final class SettingsStore: ObservableObject {
         static let terminalHotkeyEnabled = "terminalHotkeyEnabled"
         static let contextShelfCaptureShortcut = "contextShelfCaptureShortcut"
         static let contextShelfCaptureHotkeyEnabled = "contextShelfCaptureHotkeyEnabled"
+        static let quickCaptureRegionShortcut = "quickCaptureRegionShortcut"
+        static let quickCaptureRegionHotkeyEnabled = "quickCaptureRegionHotkeyEnabled"
+        static let textReaderRegionShortcut = "textReaderRegionShortcut"
+        static let textReaderRegionHotkeyEnabled = "textReaderRegionHotkeyEnabled"
         static let accessoryMouseBindings = "accessoryMouseBindings"
         static let accentTheme = "accentTheme"
         static let contrastMode = "contrastMode"
@@ -644,6 +648,38 @@ final class SettingsStore: ObservableObject {
     @Published var contextShelfCaptureHotkeyEnabled: Bool {
         didSet {
             defaults.set(contextShelfCaptureHotkeyEnabled, forKey: Key.contextShelfCaptureHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var quickCaptureRegionShortcut: String {
+        didSet {
+            defaults.set(quickCaptureRegionShortcut, forKey: Key.quickCaptureRegionShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var quickCaptureRegionHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(quickCaptureRegionHotkeyEnabled, forKey: Key.quickCaptureRegionHotkeyEnabled)
+            NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+        }
+    }
+
+    @Published var textReaderRegionShortcut: String {
+        didSet {
+            defaults.set(textReaderRegionShortcut, forKey: Key.textReaderRegionShortcut)
+            if !isRestoringActionShortcut {
+                NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
+            }
+        }
+    }
+
+    @Published var textReaderRegionHotkeyEnabled: Bool {
+        didSet {
+            defaults.set(textReaderRegionHotkeyEnabled, forKey: Key.textReaderRegionHotkeyEnabled)
             NotificationCenter.default.post(name: .rayPlacementActionShortcutsChanged, object: nil)
         }
     }
@@ -1097,6 +1133,10 @@ final class SettingsStore: ObservableObject {
         terminalShortcut = defaults.string(forKey: Key.terminalShortcut) ?? "control+option+t"
         contextShelfCaptureShortcut = defaults.string(forKey: Key.contextShelfCaptureShortcut) ?? "control+option+s"
         contextShelfCaptureHotkeyEnabled = defaults.object(forKey: Key.contextShelfCaptureHotkeyEnabled) as? Bool ?? false
+        quickCaptureRegionShortcut = defaults.string(forKey: Key.quickCaptureRegionShortcut) ?? "control+option+shift+c"
+        quickCaptureRegionHotkeyEnabled = defaults.object(forKey: Key.quickCaptureRegionHotkeyEnabled) as? Bool ?? false
+        textReaderRegionShortcut = defaults.string(forKey: Key.textReaderRegionShortcut) ?? "control+option+shift+t"
+        textReaderRegionHotkeyEnabled = defaults.object(forKey: Key.textReaderRegionHotkeyEnabled) as? Bool ?? false
         terminalHotkeyEnabled = defaults.object(forKey: Key.terminalHotkeyEnabled) as? Bool ?? false
         accessoryMouseBindings = defaults.dictionary(forKey: Key.accessoryMouseBindings) as? [String: String] ?? [:]
         accentTheme = AppAccentTheme(rawValue: defaults.string(forKey: Key.accentTheme) ?? "") ?? .violet
@@ -1319,6 +1359,18 @@ final class SettingsStore: ObservableObject {
         isRestoringActionShortcut = false
     }
 
+    func restoreQuickCaptureRegionShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        quickCaptureRegionShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
+    func restoreTextReaderRegionShortcut(_ shortcut: String) {
+        isRestoringActionShortcut = true
+        textReaderRegionShortcut = shortcut
+        isRestoringActionShortcut = false
+    }
+
     func restoreTerminalShortcut(_ shortcut: String) { isRestoringActionShortcut = true; terminalShortcut = shortcut; isRestoringActionShortcut = false }
 
     func restoreStealthGrammarShortcut(_ shortcut: String) {
@@ -1478,6 +1530,10 @@ final class SettingsStore: ObservableObject {
         case Key.terminalHotkeyEnabled: if let value = bool() { terminalHotkeyEnabled = value }
         case Key.contextShelfCaptureShortcut: if let value = string() { contextShelfCaptureShortcut = value }
         case Key.contextShelfCaptureHotkeyEnabled: if let value = bool() { contextShelfCaptureHotkeyEnabled = value }
+        case Key.quickCaptureRegionShortcut: if let value = string() { quickCaptureRegionShortcut = value }
+        case Key.quickCaptureRegionHotkeyEnabled: if let value = bool() { quickCaptureRegionHotkeyEnabled = value }
+        case Key.textReaderRegionShortcut: if let value = string() { textReaderRegionShortcut = value }
+        case Key.textReaderRegionHotkeyEnabled: if let value = bool() { textReaderRegionHotkeyEnabled = value }
         case Key.accentTheme:
             if let value = string(), let parsed = AppAccentTheme(rawValue: value) { accentTheme = parsed }
         case Key.contrastMode:

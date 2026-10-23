@@ -396,6 +396,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func showFocusedFileLauncher() { viewModel.enter(.files); presentPanel() }
 
+    func startQuickRegionCapture(_ kind: QuickRegionCaptureKind,
+                                 sourceApplication: NSRunningApplication? = nil) {
+        let externalSource = sourceApplication?.bundleIdentifier == Bundle.main.bundleIdentifier
+            ? nil : sourceApplication
+        let source = externalSource ?? previousApplication ?? lastExternalApplication
+        hide()
+        QuickRegionCaptureController.shared.start(kind, returningTo: source)
+    }
+
     func captureSelectionToShelf(from sourceApplication: NSRunningApplication?) {
         contextShelfCapture.capture(from: sourceApplication) { [weak self] result in
             guard let self else { return }
@@ -3043,6 +3052,12 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             let source = previousApplication ?? lastExternalApplication
             hide()
             ScreenshotStudioWindowController.shared.present(returningTo: source)
+
+        case .quickCaptureRegion:
+            startQuickRegionCapture(.image)
+
+        case .textReaderRegion:
+            startQuickRegionCapture(.text)
 
         case .openAudioOutput:
             let source = previousApplication ?? lastExternalApplication

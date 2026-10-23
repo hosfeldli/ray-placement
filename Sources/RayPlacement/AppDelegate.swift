@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var registeredTerminalShortcut: ShortcutSpec?
     private var registeredStealthGrammarShortcut: ShortcutSpec?
     private var registeredContextShelfCaptureShortcut: ShortcutSpec?
+    private var registeredQuickCaptureRegionShortcut: ShortcutSpec?
+    private var registeredTextReaderRegionShortcut: ShortcutSpec?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.arguments.contains("--unregister-login-item-and-quit") {
@@ -258,6 +260,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             restore: SettingsStore.shared.restoreContextShelfCaptureShortcut
         ) { [weak self] application in
             self?.launcher.captureSelectionToShelf(from: application)
+        }
+        registerActionHotkeyFromApplication(
+            identifier: "builtin.quick-capture-region",
+            displayName: "Quick Capture Region",
+            enabled: SettingsStore.shared.quickCaptureRegionHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.quickCaptureRegionShortcut,
+            previous: &registeredQuickCaptureRegionShortcut,
+            restore: SettingsStore.shared.restoreQuickCaptureRegionShortcut
+        ) { [weak self] application in
+            self?.launcher.startQuickRegionCapture(.image, sourceApplication: application)
+        }
+        registerActionHotkeyFromApplication(
+            identifier: "builtin.text-reader-region",
+            displayName: "Text Reader Region",
+            enabled: SettingsStore.shared.textReaderRegionHotkeyEnabled,
+            rawShortcut: SettingsStore.shared.textReaderRegionShortcut,
+            previous: &registeredTextReaderRegionShortcut,
+            restore: SettingsStore.shared.restoreTextReaderRegionShortcut
+        ) { [weak self] application in
+            self?.launcher.startQuickRegionCapture(.text, sourceApplication: application)
         }
         CommandManager.shared.validateShortcuts(launcher.viewModel.extensionCommands)
     }

@@ -156,6 +156,8 @@ final class CommandManager: ObservableObject {
             ("builtin.notes-dock-right", "Dock Notes Right", settings.notesDockRightShortcut),
             ("builtin.terminal", "Terminal", settings.terminalShortcut),
             ("builtin.context-shelf.capture-selection", "Add Selection to Shelf", settings.contextShelfCaptureShortcut),
+            ("builtin.quick-capture-region", "Quick Capture Region", settings.quickCaptureRegionShortcut),
+            ("builtin.text-reader-region", "Text Reader Region", settings.textReaderRegionShortcut),
             ("builtin.stealth-grammar", "Fix Writing", settings.stealthGrammarShortcut)
         ]
 

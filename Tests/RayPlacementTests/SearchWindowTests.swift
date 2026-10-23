@@ -153,6 +153,26 @@ import Testing
     }
 }
 
+@Test @MainActor func directRegionCaptureCommandsStaySeparateFromScreenshotStudio() async throws {
+    let model = LauncherViewModel(
+        clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false
+    )
+    model.query = "Quick Capture Region"
+    await model.waitForLocalSearchForTesting()
+    let image = try #require(model.results.first { $0.id == "builtin.quick-capture-region" })
+    guard case .system(.quickCaptureRegion) = image.action else {
+        Issue.record("Quick Capture must start the direct region flow")
+        return
+    }
+    model.query = "Text Reader Region"
+    await model.waitForLocalSearchForTesting()
+    let text = try #require(model.results.first { $0.id == "builtin.text-reader-region" })
+    guard case .system(.textReaderRegion) = text.action else {
+        Issue.record("Text Reader must start the local OCR region flow")
+        return
+    }
+}
+
 @Test @MainActor func audioOutputIsAnExplicitPickerAction() async throws {
     let model = LauncherViewModel(
         clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false
@@ -223,6 +243,18 @@ import Testing
     if let shortcut = assignment?.shortcut?.storageString {
         #expect(manager.shortcutRegistry.owners(of: shortcut).contains { $0.id == "builtin.expanded-workspace" })
     }
+}
+
+@Test @MainActor func regionCaptureShortcutsParticipateInConflictChecks() {
+    let manager = CommandManager.shared
+    manager.validateShortcuts([])
+    let assignments = manager.shortcutRegistry.assignments
+    let image = assignments.first { $0.id == "builtin.quick-capture-region" }
+    let text = assignments.first { $0.id == "builtin.text-reader-region" }
+    #expect(image?.title == "Quick Capture Region")
+    #expect(text?.title == "Text Reader Region")
+    #expect(image?.shortcut?.storageString == ShortcutSpec(string: SettingsStore.shared.quickCaptureRegionShortcut)?.storageString)
+    #expect(text?.shortcut?.storageString == ShortcutSpec(string: SettingsStore.shared.textReaderRegionShortcut)?.storageString)
 }
 
 @Test func searchWindowKeepsDetailsOnDemandAtCompactWidths() {

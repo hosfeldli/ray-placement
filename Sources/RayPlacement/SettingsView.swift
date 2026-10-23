@@ -264,6 +264,8 @@ struct SettingsView: View {
         case "builtin.notes-dock-right": return settings.notesDockRightShortcut
         case "builtin.terminal": return settings.terminalShortcut
         case "builtin.context-shelf.capture-selection": return settings.contextShelfCaptureShortcut
+        case "builtin.quick-capture-region": return settings.quickCaptureRegionShortcut
+        case "builtin.text-reader-region": return settings.textReaderRegionShortcut
         case "builtin.stealth-grammar": return settings.stealthGrammarShortcut
         default:
             return extensionCommand(for: assignmentID).flatMap { settings.effectiveShortcut(for: $0) } ?? ""
@@ -302,6 +304,8 @@ struct SettingsView: View {
         case "builtin.notes-dock-right": settings.notesDockRightShortcut = shortcut
         case "builtin.terminal": settings.terminalShortcut = shortcut
         case "builtin.context-shelf.capture-selection": settings.contextShelfCaptureShortcut = shortcut
+        case "builtin.quick-capture-region": settings.quickCaptureRegionShortcut = shortcut
+        case "builtin.text-reader-region": settings.textReaderRegionShortcut = shortcut
         case "builtin.stealth-grammar": settings.stealthGrammarShortcut = shortcut
         default:
             if let command = extensionCommand(for: assignmentID) {
@@ -322,6 +326,8 @@ struct SettingsView: View {
             "builtin.notes-dock-right": "Dock Notes Right",
             "builtin.terminal": "Terminal",
             "builtin.context-shelf.capture-selection": "Add Selection to Shelf",
+            "builtin.quick-capture-region": "Quick Capture Region",
+            "builtin.text-reader-region": "Text Reader Region",
             "builtin.stealth-grammar": "Fix Writing"
         ]
         return titles[assignmentID] ?? extensionCommand(for: assignmentID).map {
@@ -1387,6 +1393,18 @@ struct SettingsView: View {
                     symbol: "text.badge.plus",
                     enabled: $settings.contextShelfCaptureHotkeyEnabled,
                     shortcut: shortcutBinding(for: "builtin.context-shelf.capture-selection")
+                )
+                PrimaryShortcutRow(
+                    title: "Quick Capture Region",
+                    symbol: "rectangle.dashed",
+                    enabled: $settings.quickCaptureRegionHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.quick-capture-region")
+                )
+                PrimaryShortcutRow(
+                    title: "Text Reader Region",
+                    symbol: "text.viewfinder",
+                    enabled: $settings.textReaderRegionHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.text-reader-region")
                 )
             }
 

@@ -267,6 +267,8 @@ enum SystemAction {
     case openTerminal
     case openContextShelf
     case openScreenshotStudio
+    case quickCaptureRegion
+    case textReaderRegion
     case openAudioOutput
     case openNetworkQuality
     case addSelectionToShelf
