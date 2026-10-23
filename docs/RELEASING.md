@@ -15,7 +15,7 @@ a separate future project.
 
 * The complete-scope Browser and AI Workbench publish remains blocked until every
     item in [the embedded Browser release gate](EMBEDDED_BROWSER_RELEASE_GATE.md)
-    is complete. For `v3.14.25` through `v3.14.28` only, the requester explicitly
+    is complete. For `v3.14.25` through `v3.14.29` only, the requester explicitly
     directed limited releases despite open feature and performance gates. Disclose
     those limits in the tag-matched release notes; never claim the full Workbench is
     complete or bypass failed build, signing, artifact, or remote-verification checks.
@@ -24,7 +24,7 @@ a separate future project.
     source files. Tagging is an explicit operation handled only by
     `release_tag.sh`.
 * `release_stage.sh` creates or resumes **draft** releases only.
-* Except for the documented limited `v3.14.25` through `v3.14.28` releases, the
+* Except for the documented limited `v3.14.25` through `v3.14.29` releases, the
     embedded Browser release gate must pass before preparing a version. The signed app and DMG
     verifiers reject legacy Browser Bridge native-host and extension resources.
 * Published releases are never overwritten by the release scripts.
