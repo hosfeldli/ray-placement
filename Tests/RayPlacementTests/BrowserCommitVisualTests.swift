@@ -279,8 +279,11 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
         browser: model
     )
     #expect(!screenshot.isError)
-    let screenshotData = try #require(screenshot.output.data(using: .utf8))
-    let capture = try JSONDecoder().decode(BrowserScreenshotResult.self, from: screenshotData)
+    let capture = try #require(screenshot.browserScreenshot)
+    #expect(screenshot.output.contains(capture.captureID.uuidString))
+    #expect(!screenshot.output.contains("fileURL"))
+    #expect(!screenshot.output.contains("authorityRevision"))
+    #expect(!screenshot.output.contains("pageIdentity"))
     let (x, y) = browserVisualPoint(110, 90, in: capture)
     let hitResult = await BrowserWorkspaceAITools.execute(
         try browserVisualCall("browser_hit_test", [
@@ -466,7 +469,8 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
         pixelWidth: fresh.pixelWidth, pixelHeight: fresh.pixelHeight,
         pointWidth: fresh.pointWidth, pointHeight: fresh.pointHeight,
         byteCount: fresh.byteCount, authorityRevision: fresh.authorityRevision,
-        readRevision: fresh.readRevision
+        readRevision: fresh.readRevision,
+        navigationRevision: fresh.navigationRevision
     )
     #expect(!model.isScreenshotCurrent(expired))
     try await model.close(tab.id)
@@ -521,6 +525,9 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     _ = try await tab.webView.evaluateJavaScript(
         "document.getElementById('tile').setAttribute('aria-label', 'Credit card number')"
     )
+    // Legacy hit testing uses semantic targets; a visual screenshot no longer
+    // refreshes the semantic snapshot after a page mutation.
+    _ = try await model.read(tab.id)
     let protectedCapture = try await model.screenshot(tab.id)
     #expect(protectedCapture.redactionCount >= 1)
     let raster = try #require(NSBitmapImageRep(data: Data(contentsOf: protectedCapture.fileURL)))

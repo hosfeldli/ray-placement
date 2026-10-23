@@ -1036,7 +1036,31 @@ enum BrowserSemanticScript {
     if (!state || state.lastURL !== location.href) throw new Error("stale_target");
     const rects = [];
     const secrets = [];
-    let inspected = 0, complete = true;
+    // Capture safety must not depend on a prior semantic snapshot. Visual-only
+    // observation installs the isolated world but never calls snapshot().
+    const secureKind = element => {
+      if (!element.matches("input,textarea,[contenteditable=true]")) return null;
+      const type = (element.getAttribute("type") || "").toLowerCase();
+      const autocomplete = (element.getAttribute("autocomplete") || "").toLowerCase();
+      const hint = [element.name, element.id, autocomplete,
+        element.getAttribute("aria-label"), element.getAttribute("placeholder"),
+        element.labels?.[0]?.innerText].filter(Boolean).join(" ").toLowerCase();
+      if (type === "password" || /password|passcode|credential|secret|api.?key|access.?token/.test(hint)) return "password";
+      if (autocomplete.includes("one-time-code") || /one.?time.?code|otp|verification.?code|security.?code/.test(hint)) return "one_time_code";
+      if (autocomplete.includes("cc-csc") || /cvv|cvc|card.?security/.test(hint)) return "card_security_code";
+      if (autocomplete.includes("cc-exp") || /card.?expir|expiry|expiration/.test(hint)) return "card_expiration";
+      if (autocomplete.includes("cc-number") || /card.?number|credit.?card|debit.?card|\bpan\b/.test(hint)) return "card_number";
+      if (/routing.?number|bank.?account|iban|swift.?code/.test(hint)) return "bank_account";
+      if (/social.?security|\bssn\b|government.?id|passport.?number/.test(hint)) return "government_id";
+      return null;
+    };
+    const protectedCanvas = element => {
+      if (element.localName !== "canvas") return false;
+      const hint = [element.getAttribute("aria-label"), element.getAttribute("title"),
+        element.getAttribute("data-label")].filter(Boolean).join(" ");
+      return /password|passcode|otp|one.?time.?code|card.?number|credit.?card|cvv|cvc|bank.?account|routing.?number|social.?security|ssn/i.test(hint);
+    };
+    let inspected = 0, complete = true, frameCount = 0;
     const addRect = node => {
       const box = node?.getBoundingClientRect?.();
       if (!box || box.width <= 0 || box.height <= 0) return;
@@ -1047,9 +1071,12 @@ enum BrowserSemanticScript {
       for (const node of root.querySelectorAll("*")) {
         if (++inspected > 20000) { complete = false; break; }
         if (node.shadowRoot) walk(node.shadowRoot);
-        if (node.localName === "iframe" || node.localName === "frame") addRect(node);
-        if (node.localName === "canvas" && state.isSensitive?.(node)) addRect(node);
-        const kind = state.secureKind?.(node);
+        if (node.localName === "iframe" || node.localName === "frame") {
+          frameCount++;
+          addRect(node);
+        }
+        if (protectedCanvas(node)) addRect(node);
+        const kind = secureKind(node);
         if (!kind) continue;
         addRect(node);
         const value = String(node.isContentEditable ? node.textContent : node.value || "");
@@ -1105,7 +1132,7 @@ enum BrowserSemanticScript {
       identity: {documentID: state.documentID, routeGeneration: state.routeGeneration,
         mutationRevision: state.mutationRevision, userRevision: state.userRevision,
         snapshotRevision: state.snapshotRevision, url: location.href},
-      complete, rects
+      complete, frameCount, hasFilledSecureField: secrets.length > 0, rects
     });
     """#
 

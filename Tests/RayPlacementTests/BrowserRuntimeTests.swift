@@ -521,6 +521,7 @@ private final class BrowserLoopbackFixture {
     for mode in BrowserAIControlMode.allCases {
         #expect(BrowserWorkspaceAITools.isAvailable("browser_capabilities", mode: mode))
         #expect(BrowserWorkspaceAITools.isAvailable("browser_read", mode: mode) == mode.canRead)
+        #expect(BrowserWorkspaceAITools.isAvailable("browser_observe", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_form_read", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_screenshot", mode: mode) == mode.canRead)
         #expect(BrowserWorkspaceAITools.isAvailable("browser_result_read", mode: mode) == mode.canRead)

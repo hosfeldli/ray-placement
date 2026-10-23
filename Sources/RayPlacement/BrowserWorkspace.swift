@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import WebKit
 
-private struct BrowserScreenshotMask: Codable, Equatable {
+struct BrowserScreenshotMask: Codable, Equatable {
     let x: Double
     let y: Double
     let width: Double
@@ -19,10 +19,37 @@ private struct BrowserScreenshotMask: Codable, Equatable {
     }
 }
 
-private struct BrowserScreenshotRedaction: Codable {
+struct BrowserScreenshotRedaction: Codable {
     let identity: BrowserPageIdentity
     let complete: Bool
+    let frameCount: Int
+    var hasFilledSecureField: Bool = false
     let rects: [BrowserScreenshotMask]
+
+    /// Visual capture tolerates ordinary page-text mutations but fails closed
+    /// when the document, user input, masking geometry, frames, or viewport
+    /// may have changed between the before and after safety inspections.
+    func verifyCapture(after: Self, navigationUnchanged: Bool,
+                       viewportUnchanged: Bool) throws {
+        guard identity.documentID == after.identity.documentID,
+              identity.routeGeneration == after.identity.routeGeneration,
+              identity.userRevision == after.identity.userRevision,
+              identity.url == after.identity.url,
+              navigationUnchanged else {
+            throw BrowserCaptureFailure.navigationChanged
+        }
+        guard frameCount == after.frameCount else {
+            throw BrowserCaptureFailure.frameUnaccounted
+        }
+        guard hasFilledSecureField == after.hasFilledSecureField,
+              rects.count == after.rects.count,
+              zip(rects, after.rects).allSatisfy({ $0.isNear($1) }) else {
+            throw BrowserCaptureFailure.redactionUnresolved
+        }
+        guard viewportUnchanged else {
+            throw BrowserCaptureFailure.invalidViewport
+        }
+    }
 }
 
 private final class BrowserFrameMessageHandler: NSObject, WKScriptMessageHandler {
@@ -410,11 +437,15 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
 
     func isScreenshotCurrent(_ capture: BrowserScreenshotResult) -> Bool {
-        isResultAccessible(on: capture.tabID) &&
+        // A protected visual capture is independently usable even when semantic
+        // extraction is partial. Fresh semantic targets still require a read.
+        aiControlMode.canRead && !pausedTabIDs.contains(capture.tabID) &&
+            tabs.contains(where: { $0.id == capture.tabID }) &&
             Date().timeIntervalSince(capture.capturedAt) >= 0 &&
             Date().timeIntervalSince(capture.capturedAt) <= 120 &&
             authorityRevisions[capture.tabID, default: 0] == capture.authorityRevision &&
-            readRevisions[capture.tabID, default: 0] == capture.readRevision
+            readRevisions[capture.tabID, default: 0] == capture.readRevision &&
+            tabs.first(where: { $0.id == capture.tabID })?.navigationRevision == capture.navigationRevision
     }
 
     var selectedTab: BrowserTab? { tabs.first { $0.id == selectedTabID } }
@@ -743,44 +774,96 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
 
     private func screenshotRedaction(_ webView: WKWebView,
-                                     expected: BrowserPageIdentity) async throws -> BrowserScreenshotRedaction {
-        let raw = try await webView.callAsyncJavaScript(
-            BrowserSemanticScript.screenshotRedaction, arguments: [:], in: nil,
-            contentWorld: .world(name: BrowserSemanticScript.world)
-        )
+                                     frame: WKFrameInfo? = nil) async throws -> BrowserScreenshotRedaction {
+        let raw: Any?
+        do {
+            raw = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.screenshotRedaction, arguments: [:], in: frame,
+                contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            throw BrowserCaptureFailure.redactionUnresolved
+        }
         guard let json = raw as? String, let data = json.data(using: .utf8),
               let result = try? JSONDecoder().decode(BrowserScreenshotRedaction.self, from: data),
-              result.identity == expected, result.complete,
+              result.complete, (0...240).contains(result.frameCount),
               result.rects.count <= 240, result.rects.allSatisfy(\.isValid) else {
-            throw BrowserRuntimeError.screenshotProtected
+            throw BrowserCaptureFailure.redactionUnresolved
         }
         return result
     }
 
+    /// Masking frame pixels is not enough if a filled protected value inside a
+    /// child frame can be echoed into the parent document. Inspect every
+    /// registered frame in the isolated safety world, without a semantic read
+    /// or returning any protected value. Unknown frames withhold the image.
+    private func screenshotFrameIDs(_ tab: BrowserTab, webView: WKWebView,
+                                    main: BrowserScreenshotRedaction) async throws -> Set<String> {
+        let frames = tab.registeredFrames
+        var nestedFrameCount = 0
+        for (_, frameInfo) in frames {
+            let child: BrowserScreenshotRedaction
+            do {
+                child = try await screenshotRedaction(webView, frame: frameInfo)
+            } catch {
+                throw BrowserCaptureFailure.frameUnaccounted
+            }
+            guard !child.hasFilledSecureField else {
+                throw BrowserCaptureFailure.redactionUnresolved
+            }
+            nestedFrameCount += child.frameCount
+        }
+        guard main.frameCount + nestedFrameCount == frames.count else {
+            throw BrowserCaptureFailure.frameUnaccounted
+        }
+        return Set(frames.map(\.0))
+    }
+
     func screenshot(_ id: UUID) async throws -> BrowserScreenshotResult {
         guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
+        try requireAIAccess(id)
+        let tab = try tab(id)
         let authorityRevision = authorityRevisions[id, default: 0]
+        let readRevision = readRevisions[id, default: 0]
+        let navigationRevision = tab.navigationRevision
         beginOperation(on: id)
         defer { endOperation(on: id) }
-        let snapshot = try await wait(id, condition: .pageStable, timeoutMilliseconds: 5_000)
-        // An incomplete traversal or protected child frame cannot justify a
-        // pixel release: the parent may echo a child value outside its bounds.
-        guard !snapshot.diagnostics.truncated,
-              !snapshot.secureFields.contains(where: { $0.filled && $0.frameID != "main" }) else {
-            throw BrowserRuntimeError.screenshotProtected
+        let webView = useLiveView(tab)
+        await awaitRevocation(for: id)
+        guard !tab.isRestoring, !tab.restoreFailed else {
+            throw BrowserCaptureFailure.pageUnavailable
         }
-        let tab = try tab(id)
-        guard let webView = tab.activeWebView else { throw BrowserRuntimeError.missingSnapshot }
-        let masksBefore = try await screenshotRedaction(webView, expected: snapshot.identity)
+        // Install only the private safety collector. A full semantic read and
+        // a quiet page are not prerequisites for protected visual observation.
+        do {
+            _ = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.install, arguments: [:], in: nil,
+                contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            throw BrowserCaptureFailure.pageUnavailable
+        }
+        let masksBefore = try await screenshotRedaction(webView)
+        let frameIDsBefore = try await screenshotFrameIDs(
+            tab, webView: webView, main: masksBefore
+        )
         let bounds = webView.bounds
-        guard bounds.width >= 1, bounds.height >= 1 else { throw BrowserRuntimeError.unsupportedAction }
+        guard bounds.width.isFinite, bounds.height.isFinite,
+              bounds.width >= 1, bounds.height >= 1 else {
+            throw BrowserCaptureFailure.invalidViewport
+        }
         let configuration = WKSnapshotConfiguration()
         configuration.rect = CGRect(x: 0, y: 0,
                                     width: min(1280, bounds.width),
                                     height: min(900, bounds.height))
-        let image = try await webView.takeSnapshot(configuration: configuration)
+        let image: NSImage
+        do {
+            image = try await webView.takeSnapshot(configuration: configuration)
+        } catch {
+            throw BrowserCaptureFailure.webKitFailure
+        }
         guard let source = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-            throw BrowserRuntimeError.unsupportedAction
+            throw BrowserCaptureFailure.webKitFailure
         }
         // WebKit snapshots use backing pixels, often 2× the point-sized view.
         // Bound the encoded raster itself, not just the snapshot rectangle.
@@ -791,30 +874,25 @@ final class BrowserWorkspaceModel: ObservableObject {
             data: nil, width: width, height: height, bitsPerComponent: 8,
             bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { throw BrowserRuntimeError.unsupportedAction }
+        ) else { throw BrowserCaptureFailure.invalidViewport }
         context.interpolationQuality = .high
         context.draw(source, in: CGRect(x: 0, y: 0, width: width, height: height))
         try Task.checkCancellation()
         guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
         try requireAIAccess(id)
         _ = try self.tab(id)
-        let after = try await read(id)
-        guard after.identity.documentID == snapshot.identity.documentID,
-              after.identity.routeGeneration == snapshot.identity.routeGeneration,
-              after.identity.mutationRevision == snapshot.identity.mutationRevision,
-              after.identity.userRevision == snapshot.identity.userRevision,
-              after.frameContexts?.map({ "\($0.id)|\($0.url)|\($0.origin)" }) ==
-                snapshot.frameContexts?.map({ "\($0.id)|\($0.url)|\($0.origin)" }),
-              after.text == snapshot.text,
-              after.secureFields == snapshot.secureFields,
-              !after.diagnostics.truncated else {
-            throw BrowserRuntimeError.screenshotProtected
+        let masksAfter = try await screenshotRedaction(webView)
+        let frameIDsAfter = try await screenshotFrameIDs(
+            tab, webView: webView, main: masksAfter
+        )
+        guard frameIDsBefore == frameIDsAfter else {
+            throw BrowserCaptureFailure.frameUnaccounted
         }
-        let masksAfter = try await screenshotRedaction(webView, expected: after.identity)
-        guard masksBefore.rects.count == masksAfter.rects.count,
-              zip(masksBefore.rects, masksAfter.rects).allSatisfy({ $0.isNear($1) }) else {
-            throw BrowserRuntimeError.screenshotProtected
-        }
+        try masksBefore.verifyCapture(
+            after: masksAfter,
+            navigationUnchanged: tab.navigationRevision == navigationRevision,
+            viewportUnchanged: webView.bounds.size == bounds.size
+        )
         let pointBounds = CGRect(origin: .zero, size: configuration.rect.size)
         let pixelX = CGFloat(width) / configuration.rect.width
         let pixelY = CGFloat(height) / configuration.rect.height
@@ -832,20 +910,29 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard let scaled = context.makeImage(),
               let jpeg = NSBitmapImageRep(cgImage: scaled).representation(
                 using: .jpeg, properties: [.compressionFactor: 0.72]
-              ) else { throw BrowserRuntimeError.unsupportedAction }
+              ) else { throw BrowserCaptureFailure.webKitFailure }
+        guard authorityRevisions[id, default: 0] == authorityRevision,
+              readRevisions[id, default: 0] == readRevision,
+              tab.navigationRevision == navigationRevision else {
+            throw BrowserCaptureFailure.expired
+        }
         let stored = try await BrowserScreenshotStore.shared.save(
             jpeg, for: id, width: width, height: height,
             pointWidth: Double(configuration.rect.width),
             pointHeight: Double(configuration.rect.height),
             authorityRevision: authorityRevision,
-            readRevision: readRevisions[id, default: 0],
-            redactionCount: masksBefore.rects.count
+            readRevision: readRevision,
+            navigationRevision: navigationRevision,
+            redactionCount: masksBefore.rects.count,
+            pageIdentity: masksAfter.identity
         )
         guard aiControlMode.canRead, !pausedTabIDs.contains(id),
               authorityRevisions[id, default: 0] == authorityRevision,
+              readRevisions[id, default: 0] == readRevision,
+              tab.navigationRevision == navigationRevision,
               tabs.contains(where: { $0.id == id }) else {
             await BrowserScreenshotStore.shared.remove(for: id)
-            throw BrowserRuntimeError.controlDisabled
+            throw BrowserCaptureFailure.expired
         }
         return stored
     }

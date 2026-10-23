@@ -10,6 +10,44 @@ struct AIEngineToolOutput: Sendable {
     var providerValue: [String: Any] {
         ["type": "function_call_output", "call_id": callID, "output": output]
     }
+
+    /// Preserve bounded semantic observation data while reporting whether the
+    /// associated pixels actually reached this provider. Never forward a
+    /// private capture URL or internal authority tokens as tool-result text.
+    func providerOutput(imageAttached: Bool,
+                        imageFailure: BrowserCaptureFailure? = nil) -> String {
+        guard let data = output.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data),
+              let object = raw as? [String: Any] else {
+            return "{\"image_attached\":false,\"error\":\"Browser image metadata was invalid.\"}"
+        }
+        func stripped(_ value: Any) -> Any {
+            if let items = value as? [Any] { return items.map(stripped) }
+            if let fields = value as? [String: Any] {
+                let internalKeys: Set<String> = [
+                    "fileURL", "file_url", "authorityRevision", "readRevision",
+                    "navigationRevision", "pageIdentity"
+                ]
+                return fields.filter { !internalKeys.contains($0.key) }
+                    .mapValues(stripped)
+            }
+            return value
+        }
+        var safe = stripped(object) as? [String: Any] ?? [:]
+        safe["image_attached"] = imageAttached
+        if let imageFailure {
+            safe["visual_available"] = false
+            safe["image_error"] = [
+                "code": imageFailure.rawValue,
+                "message": imageFailure.localizedDescription
+            ]
+        }
+        guard let encoded = try? JSONSerialization.data(withJSONObject: safe,
+                                                           options: [.sortedKeys]) else {
+            return "{\"image_attached\":false,\"error\":\"Browser image metadata was invalid.\"}"
+        }
+        return String(decoding: encoded, as: UTF8.self)
+    }
 }
 
 struct AIEngineScreenshotInput: Sendable {
@@ -258,34 +296,34 @@ actor AIExecutionEngine {
             }
 
             // Pixels are loaded only while the tab and read authority match.
-            // Codex CLI and API providers receive ephemeral image input;
-            // Claude CLI remains text-only. Never expose private capture paths.
+            // Preserve semantic observation data even when image delivery fails;
+            // neither private capture paths nor internal revisions enter text.
             let supportsImageInput = (client as? CLIChatProviderClient)?.provider != .claudeCLI
             var continuationOutputs: [AIEngineToolOutput] = []
             var images: [AIEngineScreenshotInput] = []
             for output in typedOutputs {
-                if let capture = output.browserScreenshot {
-                    if supportsImageInput, let image = await imageInput(for: output) {
-                        // The model needs dimensions and pixels, not a private
-                        // on-disk path or internal revision tokens.
-                        continuationOutputs.append(AIEngineToolOutput(
-                            callID: output.callID,
-                            output: "{\"tab_id\":\"\(capture.tabID.uuidString)\",\"media_type\":\"image/jpeg\",\"pixel_width\":\(capture.pixelWidth),\"pixel_height\":\(capture.pixelHeight),\"image_attached\":true}"
-                        ))
-                        images.append(image)
-                    } else if supportsImageInput {
-                        continuationOutputs.append(AIEngineToolOutput(
-                            callID: output.callID,
-                            output: "{\"error\":\"The Browser screenshot changed or was removed before its pixels could be delivered. Capture it again.\"}"
-                        ))
-                    } else {
-                        continuationOutputs.append(AIEngineToolOutput(
-                            callID: output.callID,
-                            output: #"{"image_attached":false,"reason":"This CLI provider cannot inspect Browser screenshot pixels."}"#
-                        ))
-                    }
-                } else {
+                guard output.browserScreenshot != nil else {
                     continuationOutputs.append(output)
+                    continue
+                }
+                if !supportsImageInput {
+                    continuationOutputs.append(AIEngineToolOutput(
+                        callID: output.callID,
+                        output: output.providerOutput(imageAttached: false,
+                                                      imageFailure: .providerUnsupported)
+                    ))
+                } else if let image = await imageInput(for: output) {
+                    continuationOutputs.append(AIEngineToolOutput(
+                        callID: output.callID,
+                        output: output.providerOutput(imageAttached: true)
+                    ))
+                    images.append(image)
+                } else {
+                    continuationOutputs.append(AIEngineToolOutput(
+                        callID: output.callID,
+                        output: output.providerOutput(imageAttached: false,
+                                                      imageFailure: .expired)
+                    ))
                 }
             }
             guard !Task.isCancelled, await callbacks.canContinue() else { break }

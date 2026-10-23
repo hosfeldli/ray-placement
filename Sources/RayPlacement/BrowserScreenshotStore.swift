@@ -15,7 +15,10 @@ struct BrowserScreenshotResult: Codable, Sendable {
     let byteCount: Int
     let authorityRevision: UInt64
     let readRevision: UInt64
+    let navigationRevision: Int
     var redactionCount: Int = 0
+    /// Private page identity for coherence checks; never include in provider text.
+    var pageIdentity: BrowserPageIdentity? = nil
 }
 
 /// Short-lived, process-local Browser captures. Never put image bytes in chat
@@ -37,7 +40,8 @@ actor BrowserScreenshotStore {
     func save(_ data: Data, for tabID: UUID, width: Int, height: Int,
               pointWidth: Double, pointHeight: Double,
               authorityRevision: UInt64, readRevision: UInt64,
-              redactionCount: Int = 0) throws -> BrowserScreenshotResult {
+              navigationRevision: Int, redactionCount: Int = 0,
+              pageIdentity: BrowserPageIdentity) throws -> BrowserScreenshotResult {
         guard !data.isEmpty, data.count <= 4_000_000,
               (1...1280).contains(width), (1...900).contains(height),
               pointWidth.isFinite, pointHeight.isFinite,
@@ -54,7 +58,9 @@ actor BrowserScreenshotStore {
             pixelWidth: width, pixelHeight: height,
             pointWidth: pointWidth, pointHeight: pointHeight,
             byteCount: data.count, authorityRevision: authorityRevision,
-            readRevision: readRevision, redactionCount: redactionCount
+            readRevision: readRevision,
+            navigationRevision: navigationRevision,
+            redactionCount: redactionCount, pageIdentity: pageIdentity
         )
         entries.append(capture)
         while entries.count > maximumCaptures {
