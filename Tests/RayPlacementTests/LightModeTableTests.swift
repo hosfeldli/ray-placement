@@ -42,6 +42,7 @@ import Testing
     let expectedHeader = resolved(palette.elevatedSurface, appearance: lightAppearance)
     let expectedBody = resolved(palette.background, appearance: lightAppearance)
     let focusedCellHasIndicator = view.debugCellHasVisibleFocusIndicator(row: 1, column: 0)
+    let focusedSurface = try #require(view.debugCellSurfaceColor(row: 1, column: 0))
     let paddedCellAreaIsEditable = view.debugCellFieldCoversPoint(
         row: 1,
         column: 0,
@@ -63,6 +64,16 @@ import Testing
     #expect(bodyFrame.height >= 34)
     #expect(contrastRatio(palette.textPrimary, expectedBody, appearance: lightAppearance) >= 4.5)
     #expect(contrastRatio(palette.textPrimary, expectedHeader, appearance: lightAppearance) >= 4.5)
+
+    // Moving focus away must not leave a different body-cell fill behind.
+    window.makeFirstResponder(nil)
+    view.debugRefreshAppearance()
+    let unfocusedSurface = try #require(view.debugCellSurfaceColor(row: 1, column: 0))
+    let focusedRGB = focusedSurface.usingColorSpace(.deviceRGB) ?? focusedSurface
+    let unfocusedRGB = unfocusedSurface.usingColorSpace(.deviceRGB) ?? unfocusedSurface
+    #expect(abs(focusedRGB.redComponent - unfocusedRGB.redComponent) < 0.01)
+    #expect(abs(focusedRGB.greenComponent - unfocusedRGB.greenComponent) < 0.01)
+    #expect(abs(focusedRGB.blueComponent - unfocusedRGB.blueComponent) < 0.01)
 
     window.contentView = nil
 }

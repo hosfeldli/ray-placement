@@ -21,6 +21,21 @@ import RayPlacementCore
     #expect(notes.notes.count == 2)
 }
 
+@Test @MainActor func aiResponseCaptureCreatesEditableSourceLabeledNote() throws {
+    let notes = NotesStore(visualFixtures: [])
+    let report = "# Release report\n\n| Area | Status |\n| --- | --- |\n| Notes | Ready |"
+    let identifier = try CaptureNoteService.save(
+        report,
+        source: .aiResponse(conversationTitle: "Lima 4.0\nstatus"),
+        in: notes
+    )
+    #expect(notes.selectedNoteID == identifier)
+    #expect(notes.selectedNote?.title == "AI Response · Lima 4.0 status")
+    #expect(notes.selectedNote?.content == report)
+    notes.updateContent(report + "\n\nUser edit")
+    #expect(notes.selectedNote?.content.hasSuffix("User edit") == true)
+}
+
 @Test @MainActor func captureToNotesRejectsEmptyAndOversizedInputWithoutChangingSelection() throws {
     let notes = NotesStore(visualFixtures: [])
     let first = try CaptureNoteService.save("Keep me", source: .clipboard, in: notes)
@@ -139,70 +154,51 @@ import RayPlacementCore
     #expect(permissions == 0o600)
 }
 
-@Test @MainActor func workflowBuiltinsShareRootCommandIDsAndResolveOlderChains() async {
-    let canonical: [LimaWorkflowBuiltin: String] = [
-        .openNotes: "builtin.notes",
-        .openAI: "builtin.ai-chat",
-        .openContext: "builtin.context-shelf",
-        .openTerminal: "builtin.terminal",
-        .createNote: "builtin.create-note",
-        .captureClipboard: "builtin.capture-clipboard-note"
-    ]
-    let legacy: [String: LimaWorkflowBuiltin] = [
-        "builtin.workflow.open-notes": .openNotes,
-        "builtin.workflow.open-ai": .openAI,
-        "builtin.workflow.open-context": .openContext,
-        "builtin.workflow.open-terminal": .openTerminal,
-        "builtin.workflow.create-note": .createNote,
-        "builtin.workflow.capture-clipboard": .captureClipboard
-    ]
-    let catalog = LimaWorkflowCommandCatalog.available(extensions: [])
-    for (command, id) in canonical {
-        #expect(command.rawValue == id)
-        #expect(catalog.contains { $0.id == id })
-    }
-    for (oldID, command) in legacy {
-        #expect(LimaWorkflowCommandCatalog.resolve(oldID, extensions: [])?.id == command.rawValue)
-    }
-    let search = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
-    search.query = "new note"
-    await search.waitForLocalSearchForTesting()
-    #expect(search.results.contains { $0.id == "builtin.create-note" })
-}
-
-@Test @MainActor func workflowRunsRegisteredStepsInOrderAndHonorsFailurePolicy() async {
-    let catalog = LimaWorkflowCommandCatalog.available(extensions: [])
-    #expect(catalog.contains { $0.id == LimaWorkflowBuiltin.captureClipboard.rawValue })
-    #expect(LimaWorkflowCommandCatalog.resolve(LimaWorkflowBuiltin.createNote.rawValue, extensions: []) != nil)
-
-    let workflow = WorkflowDefinition(name: "Fixture", steps: [
-        .init(commandID: "one"),
-        .init(commandID: "two", continueOnFailure: true),
-        .init(commandID: "three")
+@Test @MainActor func retiredWorkflowsAreArchivedByteForByteAndNeverExecuted() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Workflow-Archive-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let archive = LegacyWorkflowArchive(applicationSupport: root)
+    let definition = WorkflowDefinition(name: "User definition", steps: [
+        .init(commandID: "builtin.workflow.open-notes")
     ])
-    var seen: [String] = []
-    let report = await WorkflowExecutor().execute(workflow, confirm: true) { id in
-        seen.append(id)
-        if id == "two" {
-            throw NSError(domain: "Fixture", code: 1, userInfo: [NSLocalizedDescriptionKey: "Expected failure"])
-        }
-    }
-    #expect(seen == ["one", "two", "three"])
-    #expect(report.steps.map(\.succeeded) == [true, false, true])
+    let original = try JSONEncoder().encode([definition])
+    try original.write(to: archive.sourceURL)
+    #expect(archive.hasSavedDefinitions)
+
+    let first = try #require(try archive.archiveIfNeeded())
+    #expect(try Data(contentsOf: first) == original)
+    #expect(archive.archivedFiles().count == 1)
+    let second = try archive.archiveIfNeeded()
+    #expect(second?.resolvingSymlinksInPath() == first.resolvingSymlinksInPath())
+    #expect(archive.archivedFiles().count == 1)
+    #expect(try Data(contentsOf: archive.sourceURL) == original)
+
+    let exported = root.appendingPathComponent("export.json")
+    try archive.exportLatest(to: exported)
+    #expect(try Data(contentsOf: exported) == original)
+    try archive.removeLegacyCopies()
+    #expect(!FileManager.default.fileExists(atPath: archive.sourceURL.path))
+    #expect(archive.archivedFiles().isEmpty)
+    #expect(try Data(contentsOf: exported) == original)
 }
 
-@Test @MainActor func cancelledWorkflowDoesNotStartACommand() async {
-    let workflow = WorkflowDefinition(name: "Cancelled", steps: [.init(commandID: "never")])
-    let task = Task { @MainActor in
-        withUnsafeCurrentTask { $0?.cancel() }
-        return await WorkflowExecutor().execute(workflow, confirm: true) { _ in
-            Issue.record("A cancelled workflow must not dispatch its next step.")
-        }
-    }
-    let report = await task.value
-    #expect(report.steps.count == 1)
-    #expect(report.steps.first?.succeeded == false)
-    #expect(report.steps.first?.message == "Cancelled")
+@Test @MainActor func changedOrMalformedLegacyDefinitionsGetAdditionalInactiveSnapshots() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("Lima-Workflow-Archive-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let archive = LegacyWorkflowArchive(applicationSupport: root)
+    let firstBytes = Data("[{\"name\":".utf8)
+    try firstBytes.write(to: archive.sourceURL)
+    let first = try #require(try archive.archiveIfNeeded())
+    #expect(archive.hasSavedDefinitions)
+    let secondBytes = Data("[{\"different\":true}]".utf8)
+    try secondBytes.write(to: archive.sourceURL)
+    let second = try #require(try archive.archiveIfNeeded())
+    #expect(first != second)
+    #expect(archive.archivedFiles().count == 2)
+    #expect(try Data(contentsOf: first) == firstBytes)
+    #expect(try Data(contentsOf: second) == secondBytes)
 }
 
 @Test func mainThreadProbeQueuesOnlyOneCallbackAtATime() {

@@ -156,14 +156,14 @@ struct WorkspaceConfiguration: Codable, Equatable {
         home: HomeWorkspaceConfiguration = .defaultConfiguration
     ) {
         self.sections = Self.normalizedSections(sections)
-        self.startupModule = startupModule
+        self.startupModule = startupModule == .workflows ? .home : startupModule
         self.railPresentation = railPresentation
         self.railWidth = railWidth
         self.showsSectionNames = showsSectionNames
         self.showsKeyboardShortcuts = showsKeyboardShortcuts
         self.shortcutOverrides = Self.normalizedShortcutOverrides(shortcutOverrides)
         self.home = home.normalized
-        if !visibleModules.contains(startupModule) {
+        if !visibleModules.contains(self.startupModule) {
             self.startupModule = visibleModules.first ?? .home
         }
     }
@@ -227,7 +227,8 @@ struct WorkspaceConfiguration: Codable, Equatable {
             resolved[module.rawValue] = key
         }
         return resolved.filter { key, value in
-            LimaWorkspaceModule(rawValue: key)?.shortcutNumber != value
+            guard let module = LimaWorkspaceModule(rawValue: key), LimaWorkspaceModule.allCases.contains(module) else { return false }
+            return module.shortcutNumber != value
         }
     }
 
@@ -339,7 +340,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
             let name = section.name.trimmingCharacters(in: .whitespacesAndNewlines)
             result.append(WorkspaceSectionConfiguration(
                 id: section.id, name: name.isEmpty ? "Section" : name,
-                modules: section.modules.filter { seenModules.insert($0).inserted }
+                modules: section.modules.filter { $0 != .workflows && seenModules.insert($0).inserted }
             ))
         }
         if result.isEmpty {
@@ -355,7 +356,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(sections, forKey: .sections)
-        try values.encode(2, forKey: .layoutVersion)
+        try values.encode(4, forKey: .layoutVersion)
         try values.encode(startupModule, forKey: .startupModule)
         try values.encode(railPresentation, forKey: .railPresentation)
         try values.encode(railWidth, forKey: .railWidth)
@@ -381,12 +382,28 @@ struct WorkspaceConfiguration: Codable, Equatable {
                 )
             ]
         }
-        // Reveal Grammar in the lower Tools rail once for layouts saved before
-        // this placement change. Versioned layouts can still hide it deliberately.
-        if (try values.decodeIfPresent(Int.self, forKey: .layoutVersion) ?? 1) < 2,
+        let layoutVersion = try values.decodeIfPresent(Int.self, forKey: .layoutVersion) ?? 1
+        // Older layouts exposed Grammar in Tools. Respect later deliberate hiding.
+        if layoutVersion < 2,
            !sections.contains(where: { $0.modules.contains(.grammar) }),
            let toolsIndex = sections.firstIndex(where: { $0.id == WorkspaceSectionConfiguration.toolsID }) {
             sections[toolsIndex].modules.append(.grammar)
+        }
+        // Migrate only the untouched stock rail. Custom section names, order,
+        // visibility, and placement remain exactly as the user saved them.
+        let previousDefault = [
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.workspaceID, name: "Workspace",
+                                          modules: [.home, .notes, .ai, .browser, .context]),
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.toolsID, name: "Tools",
+                                          modules: [.clipboard, .workflows, .extensions, .terminal, .grammar])
+        ]
+        let previousDefaultWithoutWorkflows = previousDefault.map { section in
+            WorkspaceSectionConfiguration(id: section.id, name: section.name,
+                                          modules: section.modules.filter { $0 != .workflows })
+        }
+        if layoutVersion < 3,
+           sections == previousDefault || sections == previousDefaultWithoutWorkflows {
+            sections = WorkspaceConfiguration.defaultConfiguration.sections
         }
         self.init(
             sections: sections,

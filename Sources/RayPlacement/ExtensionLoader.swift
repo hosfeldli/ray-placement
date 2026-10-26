@@ -35,7 +35,7 @@ final class ExtensionLoader {
                 if !fileManager.fileExists(atPath: destination.path) {
                     try fileManager.copyItem(at: source, to: destination)
                 } else if try bundledPackNeedsUpdate(source: source, destination: destination) {
-                    try replaceBundledPack(source: source, destination: destination)
+                    try Self.replaceBundledPack(source: source, destination: destination)
                 }
             } catch {
                 // A damaged or locked pack must not prevent the remaining packs
@@ -62,16 +62,78 @@ final class ExtensionLoader {
         )
     }
 
-    private func replaceBundledPack(source: URL, destination: URL) throws {
+    /// Stage the shipped pack before touching the installed copy, then move
+    /// the old directory aside for rollback. Repair keeps that old copy as its
+    /// user-visible backup; automatic updates remove the temporary rollback
+    /// only after the replacement is installed.
+    static func replaceBundledPack(
+        source: URL, destination: URL, backup: URL? = nil,
+        activate: ((URL, URL) throws -> Void)? = nil
+    ) throws {
         let fileManager = FileManager.default
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).update-\(UUID().uuidString)", isDirectory: true)
-        try fileManager.copyItem(at: source, to: temporary)
+        let parent = destination.deletingLastPathComponent()
+        let temporary = parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).update-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        let rollback = backup ?? parent.appendingPathComponent(
+            ".\(destination.lastPathComponent).previous-\(UUID().uuidString)",
+            isDirectory: true
+        )
         do {
-            try fileManager.removeItem(at: destination)
-            try fileManager.moveItem(at: temporary, to: destination)
+            try fileManager.copyItem(at: source, to: temporary)
         } catch {
             try? fileManager.removeItem(at: temporary)
             throw error
+        }
+        var movedPrevious = false
+        var activationStarted = false
+        do {
+            if fileManager.fileExists(atPath: destination.path) {
+                if backup != nil {
+                    try fileManager.createDirectory(
+                        at: rollback.deletingLastPathComponent(),
+                        withIntermediateDirectories: true
+                    )
+                }
+                try fileManager.moveItem(at: destination, to: rollback)
+                movedPrevious = true
+            }
+            activationStarted = true
+            if let activate {
+                try activate(temporary, destination)
+            } else {
+                try fileManager.moveItem(at: temporary, to: destination)
+            }
+            guard fileManager.fileExists(atPath: destination.path) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            if movedPrevious && backup == nil {
+                try? fileManager.removeItem(at: rollback)
+            }
+        } catch {
+            let replacementError = error
+            try? fileManager.removeItem(at: temporary)
+            if activationStarted {
+                do {
+                    // A failed activation may leave a partial new pack. Remove
+                    // it before restoring the previous installed directory.
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
+                    if movedPrevious {
+                        try fileManager.moveItem(at: rollback, to: destination)
+                    }
+                } catch {
+                    let recoveryPath = movedPrevious ? rollback.path : destination.path
+                    throw NSError(
+                        domain: "Lima.ExtensionLoader", code: 1,
+                        userInfo: [NSLocalizedDescriptionKey:
+                            "Extension replacement failed and cleanup could not complete. Inspect \(recoveryPath)."]
+                    )
+                }
+            }
+            throw replacementError
         }
     }
 
@@ -121,7 +183,9 @@ final class ExtensionLoader {
         }
 
         let stamp = ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-")
-        let backupRoot = ApplicationPaths.extensions.appendingPathComponent(".repair-backups/\(stamp)", isDirectory: true)
+        let backupRoot = ApplicationPaths.extensions.appendingPathComponent(
+            ".repair-backups/\(stamp)-\(UUID().uuidString)", isDirectory: true
+        )
         var backupURL: URL?
         var repairedCount = 0
         var errors: [String] = []
@@ -133,14 +197,14 @@ final class ExtensionLoader {
                   fileManager.fileExists(atPath: source.appendingPathComponent("manifest.json").path) else { continue }
             let destination = ApplicationPaths.extensions.appendingPathComponent(source.lastPathComponent, isDirectory: true)
             do {
-                if fileManager.fileExists(atPath: destination.path) {
-                    try fileManager.createDirectory(at: backupRoot, withIntermediateDirectories: true)
-                    let backup = backupRoot.appendingPathComponent(source.lastPathComponent, isDirectory: true)
-                    try fileManager.copyItem(at: destination, to: backup)
-                    backupURL = backupRoot
-                    try fileManager.removeItem(at: destination)
-                }
-                try fileManager.copyItem(at: source, to: destination)
+                let hadInstalledCopy = fileManager.fileExists(atPath: destination.path)
+                let backup = hadInstalledCopy
+                    ? backupRoot.appendingPathComponent(source.lastPathComponent, isDirectory: true)
+                    : nil
+                try Self.replaceBundledPack(
+                    source: source, destination: destination, backup: backup
+                )
+                if hadInstalledCopy { backupURL = backupRoot }
                 repairedCount += 1
             } catch {
                 errors.append("\(source.lastPathComponent): \(error.localizedDescription)")

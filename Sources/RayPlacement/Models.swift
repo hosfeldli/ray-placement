@@ -356,6 +356,7 @@ enum LauncherAction {
     case addContextToShelf(LimaContextValue)
     case toggleFavorite(String)
     case forgetRanking(String)
+    case editAlias(String)
 }
 
 enum LauncherActionRole: String, Hashable {

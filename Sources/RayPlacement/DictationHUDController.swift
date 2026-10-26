@@ -147,13 +147,13 @@ final class ActivityHUDController {
         let basePreferredWidth = dictationVisible && musicVisible
             ? 210 + 8 + requestedMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? requestedMusicWidth : 0))
-        let preferredWidth = basePreferredWidth + (basePreferredWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth
+        let preferredWidth = basePreferredWidth + (basePreferredWidth > 0 && taskWidth > 0 ? CGFloat(8) : 0) + taskWidth + 44
         let miniMusicWidth = MusicHUDPresentation.mini.hudWidth
         let miniTaskWidth = CGFloat(taskSlots.count) * 180 + CGFloat(max(0, taskSlots.count - 1)) * 8
         let baseMiniWidth = dictationVisible && musicVisible
             ? 210 + 8 + miniMusicWidth
             : (dictationVisible ? 210 : (musicVisible ? miniMusicWidth : 0))
-        let miniWidth = baseMiniWidth + (baseMiniWidth > 0 && miniTaskWidth > 0 ? CGFloat(8) : 0) + miniTaskWidth
+        let miniWidth = baseMiniWidth + (baseMiniWidth > 0 && miniTaskWidth > 0 ? CGFloat(8) : 0) + miniTaskWidth + 44
 
         let choice = ActivityShelfWidthChoice.choose(
             preferredWidth: preferredWidth,
@@ -182,9 +182,9 @@ final class ActivityHUDController {
     }
 
     private func requestedMusicPresentation(dictationVisible: Bool) -> MusicHUDPresentation {
-        if hudState.expandedMusic && settings.musicExpandOnClick { return .expanded }
         if dictationVisible { return .mini }
-        return settings.musicHUDPresentation
+        // Older expanded preferences now resolve to a fixed compact player.
+        return settings.musicHUDPresentation == .mini ? .mini : .compact
     }
 
     private func effectiveMusicPresentation(dictationVisible: Bool) -> MusicHUDPresentation {
@@ -439,7 +439,7 @@ private extension MusicHUDPresentation {
         switch self {
         case .mini: return 250
         case .compact: return 360
-        case .expanded: return 520
+        case .expanded: return 360
         }
     }
 }
@@ -455,6 +455,9 @@ private struct ActivityHUDView: View {
     let openDictation: () -> Void
     @State private var volumePopoverVisible = false
     @State private var tasksExpanded = false
+    @StateObject private var audioOutput = AudioOutputPickerModel()
+    @ObservedObject private var onboarding = OnboardingCoordinator.shared
+    @State private var audioPopoverVisible = false
 
     var body: some View {
         let dictationVisible = dictation.phase == .recording || dictation.phase == .paused
@@ -476,12 +479,37 @@ private struct ActivityHUDView: View {
                 taskSegment(task)
                     .frame(width: hudState.collisionMini ? 180 : 254)
             }
+            Button { audioPopoverVisible.toggle() } label: {
+                Image(systemName: audioOutput.devices.first(where: \.isDefault)?.transport.symbol ?? "speaker.wave.2")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 28, height: 28)
+            }
+            .buttonStyle(.plain)
+            .help("Sound Output: \(audioOutput.devices.first(where: \.isDefault)?.name ?? "Unavailable")")
+            .accessibilityLabel("Sound Output")
+            .accessibilityIdentifier("activity-shelf-audio-output")
+            .overlay {
+                if onboarding.isActive && onboarding.step == .audio {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .strokeBorder(settings.accentTheme.readablePrimary, lineWidth: 2)
+                        .allowsHitTesting(false)
+                }
+            }
+            .popover(isPresented: $audioPopoverVisible, arrowEdge: .bottom) {
+                AudioOutputPickerView(model: audioOutput,
+                                      cancel: { audioPopoverVisible = false },
+                                      switched: { audioPopoverVisible = false })
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .limaGlassContainer(region: .hud, cornerRadius: LimaRadius.searchField)
         .limaAnimation(LimaDesign.spring(0.24), value: dictation.phase)
         .limaAnimation(LimaDesign.spring(0.24), value: music.nowPlaying)
-        .onDisappear { hudState.cancelCollapse() }
+        .onAppear { audioOutput.start() }
+        .onDisappear {
+            hudState.cancelCollapse()
+            audioOutput.stop()
+        }
     }
 
     private func taskSegment(_ task: LimaTask) -> some View {
@@ -570,9 +598,9 @@ private struct ActivityHUDView: View {
 
     private func effectivePresentation(dictationVisible: Bool) -> MusicHUDPresentation {
         if hudState.collisionMini { return .mini }
-        if hudState.expandedMusic && settings.musicExpandOnClick { return .expanded }
         if dictationVisible { return .mini }
-        return settings.musicHUDPresentation
+        // Older expanded preferences now resolve to a fixed compact player.
+        return settings.musicHUDPresentation == .mini ? .mini : .compact
     }
 
     private var dictationPill: some View {
@@ -641,8 +669,16 @@ private struct ActivityHUDView: View {
         switch presentation {
         case .mini: miniMusicPill(track)
         case .compact: compactMusicPill(track)
-        case .expanded: expandedMusicPill(track)
+        case .expanded: compactMusicPill(track)
         }
+    }
+
+    private func playbackStatus(for track: MediaNowPlayingSnapshot) -> String {
+        if let message = music.controlAvailabilityMessage { return message }
+        if music.isPerformingTransport { return "Updating playback…" }
+        let state = track.isPlaying ? "Playing" : "Paused"
+        let detail = [track.artist, track.album].filter { !$0.isEmpty }.joined(separator: " · ")
+        return detail.isEmpty ? "\(state) · \(track.source.title)" : "\(state) · \(detail)"
     }
 
     private func miniMusicPill(_ track: MediaNowPlayingSnapshot) -> some View {
@@ -650,18 +686,19 @@ private struct ActivityHUDView: View {
             if settings.musicShowArtwork {
                 artworkButton(for: track, size: 38)
             }
-            Button { toggleExpandedOrOpenSource() } label: {
+            Button { openMusicSource() } label: {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title).limaFont(.system(size: 11.5, weight: .semibold, design: .rounded)).lineLimit(1)
-                    Text(track.artist.isEmpty ? track.source.title : track.artist)
+                    Text(playbackStatus(for: track))
                         .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(music.controlAvailabilityMessage == nil ? LimaColors.secondaryText : LimaColors.danger)
                         .lineLimit(1)
+                        .help(playbackStatus(for: track))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .buttonStyle(.plain)
-            .help(settings.musicExpandOnClick ? "Expand player" : "Open \(track.source.title)")
+            .help("Open \(track.source.title)")
             if settings.musicShowPlaybackControls { transportControls(track, compact: true) }
         }
         .padding(.horizontal, 8)
@@ -680,13 +717,23 @@ private struct ActivityHUDView: View {
     private func compactMusicPill(_ track: MediaNowPlayingSnapshot) -> some View {
         HStack(spacing: 8) {
             if settings.musicShowArtwork { artworkButton(for: track, size: 40) }
-            Button { toggleExpandedOrOpenSource() } label: {
+            Button { openMusicSource() } label: {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(track.title).limaFont(.system(size: 12, weight: .semibold, design: .rounded)).lineLimit(1)
-                    Text([track.artist, track.album].filter { !$0.isEmpty }.joined(separator: " · "))
+                    HStack(spacing: 5) {
+                        Image(systemName: music.controlAvailabilityMessage == nil
+                            ? (track.isPlaying ? "waveform" : "pause.fill")
+                            : "exclamationmark.triangle.fill")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(music.controlAvailabilityMessage == nil ? track.source.accent : LimaColors.danger)
+                        Text(track.title)
+                            .limaFont(.system(size: 12, weight: .semibold, design: .rounded))
+                            .lineLimit(1)
+                    }
+                    Text(playbackStatus(for: track))
                         .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(music.controlAvailabilityMessage == nil ? LimaColors.secondaryText : LimaColors.danger)
                         .lineLimit(1)
+                        .help(playbackStatus(for: track))
                     if settings.musicShowProgress {
                         HStack(spacing: 4) {
                             Text(timeLabel(track.position)).limaFont(.system(size: 7.5, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
@@ -796,13 +843,21 @@ private struct ActivityHUDView: View {
         HStack(spacing: compact ? 0 : 1) {
             mediaButton("backward.fill", label: "Previous track") { runMediaAction(.previous) }
             Button { runMediaAction(.playPause) } label: {
-                Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: compact ? 8 : 9, weight: .bold))
-                    .frame(width: compact ? 24 : 27, height: compact ? 24 : 25)
-                    .foregroundStyle(LimaColors.primaryText)
-                    .background(track.source.accent, in: Circle())
+                Group {
+                    if music.isPerformingTransport {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: track.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: compact ? 8 : 9, weight: .bold))
+                    }
+                }
+                .frame(width: compact ? 24 : 27, height: compact ? 24 : 25)
+                .foregroundStyle(LimaColors.primaryText)
+                .background(track.source.accent, in: Circle())
             }
             .buttonStyle(.plain)
+            .help(track.isPlaying ? "Pause" : "Play")
+            .accessibilityLabel(track.isPlaying ? "Pause" : "Play")
             mediaButton("forward.fill", label: "Next track") { runMediaAction(.next) }
         }
         .opacity(music.isPerformingTransport ? 0.55 : 1)
@@ -818,14 +873,9 @@ private struct ActivityHUDView: View {
         .accessibilityLabel(label)
     }
 
-    private func toggleExpandedOrOpenSource() {
-        guard settings.musicExpandOnClick else {
-            music.openSource()
-            focus.restoreSoon()
-            return
-        }
-        hudState.expandedMusic = true
-        hudState.scheduleCollapse(after: settings.musicExpandedTimeout)
+    private func openMusicSource() {
+        music.openSource()
+        focus.restoreSoon()
     }
 
     private func scheduleCollapse() {

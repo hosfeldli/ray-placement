@@ -21,6 +21,16 @@ private func packageRoot() -> URL {
     #expect(try Calculator.evaluate("2 ^ 3 ^ 2") == 512)
 }
 
+@Test func calculatorSupportsSquareRootAndConventionalPowerPrecedence() throws {
+    #expect(try Calculator.evaluate("sqrt(98)") > 9.89)
+    #expect(try Calculator.evaluate("sqrt(9 + 16)") == 5)
+    #expect(try Calculator.evaluate("-2 ^ 2") == -4)
+    #expect(try Calculator.evaluate("(-2) ^ 2") == 4)
+    #expect(try Calculator.evaluate("2 ^ -2") == 0.25)
+    #expect(throws: CalculatorError.self) { try Calculator.evaluate("sqrt(-1)") }
+    #expect(throws: CalculatorError.self) { try Calculator.evaluate("sqrt(9") }
+}
+
 @Test func shortcutParsing() {
     let shortcut = ShortcutSpec(string: "option+shift+d")
     #expect(shortcut?.displayString == "⌥⇧D")
@@ -988,6 +998,24 @@ private func packageRoot() -> URL {
     let store = CommandAliasStore(defaults: defaults)
     store.set([" PW ", "pw", ""], for: "password")
     #expect(store.aliases(for: "password") == ["pw"])
+}
+
+@Test func commandAliasStoreRejectsCollisionAndSupportsDisableReset() {
+    let suite = "lima-alias-collision-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = CommandAliasStore(defaults: defaults)
+    #expect(store.set([" SS "], for: "screenshot") == nil)
+    #expect(store.set(["ss"], for: "other") == CommandAliasConflict(alias: "ss", commandID: "screenshot"))
+    #expect(store.aliases(for: "other").isEmpty)
+    store.setEnabled(false, for: "screenshot")
+    #expect(!store.isEnabled(for: "screenshot"))
+    #expect(store.conflict(for: ["ss"], excluding: "other") == CommandAliasConflict(alias: "ss", commandID: "screenshot"))
+    #expect(store.set([], for: "screenshot") == nil)
+    #expect(store.isEnabled(for: "screenshot"))
+    #expect(store.aliases(for: "screenshot").isEmpty)
+    #expect(store.set(["ss"], for: "other") == nil)
+    #expect(store.aliases(for: "other") == ["ss"])
 }
 
 @Test func apiV3FixtureDecodesSchemaAndLifecycleMetadata() throws {

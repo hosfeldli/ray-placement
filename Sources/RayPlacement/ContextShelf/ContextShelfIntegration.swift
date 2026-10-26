@@ -104,6 +104,25 @@ enum ContextShelfIntegration {
         )
         _ = ContextShelfStore.shared.add(item)
     }
+
+    /// Store only a previously authorized Mail reference. The caller must use
+    /// MailCapabilityService.referenceForShelf immediately before this handoff.
+    @discardableResult
+    static func addMailReference(_ reference: MailMessageReference,
+                                 store: ContextShelfStore? = nil) -> UUID {
+        let now = Date()
+        let source = ContextShelfSource.application(
+            name: "Apple Mail", bundleIdentifier: "com.apple.mail", capturedAt: now
+        )
+        let item = ContextShelfItem(
+            id: UUID(), kind: .mailReference,
+            title: reference.subject.isEmpty ? "(No subject)" : reference.subject,
+            preview: "From: \(reference.sender) · \(reference.receivedAt.formatted(date: .abbreviated, time: .shortened))",
+            payload: .mailReference(reference), source: source,
+            createdAt: now, isPinned: false
+        )
+        return (store ?? .shared).add(item)
+    }
 }
 
 /// Versioned environment contract exposed to approved extensions that request
@@ -112,8 +131,12 @@ enum ContextShelfIntegration {
 /// tools without a JSON parser.
 struct ContextShelfExtensionContext: Codable, Sendable {
     static let version = 1
+    static let maximumItems = 20
+    static let maximumMarkdownBytes = 10_000
+    static let maximumItemMarkdownBytes = 3_000
     let version: Int
     let items: [Item]
+    let omittedItemCount: Int
 
     struct Item: Codable, Sendable {
         let id: UUID
@@ -123,32 +146,90 @@ struct ContextShelfExtensionContext: Codable, Sendable {
         let source: String
         let createdAt: Date
         let pinned: Bool
+        let truncated: Bool
     }
 
     @MainActor
     static func current() -> ContextShelfExtensionContext {
-        ContextShelfExtensionContext(
-            version: version,
-            items: ContextShelfStore.shared.items.map {
-                Item(id: $0.id, kind: $0.kind.rawValue, title: $0.title,
-                     markdown: ContextShelfMarkdownFormatter.format($0),
-                     source: ContextShelfMarkdownFormatter.previewSource(for: $0),
-                     createdAt: $0.createdAt, pinned: $0.isPinned)
+        boundedContext(from: ContextShelfStore.shared.items)
+    }
+
+    /// Legacy contextShelf extensions receive bounded text and file items,
+    /// never Mail references. Mail access needs a separate scoped resolver.
+    @MainActor
+    static func exportableItems(_ items: [ContextShelfItem]) -> [Item] {
+        boundedContext(from: items).items
+    }
+
+    @MainActor
+    private static func boundedContext(from items: [ContextShelfItem]) -> ContextShelfExtensionContext {
+        var exported: [Item] = []
+        var remainingBytes = maximumMarkdownBytes
+        var omitted = 0
+        for item in items where !item.isMailReference {
+            guard exported.count < maximumItems, remainingBytes >= 128 else {
+                omitted += 1
+                continue
             }
-        )
+            let budget = min(maximumItemMarkdownBytes, remainingBytes)
+            let markdown = boundedMarkdown(ContextShelfMarkdownFormatter.format(item), maximumBytes: budget)
+            let title = prefixUTF8(item.title, maximumBytes: 128)
+            let source = prefixUTF8(ContextShelfMarkdownFormatter.previewSource(for: item), maximumBytes: 128)
+            exported.append(Item(
+                id: item.id, kind: item.kind.rawValue, title: title.text,
+                markdown: markdown.text, source: source.text,
+                createdAt: item.createdAt, pinned: item.isPinned,
+                truncated: markdown.truncated || title.truncated || source.truncated
+            ))
+            remainingBytes -= markdown.text.utf8.count
+        }
+        return ContextShelfExtensionContext(version: version, items: exported, omittedItemCount: omitted)
+    }
+
+    private static func boundedMarkdown(_ markdown: String, maximumBytes: Int) -> (text: String, truncated: Bool) {
+        let full = prefixUTF8(markdown, maximumBytes: maximumBytes)
+        guard full.truncated else { return full }
+        let suffix = "\n\n[truncated]"
+        let head = prefixUTF8(markdown, maximumBytes: maximumBytes - suffix.utf8.count)
+        return (head.text + suffix, true)
+    }
+
+    private static func prefixUTF8(_ text: String, maximumBytes: Int) -> (text: String, truncated: Bool) {
+        var result = ""
+        var usedBytes = 0
+        for character in text {
+            // Process environment values cannot contain a NUL byte.
+            let safeCharacter = character == "\0" ? "�" : String(character)
+            let byteCount = safeCharacter.utf8.count
+            guard usedBytes + byteCount <= maximumBytes else { return (result, true) }
+            result.append(contentsOf: safeCharacter)
+            usedBytes += byteCount
+        }
+        return (result, false)
     }
 
     @MainActor
     static func environment() -> [String: String] {
-        let context = current()
+        let store = ContextShelfStore.shared
+        return environment(items: store.items, selectedItems: store.selectedItems)
+    }
+
+    @MainActor
+    static func environment(items: [ContextShelfItem], selectedItems: [ContextShelfItem]) -> [String: String] {
+        let context = boundedContext(from: items)
+        let selectedContext = selectedItems.isEmpty ? context : boundedContext(from: selectedItems)
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        let data = (try? encoder.encode(context)) ?? Data("{\"version\":1,\"items\":[]}".utf8)
-        let selected = ContextShelfStore.shared.selectedItems
+        let data = (try? encoder.encode(context)) ?? Data("{\"version\":1,\"items\":[],\"omittedItemCount\":0}".utf8)
+        var markdown = selectedContext.items.map(\.markdown).joined(separator: "\n\n")
+        if selectedContext.omittedItemCount > 0 {
+            if !markdown.isEmpty { markdown += "\n\n" }
+            markdown += "[\(selectedContext.omittedItemCount) additional Shelf item(s) omitted]"
+        }
         return [
             "LIMA_CONTEXT_SHELF_VERSION": String(version),
             "LIMA_CONTEXT_SHELF_JSON": String(decoding: data, as: UTF8.self),
-            "LIMA_CONTEXT_SHELF_MARKDOWN": ContextShelfMarkdownFormatter.format(selected.isEmpty ? ContextShelfStore.shared.items : selected)
+            "LIMA_CONTEXT_SHELF_MARKDOWN": markdown
         ]
     }
 }

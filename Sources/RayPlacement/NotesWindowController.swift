@@ -81,7 +81,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     private let reloadExtensions: () -> Void
     private let onOpenCommandSearch: (String) -> Void
     private let onOpenSettings: () -> Void
-    private let onRunWorkflow: (WorkflowDefinition) -> Void
     var onLauncherQueryDictation: ((String) -> Void)?
     private var window: NSWindow?
     private var dictationHUD: DictationHUDController!
@@ -105,8 +104,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         extensionStoreModel: ExtensionStoreModel,
         reloadExtensions: @escaping () -> Void,
         onOpenCommandSearch: @escaping (String) -> Void = { _ in },
-        onOpenSettings: @escaping () -> Void = {},
-        onRunWorkflow: @escaping (WorkflowDefinition) -> Void = { _ in }
+        onOpenSettings: @escaping () -> Void = {}
     ) {
         self.aiChatModel = aiChatModel
         self.terminalModel = terminalModel
@@ -116,7 +114,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         self.reloadExtensions = reloadExtensions
         self.onOpenCommandSearch = onOpenCommandSearch
         self.onOpenSettings = onOpenSettings
-        self.onRunWorkflow = onRunWorkflow
         let store = NotesStore.shared
         let conversations = DictationConversationStore.shared
         self.store = store
@@ -299,7 +296,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         return window?.isVisible == true && presentation.activeModule == .terminal
     }
 
-    func selectModule(_ module: LimaWorkspaceModule) {
+    func selectModule(_ requestedModule: LimaWorkspaceModule) {
+        let module: LimaWorkspaceModule = requestedModule == .workflows ? .home : requestedModule
         let measurementID = presentation.activeModule == module
             ? nil
             : PerformanceMonitor.shared.begin(.workspaceModuleSwitch)
@@ -337,7 +335,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if let sidebarVisible = state.sidebarVisible { presentation.sidebarVisible = sidebarVisible }
         if let focusMode = state.focusMode { presentation.notesFocusMode = focusMode }
         if let module = (state.activeModule ?? state.notesSection).flatMap(LimaWorkspaceModule.init(rawValue:)) {
-            presentation.activeModule = module
+            presentation.activeModule = module == .workflows ? .home : module
         } else {
             presentation.activeModule = SettingsStore.shared.workspaceConfiguration.startupModule
         }
@@ -613,7 +611,6 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
             launcherViewModel: launcherViewModel,
             extensionStoreModel: extensionStoreModel,
             reloadExtensions: reloadExtensions,
-            runWorkflow: onRunWorkflow,
             openCommandSearch: onOpenCommandSearch,
             selectModule: { [weak self] in self?.selectModule($0) },
             switchWorkspaceProfile: { WorkspaceProfileStore.shared.activate($0) },
@@ -756,6 +753,8 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 private struct WorkspaceShellView: View {
     @ObservedObject var presentation: WorkspacePresentationModel
     @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
+    @State private var preferredSidecarWidth: CGFloat = 380
+    @State private var sidecarResizeStart: CGFloat?
     let content: WorkspaceModuleHost
 
     init(content: WorkspaceModuleHost) {
@@ -766,6 +765,12 @@ private struct WorkspaceShellView: View {
     var body: some View {
         GeometryReader { proxy in
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
+            let chrome = LimaWorkspaceChromeLayout.resolve(
+                width: proxy.size.width,
+                sidecarRequested: presentation.aiSidecarVisible && presentation.activeModule != .ai,
+                isDocked: presentation.mode.isDocked,
+                preferredSidecarWidth: preferredSidecarWidth
+            )
             ZStack {
                 LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
                 WorkspacePrismBackground(module: presentation.activeModule)
@@ -773,7 +778,7 @@ private struct WorkspaceShellView: View {
                     LimaWayfinderRail(
                         current: presentation.activeModule,
                         previous: presentation.navigation.previous,
-                        sizeClass: sizeClass,
+                        sizeClass: chrome.collapsesRail ? .regular : sizeClass,
                         select: content.selectModule,
                         openSettings: content.openSettings,
                         isDocked: presentation.mode.isDocked,
@@ -784,17 +789,18 @@ private struct WorkspaceShellView: View {
                         createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() },
                         aiSidecarVisible: presentation.aiSidecarVisible,
                         toggleAISidecar: !presentation.mode.isDocked && proxy.size.width >= 1_120
-                            ? { presentation.aiSidecarVisible.toggle() } : nil
+                            ? { presentation.aiSidecarVisible.toggle() } : nil,
+                        openSearch: { content.openCommandSearch("") },
+                        openCaptures: { ScreenshotStudioWindowController.shared.present() },
+                        forceIconOnly: chrome.collapsesRail
                     )
                     .padding(.leading, 8)
                     .padding(.vertical, 8)
                     content
                         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.trailing, presentation.aiSidecarVisible && presentation.activeModule != .ai &&
-                                 !presentation.mode.isDocked && proxy.size.width >= 1_120 ? 0 : 8)
+                        .padding(.trailing, chrome.showsSidecar ? 0 : 8)
                         .padding(.vertical, 8)
-                    if presentation.aiSidecarVisible && presentation.activeModule != .ai &&
-                       !presentation.mode.isDocked && proxy.size.width >= 1_120 {
+                    if chrome.showsSidecar {
                         WorkspaceAISidecar(
                             model: content.aiChatModel,
                             notes: content.store,
@@ -802,7 +808,37 @@ private struct WorkspaceShellView: View {
                             expand: { content.selectModule(.ai) },
                             close: { presentation.aiSidecarVisible = false }
                         )
-                        .frame(width: min(400, max(340, proxy.size.width * 0.30)))
+                        .frame(width: chrome.sidecarWidth)
+                        .overlay(alignment: .leading) {
+                            Rectangle()
+                                .fill(Color.clear)
+                                .frame(width: 8)
+                                .contentShape(Rectangle())
+                                .gesture(DragGesture(minimumDistance: 1)
+                                    .onChanged { value in
+                                        let start = sidecarResizeStart ?? preferredSidecarWidth
+                                        if sidecarResizeStart == nil { sidecarResizeStart = start }
+                                        preferredSidecarWidth = min(max(start - value.translation.width, 350), 480)
+                                    }
+                                    .onEnded { _ in sidecarResizeStart = nil })
+                                .offset(x: -4)
+                                .accessibilityLabel("Resize AI sidecar")
+                        }
+                        .padding(.trailing, 8)
+                        .padding(.vertical, 8)
+                    } else if !presentation.mode.isDocked && presentation.activeModule != .ai &&
+                              proxy.size.width >= 1_120 {
+                        VStack {
+                            Button { presentation.aiSidecarVisible = true } label: {
+                                Image(systemName: "sidebar.right")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .frame(width: 28, height: 42)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Show AI sidecar · ⌘\\")
+                            .accessibilityLabel("Show AI sidecar")
+                            Spacer()
+                        }
                         .padding(.trailing, 8)
                         .padding(.vertical, 8)
                     }
@@ -823,25 +859,25 @@ private struct WorkspaceShellView: View {
 
 /// A second presentation of the same conversation, not a second chat runtime.
 private struct WorkspaceAISidecar: View {
+    private enum Pane: String, CaseIterable {
+        case activity = "Activity"
+        case chat = "Chat"
+    }
+
     @ObservedObject var model: AIChatViewModel
     let notes: NotesStore
     let dictation: NoteDictationService
     let expand: () -> Void
     let close: () -> Void
+    @State private var pane: Pane = .chat
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: "sparkles")
                     .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                Text("AI")
+                Text("Lima AI")
                     .limaFont(.headline)
-                if model.currentTaskState.isActive {
-                    Text(model.currentTaskState.title)
-                        .limaFont(.caption)
-                        .foregroundStyle(LimaTheme.textSecondary)
-                        .lineLimit(1)
-                }
                 Spacer(minLength: 4)
                 Button(action: expand) {
                     Image(systemName: "arrow.up.left.and.arrow.down.right")
@@ -858,14 +894,35 @@ private struct WorkspaceAISidecar: View {
             }
             .padding(.horizontal, 12)
             .frame(height: 40)
+            Picker("AI sidecar view", selection: $pane) {
+                ForEach(Pane.allCases, id: \.self) { choice in
+                    Text(choice.rawValue).tag(choice)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 9)
+            .accessibilityIdentifier("workspace.ai.sidecar.mode")
             GlassHairline()
-            AIChatWorkspaceView(
-                model: model,
-                isEmbedded: true,
-                onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
-                contextNotes: notes
-            )
+            Group {
+                if pane == .activity {
+                    WorkspaceAIActivityView(model: model, showChat: { pane = .chat })
+                } else {
+                    AIChatWorkspaceView(
+                        model: model,
+                        isEmbedded: true,
+                        onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
+                        contextNotes: notes
+                    )
+                }
+            }
             .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            if model.currentTaskState.isActive { pane = .activity }
+        }
+        .onChange(of: model.currentTaskState.isActive) { active in
+            if active { pane = .activity }
         }
         .limaContentSurface(cornerRadius: LimaRadius.panel)
         .accessibilityIdentifier("workspace.ai.sidecar")
@@ -883,11 +940,11 @@ private struct WorkspacePrismBackground: View {
         if !reduceTransparency && !(LimaTestEnvironment.isEnabled && testReduceTransparency) {
             ZStack {
                 RadialGradient(
-                    colors: [module.featureTint.primary.opacity(0.10), .clear],
+                    colors: [module.featureTint.primary.opacity(0.045), .clear],
                     center: .topLeading, startRadius: 0, endRadius: 650
                 )
                 RadialGradient(
-                    colors: [Color.cyan.opacity(0.045), .clear],
+                    colors: [Color.cyan.opacity(0.018), .clear],
                     center: .bottomTrailing, startRadius: 20, endRadius: 700
                 )
             }
@@ -914,7 +971,6 @@ private struct WorkspaceModuleHost: View {
     let launcherViewModel: LauncherViewModel
     let extensionStoreModel: ExtensionStoreModel
     let reloadExtensions: () -> Void
-    let runWorkflow: (WorkflowDefinition) -> Void
     let openCommandSearch: (String) -> Void
     let selectModule: (LimaWorkspaceModule) -> Void
     var switchWorkspaceProfile: ((WorkspaceProfile) -> Void)? = nil
@@ -968,7 +1024,7 @@ private struct WorkspaceModuleHost: View {
     var body: some View {
         let _ = activeFeatureRevision
         VStack(spacing: 0) {
-            if presentation.activeModule != .ai && presentation.activeModule != .workflows && presentation.activeModule != .browser {
+            if presentation.activeModule != .ai && presentation.activeModule != .browser {
                 workspaceHeader(sizeClass: sizeClass)
                 Color.clear.frame(height: 8)
             } else {
@@ -1297,8 +1353,12 @@ private struct WorkspaceModuleHost: View {
                         }
                     }
                 case .context:
-                    ContextShelfView(store: contextShelf)
-                        .background(Color.clear)
+                    ContextShelfView(store: contextShelf, sendToAI: { items in
+                        let added = aiChatModel.prepareShelfItems(items, notes: store)
+                        if added > 0 { selectModule(.ai) }
+                        return added
+                    }, onNoteTransfer: { selectModule(.notes) })
+                    .background(Color.clear)
                 case .ai:
                     AIChatWorkspaceView(
                         model: aiChatModel,
@@ -1314,7 +1374,7 @@ private struct WorkspaceModuleHost: View {
                 case .dictation:
                     dictationSection
                 case .workflows:
-                    WorkflowWorkspaceView(execute: runWorkflow)
+                    Color.clear.onAppear { selectModule(.home) }
                 case .extensions:
                     ExtensionsSettingsView(
                         viewModel: launcherViewModel,
@@ -2966,7 +3026,7 @@ enum LimaMockupWorkspaceFixtures {
                 - [ ] Run regression tests
 
                 ## Timeline
-                Keep local workflows available without a new account.
+                Keep local utilities available without a new account.
                 """, isPinned: true, tags: ["Work", "Planning"]),
             MarkdownNote(title: "Meeting notes — design sync", content: "Review onboarding, empty states, and the command workflow.", tags: ["Work", "Design"]),
             MarkdownNote(title: "Ideas for later", content: "Keep the next thought close to the work.", isFavorite: true, tags: ["Ideas"])
@@ -2987,7 +3047,7 @@ enum LimaMockupWorkspaceFixtures {
             aiChatModel: ai, terminalModel: DeveloperTerminalModel(),
             formatterModel: FormatterWorkspaceModel(), launcherViewModel: launcher,
             extensionStoreModel: ExtensionStoreModel(onInstalled: {}),
-            reloadExtensions: {}, runWorkflow: { _ in }, openCommandSearch: { _ in },
+            reloadExtensions: {}, openCommandSearch: { _ in },
             selectModule: { presentation.activeModule = $0 }, presentation: presentation,
             dockLeft: {}, dockRight: {}, restoreWorkspace: {}, setStaysOnTop: { _ in }, openSettings: {},
             setQuickNoteTarget: { _ in }, setQuickNoteTargetMode: { _ in },

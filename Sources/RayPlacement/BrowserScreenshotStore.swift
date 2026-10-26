@@ -61,6 +61,8 @@ actor BrowserScreenshotStore {
 
     private let directory: URL
     private var entries: [BrowserScreenshotResult] = []
+    private var taskOwners: [UUID: UUID] = [:]
+    private var providerImagePrepared: Set<UUID> = []
     private let maximumCaptures = 8
 
     init(directory: URL? = nil) {
@@ -121,6 +123,8 @@ actor BrowserScreenshotStore {
         entries.append(capture)
         while entries.count > maximumCaptures {
             let old = entries.removeFirst()
+            taskOwners.removeValue(forKey: old.captureID)
+            providerImagePrepared.remove(old.captureID)
             try? FileManager.default.removeItem(at: old.fileURL)
         }
         return capture
@@ -128,6 +132,27 @@ actor BrowserScreenshotStore {
 
     func capture(id: UUID) -> BrowserScreenshotResult? {
         entries.first { $0.captureID == id }
+    }
+
+    /// A capture is usable for native AI input only after this exact task
+    /// requested it and its masked pixels were prepared for provider input.
+    /// Screenshot metadata alone never establishes visual authority.
+    func bindToTask(_ captureID: UUID, runID: UUID) -> Bool {
+        guard entries.contains(where: { $0.captureID == captureID }),
+              taskOwners[captureID] == nil else { return false }
+        taskOwners[captureID] = runID
+        return true
+    }
+
+    func markProviderImagePrepared(_ captureID: UUID) {
+        guard taskOwners[captureID] != nil,
+              entries.contains(where: { $0.captureID == captureID }) else { return }
+        providerImagePrepared.insert(captureID)
+    }
+
+    func permitsNativeInput(captureID: UUID, runID: UUID) -> Bool {
+        taskOwners[captureID] == runID && providerImagePrepared.contains(captureID) &&
+            entries.contains(where: { $0.captureID == captureID })
     }
 
     /// Read pixels only for a capture still owned by this process and tab.
@@ -150,12 +175,18 @@ actor BrowserScreenshotStore {
     func remove(for tabID: UUID) {
         let removed = entries.filter { $0.tabID == tabID }
         entries.removeAll { $0.tabID == tabID }
-        for entry in removed { try? FileManager.default.removeItem(at: entry.fileURL) }
+        for entry in removed {
+            taskOwners.removeValue(forKey: entry.captureID)
+            providerImagePrepared.remove(entry.captureID)
+            try? FileManager.default.removeItem(at: entry.fileURL)
+        }
     }
 
     func clear() {
         for entry in entries { try? FileManager.default.removeItem(at: entry.fileURL) }
         entries.removeAll()
+        taskOwners.removeAll()
+        providerImagePrepared.removeAll()
         try? FileManager.default.removeItem(at: directory)
     }
 }

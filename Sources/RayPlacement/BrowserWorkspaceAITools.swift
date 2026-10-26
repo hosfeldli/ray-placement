@@ -14,12 +14,12 @@ enum BrowserWorkspaceAITools {
     nonisolated static let navigationIDs: Set<String> = [
         "browser_new_tab", "browser_close_tab", "browser_focus_tab",
         "browser_activate", "browser_open_link", "browser_navigate", "browser_back",
-        "browser_forward", "browser_reload", "browser_scroll", "browser_scan"
+        "browser_forward", "browser_reload", "browser_scroll", "browser_visual_scroll", "browser_scan"
     ]
     nonisolated static let interactionIDs: Set<String> = [
         "browser_click", "browser_focus", "browser_type", "browser_set_value",
         "browser_clear", "browser_select", "browser_toggle", "browser_press_key", "browser_submit",
-        "browser_pointer_click"
+        "browser_pointer_click", "browser_visual_click", "browser_visual_type"
     ]
     nonisolated static let ids = readIDs.union(navigationIDs).union(interactionIDs)
     /// Only these tools return page-derived content that may become a private,
@@ -27,7 +27,7 @@ enum BrowserWorkspaceAITools {
     /// after they revoke the old page snapshot.
     nonisolated static let contentResultIDs: Set<String> = [
         "browser_read", "browser_observe", "browser_form_read", "browser_find", "browser_wait", "browser_result_read",
-        "browser_screenshot", "browser_hit_test", "browser_scroll", "browser_scan"
+        "browser_screenshot", "browser_hit_test", "browser_scroll", "browser_visual_scroll", "browser_scan"
     ]
 
     static let definitions: [LimaAIToolDefinition] = [
@@ -50,11 +50,29 @@ enum BrowserWorkspaceAITools {
              required: ["result_id"]),
         tool("browser_screenshot", "Capture a bounded visible viewport as a private JPEG with opaque masks over confidential regions and embedded frames. Ordinary text updates do not invalidate a safely redacted capture; document, user-input, frame, mask, and viewport changes do. Compatible providers receive only masked pixels as ephemeral image input.",
              ["tab_id": string("A Lima Browser tab ID.")]),
-        tool("browser_hit_test", "Resolve a pixel in a fresh private screenshot to a labelled, tab-bound DOM hit. Use a semantic target when available; visual clicking requires separate review.",
+        tool("browser_hit_test", "Resolve a pixel in a fresh private screenshot to a labelled, tab-bound DOM hit. Use a semantic target when available; visual actions receive native payment and protected-target assessment.",
              ["tab_id": string("The screenshot's tab ID."),
               "capture_id": string("Capture ID returned by browser_screenshot."),
               "x": number("Horizontal image pixel from the left."),
               "y": number("Vertical image pixel from the top.")]),
+        tool("browser_visual_click", "Send a native click at a point in a fresh masked Browser screenshot without a semantic target. Payment and protected actions are reviewed below the model; dispatch is not proof of page success.",
+             ["tab_id": string("The screenshot tab ID."),
+              "capture_id": string("Fresh capture ID from browser_screenshot."),
+              "x": number("Horizontal screenshot pixel."),
+              "y": number("Vertical screenshot pixel.")], risk: .write),
+        tool("browser_visual_type", "Click a nonsensitive editable point in a fresh masked Browser screenshot and type bounded Unicode text with native keyboard events, without the clipboard or a semantic target. Protected fields are unavailable.",
+             ["tab_id": string("The screenshot tab ID."),
+              "capture_id": string("Fresh capture ID from browser_screenshot."),
+              "x": number("Horizontal screenshot pixel."),
+              "y": number("Vertical screenshot pixel."),
+              "text": string("Nonsensitive text to type, at most 1024 UTF-8 bytes; no control characters.")], risk: .write),
+        tool("browser_visual_scroll", "Send a bounded native scroll at a point in a fresh Browser screenshot without a semantic target. Capture again afterward.",
+             ["tab_id": string("The screenshot tab ID."),
+              "capture_id": string("Fresh capture ID from browser_screenshot."),
+              "x": number("Horizontal screenshot pixel."),
+              "y": number("Vertical screenshot pixel."),
+              "delta_x": integer("Horizontal scroll pixels, -1200 to 1200."),
+              "delta_y": integer("Vertical scroll pixels, -1200 to 1200.")], risk: .navigation),
         tool("browser_find", "Find bounded visible text excerpts, headings, semantic rows, links, and controls by text or verified destination. Refreshes the page snapshot; use target IDs from this result only.",
              ["tab_id": string("A Lima Browser tab ID."), "query": string("A visible label or destination fragment, at most 200 characters.")]),
         tool("browser_wait", "Wait up to 30 seconds for a semantic condition rather than sleeping. Returns a fresh page snapshot when the condition is met.",
@@ -169,6 +187,10 @@ enum BrowserWorkspaceAITools {
         ["type": "number", "minimum": 0, "description": description]
     }
 
+    private static func integer(_ description: String) -> [String: Any] {
+        ["type": "integer", "minimum": -1200, "maximum": 1200, "description": description]
+    }
+
     private static func optionalNumber(_ description: String, _ minimum: Double, _ maximum: Double) -> [String: Any] {
         ["type": ["number", "null"], "minimum": minimum, "maximum": maximum, "description": description]
     }
@@ -185,15 +207,17 @@ enum BrowserWorkspaceAITools {
         return false
     }
 
-    static func execute(_ call: AIOutputItem, approvalGranted: Bool = false) async -> LimaAIToolExecution {
-        await execute(call, browser: .shared, approvalGranted: approvalGranted)
+    static func execute(_ call: AIOutputItem, approvalGranted: Bool = false,
+                        runID: UUID? = nil) async -> LimaAIToolExecution {
+        await execute(call, browser: .shared, approvalGranted: approvalGranted, runID: runID)
     }
 
     static func execute(_ call: AIOutputItem, browser: BrowserWorkspaceModel,
-                        approvalGranted: Bool = false) async -> LimaAIToolExecution {
+                        approvalGranted: Bool = false,
+                        runID: UUID? = nil) async -> LimaAIToolExecution {
         let requestedTab = (try? decodedArguments(for: call)).flatMap { try? tabID($0) }
         let activityID = browser.beginAIActivity(call.name ?? "browser", tabID: requestedTab ?? browser.selectedTabID)
-        let result = await executeOperation(call, browser: browser, approvalGranted: approvalGranted)
+        let result = await executeOperation(call, browser: browser, approvalGranted: approvalGranted, runID: runID)
         browser.finishAIActivity(activityID, result: result)
         return result
     }
@@ -203,6 +227,7 @@ enum BrowserWorkspaceAITools {
         let arguments: String?
         let browserID: ObjectIdentifier
         let review: BrowserCommitReview
+        let runID: UUID?
         let createdAt: Date
     }
 
@@ -210,14 +235,15 @@ enum BrowserWorkspaceAITools {
     /// transaction: it must match the reviewed function call and page state.
     private static var reviewedCalls: [String: ReviewedCall] = [:]
 
-    static func commitReview(for call: AIOutputItem) async -> BrowserCommitReview? {
-        await commitReview(for: call, browser: .shared)
+    static func commitReview(for call: AIOutputItem, runID: UUID? = nil) async -> BrowserCommitReview? {
+        await commitReview(for: call, browser: .shared, runID: runID)
     }
 
     static func commitReview(for call: AIOutputItem,
-                             browser: BrowserWorkspaceModel) async -> BrowserCommitReview? {
+                             browser: BrowserWorkspaceModel,
+                             runID: UUID? = nil) async -> BrowserCommitReview? {
         guard let callID = call.callID, !callID.isEmpty else { return nil }
-        let review = await currentCommitReview(for: call, browser: browser)
+        let review = await currentCommitReview(for: call, browser: browser, runID: runID)
         if let review {
             reviewedCalls = reviewedCalls.filter {
                 Date().timeIntervalSince($0.value.createdAt) < 900
@@ -225,7 +251,7 @@ enum BrowserWorkspaceAITools {
             reviewedCalls[callID] = ReviewedCall(
                 toolName: call.name, arguments: call.arguments,
                 browserID: ObjectIdentifier(browser), review: review,
-                createdAt: Date()
+                runID: runID, createdAt: Date()
             )
             if reviewedCalls.count > 32,
                let oldest = reviewedCalls.min(by: { $0.value.createdAt < $1.value.createdAt })?.key {
@@ -238,9 +264,27 @@ enum BrowserWorkspaceAITools {
     }
 
     private static func currentCommitReview(for call: AIOutputItem,
-                                             browser: BrowserWorkspaceModel) async -> BrowserCommitReview? {
+                                             browser: BrowserWorkspaceModel,
+                                             runID: UUID?) async -> BrowserCommitReview? {
         guard browser.aiControlMode.canInteract, let arguments = try? decodedArguments(for: call),
               let id = try? tabID(arguments) else { return nil }
+        if call.name == "browser_visual_click" || call.name == "browser_visual_type" {
+            guard let runID,
+                  let captureID = UUID(uuidString: (try? requiredString("capture_id", in: arguments)) ?? ""),
+                  let x = try? requiredPixel("x", in: arguments),
+                  let y = try? requiredPixel("y", in: arguments) else { return nil }
+            if call.name == "browser_visual_type" {
+                guard let text = try? requiredString("text", in: arguments) else { return nil }
+                return try? await browser.nativeVisualTypeReview(
+                    taskID: runID, tabID: id, captureID: captureID,
+                    pixelX: x, pixelY: y, text: text
+                )
+            }
+            return try? await browser.nativeVisualClickReview(
+                taskID: runID, tabID: id, captureID: captureID,
+                pixelX: x, pixelY: y
+            )
+        }
         if call.name == "browser_pointer_click" {
             guard let rawHitID = try? requiredString("hit_id", in: arguments),
                   let hitID = UUID(uuidString: rawHitID),
@@ -253,6 +297,9 @@ enum BrowserWorkspaceAITools {
         switch call.name {
         case "browser_submit": action = .submit
         case "browser_click", "browser_activate", "browser_open_link": action = .click
+        case "browser_toggle": action = .toggle
+        case "browser_select": action = .select
+        case "browser_press_key": action = .pressKey
         default: return nil
         }
         return try? await browser.commitReview(id, targetID: target, action: action)
@@ -260,16 +307,19 @@ enum BrowserWorkspaceAITools {
 
     private static func requireMatchingReview(for call: AIOutputItem,
                                                browser: BrowserWorkspaceModel,
-                                               approvalGranted: Bool) async throws -> Bool {
+                                               approvalGranted: Bool,
+                                               runID: UUID?) async throws -> Bool {
         guard ["browser_submit", "browser_click", "browser_activate",
-               "browser_open_link", "browser_pointer_click"].contains(call.name ?? "") else { return false }
-        let current = await currentCommitReview(for: call, browser: browser)
+               "browser_open_link", "browser_pointer_click", "browser_visual_click", "browser_visual_type",
+               "browser_toggle", "browser_select", "browser_press_key"].contains(call.name ?? "") else { return false }
+        let current = await currentCommitReview(for: call, browser: browser, runID: runID)
         let reviewed = call.callID.flatMap { reviewedCalls[$0] }
         if let reviewed {
             guard approvalGranted else { throw BrowserRuntimeError.commitApprovalRequired }
             reviewedCalls.removeValue(forKey: call.callID!)
             guard Date().timeIntervalSince(reviewed.createdAt) < 900,
                   reviewed.browserID == ObjectIdentifier(browser),
+                  reviewed.runID == runID,
                   reviewed.toolName == call.name,
                   reviewed.arguments == call.arguments,
                   current == reviewed.review else {
@@ -283,23 +333,37 @@ enum BrowserWorkspaceAITools {
     }
 
     private static func executeOperation(_ call: AIOutputItem, browser: BrowserWorkspaceModel,
-                                         approvalGranted: Bool) async -> LimaAIToolExecution {
+                                         approvalGranted: Bool,
+                                         runID: UUID?) async -> LimaAIToolExecution {
         guard isAvailable(call.name ?? "", mode: browser.aiControlMode) else {
             return failure(for: BrowserRuntimeError.controlDisabled).toolExecution()
         }
         do {
             let arguments = try decodedArguments(for: call)
+            try enforceNavigationMode(call.name ?? "", arguments: arguments, browser: browser)
+            try enforceTaskScope(call.name ?? "", arguments: arguments, browser: browser, runID: runID)
+            if BrowserTaskApprovalState.shared.requiresActionPrompt(
+                runID: runID, toolID: call.name ?? ""
+            ) && !approvalGranted {
+                throw BrowserRuntimeError.actionApprovalRequired
+            }
             // A generic tool approval is not a Browser transaction token. Only
             // a fresh, exact-call review can authorize a final action below.
             let commitApproved = try await requireMatchingReview(
-                for: call, browser: browser, approvalGranted: approvalGranted
+                for: call, browser: browser, approvalGranted: approvalGranted, runID: runID
             )
             switch call.name {
             case "browser_capabilities":
                 return .json([
                     "runtime": "embedded_webkit",
                     "ai_control": browser.aiControlMode.rawValue,
-                    "available_tools": definitions.map(\.id).filter { isAvailable($0, mode: browser.aiControlMode) }
+                    "navigation_method": browser.navigationMode.rawValue,
+                    "approval_policy": BrowserTaskApprovalState.shared.displayMode.rawValue,
+                    "authorized_sites": BrowserTaskApprovalState.shared.authorizedSites.sorted(),
+                    "available_tools": definitions.map(\.id).filter {
+                        isAvailable($0, mode: browser.aiControlMode) &&
+                        isVisibleInNavigationMode($0, mode: browser.navigationMode)
+                    }
                 ])
             case "browser_tabs":
                 return .json(["tabs": browser.tabs.map { tab in
@@ -330,7 +394,8 @@ enum BrowserWorkspaceAITools {
                 }
                 let focus = try optionalString("focus", in: arguments) ?? ""
                 guard focus.count <= 200 else { throw BrowserWorkspaceToolError.invalidArguments }
-                return await observe(browser, tabID: tab, mode: mode, focus: focus)
+                return await observe(browser, tabID: tab, mode: mode, focus: focus,
+                                     runID: runID)
             case "browser_form_read":
                 let tab = try tabID(arguments)
                 let page = try requireComplete(await browser.read(tab))
@@ -338,16 +403,54 @@ enum BrowserWorkspaceAITools {
             case "browser_screenshot":
                 let tab = try tabID(arguments)
                 let capture = try await browser.screenshot(tab)
-                return captureExecution([
-                    "tab_id": tab.uuidString,
-                    "capture_id": capture.captureID.uuidString,
-                    "pixel_width": capture.pixelWidth,
-                    "pixel_height": capture.pixelHeight,
-                    "point_width": capture.pointWidth,
-                    "point_height": capture.pointHeight,
-                    "redaction_count": capture.redactionCount,
-                    "image_attached": false
-                ], tabID: tab, capture: capture)
+                if let runID, BrowserTaskApprovalState.shared.activeRunID == runID {
+                    guard await BrowserScreenshotStore.shared.bindToTask(
+                        capture.captureID, runID: runID
+                    ) else { throw BrowserRuntimeError.staleTarget }
+                }
+                var payload = screenshotMetadata(capture)
+                payload["tab_id"] = tab.uuidString
+                payload["image_attached"] = false
+                return captureExecution(payload, tabID: tab, capture: capture)
+            case "browser_visual_click":
+                guard let runID,
+                      let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
+                    throw BrowserRuntimeError.taskScopeDenied
+                }
+                let tab = try tabID(arguments)
+                let x = try requiredPixel("x", in: arguments)
+                let y = try requiredPixel("y", in: arguments)
+                return try encoded(await browser.nativeVisualClick(
+                    taskID: runID, tabID: tab, captureID: captureID,
+                    pixelX: x, pixelY: y, commitApproved: commitApproved
+                ), browserTabID: tab)
+            case "browser_visual_type":
+                guard let runID,
+                      let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
+                    throw BrowserRuntimeError.taskScopeDenied
+                }
+                let tab = try tabID(arguments)
+                let x = try requiredPixel("x", in: arguments)
+                let y = try requiredPixel("y", in: arguments)
+                let text = try requiredString("text", in: arguments)
+                return try encoded(await browser.nativeVisualType(
+                    taskID: runID, tabID: tab, captureID: captureID,
+                    pixelX: x, pixelY: y, text: text, commitApproved: commitApproved
+                ), browserTabID: tab)
+            case "browser_visual_scroll":
+                guard let runID,
+                      let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
+                    throw BrowserRuntimeError.taskScopeDenied
+                }
+                let tab = try tabID(arguments)
+                let x = try requiredPixel("x", in: arguments)
+                let y = try requiredPixel("y", in: arguments)
+                let dx = try requiredBoundedDelta("delta_x", in: arguments)
+                let dy = try requiredBoundedDelta("delta_y", in: arguments)
+                return try encoded(await browser.nativeVisualScroll(
+                    taskID: runID, tabID: tab, captureID: captureID,
+                    pixelX: x, pixelY: y, deltaX: dx, deltaY: dy
+                ), browserTabID: tab)
             case "browser_hit_test":
                 let tab = try tabID(arguments)
                 let rawCaptureID = try requiredString("capture_id", in: arguments)
@@ -650,6 +753,9 @@ enum BrowserWorkspaceAITools {
                 return AIToolFailure(.noVerifiedDestination, message: message, recoverable: true,
                                      nextAction: "Activate it in the current tab and read the resulting page.",
                                      suggestedTools: ["browser_activate", "browser_read"])
+            case .taskScopeDenied:
+                return AIToolFailure(.permissionDenied, message: message, recoverable: true,
+                                     nextAction: "Ask the user to authorize the visible site for this task in the Browser toolbar.")
             case .controlDisabled, .userPaused:
                 return AIToolFailure(.permissionDenied, message: message, recoverable: false,
                                      nextAction: "Wait for the user to change or resume Browser AI Control.")
@@ -664,6 +770,9 @@ enum BrowserWorkspaceAITools {
                 return AIToolFailure(.targetOccluded, message: message, recoverable: true,
                                      nextAction: "Resolve the covering dialog or overlay, then call browser_read for fresh targets.",
                                      suggestedTools: ["browser_read"])
+            case .actionApprovalRequired:
+                return AIToolFailure(.permissionDenied, message: message, recoverable: false,
+                                     nextAction: "Ask the user to allow this Browser action, or switch this task to Auto-approve Nonpayment.")
             case .commitApprovalRequired:
                 return AIToolFailure(.permissionDenied, message: message, recoverable: false,
                                      nextAction: "Ask the user to approve this exact final Browser action.")
@@ -717,6 +826,97 @@ enum BrowserWorkspaceAITools {
         case nil, .null?: return nil
         case .string(let value)?: return value
         default: throw BrowserWorkspaceToolError.invalidArguments
+        }
+    }
+
+    private static func requiredBoundedDelta(_ key: String, in arguments: [String: JSONValue]) throws -> Int32 {
+        guard case .number(let value)? = arguments[key], value.isFinite,
+              value.rounded() == value, abs(value) <= 1200 else {
+            throw BrowserWorkspaceToolError.invalidArguments
+        }
+        return Int32(value)
+    }
+
+    private static func isVisibleInNavigationMode(
+        _ name: String, mode: BrowserNavigationMode
+    ) -> Bool {
+        switch mode {
+        case .adaptive: return true
+        case .visualOnly:
+            return [
+                "browser_capabilities", "browser_tabs", "browser_current",
+                "browser_screenshot", "browser_observe",
+                "browser_new_tab", "browser_close_tab", "browser_focus_tab",
+                "browser_navigate", "browser_back", "browser_forward", "browser_reload",
+                "browser_visual_click", "browser_visual_type", "browser_visual_scroll"
+            ].contains(name)
+        case .semanticOnly:
+            return !["browser_screenshot", "browser_hit_test", "browser_pointer_click",
+                     "browser_visual_click", "browser_visual_type", "browser_visual_scroll"].contains(name)
+        }
+    }
+
+    private static func enforceNavigationMode(
+        _ name: String, arguments: [String: JSONValue], browser: BrowserWorkspaceModel
+    ) throws {
+        guard isVisibleInNavigationMode(name, mode: browser.navigationMode) else {
+            throw BrowserRuntimeError.unsupportedAction
+        }
+        if name == "browser_observe" {
+            let requested = try optionalString("mode", in: arguments) ?? "hybrid"
+            if browser.navigationMode == .visualOnly && requested != "visual" {
+                throw BrowserRuntimeError.unsupportedAction
+            }
+            if browser.navigationMode == .semanticOnly && requested != "semantic" {
+                throw BrowserRuntimeError.unsupportedAction
+            }
+        }
+    }
+
+    private static func enforceTaskScope(
+        _ name: String, arguments: [String: JSONValue],
+        browser: BrowserWorkspaceModel, runID: UUID?
+    ) throws {
+        let state = BrowserTaskApprovalState.shared
+        guard navigationIDs.contains(name) || interactionIDs.contains(name) else { return }
+        // Pause is a Browser input boundary, not only a visual-lease check.
+        // Navigation and semantic actions must not bypass user takeover.
+        if let id = try? tabID(arguments), browser.pausedTabIDs.contains(id) {
+            throw BrowserRuntimeError.userPaused
+        }
+        if state.activeRunID != nil && runID != state.activeRunID {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        guard let runID, state.activeRunID == runID,
+              state.activeMode == .autoApproveNonpayment else { return }
+        if ["browser_back", "browser_forward"].contains(name) {
+            guard let id = try? tabID(arguments),
+                  let tab = browser.tabs.first(where: { $0.id == id }),
+                  let destination = (name == "browser_back"
+                    ? tab.activeWebView?.backForwardList.backItem?.url
+                    : tab.activeWebView?.backForwardList.forwardItem?.url) else {
+                // A missing history destination is not proof it remains in scope.
+                throw BrowserRuntimeError.unsupportedAction
+            }
+            guard state.isWithinScope(runID: runID, url: destination.absoluteString) else {
+                state.noteBlockedSite(destination.absoluteString)
+                throw BrowserRuntimeError.taskScopeDenied
+            }
+        }
+        if ["browser_navigate", "browser_new_tab"].contains(name),
+           let rawURL = try optionalString("url", in: arguments),
+           !state.isWithinScope(runID: runID, url: rawURL) {
+            state.noteBlockedSite(rawURL)
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        guard BrowserWorkspaceAITools.navigationIDs.contains(name) ||
+              BrowserWorkspaceAITools.interactionIDs.contains(name) else { return }
+        if let tabID = try? tabID(arguments),
+           let tab = browser.tabs.first(where: { $0.id == tabID }),
+           BrowserTaskApprovalState.host(tab.urlString) != nil,
+           !state.isWithinScope(runID: runID, url: tab.urlString) {
+            state.noteBlockedSite(tab.urlString)
+            throw BrowserRuntimeError.taskScopeDenied
         }
     }
 
@@ -856,7 +1056,8 @@ enum BrowserWorkspaceAITools {
     }
 
     private static func observe(_ browser: BrowserWorkspaceModel, tabID: UUID,
-                                mode: String, focus: String) async -> LimaAIToolExecution {
+                                mode: String, focus: String,
+                                runID: UUID?) async -> LimaAIToolExecution {
         var page: BrowserPageSnapshot?
         var semanticError: AIToolFailure?
         if mode != "visual" {
@@ -874,6 +1075,16 @@ enum BrowserWorkspaceAITools {
         if mode != "semantic" {
             do {
                 capture = try await browser.screenshot(tabID)
+                if let snapshot = capture, let runID,
+                   BrowserTaskApprovalState.shared.activeRunID == runID {
+                    let bound = await BrowserScreenshotStore.shared.bindToTask(
+                        snapshot.captureID, runID: runID
+                    )
+                    if !bound {
+                        capture = nil
+                        throw BrowserRuntimeError.staleTarget
+                    }
+                }
             } catch {
                 visualError = failure(for: error)
             }
@@ -968,14 +1179,7 @@ enum BrowserWorkspaceAITools {
             ] as [String: Any]
         }
         if let capture {
-            payload["screenshot"] = [
-                "capture_id": capture.captureID.uuidString,
-                "pixel_width": capture.pixelWidth,
-                "pixel_height": capture.pixelHeight,
-                "point_width": capture.pointWidth,
-                "point_height": capture.pointHeight,
-                "redaction_count": capture.redactionCount
-            ] as [String: Any]
+            payload["screenshot"] = screenshotMetadata(capture)
         }
         if let semanticError {
             payload["semantic_error"] = semanticError.jsonObject
@@ -986,6 +1190,32 @@ enum BrowserWorkspaceAITools {
         let failed = completePage == nil && capture == nil
         return captureExecution(payload, tabID: tabID, capture: capture,
                                 isError: failed)
+    }
+
+    /// Geometry accompanies pixels on every visual result. Foreground input
+    /// identity is disclosed only when a lease could be attempted; a background
+    /// snapshot must never imply that its coordinates are ready for native input.
+    private static func screenshotMetadata(_ capture: BrowserScreenshotResult) -> [String: Any] {
+        var metadata: [String: Any] = [
+            "capture_id": capture.captureID.uuidString,
+            "captured_at": ISO8601DateFormatter().string(from: capture.capturedAt),
+            "pixel_width": capture.pixelWidth,
+            "pixel_height": capture.pixelHeight,
+            "point_width": capture.pointWidth,
+            "point_height": capture.pointHeight,
+            "crop_origin_x": capture.cropOriginX,
+            "crop_origin_y": capture.cropOriginY,
+            "viewport_width": capture.viewportWidth,
+            "viewport_height": capture.viewportHeight,
+            "redaction_count": capture.redactionCount,
+            "foreground_anchor_available": capture.inputAnchor != nil
+        ]
+        if let anchor = capture.inputAnchor {
+            metadata["window_number"] = anchor.windowNumber
+            metadata["screen_number"] = anchor.screenNumber
+            metadata["backing_scale"] = anchor.backingScale
+        }
+        return metadata
     }
 
     private static func captureExecution(_ payload: [String: Any], tabID: UUID,

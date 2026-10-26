@@ -14,6 +14,10 @@ enum LimaSurfaceID: String, CaseIterable, Codable, Hashable {
 }
 
 enum LimaWorkspaceModule: String, CaseIterable, Codable, Hashable {
+    // Keep the retired raw value only to decode older saved layouts and links.
+    // It is excluded from every current navigation enumeration.
+    static let allCases: [LimaWorkspaceModule] = [.home, .notes, .ai, .browser, .context, .grammar, .dictation, .extensions, .clipboard, .terminal, .formatter]
+
     case home
     case notes
     case ai

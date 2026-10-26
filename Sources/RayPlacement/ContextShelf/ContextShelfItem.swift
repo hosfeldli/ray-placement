@@ -9,6 +9,7 @@ enum ContextShelfItemKind: String, Codable, CaseIterable {
     case extensionOutput
     case noteReference
     case plainText
+    case mailReference
 }
 
 struct ContextShelfItem: Identifiable, Codable, Equatable {
@@ -21,12 +22,20 @@ struct ContextShelfItem: Identifiable, Codable, Equatable {
     var createdAt: Date
     var isPinned: Bool
 
+    /// Treat either a Mail kind or payload as private Mail context. This also
+    /// fails closed for inconsistent records loaded from local storage.
+    var isMailReference: Bool {
+        if kind == .mailReference { return true }
+        if case .mailReference = payload { return true }
+        return false
+    }
+
     var textValue: String? {
         switch payload {
         case .text(let text): return text
         case .terminal(_, let output): return output
         case .dictation(let transcript): return transcript
-        case .file, .note: return nil
+        case .file, .note, .mailReference: return nil
         }
     }
 }

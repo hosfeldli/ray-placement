@@ -22,6 +22,10 @@ enum ContextShelfMarkdownFormatter {
             return "[[\(title)]]"
         case .dictation(let transcript):
             return "### Dictation\n\n\(transcript)"
+        case .mailReference(let reference):
+            let subject = escapeMailMetadata(reference.subject.isEmpty ? "(No subject)" : reference.subject)
+            let sender = escapeMailMetadata(reference.sender)
+            return "Mail reference (body not stored): \(subject) — \(sender)"
         }
     }
 
@@ -36,6 +40,8 @@ enum ContextShelfMarkdownFormatter {
         case .file(let path, _): return path
         case .note(_, let title): return title
         case .dictation(let transcript): return transcript
+        case .mailReference(let reference):
+            return "Mail reference: \(reference.subject.isEmpty ? "(No subject)" : reference.subject) — \(reference.sender)"
         }
     }
 
@@ -52,6 +58,14 @@ enum ContextShelfMarkdownFormatter {
         if seconds < 3_600 { return "\(Int(seconds / 60))m ago" }
         if seconds < 86_400 { return "\(Int(seconds / 3_600))h ago" }
         return "\(Int(seconds / 86_400))d ago"
+    }
+
+    private static func escapeMailMetadata(_ text: String) -> String {
+        text.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "[", with: "\\[")
+            .replacingOccurrences(of: "]", with: "\\]")
+            .replacingOccurrences(of: "*", with: "\\*")
+            .replacingOccurrences(of: "`", with: "\\`")
     }
 
     private static func sourceTitle(for type: ContextShelfSource.SourceType) -> String {
@@ -153,7 +167,7 @@ final class ContextShelfActionRegistry {
             allowsMultipleItems: true,
             handler: { items in
                 guard NotesStore.shared.appendShelfItemsToQuickNote(items) != nil else {
-                    throw NSError(domain: "ContextShelf", code: 1, userInfo: [NSLocalizedDescriptionKey: "Choose or create a Quick Note before appending Shelf items."])
+                    throw NSError(domain: "ContextShelf", code: 1, userInfo: [NSLocalizedDescriptionKey: "Nothing was added. Check the Quick Note target, Note limit, and source access."])
                 }
                 return .appended
             }
@@ -165,7 +179,9 @@ final class ContextShelfActionRegistry {
             supportedKinds: allKinds,
             allowsMultipleItems: true,
             handler: { items in
-                NotesStore.shared.createNoteFromShelf(items)
+                guard NotesStore.shared.createNoteFromShelf(items) != nil else {
+                    throw NSError(domain: "ContextShelf", code: 2, userInfo: [NSLocalizedDescriptionKey: "The Note was not created. Check the Note limit and source access."])
+                }
                 return .createdNote
             }
         ))
@@ -220,10 +236,16 @@ struct ContextShelfView: View {
     @Binding var searchQuery: String
     @State private var compareItems: [ContextShelfItem] = []
     @State private var destinationMode: DestinationMode?
+    let sendToAI: (([ContextShelfItem]) -> Int)?
+    let onNoteTransfer: (() -> Void)?
 
-    init(store: ContextShelfStore, searchQuery: Binding<String> = .constant("")) {
+    init(store: ContextShelfStore, searchQuery: Binding<String> = .constant(""),
+         sendToAI: (([ContextShelfItem]) -> Int)? = nil,
+         onNoteTransfer: (() -> Void)? = nil) {
         self.store = store
         self._searchQuery = searchQuery
+        self.sendToAI = sendToAI
+        self.onNoteTransfer = onNoteTransfer
     }
 
     fileprivate enum DestinationMode: Identifiable {
@@ -322,9 +344,9 @@ struct ContextShelfView: View {
             ContextShelfDetailView(item: item)
         }
         .sheet(item: $destinationMode) { mode in
-            ContextShelfDestinationView(mode: mode, items: actionItems, store: store) {
-                destinationMode = nil
-            }
+            ContextShelfDestinationView(mode: mode, items: actionItems, store: store,
+                                        dismiss: { destinationMode = nil },
+                                        onTransferred: { onNoteTransfer?() })
         }
         .sheet(isPresented: Binding(get: { !compareItems.isEmpty }, set: { if !$0 { compareItems = [] } })) {
             ContextShelfComparisonView(items: compareItems)
@@ -349,6 +371,9 @@ struct ContextShelfView: View {
                         Button { run(descriptor) } label: { Label(descriptor.title, systemImage: descriptor.icon) }
                     }
                     Divider()
+                    if sendToAI != nil {
+                        Button { transferToAI(actionItems) } label: { Label("Add to AI Draft", systemImage: "sparkles") }
+                    }
                     Button { destinationMode = .append } label: { Label("Append to Note…", systemImage: "note.text.badge.plus") }
                     Button { destinationMode = .create } label: { Label("Send to Note…", systemImage: "square.and.pencil") }
                     if actionItems.count == 2 {
@@ -385,10 +410,16 @@ struct ContextShelfView: View {
                 .limaFont(.caption.weight(.medium))
                 .foregroundStyle(LimaTheme.textSecondary)
             Spacer(minLength: 0)
+            if sendToAI != nil {
+                Button { transferToAI(store.selectedItems) } label: {
+                    Label("To AI Draft", systemImage: "sparkles")
+                }
+                .buttonStyle(.bordered)
+            }
             Button {
                 destinationMode = .append
             } label: {
-                Label("Add to Note", systemImage: "note.text.badge.plus")
+                Label("To Note", systemImage: "note.text.badge.plus")
             }
             .buttonStyle(.bordered)
             Menu {
@@ -518,10 +549,21 @@ struct ContextShelfView: View {
         }
         .contextMenu {
             Button("Inspect") { detailItem = item }
+            if sendToAI != nil {
+                Button("Add to AI Draft", systemImage: "sparkles") { transferToAI([item]) }
+            }
             ForEach(ContextShelfActionRegistry.shared.actions(for: [item]), id: \.id) { descriptor in
                 Button(descriptor.title) { run(descriptor, items: [item]) }
             }
         }
+    }
+
+    private func transferToAI(_ items: [ContextShelfItem]) {
+        guard let sendToAI, sendToAI(items) > 0 else {
+            errorMessage = "Nothing was added to the AI draft. Check AI access and each source; Mail references require separate scoped access."
+            return
+        }
+        errorMessage = nil
     }
 
     private func run(_ descriptor: ShelfActionDescriptor, items: [ContextShelfItem]? = nil) {
@@ -564,6 +606,7 @@ struct ContextShelfView: View {
         case .extensionOutput: return "puzzlepiece.extension"
         case .noteReference: return "note.text"
         case .plainText: return "text.alignleft"
+        case .mailReference: return "envelope"
         }
     }
 }
@@ -598,21 +641,55 @@ private struct ContextShelfDestinationView: View {
     let items: [ContextShelfItem]
     @ObservedObject var store: ContextShelfStore
     let dismiss: () -> Void
+    let onTransferred: () -> Void
     @ObservedObject private var notes = NotesStore.shared
+    @State private var errorMessage: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack { Text(mode.title).font(.headline); Spacer(); Button("Cancel", action: dismiss) }
+            HStack(spacing: 6) {
+                Label("\(items.count) Shelf item\(items.count == 1 ? "" : "s")", systemImage: "tray.full")
+                Image(systemName: "arrow.right")
+                Label(mode == .create ? "New Note" : "Choose a Note", systemImage: "note.text")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(.secondary)
+            HStack(spacing: 6) {
+                ForEach(Array(items.prefix(3))) { item in
+                    Text(item.title)
+                        .lineLimit(1)
+                        .font(.caption2)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.10), in: Capsule())
+                }
+                if items.count > 3 { Text("+\(items.count - 3) more").font(.caption2).foregroundStyle(.secondary) }
+            }
+            if let errorMessage {
+                Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
             if mode == .create {
                 Button {
-                    notes.createNoteFromShelf(items)
+                    guard notes.createNoteFromShelf(items) != nil else {
+                        errorMessage = "The Note was not created. Check the Note limit and source access."
+                        return
+                    }
                     dismiss()
+                    onTransferred()
                 } label: { Label("Create New Note", systemImage: "plus") }
             }
             List(notes.notes) { note in
                 Button {
-                    notes.appendShelfItems(items, to: note.id)
+                    guard notes.appendShelfItems(items, to: note.id) else {
+                        errorMessage = "Nothing was added. This Note may be full or the source may be unavailable."
+                        return
+                    }
+                    notes.selectNote(note.id)
                     dismiss()
+                    onTransferred()
                 } label: {
                     HStack {
                         Image(systemName: note.id == notes.selectedNoteID ? "checkmark.circle.fill" : "note.text")

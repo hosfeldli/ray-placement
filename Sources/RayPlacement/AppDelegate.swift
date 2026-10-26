@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let hotKeys = HotKeyManager()
     private let accessoryMouse = AccessoryMouseBindingManager()
     private let updateService = UpdateService()
+    private let updatePresentation = LimaUpdatePresentationController()
     // Keep Sparkle alive for production updates. UpdateService routes to the
     // legacy signed-custom updater only when explicitly requested.
     private let sparkleUpdateService = SparkleUpdateService.shared
@@ -38,6 +39,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         DiagnosticsService.shared.markAppStarted()
         try? ApplicationPaths.prepare()
+        do {
+            try LegacyWorkflowArchive().archiveIfNeeded()
+        } catch {
+            NSLog("Lima legacy Workflows archive failed: %@", error.localizedDescription)
+        }
         do {
             try LegacyConnectionMigration.runAtLaunch()
         } catch {
@@ -623,6 +629,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureUpdates() -> Bool {
+        updateService.onReleaseDiscovered = { release in
+            let manifest = LimaReleaseNotesParser.fromGitHubRelease(
+                version: release.versionText, name: release.name,
+                body: release.body, url: release.htmlURL
+            )
+            do { try LimaReleaseHistoryStore.shared.stageAvailable(manifest) }
+            catch { NSLog("Lima could not save release notes: %@", error.localizedDescription) }
+        }
         updateService.onReleaseAvailable = { [weak self] release in
             self?.presentUpdateConfirmation(release)
         }
@@ -630,16 +644,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.launcher.showSettings()
         }
         if let result = updateService.consumePreviousUpdateResult() {
+            if result.succeeded {
+                let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+                do {
+                    if let manifest = try LimaReleaseHistoryStore.shared.activateVerifiedInstall(
+                        version: updateService.currentVersion, build: build
+                    ) {
+                        _ = OnboardingCoordinator.shared.startIfNeeded(manifest)
+                    }
+                } catch {
+                    NSLog("Lima could not save installed release history: %@", error.localizedDescription)
+                }
+            }
             updateService.showCompletion(succeeded: result.succeeded, message: result.message)
             DispatchQueue.main.async { [weak self] in
                 self?.launcher.showSettings()
             }
             return true
         }
+        // Sparkle verifies its signed appcast and replaces the application.
+        // It has no Lima helper receipt; a previously staged newer release is
+        // recorded only when the newly running bundle matches its version and
+        // optional build. A failed installation or rollback leaves the old
+        // bundle running, so neither history nor onboarding advances.
+        if SparkleMigrationBoundary.activeBackend == .sparkle,
+           LimaReleaseHistoryStore.shared.pending?.version == updateService.currentVersion {
+            let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? ""
+            do {
+                if let manifest = try LimaReleaseHistoryStore.shared.activateVerifiedInstall(
+                    version: updateService.currentVersion, build: build
+                ), OnboardingCoordinator.shared.startIfNeeded(manifest) {
+                    DispatchQueue.main.async { [weak self] in self?.launcher.showSettings() }
+                    return true
+                }
+            } catch {
+                NSLog("Lima could not save Sparkle release history: %@", error.localizedDescription)
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self else { return }
             if SparkleMigrationBoundary.activeBackend == .sparkle {
                 self.sparkleUpdateService.checkForUpdatesInBackground()
+                self.updateService.refreshPublishedReleaseMetadata()
             } else {
                 self.updateService.checkForUpdates(manual: false)
             }
@@ -648,23 +694,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentUpdateConfirmation(_ release: UpdateService.Release) {
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Lima \(release.versionText) is available"
-        let notes = release.body?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(1_200) ?? ""
-        alert.informativeText = "Installed: \(updateService.currentVersion)\n\n\(notes)\n\nThe update kit will be verified locally and installed only after you confirm."
-        alert.addButton(withTitle: "Update Now")
-        alert.addButton(withTitle: "Later")
-        alert.addButton(withTitle: "View on GitHub")
-        switch alert.runModal() {
-        case .alertFirstButtonReturn:
-            updateService.install(release)
-        case .alertThirdButtonReturn:
-            NSWorkspace.shared.open(release.htmlURL)
-        default:
-            break
+        let manifest: LimaReleaseManifest
+        if let staged = LimaReleaseHistoryStore.shared.pending,
+           staged.version == release.versionText {
+            manifest = staged
+        } else {
+            manifest = LimaReleaseNotesParser.fromGitHubRelease(
+                version: release.versionText, name: release.name,
+                body: release.body, url: release.htmlURL
+            )
+        }
+        updatePresentation.present(release: release, manifest: manifest) { [weak self] in
+            guard let self else { return }
+            if SparkleMigrationBoundary.activeBackend == .sparkle {
+                self.sparkleUpdateService.checkForUpdates()
+            } else {
+                self.updateService.install(release)
+            }
         }
     }
 }

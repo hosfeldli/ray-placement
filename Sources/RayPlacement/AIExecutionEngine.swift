@@ -172,6 +172,7 @@ actor AIExecutionEngine {
               await BrowserWorkspaceModel.shared.isScreenshotCurrent(capture),
               let base64 = try? await BrowserScreenshotStore.shared.providerBase64(for: capture),
               await BrowserWorkspaceModel.shared.isScreenshotCurrent(capture) else { return nil }
+        await BrowserScreenshotStore.shared.markProviderImagePrepared(capture.captureID)
         return AIEngineScreenshotInput(callID: output.callID,
                                       mediaType: capture.mediaType, base64: base64)
     }

@@ -3,12 +3,14 @@ import Foundation
 public enum CalculatorError: Error, LocalizedError {
     case invalidExpression
     case divisionByZero
+    case invalidDomain
     case unknownIdentifier(String)
 
     public var errorDescription: String? {
         switch self {
         case .invalidExpression: return "Invalid expression"
         case .divisionByZero: return "Division by zero"
+        case .invalidDomain: return "Value is outside the function's domain"
         case .unknownIdentifier(let name): return "Unknown value: \(name)"
         }
     }
@@ -60,17 +62,17 @@ public enum Calculator {
         }
 
         private mutating func parseTerm() throws -> Double {
-            var value = try parsePower()
+            var value = try parseUnary()
             while true {
                 skipWhitespace()
                 if consume("*") {
-                    value *= try parsePower()
+                    value *= try parseUnary()
                 } else if consume("/") {
-                    let divisor = try parsePower()
+                    let divisor = try parseUnary()
                     guard divisor != 0 else { throw CalculatorError.divisionByZero }
                     value /= divisor
                 } else if consume("%") {
-                    let divisor = try parsePower()
+                    let divisor = try parseUnary()
                     guard divisor != 0 else { throw CalculatorError.divisionByZero }
                     value.formTruncatingRemainder(dividingBy: divisor)
                 } else {
@@ -80,11 +82,10 @@ public enum Calculator {
         }
 
         private mutating func parsePower() throws -> Double {
-            var value = try parseUnary()
+            let value = try parsePrimary()
             skipWhitespace()
-            if consume("^") {
-                value = Foundation.pow(value, try parsePower())
-            }
+            // Exponentiation is right-associative and binds before unary signs.
+            if consume("^") { return Foundation.pow(value, try parseUnary()) }
             return value
         }
 
@@ -92,7 +93,7 @@ public enum Calculator {
             skipWhitespace()
             if consume("+") { return try parseUnary() }
             if consume("-") { return -(try parseUnary()) }
-            return try parsePrimary()
+            return try parsePower()
         }
 
         private mutating func parsePrimary() throws -> Double {
@@ -109,6 +110,14 @@ public enum Calculator {
                 switch name.lowercased() {
                 case "pi", "π": return .pi
                 case "e": return M_E
+                case "sqrt":
+                    skipWhitespace()
+                    guard consume("(") else { throw CalculatorError.invalidExpression }
+                    let argument = try parseExpression()
+                    skipWhitespace()
+                    guard consume(")") else { throw CalculatorError.invalidExpression }
+                    guard argument >= 0 else { throw CalculatorError.invalidDomain }
+                    return Foundation.sqrt(argument)
                 default: throw CalculatorError.unknownIdentifier(name)
                 }
             }
@@ -137,7 +146,7 @@ public enum Calculator {
         private mutating func parseIdentifier() -> String? {
             skipWhitespace()
             let start = index
-            while !isAtEnd, characters[index].isLetter || characters[index] == "π" { index += 1 }
+            while !isAtEnd, characters[index].isLetter { index += 1 }
             guard index > start else { return nil }
             return String(characters[start..<index])
         }

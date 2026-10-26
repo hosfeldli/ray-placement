@@ -4,14 +4,17 @@ import Testing
 @testable import RayPlacement
 
 @Test @MainActor func nativeCapabilityDefinitionsAreStrictAndOptIn() {
-    #expect(NativeCapabilityAITools.ids.count == 18)
+    #expect(NativeCapabilityAITools.ids.count == 34)
     #expect(NativeCapabilityAITools.definitions.count == NativeCapabilityAITools.ids.count)
     for definition in NativeCapabilityAITools.definitions {
         #expect(definition.responsePayload != nil)
         #expect(definition.actionCategory == .screenshotHistory ||
                 definition.actionCategory == .screenCapture ||
                 definition.actionCategory == .audioOutput ||
-                definition.actionCategory == .networkQuality)
+                definition.actionCategory == .networkQuality ||
+                definition.actionCategory == .calendar ||
+                definition.actionCategory == .reminders ||
+                definition.actionCategory == .location)
         #expect(AIComputerActionPolicy.shared.requiresApproval(
             for: definition, toolAccessMode: .fullControl
         ))
@@ -23,8 +26,15 @@ import Testing
     #expect(!NativeCapabilityRouter.supportedOperations.contains(.screenshotSave))
     #expect(NativeCapabilityRouter.supportedOperations.contains(.networkTestStart))
     #expect(NativeCapabilityRouter.supportedOperations.contains(.networkTestCancel))
-    #expect(!NativeCapabilityRouter.supportedOperations.contains(.calendarCreateEvent))
-    #expect(!NativeCapabilityRouter.supportedOperations.contains(.remindersCreate))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.calendarCreateEvent))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.calendarUpdateEvent))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.calendarDeleteEvent))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.remindersCreate))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.remindersUpdate))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.remindersComplete))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.remindersDelete))
+    #expect(NativeCapabilityRouter.supportedOperations.contains(.locationCurrent))
+    #expect(!NativeCapabilityRouter.supportedOperations.contains(.calendarOpenEvent))
 }
 
 @Test func nativeExtensionActionInfersOnlyItsDedicatedCapability() throws {

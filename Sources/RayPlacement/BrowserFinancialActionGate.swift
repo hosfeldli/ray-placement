@@ -6,7 +6,9 @@ import Foundation
 enum BrowserFinancialActionGate {
     static func requiresReview(target: BrowserTarget, action: BrowserInteractionAction,
                                page: BrowserPageSnapshot) -> Bool {
-        guard action == .click || action == .submit else { return false }
+        guard [.click, .submit, .toggle, .select, .pressKey].contains(action) else {
+            return false
+        }
 
         let label = target.label.trimmingCharacters(in: .whitespacesAndNewlines)
         let explicitMoneyAction = matches(
@@ -15,12 +17,21 @@ enum BrowserFinancialActionGate {
         )
         if explicitMoneyAction { return true }
 
+        // An exploratory-sounding label cannot exempt a submit control inside
+        // a financial form. Sites can rename the final control to "Search" or
+        // "Continue"; the native gate must classify the form, not only its text.
+        let financialForm = matches(
+            target.formLabel ?? "",
+            #"\b(checkout|payment|billing|order|subscription|donation|deposit|transfer)\b"#
+        )
+        if financialForm && (action == .submit || target.isSubmit == true) {
+            return true
+        }
+
         let clearlyExploratory = matches(
             label,
             #"^(find|search|check availability|show results|see availability|filter|look up|lookup|view)\b"#
         )
-        if clearlyExploratory { return false }
-
         let context = [page.title, target.formLabel ?? "",
                        URLComponents(string: page.identity.url)?.path ?? ""]
             .joined(separator: " ")
@@ -28,6 +39,19 @@ enum BrowserFinancialActionGate {
             context,
             #"\b(checkout|payment|billing|order review|order summary|cart|subscription|donation|transfer funds|deposit)\b"#
         )
+        // Toggle, select, and synthetic key handlers can execute page script.
+        // On a payment form or checkout surface, they cannot silently become
+        // a second path around the final-action boundary.
+        if [.toggle, .select, .pressKey].contains(action) {
+            let feeConsent = matches(label, #"\b(agree|accept|consent|authorize|approve|confirm)\b"#) &&
+                matches(page.text,
+                    #"\b(deposit|charge|fee|card hold|recurring|subscription|amount due|payment method|non.?refund)\b|\$\s?\d"#)
+            return financialForm || checkoutContext || feeConsent
+        }
+        // Availability searches on a booking page are not commitments, even
+        // when a later reservation might require a fee. A checkout submit is
+        // less certain: search-like copy cannot exempt it from review.
+        if clearlyExploratory && !checkoutContext { return false }
         let bookingContext = matches(
             context,
             #"\b(reservation|booking|appointment|registration)\b"#

@@ -33,6 +33,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     case ai
     case browser
     case appearance
+    case capabilities
     case advanced
 
     static let sidebarSections = Self.allCases
@@ -48,6 +49,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .ai: return "AI Chat"
         case .browser: return "Browser"
         case .appearance: return "Appearance"
+        case .capabilities: return "Capabilities"
         case .advanced: return "Advanced"
         }
     }
@@ -61,6 +63,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .ai: return "sparkles"
         case .browser: return "globe"
         case .appearance: return "paintbrush.fill"
+        case .capabilities: return "square.stack.3d.up.fill"
         case .advanced: return "slider.horizontal.3"
         }
     }
@@ -74,13 +77,14 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .ai: "Existing providers and chat behavior"
         case .browser: "Embedded browser, AI control, and privacy"
         case .appearance: "Theme, colors, and readable layouts"
+        case .capabilities: "Native integrations and account access"
         case .advanced: "Performance, privacy, and diagnostics"
         }
     }
 
     var tint: AppAccentTheme {
         switch self {
-        case .general, .workspace, .commands: .blue
+        case .general, .workspace, .commands, .capabilities: .blue
         case .writing: .green
         case .ai, .appearance: .violet
         case .browser: .cyan
@@ -91,7 +95,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var searchTerms: [String] {
         switch self {
         case .general:
-            return ["startup", "launcher", "updates", "login", "behavior", "default"]
+            return ["startup", "launcher", "updates", "login", "behavior", "default", "audio", "sound", "speakers", "headphones"]
         case .workspace:
             return ["workspace", "layout", "rail", "section", "module", "startup", "profile", "visibility"]
         case .commands:
@@ -104,6 +108,8 @@ enum SettingsSection: String, CaseIterable, Identifiable {
             return ["browser", "web", "tabs", "privacy", "ai control", "navigation", "website data"]
         case .appearance:
             return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
+        case .capabilities:
+            return ["capabilities", "mail", "apple mail", "accounts", "sending", "email", "automation"]
         case .advanced:
             return ["advanced", "experimental", "browser interaction", "performance", "privacy", "permissions", "usage", "logs", "developer", "secrets", "diagnostics", "clipboard"]
         }
@@ -134,6 +140,7 @@ struct SettingsView: View {
     @ObservedObject var viewModel: LauncherViewModel
     @ObservedObject var aiChatModel: AIChatViewModel
     @ObservedObject var updateService: UpdateService
+    @ObservedObject private var onboarding = OnboardingCoordinator.shared
     @ObservedObject private var usageMonitor = UsageMonitor.shared
     @ObservedObject private var taskRegistry = TaskRegistry.shared
     @ObservedObject private var performanceMonitor = PerformanceMonitor.shared
@@ -149,6 +156,7 @@ struct SettingsView: View {
     @State private var secretKind: LimaSecretKind = .localSecret
     @State private var editingSecretID: UUID?
     @State private var confirmClipboardClear = false
+    @State private var legacyWorkflowArchiveRevision = 0
     @State private var accessibilityTrusted = AXIsProcessTrusted()
     @State private var selectedSection: SettingsSection = .general
     @State private var settingsSearchQuery = ""
@@ -158,6 +166,7 @@ struct SettingsView: View {
     @State private var confirmCloudDictation = false
     @State private var commandProfileName = ""
     @State private var aliasDrafts: [String: String] = [:]
+    @State private var aliasSaveErrors: [String: String] = [:]
     @State private var shortcutLookupDraft = ""
     @State private var pendingShortcutAssignment: PendingShortcutAssignment?
     @State private var workspaceProfileName = ""
@@ -197,13 +206,23 @@ struct SettingsView: View {
         }
         .frame(minWidth: 900, idealWidth: 1060, minHeight: 620, idealHeight: 760)
         .tint(settings.accentTheme.readablePrimary)
+        .limaOnboardingOverlay(coordinator: onboarding)
         .limaAnimation(LimaDesign.spring(0.30), value: selectedSection)
+        .onChange(of: onboarding.isActive) { active in
+            if active { showOnboardingDestination(onboarding.step) }
+        }
+        .onChange(of: onboarding.step) { step in
+            if onboarding.isActive { showOnboardingDestination(step) }
+        }
         .onReceive(settings.$requestedSettingsSection) { requested in
             if let requested { selectedSection = requested }
         }
         .onChange(of: settingsSearchQuery) { query in
             if let first = filteredSections.first {
                 selectedSection = first
+                if first == .capabilities && query.localizedCaseInsensitiveContains("mail") {
+                    selectedSection = .capabilities
+                }
             } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 selectedSection = .general
             }
@@ -230,6 +249,15 @@ struct SettingsView: View {
                 },
                 secondaryButton: .cancel()
             )
+        }
+    }
+
+    private func showOnboardingDestination(_ step: LimaOnboardingStep) {
+        switch step {
+        case .mail:
+            selectedSection = .capabilities
+        case .welcome, .audio, .noteDemo, .versionHistory, .finish:
+            selectedSection = .general
         }
     }
 
@@ -491,8 +519,18 @@ struct SettingsView: View {
         case .ai: AIProviderSettingsView(model: aiChatModel)
         case .browser: BrowserWorkspaceSettingsView()
         case .appearance: appearanceSettingsTab
+        case .capabilities: capabilitiesTab
         case .advanced: advancedSettingsTab
         }
+    }
+
+    private var capabilitiesTab: some View {
+        Form {
+            MailSettingsView()
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .controlSize(.regular)
     }
 
     private var writingSettingsTab: some View {
@@ -652,6 +690,10 @@ struct SettingsView: View {
                     Text(aiChatModel.credentials.hasAPIKey(for: .openAI)
                          ? "OpenAI API key is available in Keychain."
                          : "Add an OpenAI API key in Settings → AI before recording.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                    Toggle("Clean up and format transcript with AI", isOn: $settings.dictationAICleanupEnabled)
+                    Text("After cloud transcription, Lima sends the transcript—not other app context—to OpenAI for punctuation and formatting. If cleanup fails, the original transcript is used. Speaker identities are not inferred.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -938,6 +980,10 @@ struct SettingsView: View {
                          : "Add an OpenAI API key in Settings → AI before recording.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
+                    Toggle("Clean up and format transcript with AI", isOn: $settings.dictationAICleanupEnabled)
+                    Text("After cloud transcription, Lima sends the transcript—not other app context—to OpenAI for punctuation and formatting. If cleanup fails, the original transcript is used. Speaker identities are not inferred.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
@@ -1131,6 +1177,28 @@ struct SettingsView: View {
 
             Section("Launcher learning") {
                 LabeledContent("Recent commands", value: "\(viewModel.lastLearnedCommands().count)")
+                Text("Search learns command usage locally. Excluded apps do not contribute new usage or contextual ranking; reset learned ranking to remove earlier history.")
+                    .foregroundStyle(LimaTheme.textSecondary)
+                    .limaFont(.caption)
+                ForEach(viewModel.learnedSourceApplications) { application in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(application.name)
+                            if application.name != application.id {
+                                Text(application.id)
+                                    .foregroundStyle(LimaTheme.textSecondary)
+                                    .limaFont(.caption)
+                            }
+                        }
+                        Spacer()
+                        Toggle("Exclude", isOn: Binding(
+                            get: { viewModel.isSourceApplicationExcluded(application.id) },
+                            set: { viewModel.setSourceApplicationExcluded($0, id: application.id) }
+                        ))
+                        .toggleStyle(.switch)
+                        .accessibilityLabel("Exclude \(application.name) from Search learning")
+                    }
+                }
                 Button("Reset Learned Ranking", role: .destructive) { viewModel.resetLearnedRanking() }
                     .help("Forget usage frequency, recency, and source-application ranking")
                 Button("Reset Favorites") { CommandManager.shared.resetFavorites() }
@@ -1162,22 +1230,52 @@ struct SettingsView: View {
             }
 
             Section("Command aliases") {
-                Text("Aliases are local and are ranked below an exact command title.")
+                Text("Aliases stay local. Exact titles take priority; conflicting aliases must be changed before saving.")
                     .foregroundStyle(LimaTheme.textSecondary)
                     .limaFont(.caption)
                 ForEach(viewModel.commandDescriptors) { descriptor in
+                    let saved = viewModel.aliases(for: descriptor.id)
+                    let draft = aliasDrafts[descriptor.id] ?? saved.joined(separator: ", ")
+                    let proposed = draft.split(separator: ",").map(String.init)
+                    let collision = viewModel.aliasConflict(proposed, for: descriptor.id)
                     VStack(alignment: .leading, spacing: 5) {
                         Text(descriptor.title).limaFont(.callout.weight(.medium))
                         HStack {
                             TextField("comma-separated aliases", text: Binding(
-                                get: { aliasDrafts[descriptor.id] ?? viewModel.aliases(for: descriptor.id).joined(separator: ", ") },
-                                set: { aliasDrafts[descriptor.id] = $0 }
+                                get: { aliasDrafts[descriptor.id] ?? saved.joined(separator: ", ") },
+                                set: {
+                                    aliasDrafts[descriptor.id] = $0
+                                    aliasSaveErrors.removeValue(forKey: descriptor.id)
+                                }
                             ))
                             .textFieldStyle(.roundedBorder)
                             Button("Save") {
-                                viewModel.setAliases((aliasDrafts[descriptor.id] ?? "").split(separator: ",").map(String.init), for: descriptor.id)
+                                if let error = viewModel.setAliases(proposed, for: descriptor.id) {
+                                    aliasSaveErrors[descriptor.id] = error
+                                } else {
+                                    aliasDrafts.removeValue(forKey: descriptor.id)
+                                    aliasSaveErrors.removeValue(forKey: descriptor.id)
+                                }
                             }
                             .buttonStyle(.bordered)
+                            .disabled(collision != nil)
+                            Button("Reset") {
+                                _ = viewModel.setAliases([], for: descriptor.id)
+                                aliasDrafts.removeValue(forKey: descriptor.id)
+                                aliasSaveErrors.removeValue(forKey: descriptor.id)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(saved.isEmpty)
+                            Toggle("Enabled", isOn: Binding(
+                                get: { viewModel.aliasesEnabled(for: descriptor.id) },
+                                set: { viewModel.setAliasesEnabled($0, for: descriptor.id) }
+                            ))
+                            .disabled(saved.isEmpty)
+                        }
+                        if let message = collision ?? aliasSaveErrors[descriptor.id] {
+                            Text(message)
+                                .limaFont(.caption)
+                                .foregroundStyle(.orange)
                         }
                     }
                 }
@@ -1480,6 +1578,10 @@ struct SettingsView: View {
                          : "Add an OpenAI API key in Settings → AI before recording.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
+                    Toggle("Clean up and format transcript with AI", isOn: $settings.dictationAICleanupEnabled)
+                    Text("After cloud transcription, Lima sends the transcript—not other app context—to OpenAI for punctuation and formatting. If cleanup fails, the original transcript is used. Speaker identities are not inferred.")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
                 }
                 if settings.dictationEngine == .localWhisper {
                     Picker("Whisper compute", selection: $settings.dictationComputeMode) {
@@ -1530,9 +1632,44 @@ struct SettingsView: View {
                 }
                 if let error = backups.lastError { Text(error).foregroundStyle(.orange) }
             }
+            if LegacyWorkflowArchive().hasSavedDefinitions {
+                Section("Archived Workflows") {
+                    Text("The dedicated Workflows feature has been retired. Your saved definitions are inactive and preserved locally; Lima will not run them.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                    HStack {
+                        Button("Reveal Archive") {
+                            do {
+                                if let url = try LegacyWorkflowArchive().archiveIfNeeded() {
+                                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                                }
+                            } catch { settings.lastError = error.localizedDescription }
+                        }
+                        Button("Export…") {
+                            let panel = NSSavePanel()
+                            panel.nameFieldStringValue = "Lima-Archived-Workflows.json"
+                            guard panel.runModal() == .OK, let url = panel.url else { return }
+                            do { try LegacyWorkflowArchive().exportLatest(to: url) }
+                            catch { settings.lastError = error.localizedDescription }
+                        }
+                        Button("Clean Up…", role: .destructive) {
+                            let alert = NSAlert()
+                            alert.alertStyle = .warning
+                            alert.messageText = "Remove archived Workflows definitions?"
+                            alert.informativeText = "This removes the legacy workflows.json file and archived Workflows snapshots. Export them first if you want to keep a copy."
+                            alert.addButton(withTitle: "Remove Definitions")
+                            alert.addButton(withTitle: "Cancel")
+                            guard alert.runModal() == .alertFirstButtonReturn else { return }
+                            do {
+                                try LegacyWorkflowArchive().removeLegacyCopies()
+                                legacyWorkflowArchiveRevision += 1
+                            } catch { settings.lastError = error.localizedDescription }
+                        }
+                    }
+                }
+            }
             Section("Persistence") {
                 if let error = settings.lastError { Text(error).foregroundStyle(.orange) }
-                Text("Notes, dictation, clipboard, settings, Lima's single Terminal shell, workflows, and Workspace state use private atomic storage with recovery copies.")
+                Text("Notes, dictation, clipboard, settings, Lima's single Terminal shell, and Workspace state use private atomic storage with recovery copies.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
         }
@@ -1719,6 +1856,13 @@ struct SettingsView: View {
                 Label("Notes", systemImage: "note.text").limaFont(.headline)
             }
 
+            Section {
+                AudioOutputSettingsView()
+                    .limaOnboardingTarget("audio")
+            } header: {
+                Label("Audio", systemImage: "speaker.wave.2").limaFont(.headline)
+            }
+
             Section("Software Updates") {
                 Text("Lima \(updateService.currentVersion) · Build \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—")")
                     .limaFont(.caption.weight(.medium))
@@ -1728,20 +1872,20 @@ struct SettingsView: View {
                 HStack {
                     Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
                         .disabled(updateService.isBusy || updateService.isInstalling)
-                    Button("View Releases") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
+                    if updateService.availableRelease != nil {
+                        Button("Review Available Update") { updateService.reviewAvailableRelease() }
+                    }
+                    Button("View Releases") { NSWorkspace.shared.open(UpdateService.releasesURL) }
                 }
                 if updateService.isBusy && !updateService.isInstalling {
                     ProgressView().controlSize(.small)
                 }
-                if updateService.isInstalling {
-                    VStack(alignment: .leading, spacing: 5) {
-                        ProgressView(value: updateService.installationProgress)
-                            .tint(SettingsColors.readableIndigo)
-                        Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
-                            .limaFont(.caption2.weight(.medium))
-                            .foregroundStyle(LimaTheme.textSecondary)
-                    }
-                }
+                LimaUpdateProgressView(updateService: updateService)
+                LimaVersionHistoryView(
+                    currentVersion: updateService.currentVersion,
+                    currentBuild: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+                )
+                .limaOnboardingTarget("history")
             }
 
             Section(editingSecretID == nil ? "Add secret" : "Replace secret") {
@@ -1779,7 +1923,7 @@ struct SettingsView: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(settings.accentTheme.readablePrimary)
             Text("Lima").limaFont(.title.bold())
-            Text("A fast macOS command launcher built around local-first workflows and explicit integrations.")
+            Text("A fast macOS command launcher built around local-first tools and explicit integrations.")
                 .foregroundStyle(LimaTheme.textSecondary)
             Text("Local features stay on this Mac. Features configured with external providers may send only the data required for that action.")
                 .limaFont(.callout.weight(.medium))
@@ -1791,20 +1935,12 @@ struct SettingsView: View {
                 .foregroundStyle(LimaTheme.textSecondary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
-            if updateService.isInstalling {
-                VStack(spacing: 7) {
-                    ProgressView(value: updateService.installationProgress)
-                        .tint(SettingsColors.readableIndigo)
-                    Text("\(Int(updateService.installationProgress * 100))% · \(updateService.installationStage)")
-                        .limaFont(.caption2.weight(.medium))
-                        .foregroundStyle(LimaTheme.textSecondary)
-                }
+            LimaUpdateProgressView(updateService: updateService)
                 .frame(maxWidth: 420)
-            }
             HStack {
                 Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
                     .disabled(updateService.isBusy || updateService.isInstalling)
-                Button("View on GitHub") { NSWorkspace.shared.open(UpdateService.repositoryURL) }
+                Button("View Releases") { NSWorkspace.shared.open(UpdateService.releasesURL) }
             }
             if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }
             DisclosureGroup("Update details") {

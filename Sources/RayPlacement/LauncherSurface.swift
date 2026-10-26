@@ -358,7 +358,7 @@ final class LauncherSurfaceSessionController: ObservableObject {
 
     private func returnToRootIfEligible() {
         guard let viewModel, viewModel.mode != .root else { return }
-        viewModel.enter(.root)
+        viewModel.navigateBack()
         viewModel.focusSearch()
         secondsRemaining = nil
     }

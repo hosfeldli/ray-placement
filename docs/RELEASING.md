@@ -7,9 +7,16 @@ upload, draft review, and publication are separate operations.
 The current distribution uses Lima's pinned local self-signed certificate. It is
 not an Apple-notarized Developer ID distribution, and this repository does not
 support Developer ID or Apple Developer Program signing variables. macOS may
-require **Control-click → Open** the first time the app is installed. The custom
-updater trusts the same stable certificate across releases; Sparkle migration is
-a separate future project.
+require **Control-click → Open** the first time the app is installed. Sparkle is
+the production updater and verifies its signed appcast; the pinned-certificate
+custom updater remains an explicit recovery/testing backend. Neither path may
+use display-only release metadata to bypass its signature or digest checks.
+
+For the in-progress simplification release, also follow the migration and open
+acceptance gates in [MAJOR_RELEASE_MIGRATION.md](MAJOR_RELEASE_MIGRATION.md).
+The tag-matched `docs/releases/vX.Y.Z.md` file must include reviewed structured
+notes before staging; `UNRELEASED-major.md` is only a draft and must not be
+published or presented as a completed Mail-sending release.
 
 ## Safety rules
 

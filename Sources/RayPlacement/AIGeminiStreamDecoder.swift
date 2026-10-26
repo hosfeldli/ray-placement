@@ -5,6 +5,8 @@ struct AIGeminiStreamDecoder {
     private var sawCompletion = false
     private(set) var terminated = false
     private var toolCount = 0
+    private var reportedInputTokens: Int?
+    private var reportedOutputTokens: Int?
 
     init(responseID: String) {
         self.responseID = responseID
@@ -56,8 +58,21 @@ struct AIGeminiStreamDecoder {
             }
         }
         if let usage = object["usageMetadata"] as? [String: Any] {
-            result.append(.usage(AIUsageMetrics(inputTokens: usage["promptTokenCount"] as? Int,
-                                               outputTokens: usage["candidatesTokenCount"] as? Int)))
+            // Stream chunks can repeat cumulative usage. Only emit the newly
+            // reported increment for this response, not every full snapshot.
+            var newInput: Int?
+            if let current = usage["promptTokenCount"] as? Int, current >= 0 {
+                newInput = reportedInputTokens.map { current > $0 ? current - $0 : nil } ?? current
+                reportedInputTokens = max(reportedInputTokens ?? 0, current)
+            }
+            var newOutput: Int?
+            if let current = usage["candidatesTokenCount"] as? Int, current >= 0 {
+                newOutput = reportedOutputTokens.map { current > $0 ? current - $0 : nil } ?? current
+                reportedOutputTokens = max(reportedOutputTokens ?? 0, current)
+            }
+            if newInput != nil || newOutput != nil {
+                result.append(.usage(AIUsageMetrics(inputTokens: newInput, outputTokens: newOutput)))
+            }
         }
         return result
     }

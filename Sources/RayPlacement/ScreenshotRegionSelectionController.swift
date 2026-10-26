@@ -24,18 +24,22 @@ enum ScreenshotRegionSelectionGeometry {
 /// display; a drag is bounded to the display where it began. The overlays
 /// disappear before any ScreenCaptureKit image request is made.
 @MainActor
-final class ScreenshotRegionSelectionController {
+final class ScreenshotRegionSelectionController: NSObject {
     private var panels: [ScreenshotRegionOverlayPanel] = []
     private var onSelect: ((ScreenshotCaptureTarget) -> Void)?
     private var onCancel: (() -> Void)?
+    private var onTakeover: (() -> Void)?
 
     @discardableResult
     func present(displays: [ScreenshotCaptureTargetInfo],
+                 instruction: String = "Drag within one display to capture • Esc to cancel",
                  onSelect: @escaping (ScreenshotCaptureTarget) -> Void,
-                 onCancel: @escaping () -> Void) -> Bool {
+                 onCancel: @escaping () -> Void,
+                 onTakeover: @escaping () -> Void) -> Bool {
         dismiss(notifyCancel: false)
         self.onSelect = onSelect
         self.onCancel = onCancel
+        self.onTakeover = onTakeover
 
         let displayIDs = Set(displays.compactMap { info -> CGDirectDisplayID? in
             guard case .display(let id) = info.target else { return nil }
@@ -65,6 +69,7 @@ final class ScreenshotRegionSelectionController {
             let overlay = ScreenshotRegionOverlayView(
                 frame: CGRect(origin: .zero, size: screen.frame.size),
                 displayID: id,
+                instruction: instruction,
                 onSelect: { [weak self] target in self?.select(target) },
                 onCancel: { [weak self] in self?.dismiss(notifyCancel: true) }
             )
@@ -82,7 +87,18 @@ final class ScreenshotRegionSelectionController {
             first.makeFirstResponder(first.contentView)
         }
         NSCursor.crosshair.push()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applicationDidResignActive(_:)),
+            name: NSApplication.didResignActiveNotification, object: NSApp
+        )
         return true
+    }
+
+    @objc private func applicationDidResignActive(_ notification: Notification) {
+        guard !panels.isEmpty else { return }
+        let callback = onTakeover
+        dismiss(notifyCancel: false)
+        callback?()
     }
 
     private func select(_ target: ScreenshotCaptureTarget) {
@@ -92,6 +108,9 @@ final class ScreenshotRegionSelectionController {
     }
 
     func dismiss(notifyCancel: Bool) {
+        NotificationCenter.default.removeObserver(
+            self, name: NSApplication.didResignActiveNotification, object: NSApp
+        )
         let hadPanels = !panels.isEmpty
         for panel in panels { panel.orderOut(nil); panel.close() }
         panels.removeAll()
@@ -99,6 +118,7 @@ final class ScreenshotRegionSelectionController {
         let callback = notifyCancel ? onCancel : nil
         onSelect = nil
         onCancel = nil
+        onTakeover = nil
         callback?()
     }
 }
@@ -110,15 +130,17 @@ private final class ScreenshotRegionOverlayPanel: NSPanel {
 
 private final class ScreenshotRegionOverlayView: NSView {
     private let displayID: CGDirectDisplayID
+    private let instruction: String
     private let onSelect: (ScreenshotCaptureTarget) -> Void
     private let onCancel: () -> Void
     private var startPoint: CGPoint?
     private var endPoint: CGPoint?
 
-    init(frame: CGRect, displayID: CGDirectDisplayID,
+    init(frame: CGRect, displayID: CGDirectDisplayID, instruction: String,
          onSelect: @escaping (ScreenshotCaptureTarget) -> Void,
          onCancel: @escaping () -> Void) {
         self.displayID = displayID
+        self.instruction = instruction
         self.onSelect = onSelect
         self.onCancel = onCancel
         super.init(frame: frame)
@@ -148,7 +170,7 @@ private final class ScreenshotRegionOverlayView: NSView {
             outline.lineWidth = 2
             outline.stroke()
         }
-        let title = "Drag within one display to capture • Esc to cancel"
+        let title = instruction
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
             .foregroundColor: NSColor.white

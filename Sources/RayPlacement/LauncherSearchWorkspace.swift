@@ -107,6 +107,11 @@ struct LauncherSearchWorkspace: View {
                     searchField(wide: wide)
                     if idle {
                         idleKeyboardHints
+                    } else if model.isAudioOutputPickerPresented {
+                        AudioOutputPickerView(model: model.audioOutputPicker,
+                                              cancel: { model.closeAudioOutputPicker() },
+                                              switched: { model.closeAudioOutputPicker() })
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         HStack(alignment: .top, spacing: 14) {
                             results
@@ -126,7 +131,7 @@ struct LauncherSearchWorkspace: View {
                 .padding(.top, 0)
                 .padding(.bottom, idle ? 1 : (wide ? 16 : 12))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                if !idle {
+                if !idle && !model.isAudioOutputPickerPresented {
                     footer(wide: wide, canShowInspector: canShowInspector)
                 }
             }
@@ -285,7 +290,7 @@ struct LauncherSearchWorkspace: View {
                 Divider()
                 Menu("Search in") {
                     Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
-                    ForEach(["app", "command", "file", "note", "dictation", "chat", "workflow", "workspace", "context", "clipboard"], id: \.self) { scope in
+                    ForEach(["app", "command", "file", "note", "dictation", "chat", "workspace", "context", "clipboard"], id: \.self) { scope in
                         Button(scope.capitalized) {
                             model.query = scope + ": " + UniversalSearchCoordinator.parse(model.query).query
                             searchFocused = true
@@ -446,8 +451,17 @@ struct LauncherSearchWorkspace: View {
                                            value: viewport.size.height)
                 }
             }
-            .onPreferenceChange(SearchResultFramePreferenceKey.self) { resultRowFrames = $0 }
-            .onPreferenceChange(SearchResultsViewportHeightPreferenceKey.self) { resultsViewportHeight = $0 }
+            .onPreferenceChange(SearchResultFramePreferenceKey.self) {
+                resultRowFrames = $0
+                recordVisibleResultAnchor()
+            }
+            .onPreferenceChange(SearchResultsViewportHeightPreferenceKey.self) {
+                resultsViewportHeight = $0
+                recordVisibleResultAnchor()
+            }
+            .onAppear { restoreSearchScrollIfNeeded(scroll) }
+            .onChange(of: model.results.map { $0.id }) { _ in restoreSearchScrollIfNeeded(scroll) }
+            .onChange(of: model.isSearching) { _ in restoreSearchScrollIfNeeded(scroll) }
             .onChange(of: model.navigationGeneration) { _ in
                 guard let item = model.selectedItem, model.isActionable(item),
                       let anchor = LauncherSearchDesign.scrollAnchor(
@@ -459,6 +473,25 @@ struct LauncherSearchWorkspace: View {
             }
         }
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func recordVisibleResultAnchor() {
+        guard resultsViewportHeight > 0 else { return }
+        let top = resultRowFrames
+            .filter { $0.value.maxY > 0 && $0.value.minY < resultsViewportHeight }
+            .min { $0.value.minY < $1.value.minY }
+        if let id = top?.key { model.recordSearchScrollAnchor(id) }
+    }
+
+    private func restoreSearchScrollIfNeeded(_ scroll: ScrollViewProxy) {
+        guard !model.isSearching,
+              let id = model.scrollRestorationAnchorID,
+              model.results.contains(where: { $0.id == id }) else { return }
+        DispatchQueue.main.async {
+            guard model.scrollRestorationAnchorID == id else { return }
+            scroll.scrollTo(id, anchor: .top)
+            model.consumeSearchScrollRestorationAnchor(id)
+        }
     }
 
     private func resultRow(_ item: LauncherItem, index: Int) -> some View {

@@ -6,6 +6,7 @@ enum ContextShelfPayload: Codable, Equatable {
     case note(noteID: UUID, title: String)
     case terminal(command: String?, output: String)
     case dictation(transcript: String)
+    case mailReference(MailMessageReference)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -17,6 +18,7 @@ enum ContextShelfPayload: Codable, Equatable {
         case command
         case output
         case transcript
+        case reference
     }
 
     private enum PayloadType: String, Codable {
@@ -25,6 +27,7 @@ enum ContextShelfPayload: Codable, Equatable {
         case note
         case terminal
         case dictation
+        case mailReference
     }
 
     func encode(to encoder: Encoder) throws {
@@ -48,6 +51,9 @@ enum ContextShelfPayload: Codable, Equatable {
         case .dictation(let transcript):
             try container.encode(PayloadType.dictation, forKey: .type)
             try container.encode(transcript, forKey: .transcript)
+        case .mailReference(let reference):
+            try container.encode(PayloadType.mailReference, forKey: .type)
+            try container.encode(reference, forKey: .reference)
         }
     }
 
@@ -73,6 +79,8 @@ enum ContextShelfPayload: Codable, Equatable {
             )
         case .dictation:
             self = .dictation(transcript: try container.decode(String.self, forKey: .transcript))
+        case .mailReference:
+            self = .mailReference(try container.decode(MailMessageReference.self, forKey: .reference))
         }
     }
 }

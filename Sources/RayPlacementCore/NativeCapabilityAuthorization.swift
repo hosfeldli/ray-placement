@@ -14,6 +14,7 @@ public enum NativeCapabilityOperation: String, Codable, CaseIterable, Sendable {
     case remindersListLists, remindersSearch, remindersList
     case remindersCreate, remindersUpdate, remindersComplete
     case remindersReopen, remindersDelete
+    case locationCurrent
 
     public var capability: ExtensionManifest.Capability {
         switch self {
@@ -29,6 +30,7 @@ public enum NativeCapabilityOperation: String, Codable, CaseIterable, Sendable {
         case .remindersListLists, .remindersSearch, .remindersList,
              .remindersCreate, .remindersUpdate, .remindersComplete,
              .remindersReopen, .remindersDelete: return .reminders
+        case .locationCurrent: return .location
         }
     }
 }

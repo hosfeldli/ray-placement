@@ -46,6 +46,10 @@ enum AIContextTools {
             guard tool.id != "agent_delegate",
                   tool.id != CLIToolDiscovery.name else { return false }
             guard policy.allows(tool, toolAccessMode: mode) else { return false }
+            // Child continuations currently encode tool results as text. Do not
+            // route screenshot-driven Browser work to a child that cannot see pixels.
+            if BrowserWorkspaceModel.shared.navigationMode == .visualOnly &&
+               BrowserWorkspaceAITools.ids.contains(tool.id) { return false }
             return mode == .fullControl || BrowserWorkspaceAITools.ids.contains(tool.id) ||
                 tool.actionCategory != nil || tool.risk == .read || tool.id == "agent_models"
         }
@@ -176,8 +180,9 @@ enum AIContextTools {
             ] as [String: Any],
             "notes": [
                 "read": available("read_note"),
-                "write": false,
-                "write_reason": "no_note_write_tool"
+                "create": available("create_note"),
+                "write": available("create_note"),
+                "write_reason": available("create_note") ? "exact_content_review_required" : "create_note_not_routed"
             ] as [String: Any],
             "workspace": [
                 "ai_operable": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
@@ -320,6 +325,7 @@ enum AISubagentRunner {
     @MainActor
     static func run(client: any AIChatTransport, apiKey: String, model: AIModelOption,
                     task: String, localTools: [LimaAIToolDefinition] = [],
+                    runID: UUID? = nil,
                     timeout: Duration = .seconds(120),
                     streamIdleDeadline: Duration = .seconds(60),
                     actionPolicy: AIComputerActionPolicy? = nil,
@@ -344,7 +350,7 @@ enum AISubagentRunner {
             group.addTask {
                 await consume(
                     initialStream, client: client, apiKey: apiKey, model: model,
-localTools: childTools,
+localTools: childTools, runID: runID,
                     actionPolicy: effectiveActionPolicy, systemInstructions: instructions,
                     streamIdleDeadline: min(timeout, streamIdleDeadline),
                     requestApproval: requestApproval, hasScopedGrant: hasScopedGrant,
@@ -371,6 +377,7 @@ localTools: childTools,
         apiKey: String,
         model: AIModelOption,
         localTools: [LimaAIToolDefinition],
+        runID: UUID?,
         actionPolicy: AIComputerActionPolicy,
         systemInstructions: String,
         streamIdleDeadline: Duration,
@@ -448,12 +455,21 @@ localTools: childTools,
                           let definition = localTools.first(where: { $0.name == name }) else {
                         return .json(["error": "Subagent requested a tool that was not available from the parent."], isError: true)
                     }
+                    if BrowserWorkspaceModel.shared.navigationMode == .visualOnly &&
+                       BrowserWorkspaceAITools.ids.contains(definition.id) {
+                        return .json(["error": "Visual Only Browser work requires screenshot pixels. This child cannot receive them; the parent must perform Browser actions."], isError: true)
+                    }
                     // A scoped grant skips the prompt but is never converted
                     // into a one-shot approval token. The Workspace tool checks
                     // the live grant again immediately before command launch.
-                    let browserCommitNeedsApproval = await BrowserWorkspaceAITools.commitReview(for: call) != nil
+                    let browserCommitNeedsApproval = await BrowserWorkspaceAITools.commitReview(
+                        for: call, runID: runID
+                    ) != nil
                     let needsApproval = NativeCapabilityAITools.ids.contains(definition.id) ||
                         browserCommitNeedsApproval ||
+                        BrowserTaskApprovalState.shared.requiresActionPrompt(
+                            runID: runID, toolID: definition.id
+                        ) ||
                         (actionPolicy.requiresApproval(for: definition) && !hasScopedGrant(call))
                     let approvalGranted = needsApproval ? await requestApproval(call) : false
                     guard !needsApproval || approvalGranted else {

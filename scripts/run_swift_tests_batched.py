@@ -19,7 +19,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRATCH = ROOT / ".build"
-TEST_ID = re.compile(r"^([A-Za-z][A-Za-z0-9_]*Tests)\.([A-Za-z_][A-Za-z0-9_]*)\(\)$")
+TEST_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_]*Tests(?:\.[A-Za-z_][A-Za-z0-9_]*)*[./]([A-Za-z_][A-Za-z0-9_]*)\(\)$")
 STARTED = re.compile(r"\bTest ([A-Za-z_][A-Za-z0-9_]*)\(\) started\.")
 SWIFT_TEST = ["swift", "test", "--disable-sandbox", "--scratch-path", str(SCRATCH)]
 # Hosted SwiftUI/AppKit fixtures can deadlock teardown with WebKit/AppKit
@@ -29,7 +29,26 @@ ISOLATED_TESTS = {
     "completedAnswerMountsInHostedChatWithoutScrollGesture",
     "completedLongMarkdownAnswerShowsItsTailWithoutScrollGesture",
     "embeddedBrowserSelectedTabMountsItsOwnPageOnRepeatedSwitches",
+    # This hosted navigation fixture uses process-local Browser task policy;
+    # unrelated AI runs in a mixed batch can temporarily activate a site grant.
+    "embeddedBrowserToolsReportLoadedAndDeferredPostconditions",
+    # Hosted WebKit page/new-tab fixtures can abort native teardown when mixed
+    # with Search and AI cases; each still runs and is counted on its own.
+    "embeddedBrowserWaitForNewTabReturnsTheOpenedTabIdentity",
+    "embeddedBrowserWebKitReadsLinksShadowControlsAndRejectsStaleTargets",
+    "browserAskForActionsRequiresNativeApproval",
+    # WebKit secure-handoff fixtures pass independently but can deadlock when
+    # mixed with hosted Search/AppKit tests in the same concurrent process.
+    "secureBrowserHandoffResumesSameRunWithoutReturningFieldValues",
+    "secureBrowserHandoffRejectsSameHostRouteAndCancelStopsRun",
+    "passwordHandoffResumesAfterSameHostNavigationWithoutClaimingSignIn",
     "screenshotOCRTextAppearsAsIndividualCentralSearchResult",
+    # This Search fixture passes alone but can lose its expected result when
+    # several hosted launcher queries share a mixed Swift Testing process.
+    "screenshotStudioIsAnExplicitSearchAction",
+    # This launcher fixture passes alone but can race other hosted Search
+    # fixtures that mutate the process-wide search catalog in a mixed batch.
+    "searchPreviewNeverExecutesUntilExplicitAction",
 }
 
 
@@ -102,7 +121,7 @@ def main() -> int:
         if not match:
             print(f"Unexpected Swift test catalog line: {line!r}", file=sys.stderr)
             return 2
-        names.append(match.group(2))
+        names.append(match.group(1))
     if not names or len(names) != len(set(names)):
         print("Swift test catalog is empty or has duplicate function names.", file=sys.stderr)
         return 2

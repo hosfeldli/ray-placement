@@ -93,24 +93,6 @@ struct LimaTerminalSearchProvider: LimaSearchProvider {
 }
 
 
-struct LimaWorkflowSearchProvider: LimaSearchProvider {
-    let workflows: [WorkflowDefinition]
-    var kind: LimaSearchKind { .command }
-
-    func search(query: String) async -> [LimaSearchResult] {
-        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        return workflows.compactMap { workflow in
-            let haystack = "\(workflow.name) \(workflow.steps.map(\.commandID).joined(separator: " "))"
-            guard let score = FuzzyMatcher.score(haystack, query: clean) else { return nil }
-            return LimaSearchResult(
-                id: "workflow:\(workflow.id.uuidString)", kind: .command,
-                title: workflow.name, subtitle: "Workflow · \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s")",
-                keywords: workflow.steps.map(\.commandID), score: score
-            )
-        }.sorted { $0.score > $1.score }.prefix(20).map { $0 }
-    }
-}
-
 struct LimaWorkspaceSearchProvider: LimaSearchProvider {
     let profiles: [WorkspaceProfile]
     var kind: LimaSearchKind { .workspace }
@@ -199,7 +181,6 @@ final class UniversalSearchCoordinator {
             NotesStore.shared.$notes.sink { [weak self] _ in self?.snapshotDirty = true },
             DictationConversationStore.shared.$conversations.sink { [weak self] _ in self?.snapshotDirty = true },
             AIConversationStore.shared.$conversationSummaries.sink { [weak self] _ in self?.snapshotDirty = true },
-            WorkflowStore.shared.$workflows.sink { [weak self] _ in self?.snapshotDirty = true },
             WorkspaceProfileStore.shared.$profiles.sink { [weak self] _ in self?.snapshotDirty = true },
             ContextShelfStore.shared.$items.sink { [weak self] _ in self?.snapshotDirty = true },
             ClipboardHistoryService.shared.$entries.sink { [weak self] _ in self?.snapshotDirty = true },
@@ -318,16 +299,6 @@ final class UniversalSearchCoordinator {
             keywords: ["shell", "command line", "developer"],
             searchText: "terminal shell command line developer"
         ))
-        for workflow in WorkflowStore.shared.workflows {
-            let commands = workflow.steps.map(\.commandID)
-            documents.append(UniversalSearchDocument(
-                id: "workflow:\(workflow.id.uuidString)", kind: .command,
-                title: workflow.name,
-                subtitle: "Workflow · \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s")",
-                keywords: commands,
-                searchText: "\(workflow.name) \(commands.joined(separator: " "))"
-            ))
-        }
         for profile in WorkspaceProfileStore.shared.profiles {
             documents.append(UniversalSearchDocument(
                 id: "workspace:\(profile.id.uuidString)", kind: .workspace,
@@ -363,7 +334,7 @@ final class UniversalSearchCoordinator {
 
     nonisolated static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
         let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let known = ["note", "notes", "dictation", "terminal", "workflow", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files", "screenshot", "screenshots"]
+        let known = ["note", "notes", "dictation", "terminal", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files", "screenshot", "screenshots"]
         for prefix in known where clean.lowercased().hasPrefix(prefix + ":") {
             let canonical = ["notes": "note", "commands": "command", "workspaces": "workspace", "shelf": "context", "chats": "chat", "ai": "chat", "apps": "app", "files": "file", "screenshots": "screenshot"][prefix] ?? prefix
             return (canonical, String(clean.dropFirst(prefix.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines))

@@ -63,6 +63,8 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
         tabID: tabID, target: target("Confirm booking"), action: .click, page: page
     ))
     #expect(final.visibleTerms.contains { $0.contains("$50 deposit") })
+    #expect(final.requiresPaymentConfirmation)
+    #expect(final.userSummary.contains("financial commitment"))
     #expect(final.userSummary.contains("real transaction"))
     for label in ["Buy now", "Make payment", "Donate $10", "Transfer funds"] {
         #expect(BrowserCommitAuthorization.review(
@@ -91,6 +93,35 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
         semanticTargetID: nil, pageIdentity: changedIdentity
     )
     #expect(BrowserCommitAuthorization.visualReview(hit: staleHit, page: page) == nil)
+
+    let contact = BrowserPageSnapshot(
+        identity: BrowserPageIdentity(
+            documentID: "contact", routeGeneration: 0, mutationRevision: 0,
+            userRevision: 0, snapshotRevision: 1, url: "https://example.com/contact"
+        ),
+        readiness: .readyWithContent, title: "Contact",
+        text: "Send feedback to our team.", links: [], controls: [],
+        headings: [], rows: [], diagnostics: diagnostics
+    )
+    var feedback = target("Send feedback")
+    feedback.formLabel = "Contact"
+    feedback.isSubmit = true
+    let feedbackReview = try #require(BrowserCommitAuthorization.review(
+        tabID: tabID, target: feedback, action: .submit, page: contact
+    ))
+    #expect(!feedbackReview.requiresPaymentConfirmation)
+    #expect(BrowserCommitAuthorization.review(
+        tabID: tabID, target: feedback, action: .submit, page: contact,
+        autoApproveNonpayment: true
+    ) == nil)
+    #expect(BrowserCommitAuthorization.review(
+        tabID: tabID, target: feedback, action: .submit, page: page,
+        autoApproveNonpayment: true
+    ) != nil)
+    #expect(BrowserCommitAuthorization.review(
+        tabID: tabID, target: target("Submit"), action: .submit,
+        page: contact, autoApproveNonpayment: true
+    ) != nil)
 }
 
 @Test func browserFinancialGateReviewsAmbiguousCheckoutWithoutBlockingExploration() {
@@ -122,9 +153,10 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     #expect(BrowserFinancialActionGate.requiresReview(
         target: continueButton, action: .click, page: checkout
     ))
-    #expect(BrowserCommitAuthorization.review(
+    let checkoutReview = BrowserCommitAuthorization.review(
         tabID: UUID(), target: continueButton, action: .click, page: checkout
-    ) != nil)
+    )
+    #expect(checkoutReview?.requiresPaymentConfirmation == true)
     #expect(BrowserFinancialActionGate.requiresReview(
         target: target("", isSubmit: true), action: .click, page: checkout
     ))
@@ -134,7 +166,33 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     #expect(BrowserCommitAuthorization.review(
         tabID: UUID(), target: target("Search products"), action: .submit,
         page: checkout
-    ) == nil)
+    ) != nil)
+    let unlabeledFormSubmit = target("Search products", isSubmit: true)
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: unlabeledFormSubmit, action: .click, page: checkout
+    ))
+    var misleadingSubmit = target("Search products", isSubmit: true)
+    misleadingSubmit.formLabel = "Payment"
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: misleadingSubmit, action: .click, page: checkout
+    ))
+    #expect(BrowserCommitAuthorization.review(
+        tabID: UUID(), target: misleadingSubmit, action: .click, page: checkout
+    ) != nil)
+    #expect(BrowserFinancialActionGate.requiresReview(
+        target: misleadingSubmit, action: .submit, page: checkout
+    ))
+    var paymentConsent = target("I agree")
+    paymentConsent.formLabel = "Payment"
+    for action in [BrowserInteractionAction.toggle, .select, .pressKey] {
+        #expect(BrowserFinancialActionGate.requiresReview(
+            target: paymentConsent, action: action, page: checkout
+        ))
+        #expect(BrowserCommitAuthorization.review(
+            tabID: UUID(), target: paymentConsent, action: action,
+            page: checkout, autoApproveNonpayment: true
+        )?.requiresPaymentConfirmation == true)
+    }
 
     let ordinaryIdentity = BrowserPageIdentity(
         documentID: "catalog", routeGeneration: 0, mutationRevision: 0,
@@ -149,6 +207,11 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     #expect(!BrowserFinancialActionGate.requiresReview(
         target: continueButton, action: .click, page: ordinary
     ))
+    let ordinaryConsent = target("I agree")
+    #expect(BrowserCommitAuthorization.review(
+        tabID: UUID(), target: ordinaryConsent, action: .toggle,
+        page: ordinary, autoApproveNonpayment: true
+    ) == nil)
     let bookingIdentity = BrowserPageIdentity(
         documentID: "reservation", routeGeneration: 0, mutationRevision: 0,
         userRevision: 0, snapshotRevision: 1,
@@ -162,6 +225,12 @@ private func browserVisualPoint(_ x: Double, _ y: Double,
     #expect(BrowserFinancialActionGate.requiresReview(
         target: continueButton, action: .click, page: booking
     ))
+    var depositConsent = target("I agree to the terms")
+    depositConsent.formLabel = "Dinner reservation"
+    #expect(BrowserCommitAuthorization.review(
+        tabID: UUID(), target: depositConsent, action: .toggle,
+        page: booking, autoApproveNonpayment: true
+    )?.requiresPaymentConfirmation == true)
 }
 
 @Test @MainActor func browserAmbiguousCheckoutClickNeedsExactReview() async throws {

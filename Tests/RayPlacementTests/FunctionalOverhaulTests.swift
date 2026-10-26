@@ -228,7 +228,7 @@ private func contextJSON(_ result: LimaAIToolExecution) throws -> [String: Any] 
 @Test @MainActor func searchScopesNormalizeAliasesAndKeepURLsIntact() {
     for (raw, expected) in [("NOTES: plan", "note"), ("apps: Safari", "app"),
                             ("commands: notes", "command"), ("clipboard: text", "clipboard"),
-                            ("workflow: morning", "workflow"), ("dictation: meeting", "dictation"),
+                            ("dictation: meeting", "dictation"),
                             ("chats: release", "chat"), ("ai: release", "chat")] {
         #expect(UniversalSearchCoordinator.parse(raw).prefix == expected)
     }

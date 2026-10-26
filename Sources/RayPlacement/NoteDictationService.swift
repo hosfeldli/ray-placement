@@ -689,6 +689,25 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 }
             }
             guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+            if SettingsStore.shared.dictationAICleanupEnabled, !self.chunkTranscripts.isEmpty {
+                let rawTranscript = self.chunkTranscripts.joined(separator: "\n\n")
+                if rawTranscript.count <= OpenAICloudDictationPostprocessor.maximumInputCharacters {
+                    self.transcriptionProgress = "Cleaning up and formatting transcript with AI…"
+                    do {
+                        let cleaned = try await OpenAICloudDictationPostprocessor.clean(rawTranscript, apiKey: apiKey)
+                        try Task.checkCancellation()
+                        guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+                        self.chunkTranscripts = [cleaned]
+                    } catch {
+                        guard self.operationIdentifier == operation, self.phase == .transcribing,
+                              !Task.isCancelled else { return }
+                        self.liveSpeechWarning = "AI cleanup was unavailable. The original transcript was kept."
+                    }
+                } else {
+                    self.liveSpeechWarning = "This transcript was too long for optional AI cleanup. The original transcript was kept."
+                }
+            }
+            guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
             self.cloudTranscriptionTask = nil
             self.finishTranscription()
         }

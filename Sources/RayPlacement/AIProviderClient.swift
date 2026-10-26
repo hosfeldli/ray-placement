@@ -227,11 +227,14 @@ struct AnthropicAIProviderClient: AIProviderClient {
         var arguments: String
     }
 
-    private struct StreamDecoder {
+    struct StreamDecoder {
         let model: String
         var responseID: String?
-        var inputTokens: Int?
-        var toolBlocks: [Int: ToolBlock] = [:]
+        private var reportedInputTokens: Int?
+        private var reportedOutputTokens: Int?
+        private var toolBlocks: [Int: ToolBlock] = [:]
+
+        init(model: String) { self.model = model }
 
         mutating func decode(_ frame: AIProviderSSEFrame) -> [AIChatStreamEvent] {
             guard let data = frame.data.data(using: .utf8),
@@ -240,10 +243,13 @@ struct AnthropicAIProviderClient: AIProviderClient {
             case "message_start":
                 let message = object["message"] as? [String: Any]
                 responseID = message?["id"] as? String
-                inputTokens = (message?["usage"] as? [String: Any])?["input_tokens"] as? Int
+                let input = (message?["usage"] as? [String: Any])?["input_tokens"] as? Int
+                reportedInputTokens = input.flatMap { $0 >= 0 ? $0 : nil }
                 var events: [AIChatStreamEvent] = []
                 if let responseID { events.append(.responseCreated(responseID)) }
-                if let inputTokens { events.append(.usage(AIUsageMetrics(inputTokens: inputTokens, outputTokens: nil))) }
+                if let reportedInputTokens {
+                    events.append(.usage(AIUsageMetrics(inputTokens: reportedInputTokens, outputTokens: nil)))
+                }
                 return events
             case "content_block_start":
                 guard let index = object["index"] as? Int,
@@ -277,10 +283,21 @@ struct AnthropicAIProviderClient: AIProviderClient {
                 ))]
             case "message_delta":
                 guard let usage = object["usage"] as? [String: Any] else { return [] }
-                return [.usage(AIUsageMetrics(
-                    inputTokens: (usage["input_tokens"] as? Int) ?? inputTokens,
-                    outputTokens: usage["output_tokens"] as? Int
-                ))]
+                // Anthropic deltas can repeat cumulative totals. Emit only the
+                // newly reported increment so a multi-event run is not billed
+                // twice in Lima's per-run summary.
+                var newInput: Int?
+                if let current = usage["input_tokens"] as? Int, current >= 0 {
+                    newInput = reportedInputTokens.map { current > $0 ? current - $0 : nil } ?? current
+                    reportedInputTokens = max(reportedInputTokens ?? 0, current)
+                }
+                var newOutput: Int?
+                if let current = usage["output_tokens"] as? Int, current >= 0 {
+                    newOutput = reportedOutputTokens.map { current > $0 ? current - $0 : nil } ?? current
+                    reportedOutputTokens = max(reportedOutputTokens ?? 0, current)
+                }
+                guard newInput != nil || newOutput != nil else { return [] }
+                return [.usage(AIUsageMetrics(inputTokens: newInput, outputTokens: newOutput))]
             case "message_stop":
                 return [.completed(responseID)]
             case "error":

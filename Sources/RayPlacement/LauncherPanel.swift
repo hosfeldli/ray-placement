@@ -71,6 +71,31 @@ enum LauncherPanelLayout {
     }
 }
 
+/// A Search panel expands at most once during a visible presentation. Clearing
+/// a query, receiving delayed results, or returning from a picker cannot move
+/// the search field by collapsing the physical window.
+struct LauncherPanelPresentationSizing {
+    private(set) var hasExpandedSearch = false
+
+    mutating func reset() {
+        hasExpandedSearch = false
+    }
+
+    mutating func size(
+        for mode: LauncherMode,
+        density: AppInterfaceDensity,
+        searchPhase: LauncherSearchPhase
+    ) -> NSSize {
+        guard mode == .root else {
+            return LauncherPanelLayout.size(for: mode, density: density, searchPhase: searchPhase)
+        }
+        if searchPhase == .active { hasExpandedSearch = true }
+        return hasExpandedSearch
+            ? LauncherPanelLayout.searchSize(density: density)
+            : LauncherPanelLayout.idleSearchSize(density: density)
+    }
+}
+
 final class LauncherPanel: NSPanel {
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }

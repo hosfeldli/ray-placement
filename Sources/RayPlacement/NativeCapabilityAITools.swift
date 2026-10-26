@@ -24,10 +24,31 @@ enum NativeCapabilityAITools {
         "network_test_status": .networkTestStatus,
         "network_test_cancel": .networkTestCancel,
         "network_test_history": .networkTestHistory,
-        "network_connection_info": .networkConnectionInfo
+        "network_connection_info": .networkConnectionInfo,
+        "calendar_list": .calendarList,
+        "calendar_events": .calendarEvents,
+        "calendar_search": .calendarSearch,
+        "calendar_check_conflicts": .calendarCheckConflicts,
+        "calendar_create_event": .calendarCreateEvent,
+        "calendar_update_event": .calendarUpdateEvent,
+        "calendar_delete_event": .calendarDeleteEvent,
+        "reminders_list_lists": .remindersListLists,
+        "reminders_search": .remindersSearch,
+        "reminders_list": .remindersList,
+        "reminders_create": .remindersCreate,
+        "reminders_update": .remindersUpdate,
+        "reminders_complete": .remindersComplete,
+        "reminders_reopen": .remindersReopen,
+        "reminders_delete": .remindersDelete,
+        "location_current": .locationCurrent
     ]
 
     static let ids = Set(operations.keys)
+    nonisolated static let calendarIDs: Set<String> = ["calendar_list", "calendar_events", "calendar_search",
+        "calendar_check_conflicts", "calendar_create_event", "calendar_update_event", "calendar_delete_event"]
+    nonisolated static let reminderIDs: Set<String> = ["reminders_list_lists", "reminders_search", "reminders_list",
+        "reminders_create", "reminders_update", "reminders_complete", "reminders_reopen", "reminders_delete"]
+    nonisolated static let locationIDs: Set<String> = ["location_current"]
 
     private struct ExactApproval {
         let toolID: String
@@ -115,6 +136,17 @@ enum NativeCapabilityAITools {
         "description": "Identifier of a saved Screenshot History capture."
     ]
 
+    private static let isoTime: [String: Any] = [
+        "type": "string",
+        "description": "ISO 8601 date-time with explicit timezone, e.g. 2026-10-25T14:00:00-04:00."
+    ]
+    private static let calendarID: [String: Any] = ["type": "string", "description": "ID returned by calendar_list."]
+    private static let listID: [String: Any] = ["type": "string", "description": "ID returned by reminders_list_lists."]
+    private static let eventID: [String: Any] = ["type": "string", "description": "ID returned by calendar_events or calendar_create_event."]
+    private static let reminderID: [String: Any] = ["type": "string", "description": "ID returned by reminders_list or reminders_create."]
+    private static let boundedTitle: [String: Any] = ["type": "string", "description": "Nonempty title or query; host enforces length limits."]
+    private static let optionalText: [String: Any] = ["type": ["string", "null"]]
+
     static let definitions: [LimaAIToolDefinition] = [
         tool("screenshot_targets", "List available display and window IDs and titles after exact-call review and macOS Screen Recording access; returns no pixels.",
              category: .screenCapture),
@@ -157,7 +189,57 @@ enum NativeCapabilityAITools {
         tool("network_test_history", "Read bounded locally saved network test measurements.",
              ["limit": limit], category: .networkQuality),
         tool("network_connection_info", "Read the currently observed connection type without running a bandwidth test.",
-             category: .networkQuality)
+             category: .networkQuality),
+        tool("calendar_list", "List the user's EventKit calendars and writable status after exact-call review.",
+             category: .calendar),
+        tool("calendar_events", "Read up to 100 calendar events in a bounded 90-day interval. Use calendar_list for a specific calendar.",
+             ["from": isoTime, "to": isoTime, "calendar_id": calendarID],
+             required: ["from", "to"], category: .calendar),
+        tool("calendar_search", "Search titles, locations, and notes in a bounded calendar interval.",
+             ["query": boundedTitle, "from": isoTime, "to": isoTime, "calendar_id": calendarID],
+             required: ["query", "from", "to"], category: .calendar),
+        tool("calendar_check_conflicts", "Check for timed events overlapping a proposed interval; does not change the calendar.",
+             ["from": isoTime, "to": isoTime, "calendar_id": calendarID],
+             required: ["from", "to"], category: .calendar),
+        tool("calendar_create_event", "Create one calendar event after exact-call review. Use calendar_list first if the user named a specific calendar. Does not invite attendees or create recurrence.",
+             ["title": boundedTitle, "from": isoTime, "to": isoTime, "calendar_id": calendarID,
+              "all_day": ["type": "boolean"], "location": optionalText, "notes": optionalText],
+             required: ["title", "from", "to"], risk: .write, category: .calendar),
+        tool("calendar_update_event", "Update one nonrecurring event by a freshly observed EventKit ID. Null fields are unchanged; clear_location and clear_notes explicitly remove values.",
+             ["event_id": eventID, "expected_title": boundedTitle, "title": boundedTitle, "from": isoTime, "to": isoTime,
+              "calendar_id": calendarID, "all_day": ["type": "boolean"],
+              "location": optionalText, "notes": optionalText,
+              "clear_location": ["type": "boolean"], "clear_notes": ["type": "boolean"]],
+             required: ["event_id", "expected_title"], risk: .write, category: .calendar),
+        tool("calendar_delete_event", "Delete one nonrecurring calendar event by exact EventKit ID and previously observed title after review.",
+             ["event_id": eventID, "expected_title": boundedTitle],
+             required: ["event_id", "expected_title"], risk: .destructive, category: .calendar),
+        tool("reminders_list_lists", "List Apple Reminders lists and their writable status.",
+             category: .reminders),
+        tool("reminders_list", "List up to 100 reminders in one list or across all lists; completed items are excluded unless requested.",
+             ["list_id": listID, "include_completed": ["type": "boolean"]], category: .reminders),
+        tool("reminders_search", "Search reminder titles and notes in one list or across all lists.",
+             ["query": boundedTitle, "list_id": listID, "include_completed": ["type": "boolean"]],
+             required: ["query"], category: .reminders),
+        tool("reminders_create", "Create one Apple Reminder after exact-call review. A due time also creates one notification alarm. Use reminders_list_lists if the user named a list.",
+             ["title": boundedTitle, "notes": optionalText, "due_at": isoTime, "list_id": listID],
+             required: ["title"], risk: .write, category: .reminders),
+        tool("reminders_update", "Update one reminder by a freshly observed ID. Null fields are unchanged; clear_notes and clear_due explicitly remove values. Changing due_at moves its due-time alarm while preserving other alarms.",
+             ["reminder_id": reminderID, "expected_title": boundedTitle, "title": boundedTitle, "notes": optionalText,
+              "due_at": isoTime, "list_id": listID,
+              "clear_notes": ["type": "boolean"], "clear_due": ["type": "boolean"]],
+             required: ["reminder_id", "expected_title"], risk: .write, category: .reminders),
+        tool("reminders_complete", "Mark one reminder complete by exact ID and previously observed title.",
+             ["reminder_id": reminderID, "expected_title": boundedTitle],
+             required: ["reminder_id", "expected_title"], risk: .write, category: .reminders),
+        tool("reminders_reopen", "Reopen one completed reminder by exact ID and previously observed title.",
+             ["reminder_id": reminderID, "expected_title": boundedTitle],
+             required: ["reminder_id", "expected_title"], risk: .write, category: .reminders),
+        tool("reminders_delete", "Permanently delete one reminder by exact ID and previously observed title.",
+             ["reminder_id": reminderID, "expected_title": boundedTitle],
+             required: ["reminder_id", "expected_title"], risk: .destructive, category: .reminders),
+        tool("location_current", "Request one current location from macOS Location Services after exact-call review. Returns coordinates, accuracy, and observation time; Lima does not retain a location history.",
+             category: .location)
     ]
 
     static func execute(_ call: AIOutputItem, approvalGranted: Bool,

@@ -301,6 +301,26 @@ enum AIAttachmentKind: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum AIAttachmentSourceRoute: String, Codable, Hashable, Sendable {
+    case contextShelf
+    case selectedText
+    case clipboard
+    case dictation
+    case terminal
+    case extensionOutput
+
+    var title: String {
+        switch self {
+        case .contextShelf: return "Context Shelf"
+        case .selectedText: return "Selected text"
+        case .clipboard: return "Clipboard"
+        case .dictation: return "Dictation"
+        case .terminal: return "Terminal"
+        case .extensionOutput: return "Extension"
+        }
+    }
+}
+
 struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
     var id: UUID
     var kind: AIAttachmentKind
@@ -313,6 +333,8 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
     var byteCount: Int?
     var lineCount: Int?
     var previewText: String?
+    /// Lightweight origin for an explicit handoff; no source content is stored here.
+    var sourceRoute: AIAttachmentSourceRoute?
     var createdAt: Date
 
     init(
@@ -325,6 +347,7 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
         byteCount: Int? = nil,
         lineCount: Int? = nil,
         previewText: String? = nil,
+        sourceRoute: AIAttachmentSourceRoute? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -336,6 +359,7 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
         self.byteCount = byteCount
         self.lineCount = lineCount
         self.previewText = previewText
+        self.sourceRoute = sourceRoute
         self.createdAt = createdAt
     }
 
@@ -349,6 +373,19 @@ struct AIAttachment: Codable, Hashable, Identifiable, Sendable {
         guard kind == .pastedText, let byteCount, let lineCount else { return nil }
         let size = ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
         return "\(size) · \(lineCount.formatted()) lines"
+    }
+
+    var transferRoute: String {
+        if let sourceRoute { return "\(sourceRoute.title) → AI draft" }
+        switch kind {
+        case .clipboard: return "Clipboard → AI draft"
+        case .selection: return "Selection or Shelf → AI draft"
+        case .pastedText: return "Paste → AI draft"
+        case .image: return "Image → AI draft"
+        case .file:
+            return path == nil && mimeType == "text/markdown"
+                ? "Note → AI draft" : "File → AI draft"
+        }
     }
 }
 
@@ -383,8 +420,13 @@ struct AIUsageMetrics: Codable, Hashable, Sendable {
     }
 
     var totalKnownTokens: Int? {
-        let values = [inputTokens, outputTokens, reasoningTokens].compactMap { $0 }
-        return values.isEmpty ? nil : values.reduce(0, +)
+        // Cached input and reasoning output are subsets reported alongside
+        // input/output totals, not additional tokens to add to them.
+        let values = [inputTokens, outputTokens].compactMap { $0 }.filter { $0 >= 0 }
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0) { total, value in
+            value > Int.max - total ? Int.max : total + value
+        }
     }
 
     var displayText: String? {
@@ -459,6 +501,8 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "read_screen_context": return "Screen context"
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
+        case "create_note": return "Create Note"
+        case "append_to_note": return "Append to Note"
         case "search_files": return "Find files"
         case "search_workspace_text": return "Search file contents"
         case "inspect_directory_tree": return "Inspect project tree"
@@ -497,6 +541,8 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
     var arguments: String?
     /// A bounded, fresh Browser review shown to the user before a final action.
     var browserReviewSummary: String?
+    /// Native Browser payment-risk classification for a distinct confirmation UI.
+    var browserPaymentReview: Bool?
     /// Set only for a reviewed, owned AI Workspace terminal_run request.
     var directoryGrantPath: String?
     var decision: AIToolApprovalDecision
@@ -510,6 +556,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         toolName: String,
         arguments: String? = nil,
         browserReviewSummary: String? = nil,
+        browserPaymentReview: Bool? = nil,
         directoryGrantPath: String? = nil,
         decision: AIToolApprovalDecision = .pending,
         createdAt: Date = Date()
@@ -521,6 +568,7 @@ struct AIToolApprovalRequest: Codable, Hashable, Identifiable, Sendable {
         self.toolName = toolName
         self.arguments = arguments
         self.browserReviewSummary = browserReviewSummary
+        self.browserPaymentReview = browserPaymentReview
         self.directoryGrantPath = directoryGrantPath
         self.decision = decision
         self.createdAt = createdAt
@@ -1712,7 +1760,7 @@ enum LimaAIToolRegistry {
             .union(AIUserQuestionTools.ids)
             .union(AIProjectFileTools.readIDs)
             .union(AIContextTools.ids)
-            .union(AINotesTools.ids)
+            .union(AINotesTools.readIDs)
             .union(AIWorkspaceActionTools.readIDs)
             .union(AIProcessTools.readIDs)
             .union(AIManagedServerTools.readIDs)
@@ -1736,7 +1784,8 @@ enum LimaAIToolRegistry {
             if BrowserWorkspaceAITools.ids.contains(definition.id) { return true }
             if toolAccessMode == .fullControl { return true }
             return definition.actionCategory != nil || definition.risk == .read ||
-                AIContextTools.delegationIDs.contains(definition.id)
+                AIContextTools.delegationIDs.contains(definition.id) ||
+                AINotesTools.writeIDs.contains(definition.id)
         }
     }
 
@@ -1776,6 +1825,7 @@ enum LimaAIToolRegistry {
         }
         guard let definition = definition(for: call.name),
               definition.risk == .read || definition.actionCategory != nil
+                || AINotesTools.writeIDs.contains(definition.id)
                 || BrowserWorkspaceAITools.ids.contains(definition.id) else {
             return .json(["error": "Lima AI Chat only permits registered tools enabled by the current action policy."], isError: true)
         }
@@ -1818,10 +1868,10 @@ enum LimaAIToolRegistry {
             return await AIProjectFileTools.execute(call, approvalGranted: approvalGranted)
         }
         if AINotesTools.ids.contains(definition.id) {
-            return await AINotesTools.execute(call)
+            return await AINotesTools.execute(call, approvalGranted: approvalGranted)
         }
         if BrowserWorkspaceAITools.ids.contains(definition.id) {
-            return await BrowserWorkspaceAITools.execute(call, approvalGranted: approvalGranted)
+            return await BrowserWorkspaceAITools.execute(call, approvalGranted: approvalGranted, runID: runID)
         }
         if AILocalComputerActionTools.ids.contains(definition.id) {
             return await AILocalComputerActionTools.execute(call, approvalGranted: approvalGranted,
@@ -2217,8 +2267,16 @@ struct LimaAIToolGroup: Identifiable, Hashable {
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryWriteIDs),
         .init(id: "subagents", title: "Subagents", summary: "Delegated analyses use this run’s configured concurrent and total budgets; inherits captured routed tools, API usage applies",
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
-        .init(id: "notes", title: "Notes", summary: "Search and read local Notes when asked",
-              symbol: "note.text", toolIDs: AINotesTools.ids),
+        .init(id: "notes", title: "Notes", summary: "Search and read local Notes when relevant",
+              symbol: "note.text", toolIDs: AINotesTools.readIDs),
+        .init(id: "notes-writing", title: "Write Notes", summary: "Create a new editable report after exact-content review",
+              symbol: "square.and.pencil", toolIDs: AINotesTools.writeIDs),
+        .init(id: "calendar", title: "Calendar", summary: "Find, create, change, or delete events with exact-call review",
+              symbol: "calendar", toolIDs: NativeCapabilityAITools.calendarIDs),
+        .init(id: "reminders", title: "Reminders", summary: "Find, create, complete, change, or delete reminders with exact-call review",
+              symbol: "checklist", toolIDs: NativeCapabilityAITools.reminderIDs),
+        .init(id: "location", title: "Current location", summary: "Read one current location with macOS access and exact-call review",
+              symbol: "location", toolIDs: NativeCapabilityAITools.locationIDs),
         .init(
             id: "screen-context",
             title: "Screen context",
@@ -2348,6 +2406,8 @@ extension LimaAIToolDefinition {
         case "read_screen_context": return "Screen context"
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
+        case "create_note": return "Create Note"
+        case "append_to_note": return "Append to Note"
         case "search_files": return "Find files"
         case "search_workspace_text": return "Search file contents"
         case "inspect_directory_tree": return "Inspect project tree"
@@ -2381,6 +2441,8 @@ extension LimaAIToolDefinition {
         case "read_screen_context": return "App, window, and selected text"
         case "search_notes": return "Titles and short matching excerpts"
         case "read_note": return "One bounded local note range"
+        case "create_note": return "Create one editable Markdown report after review"
+        case "append_to_note": return "Append reviewed Markdown if the note has not changed"
         case "search_files", "find_files": return "Names and paths only"
         case "search_workspace_text": return "Bounded text matches with line numbers"
         case "inspect_directory_tree": return "Bounded safe paths to four levels"
@@ -2421,6 +2483,7 @@ extension LimaAIToolDefinition {
         case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
         case "search_notes", "read_note": return "note.text"
+        case "create_note", "append_to_note": return "square.and.pencil"
         case "search_files", "find_files", "list_directory", "inspect_directory_tree": return "folder"
         case "search_workspace_text": return "text.magnifyingglass"
         case "file_metadata": return "doc.badge.gearshape"
@@ -2521,7 +2584,7 @@ final class LimaAIToolStore: ObservableObject {
         // is governed only by the Browser toolbar, never this saved tool list.
         let readMigrationKey = "lima.ai.browser-notes-read-v1"
         if !defaults.bool(forKey: readMigrationKey) {
-            enabledToolIDs.formUnion(AINotesTools.ids)
+            enabledToolIDs.formUnion(AINotesTools.readIDs)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: readMigrationKey)
         }
@@ -3262,10 +3325,11 @@ struct AIToolApprovalView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 8) {
-                Image(systemName: "hand.raised.fill")
+                Image(systemName: isPaymentReview ? "creditcard" : "hand.raised.fill")
                     .foregroundStyle(LimaColors.warning)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Review tool request").limaFont(.callout.weight(.semibold))
+                    Text(isPaymentReview ? "Payment review required" : "Review tool request")
+                        .limaFont(.callout.weight(.semibold))
                     Text("\(request.serverLabel) · \(request.toolName)")
                         .limaFont(.caption)
                         .foregroundStyle(LimaColors.secondaryText)
@@ -3277,6 +3341,12 @@ struct AIToolApprovalView: View {
                 .limaFont(.caption)
                 .foregroundStyle(LimaColors.primaryText)
                 .fixedSize(horizontal: false, vertical: true)
+            if isPaymentReview {
+                Text("Automatic approval never covers payments. Check the current Browser page and terms before confirming this exact action.")
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaColors.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if let directory = request.directoryGrantPath {
                 Text("Directory scope: \(directory)")
                     .font(.system(size: 11.5, design: .monospaced))
@@ -3302,9 +3372,11 @@ struct AIToolApprovalView: View {
             }
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(request.directoryGrantPath == nil
-                     ? "Allow Once runs only this request; its result appears in Activity."
-                     : "Allow Once runs only this command. Allow in Directory permits later commands in this session's current sandboxed directory until revoked, changed, or closed.")
+                Text(isPaymentReview
+                     ? "Confirm Financial Action permits only this reviewed action. It does not verify that payment or booking succeeded."
+                     : request.directoryGrantPath == nil
+                        ? "Allow Once runs only this request; its result appears in Activity."
+                        : "Allow Once runs only this command. Allow in Directory permits later commands in this session's current sandboxed directory until revoked, changed, or closed.")
                     .limaFont(.caption2)
                     .foregroundStyle(LimaColors.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3315,7 +3387,7 @@ struct AIToolApprovalView: View {
                         Button("Allow in Directory", action: allowDirectory)
                             .help("Allow later commands only in this AI Workspace session's current directory; revoke from AI Terminal")
                     }
-                    Button("Allow Once", action: allow)
+                    Button(isPaymentReview ? "Confirm Financial Action" : "Allow Once", action: allow)
                         .buttonStyle(.borderedProminent)
                 }
             }
@@ -3326,9 +3398,12 @@ struct AIToolApprovalView: View {
         .onAppear {
             let toolID = request.localToolID ?? request.toolName
             showingFullRequest = AIContextTools.memoryWriteIDs.contains(toolID) ||
+                AINotesTools.writeIDs.contains(toolID) ||
                 NativeCapabilityAITools.ids.contains(toolID)
         }
     }
+
+    private var isPaymentReview: Bool { request.browserPaymentReview == true }
 
     private var requestSummary: String {
         let arguments = decodedArguments
@@ -3354,6 +3429,12 @@ struct AIToolApprovalView: View {
             return "Type \(count) character\(count == 1 ? "" : "s") into the requested nonsensitive Browser field."
         case "browser_submit":
             return "Submit the requested ordinary Browser form."
+        case "create_note":
+            let title = compactQuoted(arguments["title"] as? String) ?? "an untitled note"
+            return "Create editable Note \(title) with \(characterCount(arguments["content"])) characters of Markdown. Review the full content below."
+        case "append_to_note":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            return "Append \(characterCount(arguments["content"])) characters of Markdown to Note \(target), only if it has not changed. Review the full content below."
         case "memory_save":
             let title = compactQuoted(arguments["title"] as? String) ?? "a new entry"
             let scope = arguments["scope"] as? String ?? "selected"
@@ -3476,22 +3557,34 @@ struct AIAttachmentStrip: View {
 
     var body: some View {
         if !attachments.isEmpty {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(attachments) { attachment in
-                        HStack(spacing: 5) {
-                            Image(systemName: attachment.kind.symbol)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(attachment.displayName).lineLimit(1)
-                                if let summary = attachment.metadataSummary {
-                                    Text(summary).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
+            VStack(alignment: .leading, spacing: 5) {
+                Label("Ready to send with your next AI message", systemImage: "arrow.right.circle")
+                    .limaFont(.caption2.weight(.medium))
+                    .foregroundStyle(LimaTheme.textSecondary)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(attachments) { attachment in
+                            HStack(spacing: 6) {
+                                Image(systemName: attachment.kind.symbol)
+                                    .foregroundStyle(LimaTheme.accentInk)
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(attachment.transferRoute)
+                                        .foregroundStyle(LimaTheme.accentInk)
+                                        .lineLimit(1)
+                                    Text(attachment.displayName).lineLimit(1)
+                                    if let summary = attachment.metadataSummary {
+                                        Text(summary).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)
+                                    }
                                 }
+                                Button { remove(attachment) } label: { Image(systemName: "xmark.circle.fill") }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityLabel("Remove \(attachment.displayName) from AI draft")
                             }
-                            Button { remove(attachment) } label: { Image(systemName: "xmark.circle.fill") }.buttonStyle(.borderless)
+                            .limaFont(.caption)
+                            .padding(.horizontal, 9).padding(.vertical, 6)
+                            .background(LimaColors.accentSoft, in: RoundedRectangle(cornerRadius: LimaRadius.control))
+                            .accessibilityElement(children: .combine)
                         }
-                        .limaFont(.caption)
-                        .padding(.horizontal, 8).padding(.vertical, 5)
-                        .background(LimaColors.accentSoft, in: Capsule())
                     }
                 }
             }

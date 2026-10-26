@@ -6,6 +6,7 @@ enum CaptureNoteService {
     enum Source {
         case clipboard
         case selection(applicationName: String?)
+        case aiResponse(conversationTitle: String?)
 
         var title: String {
             switch self {
@@ -19,6 +20,12 @@ enum CaptureNoteService {
                     return "Captured Selection"
                 }
                 return "Captured Selection · \(String(cleanName.prefix(80)))"
+            case .aiResponse(let conversationTitle):
+                let cleanTitle = conversationTitle?
+                    .replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let cleanTitle, !cleanTitle.isEmpty else { return "AI Response" }
+                return "AI Response · \(String(cleanTitle.prefix(80)))"
             }
         }
     }

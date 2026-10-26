@@ -51,6 +51,21 @@ private func observationJSON(_ execution: LimaAIToolExecution) throws -> [String
     #expect(visualJSON["image_attached"] as? Bool == false)
     #expect(!visual.output.contains(visualCapture.fileURL.path))
     #expect(!visual.output.contains("pageIdentity"))
+    let visualMetadata = try #require(visualJSON["screenshot"] as? [String: Any])
+    #expect(visualMetadata["capture_id"] as? String == visualCapture.captureID.uuidString)
+    #expect(visualMetadata["pixel_width"] as? Int == visualCapture.pixelWidth)
+    #expect(visualMetadata["pixel_height"] as? Int == visualCapture.pixelHeight)
+    #expect(visualMetadata["point_width"] as? Double == visualCapture.pointWidth)
+    #expect(visualMetadata["point_height"] as? Double == visualCapture.pointHeight)
+    #expect(visualMetadata["viewport_width"] as? Double == visualCapture.viewportWidth)
+    #expect(visualMetadata["viewport_height"] as? Double == visualCapture.viewportHeight)
+    #expect(visualMetadata["crop_origin_x"] as? Double == visualCapture.cropOriginX)
+    #expect(visualMetadata["crop_origin_y"] as? Double == visualCapture.cropOriginY)
+    #expect(visualMetadata["foreground_anchor_available"] as? Bool == false)
+    #expect(visualMetadata["captured_at"] as? String != nil)
+    #expect(visualMetadata["window_number"] == nil)
+    #expect(visualMetadata["fileURL"] == nil)
+    #expect(visualMetadata["protectedRects"] == nil)
 
     let semantic = await BrowserWorkspaceAITools.execute(
         try observationCall("semantic", tabID: tab.id), browser: model

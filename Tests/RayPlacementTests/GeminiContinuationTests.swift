@@ -33,6 +33,28 @@ private func geminiFrame(_ object: [String: Any]) throws -> AIProviderSSEFrame {
     #expect(decoder.decode(frame).isEmpty)
 }
 
+@Test func geminiCumulativeUsageEmitsOnlyNewTokenIncrements() throws {
+    var decoder = AIGeminiStreamDecoder(responseID: "fixture")
+    let events = decoder.decode(try geminiFrame([
+        "usageMetadata": ["promptTokenCount": 8, "candidatesTokenCount": 2]
+    ])) + decoder.decode(try geminiFrame([
+        "usageMetadata": ["promptTokenCount": 8, "candidatesTokenCount": 5]
+    ])) + decoder.decode(try geminiFrame([
+        "usageMetadata": ["promptTokenCount": 10, "candidatesTokenCount": 5],
+        "candidates": [["finishReason": "STOP"]]
+    ]))
+    let reports = events.compactMap { event -> AIUsageMetrics? in
+        if case .usage(let usage) = event { return usage }
+        return nil
+    }
+    #expect(reports.compactMap(\.inputTokens) == [8, 2])
+    #expect(reports.compactMap(\.outputTokens) == [2, 3])
+    #expect(reports.compactMap(\.totalKnownTokens).reduce(0, +) == 15)
+    #expect(decoder.decode(try geminiFrame([
+        "usageMetadata": ["promptTokenCount": 10, "candidatesTokenCount": 5]
+    ])).isEmpty)
+}
+
 @Test func geminiRejectsErrorsTruncationAndMalformedCalls() throws {
     let frames = [
         try geminiFrame(["error": ["message": "private-secret", "code": 401]]),

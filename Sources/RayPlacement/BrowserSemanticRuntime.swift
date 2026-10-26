@@ -393,7 +393,9 @@ enum BrowserRuntimeError: LocalizedError {
     case privatePageIncomplete
     case targetOccluded
     case targetNotInteractable
+    case actionApprovalRequired
     case commitApprovalRequired
+    case taskScopeDenied
     case unsupportedAction
 
     var errorDescription: String? {
@@ -411,7 +413,9 @@ enum BrowserRuntimeError: LocalizedError {
         case .privatePageIncomplete: "The Browser could not account for all page or frame content, so it withheld AI-visible content."
         case .targetOccluded: "Another page layer covers this target. Resolve the visible dialog or overlay, then read the page again."
         case .targetNotInteractable: "This target is disabled or no longer visible. Read the page again before acting."
+        case .actionApprovalRequired: "This Browser action requires approval in Ask for Actions mode."
         case .commitApprovalRequired: "A final web action requires explicit approval for this exact tool call."
+        case .taskScopeDenied: "This website is outside the current task's authorized sites. Open it yourself and add the visible site to this task, or switch to Ask for Actions."
         case .unsupportedAction: "This semantic target does not support the requested action."
         }
     }
@@ -1140,6 +1144,136 @@ enum BrowserSemanticScript {
       complete, frameCount, hasFilledSecureField: secrets.length > 0, rects,
       scrollX: window.scrollX, scrollY: window.scrollY,
       scrollFingerprint: scrolls.join('|')
+    });
+    """#
+
+    /// Private, target-ID-free safety assessment for a screenshot coordinate.
+    /// It does not select an AI target or dispatch an event. Failure is closed.
+    static let visualActionAssessment = #"""
+    const state = globalThis.__limaSemantic;
+    if (!state || state.documentID !== documentID ||
+        state.routeGeneration !== routeGeneration ||
+        state.mutationRevision !== mutationRevision ||
+        state.userRevision !== userRevision ||
+        state.snapshotRevision !== snapshotRevision ||
+        state.lastURL !== location.href) throw new Error("stale_target");
+    if (!Number.isFinite(x) || !Number.isFinite(y) ||
+        x < 0 || y < 0 || x >= innerWidth || y >= innerHeight)
+      throw new Error("target_not_interactable");
+    let hit = document.elementFromPoint(x, y);
+    for (let depth = 0; depth < 8 && hit?.shadowRoot; depth++) {
+      const inner = hit.shadowRoot.elementFromPoint(x, y);
+      if (!inner || inner === hit) break;
+      hit = inner;
+    }
+    if (!hit || hit.localName === "iframe" || hit.localName === "frame")
+      throw new Error("unsupported_action");
+    const inComposedTree = (ancestor, node) => {
+      for (let depth = 0; depth < 32 && node; depth++) {
+        if (node === ancestor) return true;
+        node = node.parentElement || node.getRootNode()?.host;
+      }
+      return false;
+    };
+    const modal = Array.from(document.querySelectorAll(
+      "dialog[open],[role=dialog][aria-modal=true],[role=alertdialog]"
+    )).filter(node => {
+      const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return box.width > 0 && box.height > 0 && style.visibility !== "hidden";
+    }).at(-1);
+    if (modal && !inComposedTree(modal, hit)) throw new Error("target_occluded");
+    let element = hit;
+    for (let depth = 0; depth < 24 && element; depth++) {
+      const style = getComputedStyle(element);
+      if (element.matches("button,a,input,select,textarea,[contenteditable=true],[role=button],[role=link],[role=option],[role=checkbox],[role=radio],[role=switch]") ||
+          element.localName === "canvas" || style.cursor === "pointer" ||
+          element.hasAttribute("onclick") || element.hasAttribute("data-action"))
+        break;
+      element = element.parentElement || element.getRootNode()?.host;
+    }
+    element ||= hit;
+    const box = element.getBoundingClientRect();
+    const style = getComputedStyle(element);
+    if (!element.isConnected || box.width <= 0 || box.height <= 0 ||
+        style.visibility === "hidden" || style.display === "none" ||
+        element.matches(":disabled,[aria-disabled=true],[inert]") ||
+        element.closest("[inert]")) throw new Error("target_not_interactable");
+    const form = element.form || element.closest("form");
+    const heading = (form || element.closest("section,article,[role=group]"))
+      ?.querySelector("h1,h2,h3,legend,[role=heading]")?.textContent || "";
+    // Visual-only never calls semantic snapshot(), which is where the semantic
+    // redactor is normally installed. Build an independent protected-value
+    // redactor before returning any label or financial term to Swift.
+    const protectedPattern = /password|passcode|credential|secret|api.?key|access.?token|one.?time.?code|otp|verification.?code|security.?code|cc-(?:csc|exp|number)|cvv|cvc|card.?number|credit.?card|debit.?card|card.?expir|bank.?account|routing.?number|iban|swift.?code|social.?security|ssn|government.?id|passport/i;
+    const secureField = node => {
+      if (!node.matches("input,textarea,[contenteditable=true]")) return false;
+      const type = (node.getAttribute("type") || "").toLowerCase();
+      const hint = [node.name, node.id, node.getAttribute("autocomplete"),
+        node.getAttribute("aria-label"), node.getAttribute("placeholder"),
+        node.labels?.[0]?.innerText].filter(Boolean).join(" ");
+      return type === "password" || protectedPattern.test(hint);
+    };
+    const secrets = [];
+    let inspected = 0;
+    const collectSecrets = root => {
+      for (const node of root.querySelectorAll("*")) {
+        if (++inspected > 20000 || secrets.length > 100)
+          throw new Error("sensitive_target");
+        if (node.shadowRoot) collectSecrets(node.shadowRoot);
+        if (!secureField(node)) continue;
+        const value = String(node.isContentEditable ? node.textContent : node.value || "");
+        if (value) secrets.push(value);
+      }
+    };
+    collectSecrets(document);
+    if (secrets.some(value => value.length < 3)) throw new Error("sensitive_target");
+    const redact = raw => {
+      let value = String(raw || "");
+      for (const secret of secrets) value = value.replaceAll(secret, "[protected]");
+      return value.replace(/\b(?:\d[ -]?){13,19}\b/g, "[protected]");
+    };
+    const rawLabel = [element.getAttribute("aria-label"), element.getAttribute("title"),
+      element.getAttribute("alt"), element.labels?.[0]?.innerText,
+      element.matches("input[type=submit],input[type=button]") ? element.value : "",
+      element.innerText, element.textContent].find(value => String(value || "").trim()) || "";
+    const label = redact(rawLabel).trim().slice(0, 160);
+    const formLabel = redact([
+      form?.getAttribute("aria-label"), form?.getAttribute("name"), heading
+    ].filter(Boolean).join(" ")).slice(0, 120);
+    const hint = [label, formLabel, element.getAttribute("autocomplete"),
+      element.getAttribute("name"), element.getAttribute("id"),
+      element.getAttribute("placeholder"), element.getAttribute("data-action"),
+      element.getAttribute("data-destructive")].filter(Boolean).join(" ");
+    const type = (element.getAttribute("type") || "").toLowerCase();
+    const protectedAction = /captcha|human verification|sign.?in|log.?in|two.?factor|delete|erase|destroy|close.?account|wire|withdraw|refund|cancel.?subscription|sign.?out|log.?out|deactivate|revoke|purge|reset.?password|security.?setting/i;
+    const bodyText = String(document.body?.innerText || "").slice(0, 8000);
+    const context = [document.title, location.pathname, formLabel, heading].join(" ");
+    const termPattern = /\b(deposit|fee|charge|total|non.?refund|card hold|recurring|subscription|amount due|payment method|cancellation policy)\b|\$\s?\d/i;
+    const financialTerms = bodyText.split(/\n/).map(value =>
+      redact(value).trim()).filter(value =>
+      value.length > 0 && value.length <= 200 && termPattern.test(value)
+    ).slice(0, 3).map(value => value.slice(0, 140));
+    const financialContext =
+      /\b(checkout|payment|billing|order review|order summary|cart|subscription|donation|transfer funds|deposit)\b/i.test(context) ||
+      (/\b(reservation|booking|appointment|registration)\b/i.test(context) &&
+       financialTerms.length > 0);
+    const sensitive = Boolean(secureField(element) || secureField(hit) ||
+      ["file", "hidden", "password"].includes(type) ||
+      protectedPattern.test(hint) || element.closest("[data-destructive],[data-danger]"));
+    return JSON.stringify({
+      label, role: element.getAttribute("role") || element.localName,
+      formLabel,
+      isSubmit: type === "submit" || (element.localName === "button" &&
+        (type === "" || type === "submit") && Boolean(form)),
+      // Only text-like fields may receive native typing. Checkboxes and radios
+      // can accept financial terms and must be classified as clicks instead.
+      isEditable: element.matches("textarea,[contenteditable=true]") ||
+        (element.localName === "input" &&
+         ["", "text", "search", "email", "tel", "url", "number"].includes(type)),
+      isCanvas: element.localName === "canvas",
+      sensitive, disabled: false, financialContext, financialTerms,
+      protectedContext: protectedAction.test(hint)
     });
     """#
 

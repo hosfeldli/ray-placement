@@ -2,16 +2,51 @@ import AudioToolbox
 import CoreAudio
 import Foundation
 
+enum AudioOutputTransport: String, Sendable, Equatable {
+    case builtIn, bluetooth, usb, display, airPlay, virtual, other
+
+    var label: String {
+        switch self {
+        case .builtIn: "Built-in"
+        case .bluetooth: "Bluetooth"
+        case .usb: "USB"
+        case .display: "Display"
+        case .airPlay: "AirPlay"
+        case .virtual: "Virtual"
+        case .other: "Other"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .builtIn, .display, .other: "speaker.wave.2"
+        case .bluetooth: "headphones"
+        case .usb: "hifispeaker"
+        case .airPlay: "airplayaudio"
+        case .virtual: "waveform"
+        }
+    }
+}
+
 struct AudioOutputHardwareDevice: Sendable, Equatable {
     let id: AudioObjectID
     let uid: String
     let name: String
+    let transport: AudioOutputTransport
+
+    init(id: AudioObjectID, uid: String, name: String, transport: AudioOutputTransport = .other) {
+        self.id = id
+        self.uid = uid
+        self.name = name
+        self.transport = transport
+    }
 }
 
 struct AudioOutputDevice: Identifiable, Sendable, Equatable {
     let id: AudioObjectID
     let uid: String
     let name: String
+    let transport: AudioOutputTransport
     let isDefault: Bool
 }
 
@@ -40,11 +75,18 @@ protocol AudioOutputHardware: AnyObject {
     func defaultOutputID() throws -> AudioObjectID
     func setDefaultOutputID(_ id: AudioObjectID) throws
     func volume(for id: AudioObjectID) throws -> Float?
+    func volumeIsWritable(for id: AudioObjectID) throws -> Bool
     func setVolume(_ value: Float, for id: AudioObjectID) throws
     func muted(for id: AudioObjectID) throws -> Bool?
     func setMuted(_ muted: Bool, for id: AudioObjectID) throws
     func observeChanges(_ onChange: @escaping @Sendable () -> Void)
     func stopObserving()
+}
+
+extension AudioOutputHardware {
+    func volumeIsWritable(for id: AudioObjectID) throws -> Bool {
+        try volume(for: id) != nil
+    }
 }
 
 /// Shared native implementation for the UI and future AI/extension adapters.
@@ -61,7 +103,7 @@ final class AudioOutputService {
         let current = try hardware.defaultOutputID()
         return try hardware.outputDevices()
             .map { AudioOutputDevice(id: $0.id, uid: $0.uid, name: $0.name,
-                                     isDefault: $0.id == current) }
+                                     transport: $0.transport, isDefault: $0.id == current) }
             .sorted {
                 if $0.isDefault != $1.isDefault { return $0.isDefault }
                 return $0.name.localizedStandardCompare($1.name) == .orderedAscending
@@ -101,10 +143,18 @@ final class AudioOutputService {
         return Int((max(0, min(1, scalar)) * 100).rounded())
     }
 
+    func canSetVolume() throws -> Bool {
+        try hardware.volumeIsWritable(for: hardware.defaultOutputID())
+    }
+
+    func getMute() throws -> Bool? {
+        try hardware.muted(for: hardware.defaultOutputID())
+    }
+
     func setVolume(_ percent: Int) throws -> Int {
         guard (0...100).contains(percent) else { throw AudioOutputError.invalidVolume }
         let id = try hardware.defaultOutputID()
-        guard try hardware.volume(for: id) != nil else {
+        guard try hardware.volumeIsWritable(for: id) else {
             throw AudioOutputError.volumeUnavailable
         }
         try hardware.setVolume(Float(percent) / 100, for: id)
@@ -157,11 +207,12 @@ final class CoreAudioOutputHardware: AudioOutputHardware {
             ))
         }
         return ids.compactMap { id in
-            guard hasOutputChannels(id),
+            guard isAlive(id), hasOutputChannels(id),
                   let uid = try? Self.stringProperty(kAudioDevicePropertyDeviceUID, of: id),
                   !uid.isEmpty else { return nil }
             let name = (try? Self.stringProperty(kAudioObjectPropertyName, of: id)) ?? uid
-            return AudioOutputHardwareDevice(id: id, uid: uid, name: name)
+            return AudioOutputHardwareDevice(id: id, uid: uid, name: name,
+                                             transport: transport(for: id))
         }
     }
 
@@ -196,11 +247,17 @@ final class CoreAudioOutputHardware: AudioOutputHardware {
         return value
     }
 
-    func setVolume(_ value: Float, for id: AudioObjectID) throws {
+    func volumeIsWritable(for id: AudioObjectID) throws -> Bool {
         var address = Self.outputAddress(kAudioHardwareServiceDeviceProperty_VirtualMainVolume)
+        guard AudioObjectHasProperty(id, &address) else { return false }
         var settable: DarwinBoolean = false
         try Self.check(AudioObjectIsPropertySettable(id, &address, &settable))
-        guard settable.boolValue else { throw AudioOutputError.volumeUnavailable }
+        return settable.boolValue
+    }
+
+    func setVolume(_ value: Float, for id: AudioObjectID) throws {
+        var address = Self.outputAddress(kAudioHardwareServiceDeviceProperty_VirtualMainVolume)
+        guard try volumeIsWritable(for: id) else { throw AudioOutputError.volumeUnavailable }
         var scalar = Float32(value)
         try Self.check(AudioObjectSetPropertyData(
             id, &address, 0, nil, UInt32(MemoryLayout<Float32>.size), &scalar
@@ -256,6 +313,32 @@ final class CoreAudioOutputHardware: AudioOutputHardware {
     }
 
     deinit { stopObserving() }
+
+    private func isAlive(_ id: AudioObjectID) -> Bool {
+        var address = Self.address(kAudioDevicePropertyDeviceIsAlive)
+        guard AudioObjectHasProperty(id, &address) else { return true }
+        var alive: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &alive) == noErr else { return false }
+        return alive != 0
+    }
+
+    private func transport(for id: AudioObjectID) -> AudioOutputTransport {
+        var address = Self.address(kAudioDevicePropertyTransportType)
+        guard AudioObjectHasProperty(id, &address) else { return .other }
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &address, 0, nil, &size, &value) == noErr else { return .other }
+        switch value {
+        case kAudioDeviceTransportTypeBuiltIn: return .builtIn
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: return .bluetooth
+        case kAudioDeviceTransportTypeUSB: return .usb
+        case kAudioDeviceTransportTypeHDMI, kAudioDeviceTransportTypeDisplayPort: return .display
+        case kAudioDeviceTransportTypeAirPlay: return .airPlay
+        case kAudioDeviceTransportTypeVirtual: return .virtual
+        default: return .other
+        }
+    }
 
     private func hasOutputChannels(_ id: AudioObjectID) -> Bool {
         var address = Self.outputAddress(kAudioDevicePropertyStreamConfiguration)

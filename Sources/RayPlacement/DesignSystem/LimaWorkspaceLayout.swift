@@ -16,9 +16,9 @@ enum LimaWorkspaceSizeClass: Equatable, Sendable {
 
     var moduleRailWidth: CGFloat {
         switch self {
-        case .compact: 44
-        case .regular: 46
-        case .expanded: 184
+        case .compact: 60
+        case .regular: 60
+        case .expanded: 208
         }
     }
 
@@ -36,6 +36,28 @@ enum LimaWorkspaceSizeClass: Equatable, Sendable {
         case .regular: LimaSpacing.md
         case .expanded: LimaSpacing.lg
         }
+    }
+}
+
+/// Reserve the webpage before deciding whether the AI sidecar fits. The
+/// chrome budget includes outer padding, inter-pane gaps, and rail insets.
+struct LimaWorkspaceChromeLayout: Equatable {
+    let showsSidecar: Bool
+    let collapsesRail: Bool
+    let sidecarWidth: CGFloat
+
+    static func resolve(width: CGFloat, sidecarRequested: Bool, isDocked: Bool,
+                        preferredSidecarWidth: CGFloat) -> Self {
+        let showsSidecar = sidecarRequested && !isDocked && width >= 1_120
+        let collapsesRail = width < (showsSidecar ? 1_380 : 940)
+        // The expanded rail can reach 315 points with 140% text and Wide
+        // presentation. Budget its maximum so resizing the sidecar never
+        // silently steals the Browser's preferred 650-point minimum.
+        let railBudget: CGFloat = collapsesRail ? 64 : 316
+        let maximumSidecar = max(350, min(480, width - railBudget - 650 - 54))
+        let sidecarWidth = min(max(preferredSidecarWidth, 350), maximumSidecar)
+        return Self(showsSidecar: showsSidecar, collapsesRail: collapsesRail,
+                    sidecarWidth: sidecarWidth)
     }
 }
 

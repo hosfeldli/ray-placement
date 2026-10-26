@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Explicit user controls for local memory. AI may read enabled entries but never mutates them.
+/// Explicit user controls for local memory. AI writes use the active Tool Access policy.
 @MainActor
 struct AIMemoryInspector: View {
     @ObservedObject var model: AIChatViewModel
@@ -32,8 +32,8 @@ struct AIMemoryInspector: View {
         LimaWorkspaceCard {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(tools.enabledToolIDs.contains("memory_search")
-                         ? "AI can read these saved entries when you send. Add, edit, or forget entries yourself; earlier messages may still contain previously shared context."
+                    Text(tools.effectiveEnabledToolIDs.contains("memory_search")
+                         ? "AI can read these entries and, when Memory changes is enabled, save stable facts you tell it under Tool Access controls. You can edit or forget entries here; earlier messages may still contain previously shared context."
                          : "Memory read is off. Saved entries remain here for review and direct editing.")
                         .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

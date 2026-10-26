@@ -1,5 +1,6 @@
 #if DEBUG
 import AppKit
+import CoreAudio
 import RayPlacementCore
 import RayPlacementWriting
 import SwiftUI
@@ -19,6 +20,11 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--major-release-only") {
+                let failures = await renderMajorReleaseScreenshots(application: application, directory: directory)
+                print("Major-release visual audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
             var failures = 0
             for dark in [false, true] {
                 let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
@@ -234,6 +240,89 @@ enum LimaVisualAudit {
         application.run()
     }
 
+    private static func renderMajorReleaseScreenshots(application: NSApplication, directory: URL) async -> Int {
+        // These are isolated, synthetic fixtures rendered from the production
+        // views. They never inspect accounts, devices, Mail, or updater state.
+        let manifest = LimaReleaseManifest(
+            version: "9.0.0", build: "9000000", channel: "visual-audit",
+            importance: .major, title: "A more focused Lima",
+            summary: "Synthetic visual preview of audio controls, Apple Mail settings, and release guidance.",
+            highlights: [
+                LimaReleaseHighlight(id: "audio-output", title: "Sound Output", destination: .audioSettings),
+                LimaReleaseHighlight(id: "mail-sending", title: "Apple Mail controls", destination: .mailSettings)
+            ],
+            sections: [
+                LimaReleaseSection(category: .newFeatures, markdown: "- Native sound output selection.\n- Reviewed Apple Mail controls."),
+                LimaReleaseSection(category: .removedFeatures, markdown: "- The dedicated Workflows feature.")
+            ],
+            requiresOnboarding: true, onboardingID: "visual-audit",
+            technicalDetails: nil, releaseURL: nil
+        )
+        let release = UpdateService.Release(
+            tagName: "v9.0.0", name: "Synthetic visual preview", body: nil,
+            htmlURL: URL(fileURLWithPath: "/dev/null"), assets: []
+        )
+        var failures = 0
+        for dark in [false, true] {
+            let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+            let scheme: ColorScheme = dark ? .dark : .light
+            let suffix = dark ? "dark" : "light"
+            application.appearance = appearance
+
+            let audio = AudioOutputPickerModel(
+                service: AudioOutputService(hardware: VisualAuditAudioHardware())
+            )
+            audio.start()
+            let audioView = AudioOutputPickerView(model: audio, cancel: {}, switched: {})
+                .environment(\.colorScheme, scheme)
+            if !(await render(audioView, size: NSSize(width: 430, height: 430),
+                              appearance: appearance,
+                              url: directory.appendingPathComponent("major-audio-synthetic-\(suffix).png"))) {
+                failures += 1
+            }
+            audio.stop()
+
+            let mail = Form { MailSettingsView() }
+                .formStyle(.grouped)
+                .environment(\.colorScheme, scheme)
+            if !(await render(mail, size: NSSize(width: 820, height: 900),
+                              appearance: appearance,
+                              url: directory.appendingPathComponent("major-mail-settings-synthetic-\(suffix).png"))) {
+                failures += 1
+            }
+
+            let update = LimaUpdateAvailableView(
+                release: release, manifest: manifest, install: {}, dismiss: {}
+            )
+            .environment(\.colorScheme, scheme)
+            if !(await render(update, size: NSSize(width: 660, height: 460),
+                              appearance: appearance,
+                              url: directory.appendingPathComponent("major-update-synthetic-\(suffix).png"))) {
+                failures += 1
+            }
+
+            let tour = OnboardingCoordinator(
+                fileURL: directory.appendingPathComponent("onboarding-visual-fixture-\(suffix).json")
+            )
+            if tour.replay(manifest) {
+                tour.next()
+                tour.next()
+                let tutorial = Form { MailSettingsView() }
+                    .formStyle(.grouped)
+                    .limaOnboardingOverlay(coordinator: tour)
+                    .environment(\.colorScheme, scheme)
+                if !(await render(tutorial, size: NSSize(width: 820, height: 900),
+                                  appearance: appearance,
+                                  url: directory.appendingPathComponent("major-tutorial-synthetic-\(suffix).png"))) {
+                    failures += 1
+                }
+            } else {
+                failures += 1
+            }
+        }
+        return failures
+    }
+
     private static func render<V: View>(_ view: V, size: NSSize, appearance: NSAppearance, url: URL) async -> Bool {
         let window = NSWindow(contentRect: NSRect(origin: .zero, size: size),
                               styleMask: [.borderless], backing: .buffered, defer: false)
@@ -250,6 +339,33 @@ enum LimaVisualAudit {
         guard let png = bitmap.representation(using: .png, properties: [:]) else { return false }
         do { try png.write(to: url); return true } catch { return false }
     }
+}
+
+
+private final class VisualAuditAudioHardware: AudioOutputHardware {
+    func outputDevices() throws -> [AudioOutputHardwareDevice] {
+        [
+            AudioOutputHardwareDevice(id: 11, uid: "visual-built-in", name: "Mac Speakers", transport: .builtIn),
+            AudioOutputHardwareDevice(id: 12, uid: "visual-headphones", name: "Demo Headphones", transport: .bluetooth),
+            AudioOutputHardwareDevice(id: 13, uid: "visual-display", name: "Demo Display", transport: .display)
+        ]
+    }
+
+    func defaultOutputID() throws -> AudioObjectID { 11 }
+    func setDefaultOutputID(_ id: AudioObjectID) throws {
+        throw AudioOutputError.unavailable("Visual fixture")
+    }
+    func volume(for id: AudioObjectID) throws -> Float? { id == 11 ? 0.56 : nil }
+    func volumeIsWritable(for id: AudioObjectID) throws -> Bool { id == 11 }
+    func setVolume(_ value: Float, for id: AudioObjectID) throws {
+        throw AudioOutputError.unavailable("Visual fixture")
+    }
+    func muted(for id: AudioObjectID) throws -> Bool? { id == 11 ? false : nil }
+    func setMuted(_ muted: Bool, for id: AudioObjectID) throws {
+        throw AudioOutputError.unavailable("Visual fixture")
+    }
+    func observeChanges(_ onChange: @escaping @Sendable () -> Void) {}
+    func stopObserving() {}
 }
 
 private struct WayfinderAuditWorkspace: View {

@@ -34,6 +34,30 @@ import Testing
     }
 }
 
+@Test func searchPanelExpandsOnceAndPreservesTopEdgeAcrossPickerTransitions() {
+    for density in AppInterfaceDensity.allCases {
+        var sizing = LauncherPanelPresentationSizing()
+        let idle = sizing.size(for: .root, density: density, searchPhase: .idle)
+        let expanded = sizing.size(for: .root, density: density, searchPhase: .active)
+        #expect(expanded.height > idle.height)
+        #expect(sizing.hasExpandedSearch)
+        #expect(sizing.size(for: .root, density: density, searchPhase: .idle) == expanded)
+        #expect(sizing.size(for: .root, density: density, searchPhase: .active) == expanded)
+
+        let picker = sizing.size(for: .picker(.timezone), density: density, searchPhase: .idle)
+        let original = NSRect(x: 100, y: 500, width: expanded.width, height: expanded.height)
+        let pickerFrame = LauncherPanelLayout.resizedFrame(original, to: picker, anchorTop: true)
+        #expect(pickerFrame.maxY == original.maxY)
+        let restoredSize = sizing.size(for: .root, density: density, searchPhase: .idle)
+        let restoredFrame = LauncherPanelLayout.resizedFrame(pickerFrame, to: restoredSize, anchorTop: true)
+        #expect(restoredFrame.maxY == original.maxY)
+        #expect(restoredSize == expanded)
+
+        sizing.reset()
+        #expect(sizing.size(for: .root, density: density, searchPhase: .idle) == idle)
+    }
+}
+
 @Test func searchResultsOnlyScrollWhenKeyboardSelectionLeavesViewport() {
     let viewport: CGFloat = 300
     #expect(LauncherSearchDesign.scrollAnchor(
@@ -46,6 +70,31 @@ import Testing
         for: CGRect(x: 0, y: 250, width: 500, height: 64), viewportHeight: viewport
     ) == .bottom)
     #expect(LauncherSearchDesign.scrollAnchor(for: nil, viewportHeight: viewport) == .center)
+}
+
+@Test func keyboardNavigationKeepsExistingSearchRowsInPlace() {
+    func item(_ id: String) -> LauncherItem {
+        LauncherItem(id: id, title: id, subtitle: "", icon: .system("doc"),
+                     keywords: [], action: .copyText(id))
+    }
+    let first = item("first")
+    let second = item("second")
+    let third = item("third")
+    let incoming = [third, second, first]
+    #expect(SearchSelectionCoordinator.orderedResults(
+        current: [first, second], incoming: incoming, preserveCurrentOrder: true
+    ).map { $0.id } == ["first", "second", "third"])
+    #expect(SearchSelectionCoordinator.orderedResults(
+        current: [first, second], incoming: incoming, preserveCurrentOrder: false
+    ).map { $0.id } == ["third", "second", "first"])
+    #expect(SearchSelectionCoordinator.selectedIndex(
+        in: [first, second, third], preferredID: "second", previousIndex: 0,
+        isActionable: { _ in true }
+    ) == 1)
+    #expect(SearchSelectionCoordinator.selectedIndex(
+        in: [first, third], preferredID: "second", previousIndex: 1,
+        isActionable: { _ in true }
+    ) == 1)
 }
 
 @Test @MainActor func searchPhasePublishesOnlyIdleActiveTransitions() {
@@ -187,6 +236,36 @@ import Testing
     }
 }
 
+@Test func localMeasurementConversionsRequireExplicitCompatibleUnits() throws {
+    let distance = try #require(SearchMeasurementConversion.convert("10 miles to km"))
+    #expect(abs(distance.rawValue - 16.09344) < 0.00001)
+    #expect(distance.formatted.hasSuffix(" km"))
+    let temperature = try #require(SearchMeasurementConversion.convert("72 F to C"))
+    #expect(abs(temperature.rawValue - 22.2222222222) < 0.00001)
+    #expect(temperature.formatted.hasSuffix(" °C"))
+    #expect(SearchMeasurementConversion.convert("10 miles to kg") == nil)
+    #expect(SearchMeasurementConversion.convert("10 miles of km") == nil)
+}
+
+@Test @MainActor func calculatorAndConversionRowsOfferCopyAlternatives() async throws {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    model.query = "sqrt(98)"
+    await model.waitForLocalSearchForTesting()
+    let calculator = try #require(model.results.first { $0.id == "calculator.sqrt(98)" })
+    #expect(LauncherSearchDesign.primaryTitle(for: calculator) == "Copy")
+    let calculatorActions = model.actionPanelActions(for: calculator)
+    #expect(calculatorActions.contains { $0.id == "copy-raw" })
+    #expect(calculatorActions.contains { $0.id == "copy-expression" })
+
+    model.query = "10 miles to km"
+    await model.waitForLocalSearchForTesting()
+    let conversion = try #require(model.results.first { $0.id == "conversion.10 miles to km" })
+    #expect(conversion.title.hasSuffix(" km"))
+    let conversionActions = model.actionPanelActions(for: conversion)
+    #expect(conversionActions.contains { $0.id == "copy-raw" })
+    #expect(conversionActions.contains { $0.id == "copy-expression" })
+}
+
 @Test @MainActor func hiddenSearchDefersRankingUntilPresented() async {
     let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
     model.setSearchPresented(false)
@@ -279,12 +358,129 @@ import Testing
 private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     var executedIDs: [String] = []
     var executedActions: [LauncherAction] = []
+    var hideRequests = 0
     func launcherViewModel(_ viewModel: LauncherViewModel, perform action: LauncherAction, item: LauncherItem) {
         executedIDs.append(item.id)
         executedActions.append(action)
     }
     func launcherViewModelDidReloadExtensions(_ viewModel: LauncherViewModel) {}
-    func launcherViewModelDidRequestHide(_ viewModel: LauncherViewModel) {}
+    func launcherViewModelDidRequestHide(_ viewModel: LauncherViewModel) { hideRequests += 1 }
+}
+
+@Test func searchLearningUsesOnlyLocalAppIdentityAndHonorsExclusions() {
+    let suite = "lima-search-learning-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let store = UsageStore(defaults: defaults)
+    store.record("builtin.notes", sourceApplicationID: "com.example.mail", sourceApplicationName: "Mail")
+    let global = store.score(for: "builtin.notes")
+    let contextual = store.score(for: "builtin.notes", sourceApplicationID: "com.example.mail", sourceApplicationName: "Mail")
+    #expect(contextual > global)
+    #expect(abs(store.score(for: "builtin.notes", sourceApplicationID: "com.example.browser", sourceApplicationName: "Browser") - global) < 0.01)
+    #expect(store.knownSourceApplications.contains(SearchLearningApplication(id: "com.example.mail", name: "Mail")))
+
+    store.setExcluded(true, id: "com.example.mail")
+    #expect(abs(store.score(for: "builtin.notes", sourceApplicationID: "com.example.mail", sourceApplicationName: "Mail") - global) < 0.01)
+    store.record("builtin.terminal", sourceApplicationID: "com.example.mail", sourceApplicationName: "Mail")
+    #expect(store.score(for: "builtin.terminal") == 0)
+
+    let reloaded = UsageStore(defaults: defaults)
+    #expect(reloaded.isExcluded("com.example.mail"))
+    reloaded.record("builtin.terminal", sourceApplicationID: "com.example.browser", sourceApplicationName: "Browser")
+    #expect(reloaded.score(for: "builtin.terminal") > 0)
+    reloaded.reset()
+    #expect(reloaded.score(for: "builtin.notes") == 0)
+    #expect(reloaded.isExcluded("com.example.mail"))
+}
+
+@Test @MainActor func aliasEditorDetectsExactTitleCollision() throws {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let descriptor = try #require(model.commandDescriptors.first)
+    #expect(model.aliasConflict([descriptor.title], for: descriptor.id)?.contains("exact title") == true)
+}
+
+@Test @MainActor func commandActionMenuCanCreateAliasWithoutExecutingCommand() async throws {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let recorder = SearchExecutionRecorder()
+    model.delegate = recorder
+    let commandID = "builtin.notes"
+    let originalAliases = model.aliases(for: commandID)
+    defer { _ = model.setAliases(originalAliases, for: commandID) }
+
+    model.query = "notes"
+    await model.waitForLocalSearchForTesting()
+    let index = try #require(model.results.firstIndex { $0.id == commandID })
+    model.select(index)
+    model.openActionPanel()
+    let item = try #require(model.actionPanelItem)
+    let action = try #require(model.actionPanelActions(for: item).first { $0.id == "add-alias" })
+    model.executeAction(action)
+    #expect(model.actionPanelItem == nil)
+    #expect(model.aliasEditorItem?.id == commandID)
+    #expect(recorder.executedActions.isEmpty)
+    model.handleEscape()
+    #expect(model.aliasEditorItem == nil)
+    #expect(model.query == "notes")
+    model.openActionPanel()
+    let reopenedItem = try #require(model.actionPanelItem)
+    let reopenedAction = try #require(model.actionPanelActions(for: reopenedItem).first { $0.id == "add-alias" })
+    model.executeAction(reopenedAction)
+    #expect(model.aliasEditorItem?.id == commandID)
+
+    model.aliasEditorDraft = item.title
+    #expect(!model.saveAliasDraft())
+    #expect(model.aliasEditorError != nil)
+    #expect(model.aliasEditorItem != nil)
+    model.aliasEditorDraft = "lima-test-\(UUID().uuidString.lowercased())"
+    #expect(model.saveAliasDraft())
+    #expect(model.aliasEditorItem == nil)
+    #expect(model.aliases(for: commandID).contains { $0.hasPrefix("lima-test-") })
+    #expect(recorder.executedActions.isEmpty)
+}
+
+@Test @MainActor func escapeRestoresSearchQueryAndSelectedResultBeforeDismissing() async throws {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let recorder = SearchExecutionRecorder()
+    model.delegate = recorder
+    model.query = "audio"
+    await model.waitForLocalSearchForTesting()
+    let selectedIndex = try #require(model.results.firstIndex { $0.id == "builtin.audio-output" })
+    model.select(selectedIndex)
+    model.recordSearchScrollAnchor("builtin.audio-output")
+    model.enter(.picker(.timezone))
+    #expect(model.mode == .picker(.timezone))
+    model.query = "Safari"
+    model.handleEscape()
+    #expect(model.mode == .root)
+    #expect(model.query == "audio")
+    await model.waitForLocalSearchForTesting()
+    #expect(model.selectedItem?.id == "builtin.audio-output")
+    #expect(model.scrollRestorationAnchorID == "builtin.audio-output")
+    model.consumeSearchScrollRestorationAnchor("builtin.audio-output")
+    #expect(model.scrollRestorationAnchorID == nil)
+    #expect(recorder.hideRequests == 0)
+    model.handleEscape()
+    #expect(recorder.hideRequests == 1)
+    #expect(model.query == "audio")
+}
+
+@Test @MainActor func escapeClosesActionPanelBeforeLeavingSearch() async throws {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let recorder = SearchExecutionRecorder()
+    model.delegate = recorder
+    model.query = "notes"
+    await model.waitForLocalSearchForTesting()
+    let selectedIndex = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
+    model.select(selectedIndex)
+    model.openActionPanel()
+    #expect(model.actionPanelItem != nil)
+    model.handleEscape()
+    #expect(model.actionPanelItem == nil)
+    #expect(recorder.hideRequests == 0)
+    #expect(model.query == "notes")
+    model.handleEscape()
+    #expect(recorder.hideRequests == 1)
 }
 
 @Test @MainActor func idleSearchHasNoHiddenKeyboardActions() async {
@@ -307,6 +503,34 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     model.query = ""
     #expect(model.results.isEmpty)
     #expect(model.selectedItem == nil)
+}
+
+@Test @MainActor func searchMailShelfReferenceHasNoGenericUseWithOrExtensionExport() {
+    let accountID = "synthetic-mail-\(UUID().uuidString)"
+    let marker = "Private fixture \(UUID().uuidString)"
+    let reference = MailMessageReference(
+        accountID: accountID, mailboxID: "inbox", messageID: 42,
+        internetMessageID: nil, subject: marker, sender: "Fixture Sender",
+        receivedAt: Date(timeIntervalSince1970: 1_000),
+        capturedAt: Date(timeIntervalSince1970: 2_000)
+    )
+    let store = ContextShelfStore.shared
+    let previousSelection = store.selectedIDs
+    let id = ContextShelfIntegration.addMailReference(reference, store: store)
+    defer {
+        store.removeMailReferences(accountIDs: [accountID])
+        store.selectedIDs = previousSelection
+    }
+    store.select(id: id)
+    let item = LauncherItem(id: "shelf.\(id.uuidString)", title: marker,
+                            subtitle: "Mail reference", icon: .system("envelope"),
+                            keywords: ["shelf"], action: .shelfItem(id))
+    let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
+    let actions = model.actionPanelActions(for: item)
+    #expect(actions.contains { $0.id == "run" })
+    #expect(!actions.contains { $0.id.hasPrefix("use-with.") })
+    let environment = ContextShelfExtensionContext.environment()
+    #expect(!environment.values.contains { $0.contains(marker) })
 }
 
 @Test @MainActor func searchActionMenuOwnsKeyboardSelectionAndExecution() async throws {

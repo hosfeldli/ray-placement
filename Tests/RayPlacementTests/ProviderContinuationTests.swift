@@ -23,6 +23,36 @@ private func compatibleFrame(_ object: [String: Any]) throws -> AIProviderSSEFra
     #expect(messages[4]["tool_call_id"] as? String == "b")
 }
 
+@Test func anthropicCumulativeUsageEmitsOnlyNewTokenIncrements() throws {
+    func frame(_ event: String, _ value: [String: Any]) throws -> AIProviderSSEFrame {
+        AIProviderSSEFrame(
+            event: event,
+            data: String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self)
+        )
+    }
+    var decoder = AnthropicAIProviderClient.StreamDecoder(model: "fixture")
+    let events = decoder.decode(try frame("message_start", [
+        "message": ["id": "response-1", "usage": ["input_tokens": 10]]
+    ])) + decoder.decode(try frame("message_delta", [
+        "usage": ["input_tokens": 10, "output_tokens": 4]
+    ])) + decoder.decode(try frame("message_delta", [
+        "usage": ["input_tokens": 10, "output_tokens": 6]
+    ])) + decoder.decode(try frame("message_delta", [
+        "usage": ["input_tokens": 12, "output_tokens": 6]
+    ]))
+    let reports = events.compactMap { event -> AIUsageMetrics? in
+        if case .usage(let metrics) = event { return metrics }
+        return nil
+    }
+    #expect(reports.count == 4)
+    #expect(reports.compactMap(\.inputTokens) == [10, 2])
+    #expect(reports.compactMap(\.outputTokens) == [4, 2])
+    #expect(reports.compactMap(\.totalKnownTokens).reduce(0, +) == 18)
+    #expect(decoder.decode(try frame("message_delta", [
+        "usage": ["input_tokens": 12, "output_tokens": 6]
+    ])).isEmpty)
+}
+
 @Test func browserScreenshotFollowsItsToolResultAsEphemeralImageInput() throws {
     let history = [
         AIProviderMessage(role: .assistant, content: [

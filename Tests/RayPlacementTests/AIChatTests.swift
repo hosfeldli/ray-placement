@@ -566,7 +566,7 @@ import Vision
     let capturedToolIDs = Set(continuation?.localTools.map(\.id) ?? [])
     #expect(capturedToolIDs.isSuperset(of: BrowserWorkspaceAITools.ids))
     #expect(capturedToolIDs.contains("browser_read"))
-    #expect(continuation?.systemInstructions.contains("embedded Browser AI Control") == true)
+    #expect(continuation?.systemInstructions.contains("Lima Browser permission is") == true)
 
     model.endTask()
     #expect(model.approvalContinuationContextForTesting == nil)
@@ -1243,6 +1243,43 @@ import Vision
     #expect(model.canRetryLastRequest)
 }
 
+@Test @MainActor func retryActionDoesNotResurrectOlderFailureAfterSuccessfulTurn() {
+    let failure = AIExecutionRunFailure(
+        category: .timedOut,
+        originalRequestConfiguration: AIExecutionProviderConfigurationSnapshot(
+            providerID: AIProvider.openAI.rawValue,
+            modelID: "gpt-5.6-luna",
+            reasoningEffort: "medium"
+        ),
+        httpStatus: nil,
+        safeMessage: "The previous request timed out.",
+        invalidParameter: nil,
+        retryability: .safe
+    )
+    let conversation = AIConversation(
+        title: "Recovered task",
+        messages: [
+            AIChatMessage(role: .user, text: "First request"),
+            AIChatMessage(role: .assistant, text: "", failure: failure),
+            AIChatMessage(role: .user, text: "Second request"),
+            AIChatMessage(role: .assistant, text: "Completed answer")
+        ]
+    )
+    let store = AIConversationStore(fixtures: [conversation])
+    let model = AIChatViewModel(
+        store: store,
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: []),
+        transport: FixtureAITransport.standard
+    )
+
+    #expect(!model.canRetryLastRequest)
+    model.retryLastRequest()
+    #expect(model.selectedConversationID == conversation.id)
+    #expect(model.selectedConversation?.messages == conversation.messages)
+    #expect(model.draft.isEmpty)
+}
+
 @Test @MainActor func aiRecoveryVisualFixturesUsePersistedFailures() {
     let fixtures: [(AIChatVisualScenario, AIExecutionRunFailure.Category)] = [
         (.failure, .invalidConfiguration),
@@ -1525,8 +1562,101 @@ import Vision
 
 @Test func usageMetricsDisplayKnownTotal() {
     let usage = AIUsageMetrics(inputTokens: 10, cachedInputTokens: 2, outputTokens: 7, reasoningTokens: 3)
-    #expect(usage.totalKnownTokens == 20)
-    #expect(usage.displayText == "20 tokens")
+    #expect(usage.totalKnownTokens == 17)
+    #expect(usage.displayText == "17 tokens")
+    #expect(AIUsageMetrics(inputTokens: nil, outputTokens: nil, reasoningTokens: 3).totalKnownTokens == nil)
+    #expect(AIUsageMetrics(inputTokens: nil, outputTokens: 7).totalKnownTokens == 7)
+    #expect(AIUsageMetrics(inputTokens: Int.max, outputTokens: 1).totalKnownTokens == Int.max)
+    #expect(AIUsageMetrics(inputTokens: -1, outputTokens: nil).totalKnownTokens == nil)
+}
+
+@Test func usageRunSummaryAggregatesReportedRoundsWithoutCountingSubsetsTwice() {
+    let startedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let message = AIChatMessage(
+        role: .assistant,
+        text: "Done",
+        providerID: AIProvider.openAI.rawValue,
+        modelID: "gpt-test",
+        activities: [
+            AIAgentActivity(kind: .started, title: "Started", startedAt: startedAt),
+            AIAgentActivity(kind: .completed, title: "Usage",
+                            usage: AIUsageMetrics(inputTokens: 10, cachedInputTokens: 2,
+                                                  outputTokens: 5, reasoningTokens: 1), completed: true),
+            AIAgentActivity(kind: .toolCompleted, title: "Read file", completed: true),
+            AIAgentActivity(kind: .completed, title: "Usage",
+                            usage: AIUsageMetrics(inputTokens: 20, cachedInputTokens: 3,
+                                                  outputTokens: 15, reasoningTokens: 4), completed: true),
+            AIAgentActivity(kind: .toolFailed, title: "Open file", completed: true),
+            AIAgentActivity(kind: .completed, title: "Completed", duration: 83, completed: true)
+        ]
+    )
+    let summary = AIUsageRunSummary(message: message)
+    #expect(summary.providerLabel == "OpenAI")
+    #expect(summary.modelLabel == "gpt-test")
+    #expect(summary.usage?.inputTokens == 30)
+    #expect(summary.usage?.cachedInputTokens == 5)
+    #expect(summary.usage?.outputTokens == 20)
+    #expect(summary.usage?.reasoningTokens == 5)
+    #expect(summary.usage?.totalKnownTokens == 50)
+    #expect(summary.completedToolCalls == 2)
+    #expect(summary.failedToolCalls == 1)
+    #expect(summary.durationText == "1m 23s")
+    #expect(AIUsageRunSummary.costAvailability.contains("Unavailable"))
+}
+
+@Test func usageRunSummaryDoesNotInventMissingHistoricalProviderOrTokens() throws {
+    let message = AIChatMessage(role: .assistant, text: "Legacy response")
+    var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any])
+    object.removeValue(forKey: "providerID")
+    object.removeValue(forKey: "modelID")
+    let restored = try JSONDecoder().decode(AIChatMessage.self, from: JSONSerialization.data(withJSONObject: object))
+    let summary = AIUsageRunSummary(message: restored)
+    #expect(restored.providerID == nil)
+    #expect(restored.modelID == nil)
+    #expect(summary.providerLabel == "Not recorded")
+    #expect(summary.modelLabel == "Not recorded")
+    #expect(summary.usage == nil)
+    #expect(summary.reportedTokenText == "Not reported")
+    #expect(summary.duration == nil)
+}
+
+@Test func contextManifestSeparatesAttachedContentFromBrowserToolAccess() throws {
+    let conversationID = UUID()
+    let userMessageID = UUID()
+    let clipboard = AIAttachment(kind: .clipboard, displayName: "Clipboard excerpt", text: "private fixture text")
+    let missingFile = AIAttachment(kind: .file, displayName: "missing.txt", path: "/tmp/lima-context-missing-fixture.txt")
+    let manifest = AIContextManifest(
+        conversationID: conversationID,
+        userMessageID: userMessageID,
+        attachments: [clipboard, missingFile],
+        instructionSources: ["Project: Test"],
+        browserTabTitle: "Example tab",
+        browserTabHost: "example.com",
+        browserToolRouted: true,
+        hasPriorConversation: true,
+        permissionsSnapshot: AIContextPermissionsSnapshot(
+            toolAccessMode: "custom",
+            routedToolIDs: ["browser_read"],
+            browserControlMode: "readOnly"
+        )
+    )
+    #expect(manifest.entries.count == 5)
+    #expect(manifest.entries[0].delivery == .attachedWithMessage)
+    #expect(manifest.entries[0].availability == .ready)
+    #expect(manifest.entries[1].availability == .unavailable)
+    #expect(manifest.entries[2].delivery == .includedInInstructions)
+    #expect(manifest.entries[3].delivery == .availableThroughTool)
+    #expect(manifest.entries[3].detail.contains("Page contents are not attached"))
+    #expect(manifest.entries[4].delivery == .priorConversation)
+    let encoded = try JSONEncoder().encode(manifest)
+    let json = String(decoding: encoded, as: UTF8.self)
+    #expect(!json.contains("private fixture text"))
+    #expect(!json.contains("/tmp/lima-context-missing-fixture.txt"))
+    #expect(try JSONDecoder().decode(AIContextManifest.self, from: encoded) == manifest)
+
+    let message = AIChatMessage(role: .user, text: "Question", contextManifest: manifest)
+    let restored = try JSONDecoder().decode(AIChatMessage.self, from: JSONEncoder().encode(message))
+    #expect(restored.contextManifest == manifest)
 }
 
 // MARK: - Responses event compatibility

@@ -100,6 +100,7 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     private(set) var isRestoring = false
     private(set) var restoreFailed = false
     var openPopup: ((WKWebViewConfiguration) -> WKWebView?)?
+    var permitsNavigation: ((URL) -> Bool)?
     private let configuration: WKWebViewConfiguration
     private var liveWebView: WKWebView?
     private var restoreURL: URL?
@@ -243,7 +244,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         guard let url = navigationAction.request.url else { return .cancel }
         if url.scheme == "about" { return .allow }
-        return BrowserRuntime.safeDestination(url.absoluteString) == nil ? .cancel : .allow
+        guard let safe = BrowserRuntime.safeDestination(url.absoluteString),
+              permitsNavigation?(safe) != false else { return .cancel }
+        return .allow
     }
 
     func webView(_ webView: WKWebView,
@@ -251,8 +254,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
                  for navigationAction: WKNavigationAction,
                  windowFeatures: WKWindowFeatures) -> WKWebView? {
         guard navigationAction.targetFrame == nil else { return nil }
-        if let url = navigationAction.request.url,
-           BrowserRuntime.safeDestination(url.absoluteString) == nil { return nil }
+        guard let url = navigationAction.request.url,
+              let safe = BrowserRuntime.safeDestination(url.absoluteString),
+              permitsNavigation?(safe) != false else { return nil }
         return openPopup?(configuration)
     }
 
@@ -309,6 +313,18 @@ final class BrowserWorkspaceModel: ObservableObject {
             }
         }
     }
+    @Published var navigationMode: BrowserNavigationMode {
+        didSet {
+            if persistPreferences {
+                LimaTestEnvironment.userDefaults.set(navigationMode.rawValue, forKey: "limaBrowserNavigationMode")
+            }
+            if navigationMode != oldValue {
+                automation = nil
+                aiFocus = nil
+                for tab in tabs { revokeBrowserState(for: tab.id) }
+            }
+        }
+    }
     @Published var showAIPointer: Bool {
         didSet { if persistPreferences { LimaTestEnvironment.userDefaults.set(showAIPointer, forKey: "limaBrowserShowAIPointer") } }
     }
@@ -352,6 +368,9 @@ final class BrowserWorkspaceModel: ObservableObject {
         aiControlMode = BrowserAIControlMode(
             rawValue: defaults.string(forKey: "limaBrowserAIControlMode") ?? ""
         ) ?? .fullControl
+        navigationMode = BrowserNavigationMode(
+            rawValue: defaults.string(forKey: "limaBrowserNavigationMode") ?? ""
+        ) ?? .adaptive
         showAIPointer = defaults.object(forKey: "limaBrowserShowAIPointer") as? Bool ?? true
         highlightAITargets = defaults.object(forKey: "limaBrowserHighlightAITargets") as? Bool ?? true
         showActionDescriptions = defaults.object(forKey: "limaBrowserShowActionDescriptions") as? Bool ?? true
@@ -388,6 +407,9 @@ final class BrowserWorkspaceModel: ObservableObject {
     }
 
     private func handleUserEvent(_ event: NSEvent) {
+        if event.cgEvent?.getIntegerValueField(.eventSourceUserData) == BrowserNativePointerDriver.automationEventTag {
+            return
+        }
         guard let tab = selectedTab,
               let webView = tab.activeWebView,
               webView.window === event.window else { return }
@@ -401,14 +423,17 @@ final class BrowserWorkspaceModel: ObservableObject {
         markPageChangedByUser(tab.id)
     }
 
-    /// Human input invalidates stale semantic targets without permanently
-    /// revoking the assistant's ability to reread the tab.
+    /// Human page input invalidates stale targets and pauses automated Browser
+    /// access for an active task until the user explicitly resumes this tab.
     func markPageChangedByUser(_ id: UUID) {
         guard tabs.contains(where: { $0.id == id }) else { return }
         userChangedTabIDs.insert(id)
         automation = nil
         aiFocus = nil
         revokeBrowserState(for: id)
+        if BrowserTaskApprovalState.shared.activeRunID != nil {
+            pauseAI(on: id)
+        }
     }
 
     func pauseAI(on id: UUID) {
@@ -563,10 +588,23 @@ final class BrowserWorkspaceModel: ObservableObject {
         configuration.websiteDataStore = dataStore
         let tab = BrowserTab(configuration: configuration)
         tab.context = context
+        tab.permitsNavigation = { [weak self, tabID = tab.id] destination in
+            guard let self else { return false }
+            let approval = BrowserTaskApprovalState.shared
+            guard let runID = approval.activeRunID,
+                  approval.activeMode == .autoApproveNonpayment,
+                  !self.pausedTabIDs.contains(tabID) else { return true }
+            guard approval.isWithinScope(runID: runID, url: destination.absoluteString) else {
+                approval.noteBlockedSite(destination.absoluteString)
+                return false
+            }
+            return true
+        }
         if let url { tab.deferNavigation(to: url) }
-        tab.openPopup = { [weak self] configuration in
-            guard let self else { return nil }
+        tab.openPopup = { [weak self, weak tab] configuration in
+            guard let self, let tab else { return nil }
             let popup = self.newTab(foreground: true, configuration: configuration)
+            if self.pausedTabIDs.contains(tab.id) { self.pauseAI(on: popup.id) }
             return self.useLiveView(popup)
         }
         tabs.append(tab)
@@ -956,12 +994,16 @@ final class BrowserWorkspaceModel: ObservableObject {
         return stored
     }
 
-    /// Internal preparation only. A lease cannot post an event and is not an
-    /// authorization grant; Visual Only remains unavailable.
+    /// Preparation only. A lease cannot post an event or grant authority;
+    /// the native action path repeats all safety and policy checks.
     func makeVisualInputLease(taskID: UUID, tabID: UUID,
                               captureID: UUID) async throws -> BrowserInputLease {
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
         try requireAIAccess(tabID)
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID,
+              await BrowserScreenshotStore.shared.permitsNativeInput(
+                captureID: captureID, runID: taskID
+              ) else { throw BrowserRuntimeError.taskScopeDenied }
         guard selectedTabID == tabID,
               let capture = await BrowserScreenshotStore.shared.capture(id: captureID),
               capture.tabID == tabID, isScreenshotCurrent(capture),
@@ -974,9 +1016,9 @@ final class BrowserWorkspaceModel: ObservableObject {
         return try BrowserInputLease(taskID: taskID, capture: capture)
     }
 
-    /// Reinspect safety geometry without a semantic snapshot. The eventual
-    /// native driver must call this again immediately before dispatch and then
-    /// apply its independent financial/protected-data gate.
+    /// Reinspect safety geometry without a semantic snapshot. Native actions
+    /// repeat this check immediately before dispatch after their independent
+    /// financial and protected-data assessment.
     func preflightVisualInputPoint(_ lease: BrowserInputLease,
                                    taskID: UUID, pixelX: Double,
                                    pixelY: Double) async throws -> BrowserVisualInputPoint {
@@ -984,6 +1026,10 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard aiControlMode.canInteract, selectedTabID == lease.tabID else {
             throw BrowserRuntimeError.controlDisabled
         }
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID,
+              await BrowserScreenshotStore.shared.permitsNativeInput(
+                captureID: lease.captureID, runID: taskID
+              ) else { throw BrowserRuntimeError.taskScopeDenied }
         try requireAIAccess(lease.tabID)
         guard let capture = await BrowserScreenshotStore.shared.capture(id: lease.captureID),
               isScreenshotCurrent(capture),
@@ -999,6 +1045,7 @@ final class BrowserWorkspaceModel: ObservableObject {
             viewportHeight: Double(webView.bounds.height), frameIDs: frameIDs
         )
         guard aiControlMode.canInteract, selectedTabID == lease.tabID,
+              BrowserTaskApprovalState.shared.activeRunID == taskID,
               isScreenshotCurrent(capture) else {
             throw BrowserRuntimeError.staleTarget
         }
@@ -1020,8 +1067,259 @@ final class BrowserWorkspaceModel: ObservableObject {
         )
     }
 
-    /// Internal, non-committing native input path. It does not authorize a
-    /// visual click or make Visual Only available to the AI runtime.
+    private struct NativeVisualAction {
+        let lease: BrowserInputLease
+        let assessment: BrowserVisualActionAssessment
+    }
+
+    private func assessNativeVisualAction(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double
+    ) async throws -> NativeVisualAction {
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID else {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        let lease = try await makeVisualInputLease(
+            taskID: taskID, tabID: tabID, captureID: captureID
+        )
+        _ = try await preflightVisualInputPoint(
+            lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        guard let capture = await BrowserScreenshotStore.shared.capture(id: captureID),
+              let identity = capture.pageIdentity,
+              BrowserTaskApprovalState.shared.isWithinScope(runID: taskID, url: identity.url),
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        let pageX = capture.cropOriginX +
+            pixelX * capture.pointWidth / Double(capture.pixelWidth)
+        let pageY = capture.cropOriginY +
+            pixelY * capture.pointHeight / Double(capture.pixelHeight)
+        let raw: Any?
+        do {
+            raw = try await webView.callAsyncJavaScript(
+                BrowserSemanticScript.visualActionAssessment,
+                arguments: [
+                    "documentID": identity.documentID,
+                    "routeGeneration": identity.routeGeneration,
+                    "mutationRevision": identity.mutationRevision,
+                    "userRevision": identity.userRevision,
+                    "snapshotRevision": identity.snapshotRevision,
+                    "x": pageX, "y": pageY
+                ],
+                in: nil, contentWorld: .world(name: BrowserSemanticScript.world)
+            )
+        } catch {
+            if let mapped = semanticActionError(error) { throw mapped }
+            throw BrowserRuntimeError.staleTarget
+        }
+        guard let json = raw as? String, let data = json.data(using: .utf8),
+              let assessment = try? JSONDecoder().decode(
+                BrowserVisualActionAssessment.self, from: data
+              ) else {
+            throw BrowserRuntimeError.screenshotProtected
+        }
+        _ = try await preflightVisualInputPoint(
+            lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        return NativeVisualAction(lease: lease, assessment: assessment)
+    }
+
+    func nativeVisualClickReview(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double
+    ) async throws -> BrowserCommitReview? {
+        let action = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard action.assessment.decision != .blocked else {
+            throw BrowserRuntimeError.sensitiveTarget
+        }
+        let auto = BrowserTaskApprovalState.shared.isAutoApproved(
+            runID: taskID, url: action.lease.pageIdentity.url
+        )
+        guard action.assessment.decision == .review || !auto else { return nil }
+        return BrowserCommitReview(
+            tabID: tabID,
+            targetID: "\(captureID.uuidString):\(pixelX):\(pixelY)",
+            action: "nativeClick",
+            label: action.assessment.label,
+            host: BrowserTaskApprovalState.host(action.lease.pageIdentity.url) ?? "this site",
+            formLabel: action.assessment.formLabel.isEmpty ? nil : action.assessment.formLabel,
+            visibleTerms: action.assessment.financialTerms,
+            isVisual: true,
+            pageIdentity: action.lease.pageIdentity,
+            requiresPaymentConfirmation: action.assessment.potentialPaymentCommitment
+        )
+    }
+
+    func nativeVisualClick(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double, commitApproved: Bool
+    ) async throws -> BrowserActionOutcome {
+        let action = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard action.assessment.decision != .blocked else {
+            throw BrowserRuntimeError.sensitiveTarget
+        }
+        let auto = BrowserTaskApprovalState.shared.isAutoApproved(
+            runID: taskID, url: action.lease.pageIdentity.url
+        )
+        if action.assessment.decision == .review || !auto {
+            guard commitApproved else { throw BrowserRuntimeError.commitApprovalRequired }
+        }
+        // Repeat the lease and policy checks immediately before the native event.
+        // Reassess the exact coordinate before delivery. A changed label, form,
+        // protected-field status, or payment context invalidates prior review.
+        let finalAction = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard finalAction.assessment == action.assessment,
+              finalAction.lease.pageIdentity == action.lease.pageIdentity else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let freshPoint = try await preflightVisualInputPoint(
+            finalAction.lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID,
+              BrowserTaskApprovalState.shared.isWithinScope(
+                runID: taskID, url: action.lease.pageIdentity.url
+              ),
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        try Task.checkCancellation()
+        try BrowserNativePointerDriver.click(
+            freshPoint, in: webView, expectedAnchor: action.lease.anchor
+        )
+        revokeBrowserState(for: tabID)
+        return BrowserActionOutcome(
+            requested: true, performed: true, postActionVerified: false,
+            pageChanged: false, routeChangeDetected: false,
+            detail: "A native click was sent to the foreground Browser. Capture a fresh observation to verify the result; this is not transaction confirmation."
+        )
+    }
+
+    func nativeVisualTypeReview(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double, text: String
+    ) async throws -> BrowserCommitReview? {
+        let action = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard action.assessment.decision == .routine,
+              action.assessment.isEditable else {
+            throw BrowserRuntimeError.sensitiveTarget
+        }
+        guard !text.isEmpty, text.utf8.count <= 1024,
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) &&
+                  $0.value != 0x2028 && $0.value != 0x2029 }) else {
+            throw BrowserRuntimeError.unsupportedAction
+        }
+        guard !BrowserTaskApprovalState.shared.isAutoApproved(
+            runID: taskID, url: action.lease.pageIdentity.url
+        ) else { return nil }
+        return BrowserCommitReview(
+            tabID: tabID,
+            targetID: "\(captureID.uuidString):\(pixelX):\(pixelY)",
+            action: "nativeType", label: action.assessment.label,
+            host: BrowserTaskApprovalState.host(action.lease.pageIdentity.url) ?? "this site",
+            formLabel: action.assessment.formLabel.isEmpty ? nil : action.assessment.formLabel,
+            visibleTerms: [], isVisual: true,
+            pageIdentity: action.lease.pageIdentity, typedText: text
+        )
+    }
+
+    func nativeVisualType(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double, text: String,
+        commitApproved: Bool
+    ) async throws -> BrowserActionOutcome {
+        let action = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard action.assessment.decision == .routine,
+              action.assessment.isEditable else {
+            throw BrowserRuntimeError.sensitiveTarget
+        }
+        if !BrowserTaskApprovalState.shared.isAutoApproved(
+            runID: taskID, url: action.lease.pageIdentity.url
+        ) && !commitApproved {
+            throw BrowserRuntimeError.commitApprovalRequired
+        }
+        // Reassess the exact coordinate before delivery. A changed label, form,
+        // protected-field status, or payment context invalidates prior review.
+        let finalAction = try await assessNativeVisualAction(
+            taskID: taskID, tabID: tabID, captureID: captureID,
+            pixelX: pixelX, pixelY: pixelY
+        )
+        guard finalAction.assessment == action.assessment,
+              finalAction.lease.pageIdentity == action.lease.pageIdentity else {
+            throw BrowserRuntimeError.staleTarget
+        }
+        let freshPoint = try await preflightVisualInputPoint(
+            finalAction.lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID,
+              BrowserTaskApprovalState.shared.isWithinScope(
+                runID: taskID, url: action.lease.pageIdentity.url
+              ),
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        try Task.checkCancellation()
+        try BrowserNativePointerDriver.typeText(
+            text, at: freshPoint, in: webView, expectedAnchor: action.lease.anchor
+        )
+        revokeBrowserState(for: tabID)
+        return BrowserActionOutcome(
+            requested: true, performed: true, postActionVerified: false,
+            pageChanged: false, routeChangeDetected: false,
+            detail: "Native text events were sent to the foreground Browser without using the clipboard. Capture a fresh observation to verify the field value; protected fields remain unavailable."
+        )
+    }
+
+    func nativeVisualScroll(
+        taskID: UUID, tabID: UUID, captureID: UUID,
+        pixelX: Double, pixelY: Double, deltaX: Int32, deltaY: Int32
+    ) async throws -> BrowserActionOutcome {
+        let lease = try await makeVisualInputLease(
+            taskID: taskID, tabID: tabID, captureID: captureID
+        )
+        let point = try await preflightVisualInputPoint(
+            lease, taskID: taskID, pixelX: pixelX, pixelY: pixelY
+        )
+        guard BrowserTaskApprovalState.shared.activeRunID == taskID,
+              BrowserTaskApprovalState.shared.isWithinScope(
+                runID: taskID, url: lease.pageIdentity.url
+              ),
+              let tab = tabs.first(where: { $0.id == tabID }),
+              let webView = tab.activeWebView else {
+            throw BrowserRuntimeError.taskScopeDenied
+        }
+        try Task.checkCancellation()
+        try BrowserNativePointerDriver.scroll(
+            point, deltaX: deltaX, deltaY: deltaY,
+            in: webView, expectedAnchor: lease.anchor
+        )
+        revokeBrowserState(for: tabID)
+        return BrowserActionOutcome(
+            requested: true, performed: true, postActionVerified: false,
+            pageChanged: false, routeChangeDetected: false,
+            detail: "A native scroll was sent to the foreground Browser. Capture a fresh observation to locate the next control."
+        )
+    }
+
+    /// Internal, non-committing native pointer move.
     func moveNativePointer(taskID: UUID, tabID: UUID, captureID: UUID,
                            pixelX: Double, pixelY: Double) async throws {
         let lease = try await makeVisualInputLease(
@@ -1032,6 +1330,10 @@ final class BrowserWorkspaceModel: ObservableObject {
         )
         try Task.checkCancellation()
         guard aiControlMode.canInteract, selectedTabID == tabID,
+              BrowserTaskApprovalState.shared.activeRunID == taskID,
+              BrowserTaskApprovalState.shared.isWithinScope(
+                runID: taskID, url: lease.pageIdentity.url
+              ),
               let tab = tabs.first(where: { $0.id == tabID }),
               let webView = tab.activeWebView else {
             throw BrowserRuntimeError.staleTarget
@@ -1291,10 +1593,18 @@ final class BrowserWorkspaceModel: ObservableObject {
         guard let destination = BrowserRuntime.safeLinkDestination(target) else {
             throw BrowserRuntimeError.invalidDestination
         }
+        if let runID = BrowserTaskApprovalState.shared.activeRunID,
+           BrowserTaskApprovalState.shared.activeMode == .autoApproveNonpayment,
+           !BrowserTaskApprovalState.shared.isWithinScope(
+                runID: runID, url: destination.absoluteString
+           ) {
+            BrowserTaskApprovalState.shared.noteBlockedSite(destination.absoluteString)
+            throw BrowserRuntimeError.taskScopeDenied
+        }
         guard let initialPage = await runtime.snapshot(for: id) else {
             throw BrowserRuntimeError.missingSnapshot
         }
-        if BrowserCommitAuthorization.review(tabID: id, target: target, action: .click,
+        if actionCommitReview(tabID: id, target: target, action: .click,
                                              page: initialPage) != nil && !commitApproved {
             throw BrowserRuntimeError.commitApprovalRequired
         }
@@ -1311,13 +1621,21 @@ final class BrowserWorkspaceModel: ObservableObject {
         try requireFreshTarget(id)
         try await validateTarget(id, target: target, identity: identity)
         if let currentPage = await runtime.snapshot(for: id),
-           BrowserCommitAuthorization.review(tabID: id, target: target, action: .click,
+           actionCommitReview(tabID: id, target: target, action: .click,
                                              page: currentPage) != nil && !commitApproved {
             throw BrowserRuntimeError.commitApprovalRequired
         }
         try Task.checkCancellation()
         guard aiControlMode.canNavigate else { throw BrowserRuntimeError.controlDisabled }
         try requireFreshTarget(id)
+        if let runID = BrowserTaskApprovalState.shared.activeRunID,
+           BrowserTaskApprovalState.shared.activeMode == .autoApproveNonpayment,
+           !BrowserTaskApprovalState.shared.isWithinScope(
+                runID: runID, url: destination.absoluteString
+           ) {
+            BrowserTaskApprovalState.shared.noteBlockedSite(destination.absoluteString)
+            throw BrowserRuntimeError.taskScopeDenied
+        }
         switch disposition {
         case .currentTab:
             try navigate(id, to: destination)
@@ -1333,12 +1651,26 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
     }
 
+    private func actionCommitReview(
+        tabID: UUID, target: BrowserTarget,
+        action: BrowserInteractionAction, page: BrowserPageSnapshot
+    ) -> BrowserCommitReview? {
+        let approval = BrowserTaskApprovalState.shared
+        let auto = approval.isAutoApproved(
+            runID: approval.activeRunID, url: page.identity.url
+        )
+        return BrowserCommitAuthorization.review(
+            tabID: tabID, target: target, action: action,
+            page: page, autoApproveNonpayment: auto
+        )
+    }
+
     func commitReview(_ id: UUID, targetID: String,
                       action: BrowserInteractionAction) async throws -> BrowserCommitReview? {
         try requireFreshTarget(id)
         let target = try await runtime.resolveAny(tabID: id, targetID: targetID)
         guard let page = await runtime.snapshot(for: id) else { throw BrowserRuntimeError.missingSnapshot }
-        return BrowserCommitAuthorization.review(tabID: id, target: target, action: action, page: page)
+        return actionCommitReview(tabID: id, target: target, action: action, page: page)
     }
 
     func interact(_ id: UUID, targetID: String, action: BrowserInteractionAction,
@@ -1371,7 +1703,7 @@ final class BrowserWorkspaceModel: ObservableObject {
             throw BrowserRuntimeError.targetOccluded
         }
         guard let initialPage = await runtime.snapshot(for: id) else { throw BrowserRuntimeError.missingSnapshot }
-        if BrowserCommitAuthorization.review(tabID: id, target: target, action: action,
+        if actionCommitReview(tabID: id, target: target, action: action,
                                              page: initialPage) != nil && !commitApproved {
             throw BrowserRuntimeError.commitApprovalRequired
         }
@@ -1398,7 +1730,7 @@ final class BrowserWorkspaceModel: ObservableObject {
         }
         try requireFreshTarget(id)
         let before = await runtime.snapshot(for: id)
-        if let before, BrowserCommitAuthorization.review(tabID: id, target: target,
+        if let before, actionCommitReview(tabID: id, target: target,
                                                          action: action, page: before) != nil,
            !commitApproved {
             throw BrowserRuntimeError.commitApprovalRequired
@@ -2184,7 +2516,16 @@ private struct BrowserWebView: NSViewRepresentable {
 
 struct BrowserWorkspaceView: View {
     @ObservedObject var model: BrowserWorkspaceModel = .shared
+    @ObservedObject private var approval = BrowserTaskApprovalState.shared
     @State private var showingAITimeline = false
+
+    private var activitySummary: BrowserWorkspaceActivitySummary? {
+        guard let tabID = model.selectedTabID else { return nil }
+        let activity = model.aiActivity.last(where: { $0.tabID == tabID })
+        return BrowserWorkspaceActivitySummary.resolve(
+            activity: activity, isPaused: model.pausedTabIDs.contains(tabID)
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -2210,11 +2551,70 @@ struct BrowserWorkspaceView: View {
                     }
                 }
                 Menu {
+                    Text("Navigation method")
+                    ForEach(BrowserNavigationMode.allCases) { mode in
+                        Button {
+                            model.navigationMode = mode
+                        } label: {
+                            if model.navigationMode == mode {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                } label: {
+                    Label(model.navigationMode.title, systemImage: "viewfinder")
+                        .limaFont(.caption.weight(.semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("How Lima observes and navigates. Does not change Browser permission or task approval.")
+                .accessibilityLabel("Navigation method: \(model.navigationMode.title)")
+                Menu {
+                    Text(approval.activeRunID == nil ? "Next task approval" : "Current task approval")
+                    ForEach(BrowserApprovalMode.allCases) { mode in
+                        Button {
+                            approval.select(mode)
+                        } label: {
+                            if approval.displayMode == mode {
+                                Label(mode.title, systemImage: "checkmark")
+                            } else {
+                                Text(mode.title)
+                            }
+                        }
+                    }
+                    if approval.activeRunID != nil {
+                        Divider()
+                        Button("Allow visible site for this task") {
+                            approval.authorizeVisibleSite(model.selectedTab?.urlString)
+                        }
+                        if let requestedSite = approval.requestedSite {
+                            Button("Allow blocked site: \(requestedSite)") {
+                                approval.authorizeRequestedSite()
+                            }
+                        }
+                        Text("Authorized: \(approval.authorizedSites.sorted().joined(separator: ", "))")
+                    }
+                    Divider()
+                    Text("Payments still require review; credentials and verification codes stay with you.")
+                } label: {
+                    Label(approval.displayMode == .autoApproveNonpayment ? "Auto nonpayment" : "Ask actions",
+                          systemImage: "checkmark.shield")
+                        .limaFont(.caption.weight(.semibold))
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize()
+                .help("Task-scoped action approval. Never authorizes payment or protected information.")
+                .accessibilityLabel("Approval policy: \(approval.displayMode.title)")
+                Menu {
+                    Text("Browser permission level")
                     ForEach(BrowserAIControlMode.allCases, id: \.self) { mode in
                         Button(mode.title) { model.aiControlMode = mode }
                     }
                 } label: {
-                    Label(model.aiControlMode.title, systemImage: model.aiControlMode == .off ? "sparkles.slash" : "sparkles")
+                    Label("Access: \(model.aiControlMode.title)",
+                          systemImage: model.aiControlMode == .off ? "hand.raised.slash" : "hand.raised")
                         .limaFont(.caption.weight(.semibold))
                         .foregroundStyle(model.aiControlMode == .off ? LimaTheme.textSecondary : LimaTheme.accentInk)
                         .padding(.horizontal, 8)
@@ -2223,56 +2623,81 @@ struct BrowserWorkspaceView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Browser AI Control")
+                .help("Browser permission level. Protected actions still require review.")
+                .accessibilityLabel("Browser permission: \(model.aiControlMode.title)")
             }
             .padding(.horizontal, LimaSpacing.sm)
             .frame(height: 42)
             .background(LimaTheme.surfaceSecondary)
             GlassHairline()
+            if let requestedSite = approval.requestedSite {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(LimaTheme.warning)
+                    Text("AI stopped at a new site: \(requestedSite)")
+                        .lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button("Allow for task") { approval.authorizeRequestedSite() }
+                        .buttonStyle(.bordered)
+                    Button("Dismiss") { approval.dismissRequestedSite() }
+                        .buttonStyle(.plain)
+                }
+                .font(.system(size: 11, weight: .medium))
+                .padding(.horizontal, 12)
+                .frame(height: 34)
+                .background(LimaTheme.surfaceSecondary)
+                GlassHairline()
+            }
             if let tab = model.selectedTab {
                 BrowserTabContent(tab: tab, model: model)
                     .id(tab.id)
             } else {
                 BrowserEmptyState(model: model)
             }
-            if !model.aiActivity.isEmpty {
+            if let summary = activitySummary {
                 GlassHairline()
                 Button { showingAITimeline = true } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "sparkles")
-                            .foregroundStyle(LimaTheme.accentInk)
-                        Text("AI · Browser")
-                            .fontWeight(.semibold)
-                        ForEach(Array(model.aiActivity.suffix(3))) { activity in
-                            Image(systemName: activity.state == .working ? "circle.fill" :
-                                  activity.state == .failed ? "exclamationmark.circle" : "checkmark")
-                                .font(.system(size: 9))
-                            Text(activity.title).lineLimit(1)
-                        }
+                    HStack(spacing: 8) {
+                        Image(systemName: summary.symbol)
+                            .foregroundStyle(summary.isBlocked ? LimaTheme.error : LimaTheme.accentInk)
+                        Text(summary.label).lineLimit(1)
                         Spacer(minLength: 0)
+                        Text("View activity")
+                            .foregroundStyle(LimaTheme.textTertiary)
                         Image(systemName: "chevron.up")
                             .font(.system(size: 9, weight: .semibold))
                     }
-                    .font(.system(size: 11))
+                    .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(LimaTheme.textSecondary)
                     .padding(.horizontal, 12)
                     .frame(height: 30)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Browser AI: \(summary.label). View activity")
                 .popover(isPresented: $showingAITimeline, arrowEdge: .bottom) {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 9) {
                             Text("Browser AI activity").font(.headline)
                             ForEach(Array(model.aiActivity.reversed())) { activity in
-                                HStack(spacing: 8) {
-                                    Image(systemName: activity.state == .working ? "circle.fill" :
-                                          activity.state == .failed ? "exclamationmark.circle" : "checkmark.circle")
-                                        .foregroundStyle(activity.state == .failed ? LimaTheme.error : LimaTheme.accentInk)
-                                    Text(activity.title)
-                                    Spacer()
+                                Button {
+                                    if let tabID = activity.tabID {
+                                        try? model.focus(tabID)
+                                    }
+                                    showingAITimeline = false
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: activity.state == .working ? "circle.dotted" :
+                                              activity.state == .failed ? "exclamationmark.circle" : "checkmark.circle")
+                                            .foregroundStyle(activity.state == .failed ? LimaTheme.error : LimaTheme.accentInk)
+                                        Text(activity.title)
+                                        Spacer()
+                                    }
+                                    .font(.caption)
                                 }
-                                .font(.caption)
+                                .buttonStyle(.plain)
+                                .disabled(activity.tabID == nil)
+                                .help(activity.tabID == nil ? "No linked tab" : "Focus the linked Browser tab")
                             }
                         }
                         .padding(14)
@@ -2297,7 +2722,11 @@ private struct BrowserEmptyState: View {
                 .frame(maxWidth: 420)
                 .onSubmit {
                     guard let url = BrowserRuntime.addressDestination(address) else { return }
-                    _ = model.newTab(url: url)
+                    let tab = model.newTab()
+                    if BrowserTaskApprovalState.shared.activeRunID != nil {
+                        model.pauseAI(on: tab.id)
+                    }
+                    try? model.navigate(tab.id, to: url)
                 }
                 .accessibilityLabel("Browser address")
             Text("A page starts only when you navigate.").font(.caption)
@@ -2368,20 +2797,35 @@ private struct BrowserTabContent: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Button { try? model.back(tab.id) } label: { Image(systemName: "chevron.left") }
+                Button {
+                    model.markPageChangedByUser(tab.id)
+                    try? model.back(tab.id)
+                } label: { Image(systemName: "chevron.left") }
                     .disabled(!(tab.activeWebView?.canGoBack ?? false))
-                Button { try? model.forward(tab.id) } label: { Image(systemName: "chevron.right") }
+                Button {
+                    model.markPageChangedByUser(tab.id)
+                    try? model.forward(tab.id)
+                } label: { Image(systemName: "chevron.right") }
                     .disabled(!(tab.activeWebView?.canGoForward ?? false))
-                Button { try? model.reload(tab.id) } label: { Image(systemName: "arrow.clockwise") }
+                Button {
+                    model.markPageChangedByUser(tab.id)
+                    try? model.reload(tab.id)
+                } label: { Image(systemName: "arrow.clockwise") }
                     .disabled(tab.urlString.isEmpty)
                 HStack(spacing: 6) {
                     Image(systemName: tab.urlString.hasPrefix("https://") ? "lock.fill" : "globe")
                         .foregroundStyle(LimaTheme.textSecondary)
                         .accessibilityHidden(true)
-                    TextField("HTTPS or localhost address", text: $address)
+                    TextField("HTTPS or localhost address", text: $address,
+                              onEditingChanged: { editing in
+                                  if editing && BrowserTaskApprovalState.shared.activeRunID != nil {
+                                      model.pauseAI(on: tab.id)
+                                  }
+                              })
                         .textFieldStyle(.plain)
                         .onSubmit {
                             if let url = BrowserRuntime.addressDestination(address) {
+                                model.markPageChangedByUser(tab.id)
                                 try? model.navigate(tab.id, to: url)
                             }
                         }
@@ -2392,9 +2836,18 @@ private struct BrowserTabContent: View {
                 .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(LimaTheme.fieldBorder, lineWidth: LimaDesign.hairlineWidth))
-                Button("Pause AI") { model.pauseAI(on: tab.id) }
-                    .disabled(model.pausedTabIDs.contains(tab.id))
-                    .accessibilityLabel("Pause AI for this tab")
+                Button {
+                    if model.pausedTabIDs.contains(tab.id) {
+                        try? model.resumeAI(on: tab.id)
+                    } else {
+                        model.pauseAI(on: tab.id)
+                    }
+                } label: {
+                    Label(model.pausedTabIDs.contains(tab.id) ? "Resume AI" : "Pause AI",
+                          systemImage: model.pausedTabIDs.contains(tab.id) ? "play.circle" : "pause.circle")
+                }
+                .accessibilityLabel(model.pausedTabIDs.contains(tab.id)
+                                    ? "Resume AI access for this tab" : "Pause AI access for this tab")
                 if tab.isLoading {
                     ProgressView().controlSize(.mini).accessibilityLabel("Page loading")
                 } else if tab.navigationRevision > 0 &&
@@ -2417,18 +2870,6 @@ private struct BrowserTabContent: View {
             .onAppear { address = tab.urlString }
             .onChange(of: tab.urlString) { address = $0 }
             GlassHairline()
-            if model.pausedTabIDs.contains(tab.id) {
-                HStack(spacing: 8) {
-                    Image(systemName: "pause.circle.fill")
-                    Text("AI paused for this tab")
-                    Spacer()
-                    Button("Resume AI") { try? model.resumeAI(on: tab.id) }
-                }
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 12)
-                .frame(height: 30)
-                .background(Color.orange.opacity(0.12))
-            }
             ZStack(alignment: .topLeading) {
                 if let webView = tab.activeWebView {
                     BrowserWebView(tabID: tab.id, webView: webView)
@@ -2455,22 +2896,6 @@ private struct BrowserTabContent: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            if model.showActionDescriptions,
-               let action = model.automation,
-               action.destinationTabID == tab.id {
-                HStack(spacing: 7) {
-                    Image(systemName: "sparkles").foregroundStyle(.cyan)
-                    Text(action.title).lineLimit(1)
-                    Spacer(minLength: 0)
-                    if tab.isSuspended { Text("Queued").foregroundStyle(.secondary) }
-                    else if tab.isLoading { ProgressView().controlSize(.mini) }
-                }
-                .font(.system(size: 11, weight: .medium))
-                .padding(.horizontal, 12)
-                .frame(height: 28)
-                .background(.thinMaterial)
-                .accessibilityLabel("AI: \(action.title)")
-            }
         }
     }
 }
@@ -2547,7 +2972,12 @@ struct BrowserWorkspaceSettingsView: View {
     var body: some View {
         Form {
             Section("AI Control") {
-                Picker("Default", selection: $browser.aiControlMode) {
+                Picker("Navigation method", selection: $browser.navigationMode) {
+                    ForEach(BrowserNavigationMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                Picker("Permission level", selection: $browser.aiControlMode) {
                     ForEach(BrowserAIControlMode.allCases, id: \.self) { mode in
                         Text(mode.title).tag(mode)
                     }
@@ -2555,7 +2985,7 @@ struct BrowserWorkspaceSettingsView: View {
                 Text("Page interactions invalidate stale AI targets. Use Pause AI on a tab to stop AI access until you resume it.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Text("One mode governs reading, navigation, and interaction in Lima Browser tabs. Sensitive controls remain protected even with Full Control.")
+                Text("Navigation method and Browser permission are independent. Task-scoped action approval is set in the Browser toolbar; payments and protected information always retain their own review boundary.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

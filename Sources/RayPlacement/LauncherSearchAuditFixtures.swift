@@ -20,7 +20,6 @@ enum LauncherSearchAuditFixtures {
             inlineExtensionSurfaceModel: InlineExtensionSurfaceModel(),
             formatterModel: FormatterWorkspaceModel(),
             extensionStoreModel: ExtensionStoreModel(onInstalled: {}),
-            workflowModel: WorkflowEditorModel(selected: nil),
             surfaceSessionController: LauncherSurfaceSessionController()
         )
     }

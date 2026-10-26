@@ -38,17 +38,20 @@ private final class QuestionOutputCapture: @unchecked Sendable {
 
     let choice = try #require(AIUserQuestionTools.parse(kinds[0].1, runID: runID))
     #expect(AIUserQuestionResponse(questionID: choice.id, selectedOptionIDs: ["a"], text: nil).isValid(for: choice))
+    #expect(!AIUserQuestionResponse(questionID: choice.id, selectedOptionIDs: ["a"], text: "hidden text").isValid(for: choice))
     #expect(!AIUserQuestionResponse(questionID: choice.id, selectedOptionIDs: ["a", "b"], text: nil).isValid(for: choice))
     #expect(AIUserQuestionResponse(questionID: choice.id, selectedOptionIDs: ["other"], text: "New project").isValid(for: choice))
     #expect(!AIUserQuestionResponse(questionID: choice.id, selectedOptionIDs: ["other"], text: " ").isValid(for: choice))
 
     let multi = try #require(AIUserQuestionTools.parse(kinds[1].1, runID: runID))
     #expect(AIUserQuestionResponse(questionID: multi.id, selectedOptionIDs: ["a", "b"], text: nil).isValid(for: multi))
+    #expect(!AIUserQuestionResponse(questionID: multi.id, selectedOptionIDs: ["a"], text: "hidden text").isValid(for: multi))
     #expect(!AIUserQuestionResponse(questionID: multi.id, selectedOptionIDs: ["a", "a"], text: nil).isValid(for: multi))
     let free = try #require(AIUserQuestionTools.parse(kinds[2].1, runID: runID))
     #expect(AIUserQuestionResponse(questionID: free.id, selectedOptionIDs: [], text: "Track spending").isValid(for: free))
     let confirmation = try #require(AIUserQuestionTools.parse(kinds[3].1, runID: runID))
     #expect(AIUserQuestionResponse(questionID: confirmation.id, selectedOptionIDs: ["cancel"], text: nil).isValid(for: confirmation))
+    #expect(!AIUserQuestionResponse(questionID: confirmation.id, selectedOptionIDs: ["confirm"], text: "hidden text").isValid(for: confirmation))
 
     let projectChoice = try #require(AIUserQuestionTools.parse(
         #"{"kind":"single_choice","purpose":"project_resolution","question":"Reuse the existing dashboard?","options":[{"id":"existing","label":"Use Finance Dashboard"},{"id":"create_new_project","label":"Create a new project"}]}"#,
@@ -91,6 +94,26 @@ private final class QuestionOutputCapture: @unchecked Sendable {
     #expect(resumedQuestion)
     #expect(run.pendingQuestion == nil)
     #expect(run.state == .runningTools)
+}
+
+@Test func generalUserQuestionRejectsProtectedDataTextPrompts() {
+    let runID = UUID()
+    for raw in [
+        #"{"kind":"free_response","question":"Enter your password"}"#,
+        #"{"kind":"free_response","question":"What is your CVV?"}"#,
+        #"{"kind":"free_response","question":"Paste your API key"}"#,
+        #"{"kind":"single_choice","question":"Which verification code?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}],"allow_other":true}"#,
+        #"{"kind":"single_choice","question":"Which verification code?","options":[{"id":"a","label":"A"},{"id":"b","label":"B"}]}"#,
+        #"{"kind":"multiple_choice","question":"Select the matching entries","options":[{"id":"a","label":"Card number"},{"id":"b","label":"Name"}]}"#,
+        #"{"kind":"confirmation","question":"Enter your password to continue"}"#,
+        #"{"kind":"confirmation","question":"Proceed?","confirm_label":"Submit CVV"}"#
+    ] {
+        #expect(AIUserQuestionTools.parse(raw, runID: runID) == nil)
+    }
+    #expect(AIUserQuestionTools.parse(
+        #"{"kind":"free_response","question":"What headline should I use?"}"#,
+        runID: runID
+    ) != nil)
 }
 
 @Test @MainActor func userQuestionResumesSameAIExecutionRunWithStructuredToolOutput() async throws {
@@ -259,6 +282,94 @@ private final class QuestionOutputCapture: @unchecked Sendable {
 
 
 
+@Test @MainActor func passwordHandoffResumesAfterSameHostNavigationWithoutClaimingSignIn() async throws {
+    let browser = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    browser.aiControlMode = .fullControl
+    let tab = browser.newTab()
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><html><body>
+        <form><label>Password <input id="password" type="password" required></label></form>
+        </body></html>
+        """, baseURL: URL(string: "https://example.com/sign-in")!)
+    _ = try await browser.wait(tab.id, condition: .pageStable, timeoutMilliseconds: 5_000)
+
+    let capture = QuestionOutputCapture()
+    let arguments = #"{"kind":"confirmation","purpose":"secure_browser_input","question":"Sign in on the website","browser_tab_id":""# +
+        tab.id.uuidString + #""}"#
+    var transport = FixtureAITransport(events: [
+        .responseCreated("auth-handoff-response"),
+        .outputItem(AIOutputItem(
+            phase: .completed, apiType: "function_call", callID: "auth-handoff-call",
+            name: "request_user_input", arguments: arguments
+        )),
+        .completed("auth-handoff-response")
+    ])
+    transport.toolOutputEvents = [
+        .responseCreated("auth-resume-response"),
+        .textDelta("I will inspect the current page before continuing."),
+        .completed("auth-resume-response")
+    ]
+    transport.onToolOutputs = { outputs, _ in capture.record(outputs) }
+    let model = AIChatViewModel(
+        store: AIConversationStore(fixtures: []),
+        credentials: AIChatCredentialStore(configuration: .fixture),
+        nativeToolStore: LimaAIToolStore(fixtures: ["request_user_input"]),
+        transport: transport,
+        taskRegistry: TaskRegistry(), browserWorkspace: browser
+    )
+    model.draft = "Continue after I sign in"
+    model.send()
+    for _ in 0..<500 where model.pendingQuestion == nil {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    let question = try #require(model.pendingQuestion)
+    let runID = try #require(model.executionRun?.id)
+    #expect(question.secureFields?.first?.kind == "password")
+    let answer = AIUserQuestionResponse(questionID: question.id,
+        selectedOptionIDs: ["confirm"], text: nil)
+    model.answerUserQuestion(answer)
+    for _ in 0..<500 where model.secureInputError == nil {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.pendingQuestion?.id == question.id)
+    #expect(model.secureInputError != nil)
+
+    tab.webView.loadHTMLString("""
+        <!doctype html><html><body><h1>Account dashboard</h1></body></html>
+        """, baseURL: URL(string: "https://example.com/account")!)
+    browser.markPageChangedByUser(tab.id)
+    // User takeover pauses AI Browser reads until the user explicitly
+    // confirms the secure handoff. Inspect WebKit directly in this fixture.
+    #expect(browser.pausedTabIDs.contains(tab.id))
+    for _ in 0..<100 {
+        if (try? await tab.webView.evaluateJavaScript(
+            "document.body?.textContent?.includes('Account dashboard')"
+        )) as? Bool == true { break }
+        try await Task.sleep(for: .milliseconds(25))
+    }
+    let landingVisible = try await tab.webView.evaluateJavaScript(
+        "document.body?.textContent?.includes('Account dashboard')"
+    ) as? Bool
+    #expect(landingVisible == true)
+    #expect(tab.webView.url?.host == question.browserPageHost)
+    #expect(tab.webView.url?.path == "/account")
+    model.answerUserQuestion(answer)
+    for _ in 0..<800 where model.executionRun?.state != .completed {
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    #expect(model.executionRun?.id == runID)
+    #expect(model.executionRun?.state == .completed)
+    let output = try #require(capture.outputs.first?["output"] as? String)
+    let payload = try #require(JSONSerialization.jsonObject(with: Data(output.utf8)) as? [String: Any])
+    #expect(payload["post_handoff_navigation"] as? Bool == true)
+    #expect(payload["authentication_verified"] as? Bool == false)
+    #expect(payload["final_action_authorized"] as? Bool == false)
+    #expect(payload["fresh_browser_read_required"] as? Bool == true)
+    #expect((payload["secure_fields"] as? [[String: Any]])?.isEmpty == true)
+    try await browser.close(tab.id)
+}
+
 @Test @MainActor func secureBrowserHandoffRejectsSameHostRouteAndCancelStopsRun() async throws {
     let browser = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
     browser.aiControlMode = .fullControl
@@ -301,9 +412,10 @@ private final class QuestionOutputCapture: @unchecked Sendable {
         true;
         """)
     browser.markPageChangedByUser(tab.id)
-    let changed = try await browser.wait(tab.id, condition: .pageStable, timeoutMilliseconds: 5_000)
-    #expect(changed.identity.documentID == original.identity.documentID)
-    #expect(changed.identity.routeGeneration != original.identity.routeGeneration)
+    #expect(browser.pausedTabIDs.contains(tab.id))
+    #expect(URLComponents(string: original.identity.url)?.path == "/")
+    let currentPath = try await tab.webView.evaluateJavaScript("location.pathname") as? String
+    #expect(currentPath == "/different-checkout-step")
     let confirm = AIUserQuestionResponse(questionID: question.id,
         selectedOptionIDs: ["confirm"], text: nil)
     model.answerUserQuestion(confirm)
@@ -313,6 +425,7 @@ private final class QuestionOutputCapture: @unchecked Sendable {
     #expect(model.secureInputError?.contains("changed") == true)
     #expect(model.executionRun?.id == runID)
     #expect(model.executionRun?.state == .waitingForUserInput)
+    #expect(browser.pausedTabIDs.contains(tab.id))
 
     let cancel = AIUserQuestionResponse(questionID: question.id,
         selectedOptionIDs: ["cancel"], text: nil)

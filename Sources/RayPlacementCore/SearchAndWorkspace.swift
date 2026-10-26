@@ -128,6 +128,7 @@ public struct CommandProfile: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// Decode-only legacy schema for archived user definitions. No executor consumes it.
 public struct WorkflowDefinition: Codable, Equatable, Identifiable, Sendable {
     public struct Step: Codable, Equatable, Identifiable, Sendable {
         public var id: UUID
@@ -152,34 +153,6 @@ public struct WorkflowDefinition: Codable, Equatable, Identifiable, Sendable {
         self.steps = steps
         self.favorite = favorite
     }
-}
-
-public struct WorkflowExecutionReport: Codable, Equatable, Sendable {
-    public struct StepResult: Codable, Equatable, Sendable {
-        public let commandID: String
-        public let succeeded: Bool
-        public let message: String?
-
-        public init(commandID: String, succeeded: Bool, message: String? = nil) {
-            self.commandID = commandID
-            self.succeeded = succeeded
-            self.message = message
-        }
-    }
-
-    public let workflowID: UUID
-    public let startedAt: Date
-    public let finishedAt: Date
-    public let steps: [StepResult]
-
-    public init(workflowID: UUID, startedAt: Date, finishedAt: Date, steps: [StepResult]) {
-        self.workflowID = workflowID
-        self.startedAt = startedAt
-        self.finishedAt = finishedAt
-        self.steps = steps
-    }
-
-    public var succeeded: Bool { steps.allSatisfy(\.succeeded) }
 }
 
 public struct WorkspaceProfile: Codable, Equatable, Identifiable, Sendable {

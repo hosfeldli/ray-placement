@@ -121,6 +121,54 @@ private func draftTestModel() -> AIChatViewModel {
     #expect(model.draft == "Keep this unsent text.\n\nSummarize.")
 }
 
+@Test @MainActor func shelfHandoffShowsSourceAndNeverSendsOrLeaksMail() {
+    let note = MarkdownNote(title: "Project note", content: "Editable note body")
+    let notes = NotesStore(visualFixtures: [note])
+    let model = draftTestModel()
+    model.draft = "Keep this instruction."
+    let source = ContextShelfSource(type: .lima, capturedAt: Date())
+    let selected = ContextShelfItem(
+        id: UUID(), kind: .selectedText, title: "Selection", preview: "Selected words",
+        payload: .text("Selected words"), source: source, createdAt: Date(), isPinned: false
+    )
+    let dictation = ContextShelfItem(
+        id: UUID(), kind: .dictation, title: "Dictation", preview: "Spoken words",
+        payload: .dictation(transcript: "Spoken words"), source: source, createdAt: Date(), isPinned: false
+    )
+    let noteReference = ContextShelfItem(
+        id: UUID(), kind: .noteReference, title: note.displayTitle, preview: "Note",
+        payload: .note(noteID: note.id, title: note.displayTitle), source: source,
+        createdAt: Date(), isPinned: false
+    )
+    #expect(model.prepareShelfItems([selected, dictation, noteReference], notes: notes) == 3)
+    #expect(model.attachments.count == 3)
+    #expect(model.attachments.first(where: { $0.id == selected.id })?.transferRoute == "Selected text → AI draft")
+    #expect(model.attachments.first(where: { $0.id == dictation.id })?.transferRoute == "Dictation → AI draft")
+    #expect(model.attachments.first(where: { $0.id == note.id })?.transferRoute == "Note → AI draft")
+    #expect(model.draft == "Keep this instruction.")
+    #expect(model.store.conversations.isEmpty)
+
+    // An inconsistent Mail payload must fail closed before even safe peers are attached.
+    let mail = ContextShelfItem(
+        id: UUID(), kind: .plainText, title: "Private mail", preview: "Metadata",
+        payload: .mailReference(MailMessageReference(
+            accountID: "synthetic-work", mailboxID: "inbox", messageID: 42,
+            internetMessageID: nil, subject: "Private mail", sender: "Sender",
+            receivedAt: Date(), capturedAt: Date()
+        )), source: source, createdAt: Date(), isPinned: false
+    )
+    let attachmentsBefore = model.attachments
+    #expect(model.prepareShelfItems([selected, mail], notes: notes) == 0)
+    #expect(model.attachments == attachmentsBefore)
+
+    let empty = ContextShelfItem(
+        id: UUID(), kind: .plainText, title: "Empty", preview: "",
+        payload: .text("   "), source: source, createdAt: Date(), isPinned: false
+    )
+    #expect(model.prepareShelfItems([selected, empty], notes: notes) == 0)
+    #expect(model.attachments == attachmentsBefore)
+}
+
 @Test @MainActor func workspaceShortcutsPreserveDraftAndRequireUsefulContext() {
     let model = draftTestModel()
     model.draft = "Keep my instructions."

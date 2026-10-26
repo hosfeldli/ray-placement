@@ -293,6 +293,47 @@ public enum MediaDurationNormalization {
     }
 }
 
+/// Bounded Mail provenance. Full message bodies never enter the Notes model;
+/// short evidence excerpts are retained only for approved tasks.
+public struct MarkdownMailSource: Codable, Hashable, Sendable {
+    public let accountID: String
+    public let mailboxID: String
+    public let messageID: Int64
+    public let internetMessageID: String?
+    public let subject: String
+    public let sender: String
+    public let receivedAt: Date
+
+    public init(accountID: String, mailboxID: String, messageID: Int64,
+                internetMessageID: String?, subject: String, sender: String,
+                receivedAt: Date) {
+        self.accountID = accountID
+        self.mailboxID = mailboxID
+        self.messageID = messageID
+        self.internetMessageID = internetMessageID
+        self.subject = subject
+        self.sender = sender
+        self.receivedAt = receivedAt
+    }
+}
+
+/// A task keeps its source references even when the user edits or completes its
+/// visible Markdown checklist line. Refresh must propose changes, not overwrite it.
+public struct MarkdownMailTaskProvenance: Codable, Hashable, Sendable {
+    public let taskID: UUID
+    public let sourceMessages: [MarkdownMailSource]
+    public let evidenceExcerpts: [String]
+    public let capturedAt: Date
+
+    public init(taskID: UUID, sourceMessages: [MarkdownMailSource],
+                evidenceExcerpts: [String], capturedAt: Date) {
+        self.taskID = taskID
+        self.sourceMessages = sourceMessages
+        self.evidenceExcerpts = evidenceExcerpts
+        self.capturedAt = capturedAt
+    }
+}
+
 public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var id: UUID
     public var title: String
@@ -304,6 +345,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
     public var speakerNames: [Int: String]
     public var tags: [String]
     public var revisionHistory: [NoteRevision]
+    public var mailTaskProvenance: [MarkdownMailTaskProvenance]
 
     public init(
         id: UUID = UUID(),
@@ -315,7 +357,8 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         isFavorite: Bool = false,
         speakerNames: [Int: String] = [:],
         tags: [String] = [],
-        revisionHistory: [NoteRevision] = []
+        revisionHistory: [NoteRevision] = [],
+        mailTaskProvenance: [MarkdownMailTaskProvenance] = []
     ) {
         self.id = id
         self.title = title
@@ -327,10 +370,11 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         self.speakerNames = speakerNames
         self.tags = tags
         self.revisionHistory = revisionHistory
+        self.mailTaskProvenance = mailTaskProvenance
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite, speakerNames, tags, revisionHistory
+        case id, title, content, createdAt, modifiedAt, isPinned, isFavorite, speakerNames, tags, revisionHistory, mailTaskProvenance
     }
 
     public init(from decoder: Decoder) throws {
@@ -345,6 +389,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         speakerNames = try container.decodeIfPresent([Int: String].self, forKey: .speakerNames) ?? [:]
         tags = try container.decodeIfPresent([String].self, forKey: .tags) ?? []
         revisionHistory = try container.decodeIfPresent([NoteRevision].self, forKey: .revisionHistory) ?? []
+        mailTaskProvenance = try container.decodeIfPresent([MarkdownMailTaskProvenance].self, forKey: .mailTaskProvenance) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -359,6 +404,7 @@ public struct MarkdownNote: Codable, Identifiable, Hashable, Sendable {
         try container.encode(speakerNames, forKey: .speakerNames)
         try container.encode(tags, forKey: .tags)
         try container.encode(revisionHistory, forKey: .revisionHistory)
+        try container.encode(mailTaskProvenance, forKey: .mailTaskProvenance)
     }
 
     public var displayTitle: String {

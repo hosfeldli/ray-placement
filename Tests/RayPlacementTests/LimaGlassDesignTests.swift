@@ -55,12 +55,12 @@ import RayPlacementCore
 
 @Test func workspaceConfigurationCanHideRegroupAndReorderEveryModule() {
     var configuration = WorkspaceConfiguration.defaultConfiguration
-    #expect(configuration.workspaceModules == [.home, .notes, .ai, .browser, .context])
-    #expect(configuration.toolModules == [.clipboard, .workflows, .extensions, .terminal, .grammar])
-    #expect(configuration.hiddenModules == [.dictation, .formatter])
+    #expect(configuration.workspaceModules == [.home, .ai, .browser, .terminal, .notes])
+    #expect(configuration.toolModules == [.clipboard, .extensions, .grammar])
+    #expect(configuration.hiddenModules == [.context, .dictation, .formatter])
 
-    configuration.move(.notes, in: .workspace, by: 1)
-    #expect(configuration.workspaceModules == [.home, .ai, .notes, .browser, .context])
+    configuration.move(.notes, in: .workspace, by: -2)
+    #expect(configuration.workspaceModules == [.home, .ai, .notes, .browser, .terminal])
     configuration.setSection(.workspace, for: .grammar)
     #expect(configuration.workspaceModules.last == .grammar)
     #expect(!configuration.hiddenModules.contains(.grammar))
@@ -85,6 +85,40 @@ import RayPlacementCore
     customized.hideModule(.grammar)
     let restored = try JSONDecoder().decode(WorkspaceConfiguration.self, from: JSONEncoder().encode(customized))
     #expect(restored.sectionID(for: .grammar) == nil)
+}
+
+@Test func workspaceStockRailMigratesWithoutOverwritingCustomization() throws {
+    var previous = WorkspaceConfiguration(sections: [
+        WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.workspaceID, name: "Workspace",
+                                      modules: [.home, .notes, .ai, .browser, .context]),
+        WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.toolsID, name: "Tools",
+                                      modules: [.clipboard, .workflows, .extensions, .terminal, .grammar])
+    ])
+    previous.railWidth = .wide
+    previous.setShortcutKey("Q", for: .ai)
+    func previousVersion(_ layout: WorkspaceConfiguration) throws -> Data {
+        let data = try JSONEncoder().encode(layout)
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        object["layoutVersion"] = 2
+        return try JSONSerialization.data(withJSONObject: object)
+    }
+    let migrated = try JSONDecoder().decode(WorkspaceConfiguration.self, from: previousVersion(previous))
+    #expect(migrated.sections == WorkspaceConfiguration.defaultConfiguration.sections)
+    #expect(migrated.railWidth == .wide)
+    #expect(migrated.shortcutKey(for: .ai) == "Q")
+
+    previous.sections[0].name = "My Work"
+    let customized = try JSONDecoder().decode(WorkspaceConfiguration.self, from: previousVersion(previous))
+    #expect(customized.sections == previous.sections)
+}
+
+@Test func retiredWorkflowLayoutEntriesAndShortcutsAreDroppedSafely() throws {
+    let legacy = Data(#"{"workspaceModules":["workflows","home"],"toolModules":["extensions"],"startupModule":"workflows","shortcutOverrides":{"workflows":"7"}}"#.utf8)
+    let layout = try JSONDecoder().decode(WorkspaceConfiguration.self, from: legacy)
+    #expect(!layout.visibleModules.contains(.workflows))
+    #expect(!layout.hiddenModules.contains(.workflows))
+    #expect(layout.startupModule == .home)
+    #expect(layout.shortcutOverrides["workflows"] == nil)
 }
 
 @Test func workspaceCustomSectionsOwnOrderingVisibilityAndStartup() throws {

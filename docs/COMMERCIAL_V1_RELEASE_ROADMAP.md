@@ -1,13 +1,13 @@
 # Lima commercial v1 release roadmap
 
-Status: October 14, 2026. This is a historical commercial roadmap; the current next-publish gate is `docs/EMBEDDED_BROWSER_RELEASE_GATE.md`. Neither document claims the app is ready to publish or sell.
+Status: October 14, 2026 historical roadmap, updated for the Workflows retirement decision. The current major-release gate is `docs/MAJOR_RELEASE_MIGRATION.md`; the embedded Browser gate remains separate. Neither document claims the app is ready to publish or sell.
 
 ## Product contract
 
 - **Search** is transient, compact, keyboard-first, and disappears after action.
-- **Workspace** persists Notes, AI, Context, Clipboard, Workflows, and optional history.
-- **HUDs** briefly report capture, dictation, replacement, workflow, and AI outcomes.
-- Default navigation exposes Home, Notes, AI, Context, then Clipboard, Workflows, Extensions under Tools. Grammar, Transcripts, Formatter, Terminal, passwords, and similar utilities stay available through Search/commands without crowding the rail.
+- **Workspace** persists Notes, AI, Context, Clipboard, and optional history; the dedicated Workflows product is retired.
+- **HUDs** briefly report capture, dictation, replacement, task, and AI outcomes.
+- Default navigation stays compact around Search, AI, Notes, Dictation, Terminal, Extensions, and Settings. Other utilities remain available through Search/commands without crowding the rail.
 - Home resumes work (Continue, Recent, Pinned) instead of cataloging features.
 - AI shows recorded completed actions and the current action. It never schedules hypothetical tool calls visually. A model-authored plan, when present, must be labeled tentative and allowed to change.
 - The embedded Lima Browser shares human/AI tabs and uses one visible AI Control mode (Off, Read Only, Navigate, or Full Control). Sensitive controls remain protected; local files and terminal actions retain separate policy boundaries.
@@ -23,7 +23,7 @@ Status: October 14, 2026. This is a historical commercial roadmap; the current n
 - Audit major Workspace modules and HUDs in light/dark, compact/full widths, reduced motion, and accessibility sizes. Remove inconsistent row, border, typography, and inspector patterns.
 - Exercise selected text → Capture → Save to Note / Add Context / Ask Lima without leaving the source app.
 - Exercise Notes editing, checklists, Markdown, undo/redo, dictation insertion, autosave, restart persistence, and instant note search.
-- Exercise Context add/search/remove and sequential Workflows with stop-on-failure, continue-on-failure, cancellation, and visible outcomes.
+- Exercise Context add/search/remove and sequential AI tool calls with cancellation and visible outcomes. Verify archived Workflows definitions cannot execute and remain exportable.
 
 ### 2. AI reliability and truthful activity
 
@@ -55,7 +55,7 @@ The old extension/native-host approach is retired. The current implementation us
 **Open release work:**
 - Measure Search appearance and local-results latency, Workspace/module/note switching, clipboard search, AI first feedback and Stop; log regressions and eliminate main-thread blocking.
 - Run the release-candidate matrix: fresh install, old→new updates, signed/unsigned and network failures, interrupted download/install, relaunch/rollback, and clean uninstall.
-- Run a small end-to-end regression suite for Search, Notes, Dictation, AI, Clipboard, Context, Workflows, and Browser, plus visual snapshots.
+- Run a small end-to-end regression suite for Search, Notes, Dictation, AI, Clipboard, Context, Extensions, and Browser, plus Workflows-retirement migration tests and visual snapshots.
 - Build model-free and full app variants without any legacy Browser extension or native host; verify the app/DMG signatures and the absence of retired assets. Never overwrite a published release.
 - Stage a **new** version/tag as a draft only after source is committed, CI is green, browser acceptance passes, and the build matrix is complete. Public publication is a separate review.
 

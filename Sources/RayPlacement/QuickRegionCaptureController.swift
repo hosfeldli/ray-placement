@@ -4,6 +4,13 @@ import Foundation
 enum QuickRegionCaptureKind: Sendable {
     case image
     case text
+
+    var selectionInstruction: String {
+        switch self {
+        case .image: "Drag within one display to copy an image • Esc to cancel"
+        case .text: "Drag within one display to read text • Esc to cancel"
+        }
+    }
 }
 
 enum QuickRegionCapturePayload: Equatable, Sendable {
@@ -53,6 +60,14 @@ enum QuickRegionCaptureError: LocalizedError {
     }
 }
 
+enum QuickRegionCaptureFocus {
+    static func permitsCapture(frontmostProcessID: pid_t?, limaProcessID: pid_t,
+                               sourceProcessID: pid_t?) -> Bool {
+        guard let frontmostProcessID else { return false }
+        return frontmostProcessID == limaProcessID || frontmostProcessID == sourceProcessID
+    }
+}
+
 /// A direct, user-initiated region-to-clipboard flow. It deliberately does not
 /// open Screenshot Studio, write a file, or import a Screenshot History record.
 @MainActor
@@ -64,6 +79,7 @@ final class QuickRegionCaptureController {
     private let toast = ActionToastController()
     private var activeRunID: UUID?
     private var returnApplication: NSRunningApplication?
+    private var captureContext: ScreenshotCaptureContext?
 
     func start(_ kind: QuickRegionCaptureKind, returningTo application: NSRunningApplication?) {
         guard activeRunID == nil else { return }
@@ -84,6 +100,7 @@ final class QuickRegionCaptureController {
         let runID = UUID()
         activeRunID = runID
         returnApplication = application?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : application
+        captureContext = ScreenshotCaptureContext(sourceProcessID: returnApplication?.processIdentifier)
 
         Task { [weak self] in
             guard let self else { return }
@@ -91,14 +108,22 @@ final class QuickRegionCaptureController {
                 let displays = try await captureService.availableTargets()
                     .filter { $0.kind == .display }
                 guard activeRunID == runID else { return }
+                guard captureContextIsCurrent else {
+                    finish(runID: runID, result: nil, restoreApplication: false)
+                    return
+                }
                 guard !displays.isEmpty else { throw QuickRegionCaptureError.noDisplay }
                 _ = regionSelection.present(
                     displays: displays,
+                    instruction: kind.selectionInstruction,
                     onSelect: { [weak self] target in
                         self?.capture(target, kind: kind, runID: runID)
                     },
                     onCancel: { [weak self] in
                         self?.finish(runID: runID, result: nil)
+                    },
+                    onTakeover: { [weak self] in
+                        self?.finish(runID: runID, result: nil, restoreApplication: false)
                     }
                 )
             } catch {
@@ -116,7 +141,16 @@ final class QuickRegionCaptureController {
                 // Selection overlays must leave the compositor before capture.
                 try await Task.sleep(nanoseconds: 180_000_000)
                 guard activeRunID == runID else { return }
+                guard captureContextIsCurrent else {
+                    finish(runID: runID, result: nil, restoreApplication: false)
+                    return
+                }
                 let captured = try await captureService.capture(target)
+                guard activeRunID == runID else { return }
+                guard captureContextIsCurrent else {
+                    finish(runID: runID, result: nil, restoreApplication: false)
+                    return
+                }
                 if kind == .text {
                     toast.show("Reading region…", style: .working, duration: 20)
                 }
@@ -126,6 +160,10 @@ final class QuickRegionCaptureController {
                     )
                 }.value
                 guard activeRunID == runID else { return }
+                guard captureContextIsCurrent else {
+                    finish(runID: runID, result: nil, restoreApplication: false)
+                    return
+                }
                 guard payload.copy() else { throw QuickRegionCaptureError.clipboardUnavailable }
                 finish(runID: runID, result: .success(kind))
             } catch {
@@ -134,13 +172,30 @@ final class QuickRegionCaptureController {
         }
     }
 
-    private func finish(runID: UUID, result: Result<QuickRegionCaptureKind, Error>?) {
+    /// A user switch to a third application is a takeover, not a reason to
+    /// capture its pixels or overwrite the user's clipboard. The source app
+    /// may legitimately become foreground again after the overlay closes.
+    private var captureContextIsCurrent: Bool {
+        captureContext?.isCurrent == true
+    }
+
+    private func finish(runID: UUID, result: Result<QuickRegionCaptureKind, Error>?,
+                        restoreApplication: Bool = true) {
         guard activeRunID == runID else { return }
+        // Failed asynchronous work must not steal focus after a takeover.
+        // A successful copy changes the clipboard count itself.
+        let contextCurrent: Bool
+        if case .success = result { contextCurrent = true }
+        else { contextCurrent = captureContextIsCurrent }
         regionSelection.dismiss(notifyCancel: false)
         activeRunID = nil
         let application = returnApplication
         returnApplication = nil
-        application?.activate(options: [.activateIgnoringOtherApps])
+        captureContext = nil
+        if restoreApplication && contextCurrent {
+            application?.activate(options: [.activateIgnoringOtherApps])
+        }
+        guard contextCurrent else { toast.dismiss(); return }
         switch result {
         case .success(.image):
             toast.show("Region image copied to clipboard")

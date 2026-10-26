@@ -55,8 +55,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             extensionStoreModel: extensionStoreModel,
             reloadExtensions: { [weak self] in self?.viewModel.reloadExtensions() },
             onOpenCommandSearch: { [weak self] query in self?.showCommandSearch(query: query) },
-            onOpenSettings: { [weak self] in self?.showSettings() },
-            onRunWorkflow: { [weak self] workflow in self?.executeWorkflow(workflow) }
+            onOpenSettings: { [weak self] in self?.showSettings() }
         )
         controller.onLauncherQueryDictation = { [weak self] delta in
             guard let self, !delta.isEmpty else { return }
@@ -70,7 +69,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }()
     private let extensionStoreModel: ExtensionStoreModel
     private let formatterModel: FormatterWorkspaceModel
-    private let workflowModel: WorkflowEditorModel
     private let terminalModel: DeveloperTerminalModel
     private let passwordGeneratorModel: PasswordGeneratorModel
     private let inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
@@ -82,13 +80,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private var focusedTextContext: SelectedTextService.SelectionContext?
     private var writingTaskID: UUID?
     private var grammarExecutionRun: GrammarExecutionRun?
-    private var workflowTask: Task<Void, Never>?
     private var writingOperationToken: UUID?
     private var writingHoldToken: UUID?
     private var quickLookTimeoutHeld = false
     private var localEventMonitor: Any?
     private var applicationActivationObserver: NSObjectProtocol?
     private var modeSubscription: AnyCancellable?
+    private var panelPresentationSizing = LauncherPanelPresentationSizing()
     private var surfaceModeSubscription: AnyCancellable?
     private var queryInteractionSubscription: AnyCancellable?
     private var surfaceQuerySubscriptions: [AnyCancellable] = []
@@ -118,7 +116,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.viewModel = LauncherViewModel(clipboard: clipboard)
         self.extensionStoreModel = ExtensionStoreModel(onInstalled: {})
         self.formatterModel = FormatterWorkspaceModel()
-        self.workflowModel = WorkflowEditorModel(selected: nil)
         self.terminalModel = DeveloperTerminalModel()
         self.passwordGeneratorModel = PasswordGeneratorModel()
         self.inlineExtensionSurfaceModel = InlineExtensionSurfaceModel()
@@ -134,7 +131,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
         viewModel.setSearchPresented(false)
         extensionStoreModel.setOnInstalled { [weak self] in self?.viewModel.reloadExtensions() }
-        workflowModel.onExecute = { [weak self] workflow in self?.executeWorkflow(workflow) }
 
         viewModel.delegate = self
         panel.delegate = self
@@ -146,7 +142,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 inlineExtensionSurfaceModel: inlineExtensionSurfaceModel,
                 formatterModel: formatterModel,
                 extensionStoreModel: extensionStoreModel,
-                workflowModel: workflowModel,
                 surfaceSessionController: surfaceSessionController,
                 onSurfaceInteraction: { [weak self] in self?.surfaceSessionController.interactionOccurred() },
                 onPinSurface: { [weak self] pinned in
@@ -174,12 +169,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             viewModel.$searchPhase,
             SettingsStore.shared.$interfaceDensity
         )
-            .map { mode, phase, density in
-                LauncherPanelLayout.size(for: mode, density: density, searchPhase: phase)
-            }
-            .removeDuplicates()
-            .sink { [weak self] size in
-                self?.resizePanel(to: size, animated: true)
+            .sink { [weak self] mode, phase, density in
+                guard let self else { return }
+                let size = self.panelPresentationSizing.size(
+                    for: mode, density: density, searchPhase: phase
+                )
+                // Typing may expand Search once, but never animates or collapses
+                // the physical panel while this presentation remains visible.
+                self.resizePanel(to: size, animated: mode != .root)
             }
         surfaceModeSubscription = viewModel.$mode
             .sink { [weak self] mode in
@@ -222,7 +219,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     switch session.surface.handler {
                     case .formatter: if self.formatterModel.searchQuery != query { self.formatterModel.searchQuery = query }
                     case .extensionStore: if self.extensionStoreModel.query != query { self.extensionStoreModel.query = query }
-                    case .workflows: if self.workflowModel.commandFilter != query { self.workflowModel.commandFilter = query }
                     default: break
                     }
                 case .contextShelf:
@@ -240,10 +236,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 guard let self, self.viewModel.mode.surfaceHandler == .extensionStore, self.viewModel.query != value else { return }
                 self.viewModel.query = value
             },
-            workflowModel.$commandFilter.sink { [weak self] value in
-                guard let self, self.viewModel.mode.surfaceHandler == .workflows, self.viewModel.query != value else { return }
-                self.viewModel.query = value
-            }
         ]
         resizePanel(for: viewModel.mode, animated: false)
         surfaceSessionController.surfaceChanged(to: viewModel.mode)
@@ -267,6 +259,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let measurementID = PerformanceMonitor.shared.begin(.launcherOpenToVisible)
         defer { LauncherPerformanceDiagnostics.shared.mark("hotkey-visible", startedAt: startedAt, budget: 80) }
         rememberFrontmostApplication(preferred: sourceApplication)
+        viewModel.setSourceApplication(id: previousApplication?.bundleIdentifier,
+                                       name: previousApplication?.localizedName)
         viewModel.setContextualSelection(selectedTextContext?.text)
         viewModel.resetForPresentation()
         resizePanel(for: viewModel.mode, animated: false)
@@ -277,6 +271,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     func showCommandSearch(query: String) {
+        viewModel.setSourceApplication(id: nil, name: nil)
         viewModel.resetContextualSelection()
         viewModel.resetForPresentation()
         viewModel.enter(.root, query: query)
@@ -287,6 +282,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     func hide() {
         panel.orderOut(nil)
         viewModel.setSearchPresented(false)
+        panelPresentationSizing.reset()
     }
 
     func shutdown() {
@@ -441,7 +437,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         let previousID = notesWindow.store.selectedNoteID
         notesWindow.store.createNote()
         guard notesWindow.store.selectedNoteID != previousID else {
-            throw NSError(domain: "LimaWorkflow", code: 3, userInfo: [
+            throw NSError(domain: "LimaNotes", code: 3, userInfo: [
                 NSLocalizedDescriptionKey: notesWindow.store.lastError ?? "The note could not be created."
             ])
         }
@@ -544,12 +540,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .builtinInvocation(let invocation):
             executeBuiltinInvocation(invocation)
 
-        case .workflow(let id):
-            guard let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) else {
-                presentError(title: "Workflow", message: "That workflow no longer exists.")
-                return
-            }
-            executeWorkflow(workflow)
+        case .workflow:
+            presentError(title: "Workflows retired", message: "Saved definitions can be exported from Settings. They no longer run in Lima.")
 
         case .macro(let id):
             executeMacro(id)
@@ -600,6 +592,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             viewModel.refreshForSettings()
         case .forgetRanking(let id):
             viewModel.forgetLearnedRanking(id)
+        case .editAlias(let id):
+            guard item.id == id else { return }
+            viewModel.openAliasEditor(for: item)
 
         case .noOp:
             break
@@ -718,7 +713,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func resizePanel(for mode: LauncherMode, animated: Bool) {
-        let desiredSize = LauncherPanelLayout.size(
+        let desiredSize = panelPresentationSizing.size(
             for: mode,
             density: SettingsStore.shared.interfaceDensity,
             searchPhase: viewModel.searchPhase
@@ -727,7 +722,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     }
 
     private func resizePanel(to desiredSize: NSSize, animated: Bool) {
-        let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
+        // Once shown, pointer movement to another display must not make a
+        // later mode change clamp or recenter this panel on a different screen.
+        let targetScreen = (panel.isVisible ? panel.screen : nil)
+            ?? screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         let size: NSSize
         if let visibleFrame = targetScreen?.visibleFrame {
             size = NSSize(
@@ -739,8 +737,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         }
 
         let frame = LauncherPanelLayout.resizedFrame(
-            panel.frame, to: size, anchorTop: viewModel.mode == .root
+            panel.frame, to: size, anchorTop: true
         )
+        guard frame != panel.frame else { return }
 
         guard animated, panel.isVisible else {
             panel.setFrame(frame, display: panel.isVisible)
@@ -758,20 +757,20 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
     private func presentPanel() {
         let startedAt = DispatchTime.now().uptimeNanoseconds
         defer { LauncherPerformanceDiagnostics.shared.mark("surface-presentation", startedAt: startedAt, budget: 50) }
+        if panel.isVisible {
+            panel.makeKeyAndOrderFront(nil)
+            return
+        }
         let targetScreen = screenUnderPointer() ?? NSScreen.main ?? NSScreen.screens.first
         var finalOrigin = panel.frame.origin
         if let visibleFrame = targetScreen?.visibleFrame {
             let size = panel.frame.size
             let x = visibleFrame.midX - size.width / 2
-            let y: CGFloat
-            if viewModel.mode == .root {
-                // Present the compact command surface like a palette. Search
-                // expansion preserves its top edge, so the input does not move.
-                y = visibleFrame.midY - size.height / 2 - 36
-            } else {
-                let topInset = max(64, visibleFrame.height * 0.12)
-                y = max(visibleFrame.minY + 24, visibleFrame.maxY - size.height - topInset)
-            }
+            // Every launcher surface opens under the same display-relative top
+            // edge, independent of its height. Mode changes then resize below
+            // that anchor rather than moving the search header.
+            let topInset = max(64, visibleFrame.height * 0.12)
+            let y = max(visibleFrame.minY + 24, visibleFrame.maxY - size.height - topInset)
             finalOrigin = NSPoint(x: x, y: y)
         }
         let reduceMotion = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -863,7 +862,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .surface(let session):
             switch session.surface.handler {
             case .formatter: formatterModel.format()
-            case .workflows: workflowModel.executeSelected()
+            case .workflows: break
             default: break
             }
 
@@ -878,6 +877,9 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                   event.window === self.panel, self.panel.attachedSheet == nil else { return event }
             let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
             let characters = event.charactersIgnoringModifiers?.lowercased() ?? ""
+            if let editor = self.panel.firstResponder as? NSTextView, editor.hasMarkedText() {
+                return event
+            }
 
             // The launcher consumes menu shortcuts itself while its panel is key.
             // Stop one active task even if an action menu or AI composer is open.
@@ -886,11 +888,21 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return nil
             }
 
+            // The alias field owns ordinary text editing; only its explicit
+            // Return and Escape intents are routed at the launcher level.
+            if self.viewModel.aliasEditorItem != nil {
+                switch event.keyCode {
+                case 53: self.viewModel.handleEscape(); return nil
+                case 36, 76: _ = self.viewModel.saveAliasDraft(); return nil
+                default: return event
+                }
+            }
+
             // Action menus own their selection. Never execute or move the
             // search result hidden behind an open menu.
             if self.viewModel.actionPanelItem != nil {
                 switch event.keyCode {
-                case 53: self.viewModel.closeActionPanel()
+                case 53: self.viewModel.handleEscape()
                 case 125: self.viewModel.moveActionPanelSelection(by: 1)
                 case 126: self.viewModel.moveActionPanelSelection(by: -1)
                 case 36, 76, 49: self.viewModel.executeSelectedPanelAction()
@@ -905,12 +917,36 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 return nil
             }
 
+            // The inline audio selector owns its own keyboard navigation. An
+            // arrow only highlights a row; Return requests a verified switch,
+            // while Escape closes it without touching the system default.
+            if self.viewModel.isAudioOutputPickerPresented {
+                let plainKey = !flags.contains(.command) && !flags.contains(.option) && !flags.contains(.control)
+                switch event.keyCode {
+                case 53:
+                    self.viewModel.closeAudioOutputPicker()
+                    return nil
+                case 125 where plainKey:
+                    self.viewModel.audioOutputPicker.moveSelection(by: 1)
+                    return nil
+                case 126 where plainKey:
+                    self.viewModel.audioOutputPicker.moveSelection(by: -1)
+                    return nil
+                case 36 where plainKey, 76 where plainKey:
+                    self.viewModel.audioOutputPicker.switchSelection { [weak self] in
+                        self?.viewModel.closeAudioOutputPicker()
+                    }
+                    return nil
+                default: break
+                }
+            }
+
             // In terminal mode the PTY receives every ordinary keystroke.
             // Escape is the only launcher-level action, allowing the user to
             // leave the terminal without adding a second command surface.
             if viewModel.mode == .terminal {
                 if event.keyCode == 53 {
-                    viewModel.enter(.root)
+                    viewModel.handleEscape()
                     return nil
                 }
                 return event
@@ -924,7 +960,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             if case .surface(let session) = viewModel.mode,
                session.surface.handler == .aiChat {
                 if LauncherAIKeyboardRoute.action(for: event) == .navigateBack {
-                    viewModel.enter(.root)
+                    viewModel.handleEscape()
                     return nil
                 }
                 return event
@@ -1025,7 +1061,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 case .surface(let session):
                     switch session.surface.handler {
                     case .formatter: formatterModel.format()
-                    case .workflows: workflowModel.executeSelected()
+                    case .workflows: break
                     default: break
                     }
                 default:
@@ -1071,10 +1107,6 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 }
             }
             if event.keyCode == 53 {
-                if self.viewModel.actionPanelItem != nil {
-                    self.viewModel.closeActionPanel()
-                    return nil
-                }
                 // Escape is navigation, not cancellation. Long-running work
                 // stays visible in the Activity Shelf and ends only through an
                 // explicit Stop control owned by that task.
@@ -1420,16 +1452,23 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         pendingFileActionURL = url
         let menu = NSMenu(title: "File Actions")
         menu.autoenablesItems = false
-        let canUseAI = AIRequestPolicy.shared.isEnabled && AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url))
-        let hasCode = ["com.microsoft.VSCode", "com.visualstudio.code.oss"]
-            .contains { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }
-        for action in LauncherFileAction.allCases {
-            if (action == .describeWithAI || action == .askAIAboutFile) && !canUseAI { continue }
-            if action == .openInCode && !hasCode { continue }
-            let item = NSMenuItem(title: action.title, action: #selector(performFileActionMenuItem(_:)), keyEquivalent: "")
+        var capabilities = LimaActionRegistry.Capabilities()
+        capabilities.objectExists = FileManager.default.fileExists(atPath: url.path)
+        capabilities.canAttachFileToAI = capabilities.objectExists &&
+            AIRequestPolicy.shared.isEnabled &&
+            AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url))
+        capabilities.canOpenInCode = capabilities.objectExists &&
+            ["com.microsoft.VSCode", "com.visualstudio.code.oss"].contains {
+                NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+            }
+        for descriptor in LimaActionRegistry.fileActions(for: url, capabilities: capabilities) {
+            guard case .fileAction(_, let action) = descriptor.action else { continue }
+            let item = NSMenuItem(title: descriptor.title,
+                                  action: #selector(performFileActionMenuItem(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = action.rawValue
-            item.image = NSImage(systemSymbolName: action.symbol, accessibilityDescription: action.title)
+            item.image = NSImage(systemSymbolName: descriptor.symbol,
+                                 accessibilityDescription: descriptor.title)
             menu.addItem(item)
         }
         let point = NSPoint(x: panel.contentView?.bounds.midX ?? panel.frame.width / 2, y: 24)
@@ -1492,7 +1531,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         case .formatter:
             notesWindow.present(module: .formatter)
         case .workflows:
-            notesWindow.present(module: .workflows)
+            notesWindow.present(module: .home)
         case .extensionDevelopment:
             let window = ExtensionDevelopmentWindowController()
             retainedSurfaceWindows.append(window)
@@ -2851,109 +2890,14 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
         case .command:
-            if result.id.hasPrefix("workflow:"),
-               let id = UUID(uuidString: String(result.id.dropFirst("workflow:".count))),
-               let workflow = WorkflowStore.shared.workflows.first(where: { $0.id == id }) {
-                executeWorkflow(workflow)
+            if result.id.hasPrefix("workflow:") {
+                presentError(title: "Workflows retired", message: "Saved definitions can be exported from Settings. They no longer run in Lima.")
             } else {
                 presentError(title: result.title, message: "This command cannot be opened from universal search.")
             }
 
         default:
             presentError(title: result.title, message: "This result type is not routable yet.")
-        }
-    }
-
-    private func executeWorkflow(_ workflow: WorkflowDefinition) {
-        guard workflowTask == nil else {
-            presentError(title: "Workflow already running", message: "Stop the current workflow before starting another.")
-            return
-        }
-        guard !workflow.steps.isEmpty else {
-            presentError(title: workflow.name, message: "Add at least one command before running this workflow.")
-            return
-        }
-        surfaceSessionController.suspendTimeout(for: "workflow-confirmation")
-        let alert = NSAlert()
-        alert.alertStyle = .informational
-        alert.messageText = "Run \(workflow.name)?"
-        alert.informativeText = "This workflow contains \(workflow.steps.count) step\(workflow.steps.count == 1 ? "" : "s"). Each step will be reported individually."
-        alert.addButton(withTitle: "Run Workflow")
-        alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else {
-            surfaceSessionController.resumeTimeout(for: "workflow-confirmation")
-            return
-        }
-        hide()
-        let measurementID = PerformanceMonitor.shared.begin(.workflowExecution)
-        let taskID = TaskRegistry.shared.begin(
-            kind: .workflow,
-            title: workflow.name,
-            detail: "Running \(workflow.steps.count) steps",
-            progress: 0,
-            isCancellable: true,
-            onCancel: { [weak self] in self?.workflowTask?.cancel() }
-        )
-        workflowTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let report = await WorkflowExecutor().execute(workflow, confirm: true) { [weak self] commandID in
-                try await self?.executeWorkflowCommand(commandID)
-            }
-            let cancelled = Task.isCancelled
-            let failed = report.steps.filter { !$0.succeeded }
-            let state: LimaTaskState = cancelled ? .cancelled : (failed.isEmpty ? .completed : .failed)
-            TaskRegistry.shared.finish(taskID, state: state)
-            PerformanceMonitor.shared.end(measurementID, succeeded: state == .completed)
-            if cancelled {
-                self.toast.show("Workflow stopped")
-            } else if failed.isEmpty {
-                self.toast.show("Workflow completed")
-            } else {
-                self.presentError(
-                    title: "Workflow completed with errors",
-                    message: failed.map { "\($0.commandID): \($0.message ?? "Failed")" }.joined(separator: "\n")
-                )
-            }
-            self.workflowTask = nil
-            self.surfaceSessionController.resumeTimeout(for: "workflow-confirmation")
-        }
-    }
-
-    private func executeWorkflowCommand(_ commandID: String) async throws {
-        try Task.checkCancellation()
-        guard let resolved = LimaWorkflowCommandCatalog.resolve(commandID, extensions: viewModel.extensionCommands) else {
-            throw NSError(domain: "LimaWorkflow", code: 1, userInfo: [NSLocalizedDescriptionKey: "Command \(commandID) is unavailable."])
-        }
-        switch resolved.source {
-        case .builtin(let builtin):
-            switch builtin {
-            case .openNotes: notesWindow.present(module: .notes)
-            case .openAI: notesWindow.present(module: .ai)
-            case .openContext: notesWindow.present(module: .context)
-            case .openTerminal: notesWindow.present(module: .terminal)
-            case .createNote:
-                try createNoteAndOpen()
-            case .captureClipboard:
-                let text = NSPasteboard.general.string(forType: .string) ?? ""
-                let id = try CaptureNoteService.save(text, source: .clipboard, in: notesWindow.store)
-                notesWindow.selectNote(id)
-                notesWindow.present(module: .notes)
-            }
-            return
-        case .extensionCommand(let command):
-            let result = try await extensionExecutor.executeAsync(command, clipboard: clipboard)
-            switch result.payload {
-            case .text:
-                return
-            case .native(let action):
-                await withCheckedContinuation { continuation in
-                    dispatchNativeAction(action) { continuation.resume() }
-                }
-            case .nativeChain(let actions):
-                await withCheckedContinuation { continuation in
-                    dispatchNativeChain(actions) { continuation.resume() }
-                }
-            }
         }
     }
 
@@ -3060,9 +3004,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             startQuickRegionCapture(.text)
 
         case .openAudioOutput:
-            let source = previousApplication ?? lastExternalApplication
-            hide()
-            AudioOutputWindowController.shared.present(returningTo: source)
+            viewModel.openAudioOutputPicker()
 
         case .openNetworkQuality:
             let source = previousApplication ?? lastExternalApplication
@@ -3087,7 +3029,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             }
 
         case .openWorkflows:
-            notesWindow.present(module: .workflows)
+            notesWindow.present(module: .home)
 
         case .openSettings:
             showSettings()

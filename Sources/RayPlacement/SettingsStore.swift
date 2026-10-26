@@ -267,7 +267,7 @@ enum DictationEngine: String, CaseIterable, Identifiable {
         case .appleSpeech:
             return "Uses macOS on-device recognition for the fastest live updates, with short local windows and no cloud transcription."
         case .openAICloud:
-            return "Uploads recorded audio segments to OpenAI after Stop. Requires an OpenAI API key in Settings → AI; audio is preserved locally if upload or transcription fails."
+            return "Uploads recorded audio segments to OpenAI after Stop. Optional AI cleanup also sends the transcript to OpenAI; the original text is kept if cleanup fails. Requires an OpenAI API key in Settings → AI."
         }
     }
 }
@@ -502,6 +502,7 @@ final class SettingsStore: ObservableObject {
         static let inlineGrammarCheckingEnabled = "inlineGrammarCheckingEnabled"
         static let dictationPerformance = "dictationPerformance"
         static let dictationEngine = "dictationEngine"
+        static let dictationAICleanupEnabled = "dictationAICleanupEnabled"
         static let dictationComputeMode = "dictationComputeMode"
         static let extensionPerformance = "extensionPerformance"
         static let dynamicPerformance = "dynamicPerformance"
@@ -1037,6 +1038,10 @@ final class SettingsStore: ObservableObject {
         didSet { defaults.set(dictationEngine.rawValue, forKey: Key.dictationEngine) }
     }
 
+    @Published var dictationAICleanupEnabled: Bool {
+        didSet { defaults.set(dictationAICleanupEnabled, forKey: Key.dictationAICleanupEnabled) }
+    }
+
     @Published var dictationComputeMode: DictationComputeMode {
         didSet { defaults.set(dictationComputeMode.rawValue, forKey: Key.dictationComputeMode) }
     }
@@ -1212,6 +1217,7 @@ final class SettingsStore: ObservableObject {
         inlineGrammarCheckingEnabled = defaults.object(forKey: Key.inlineGrammarCheckingEnabled) as? Bool ?? true
         dictationPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.dictationPerformance) ?? "") ?? .eco
         dictationEngine = DictationEngine(rawValue: defaults.string(forKey: Key.dictationEngine) ?? "") ?? .localWhisper
+        dictationAICleanupEnabled = defaults.object(forKey: Key.dictationAICleanupEnabled) as? Bool ?? true
         dictationComputeMode = DictationComputeMode(rawValue: defaults.string(forKey: Key.dictationComputeMode) ?? "") ?? .automatic
         extensionPerformance = PerformanceScale(rawValue: defaults.string(forKey: Key.extensionPerformance) ?? "") ?? .eco
         dynamicPerformance = defaults.object(forKey: Key.dynamicPerformance) as? Bool ?? false

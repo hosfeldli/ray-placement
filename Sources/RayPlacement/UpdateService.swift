@@ -92,6 +92,7 @@ final class UpdateService: ObservableObject {
     }
 
     static let repositoryURL = URL(string: "https://github.com/hosfeldli/ray-placement")!
+    static let releasesURL = repositoryURL.appendingPathComponent("releases")
     private static let latestReleaseURL = URL(string: "https://api.github.com/repos/hosfeldli/ray-placement/releases/latest")!
     private static var siteMetadataURL: URL? {
         guard let raw = Bundle.main.object(forInfoDictionaryKey: "LimaUpdateMetadataURL") as? String,
@@ -102,6 +103,7 @@ final class UpdateService: ObservableObject {
     @Published private(set) var statusText = "Updates are checked from the Lima site when Lima starts."
     @Published private(set) var isBusy = false
     @Published private(set) var latestVersion: String?
+    @Published private(set) var availableRelease: Release?
     @Published private(set) var isInstalling = false
     @Published private(set) var installationProgress = 0.0
     @Published private(set) var installationStage = ""
@@ -112,6 +114,7 @@ final class UpdateService: ObservableObject {
     @Published private(set) var installationStartedAt: Date?
 
     var onReleaseAvailable: ((Release) -> Void)?
+    var onReleaseDiscovered: ((Release) -> Void)?
     var onInstallStarted: (() -> Void)?
     private let resultFile = ApplicationPaths.updates.appendingPathComponent("last-update-result.txt")
     private let progressFile = ApplicationPaths.updates.appendingPathComponent("update-progress.txt")
@@ -179,12 +182,37 @@ final class UpdateService: ObservableObject {
         if SparkleMigrationBoundary.activeBackend == .sparkle {
             statusText = "Sparkle is checking for Lima updates…"
             SparkleUpdateService.shared.checkForUpdates()
+            refreshPublishedReleaseMetadata()
             return
         }
         guard !isBusy, !isInstalling else { return }
         isBusy = true
         statusText = "Checking for Lima updates…"
         fetchReleaseMetadata(manual: manual, candidates: Self.metadataCandidates())
+    }
+
+    func reviewAvailableRelease() {
+        guard let availableRelease else { return }
+        onReleaseAvailable?(availableRelease)
+    }
+
+    /// Informational notes for the production Sparkle path. The GitHub
+    /// response cannot authorize installation; Sparkle still verifies its
+    /// signed appcast and update independently.
+    func refreshPublishedReleaseMetadata() {
+        var request = URLRequest(url: Self.latestReleaseURL)
+        request.timeoutInterval = rayPlacementUpdateMetadataTimeout
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("Lima/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+        URLSession.shared.dataTask(with: request) { [weak self] data, response, error in
+            guard error == nil, let data, data.count <= 256 * 1_024,
+                  let response = response as? HTTPURLResponse,
+                  (200..<300).contains(response.statusCode),
+                  let release = try? JSONDecoder().decode(Release.self, from: data) else { return }
+            Task { @MainActor [weak self] in
+                self?.finishUpdateCheck(release, manual: false)
+            }
+        }.resume()
     }
 
     private static func metadataCandidates() -> [(url: URL, isSite: Bool)] {
@@ -287,11 +315,14 @@ final class UpdateService: ObservableObject {
         }
         latestVersion = release.versionText
         guard installedVersion < remoteVersion else {
+            availableRelease = nil
             statusText = "Lima \(currentVersion) is up to date."
             return
         }
+        availableRelease = release
         statusText = "Lima \(release.versionText) is available."
-        onReleaseAvailable?(release)
+        onReleaseDiscovered?(release)
+        if manual { onReleaseAvailable?(release) }
     }
 
     func install(_ release: Release) {

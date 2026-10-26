@@ -11,6 +11,16 @@ protocol LauncherViewModelDelegate: AnyObject {
     func launcherViewModelDidRequestHide(_ viewModel: LauncherViewModel)
 }
 
+/// Session-local history for transient launcher surfaces. The mode itself is
+/// retained so returning from a picker does not fabricate a new surface state.
+private struct LauncherNavigationFrame {
+    let mode: LauncherMode
+    let query: String
+    let selectedResultID: String?
+    let selectedIndex: Int
+    let scrollAnchorID: String?
+}
+
 @MainActor
 final class LauncherViewModel: ObservableObject {
     // Keep the grid geometry in one place so keyboard navigation matches the
@@ -20,9 +30,11 @@ final class LauncherViewModel: ObservableObject {
     @Published var query = "" {
         didSet {
             if oldValue != query {
+                closeAudioOutputPicker()
                 let phase = LauncherSearchPhase(query: query)
                 if searchPhase != phase { searchPhase = phase }
                 closeActionPanel()
+                if mode == .root { keyboardNavigationQuery = nil }
                 if mode == .root {
                     if let item = selectedItem, item.id != "root.empty" {
                         preferredRootSelectionID = item.id
@@ -46,6 +58,8 @@ final class LauncherViewModel: ObservableObject {
     }
     @Published private(set) var mode: LauncherMode = .root
     @Published private(set) var searchPhase: LauncherSearchPhase = .idle
+    @Published private(set) var isAudioOutputPickerPresented = false
+    let audioOutputPicker = AudioOutputPickerModel()
     @Published private(set) var results: [LauncherItem] = []
     @Published private(set) var universalResults: [LimaSearchResult] = []
     /// The emoji picker owns its own lightweight data path. Keeping the raw
@@ -55,6 +69,7 @@ final class LauncherViewModel: ObservableObject {
     /// Only keyboard/page navigation increments this value. Pointer hover may
     /// update the highlighted row, but must never recenter the scroll view.
     @Published private(set) var navigationGeneration = 0
+    @Published private(set) var scrollRestorationAnchorID: String?
     @Published private(set) var isSearching = false
     @Published private(set) var extensionIssues: [ExtensionIssue] = []
     @Published private(set) var focusGeneration = 0
@@ -66,8 +81,13 @@ final class LauncherViewModel: ObservableObject {
     }
     @Published private(set) var timezoneDidCopy = false
     @Published private(set) var contextualSelectionText: String?
+    private(set) var sourceApplicationID: String?
+    private(set) var sourceApplicationName: String?
     @Published private(set) var actionPanelItem: LauncherItem?
     @Published private(set) var actionPanelSelectedIndex = 0
+    @Published private(set) var aliasEditorItem: LauncherItem?
+    @Published var aliasEditorDraft = "" { didSet { aliasEditorError = nil } }
+    @Published private(set) var aliasEditorError: String?
 
     weak var delegate: LauncherViewModelDelegate?
 
@@ -81,7 +101,7 @@ final class LauncherViewModel: ObservableObject {
     /// Each source owns its own command models and normalized documents. A note
     /// edit updates only Notes documents; applications and commands stay cached.
     private enum CatalogSource: CaseIterable {
-        case builtins, extensions, applications, macros, notes, shelf, clipboard, workflows, outputs
+        case builtins, extensions, applications, macros, notes, shelf, clipboard, outputs
     }
     private var catalogItemsBySource: [CatalogSource: [LauncherItem]] = [:]
     private var catalogInputsBySource: [CatalogSource: [LauncherSearchDocumentInput]] = [:]
@@ -113,6 +133,9 @@ final class LauncherViewModel: ObservableObject {
     /// query arrives. This prevents a placeholder flash and stale execution.
     private var renderedRootQuery = ""
     private var preferredRootSelectionID: String?
+    private var navigationFrames: [LauncherNavigationFrame] = []
+    private var keyboardNavigationQuery: String?
+    private var visibleSearchScrollAnchorID: String?
     private var clipboardSearchWorkItem: DispatchWorkItem?
     private var clipboardSearchGeneration = 0
     private var clipboardObserver: AnyCancellable?
@@ -128,7 +151,6 @@ final class LauncherViewModel: ObservableObject {
             // other store UI changes must not invalidate the command catalog.
             NotesStore.shared.$notes.sink { [weak self] _ in self?.rootCatalogDidChange(.notes) },
             ContextShelfStore.shared.$items.sink { [weak self] _ in self?.rootCatalogDidChange(.shelf) },
-            WorkflowStore.shared.$workflows.sink { [weak self] _ in self?.rootCatalogDidChange(.workflows) },
             LimaMacroStore.shared.$chains.sink { [weak self] _ in self?.rootCatalogDidChange(.macros) },
             ExtensionOutputStore.shared.$outputs.sink { [weak self] _ in self?.rootCatalogDidChange(.outputs) },
             CommandManager.shared.$favoriteIDs.sink { [weak self] _ in self?.rootCatalogDidChange() },
@@ -292,6 +314,16 @@ final class LauncherViewModel: ObservableObject {
         if mode == .root { refreshResults() }
     }
 
+    /// Only app identity participates in local ranking. Selection and window
+    /// content follow their separate explicit-context paths.
+    func setSourceApplication(id: String?, name: String?) {
+        guard sourceApplicationID != id || sourceApplicationName != name else { return }
+        sourceApplicationID = id
+        sourceApplicationName = name
+        invalidateSearchDocuments()
+        if mode == .root && searchPresented { refreshResults() }
+    }
+
     func refreshForSettings() {
         invalidateRootCatalog()
         if searchPresented { refreshResults() }
@@ -303,6 +335,11 @@ final class LauncherViewModel: ObservableObject {
         if presented {
             if mode == .root, searchPhase == .active { refreshRootResults() }
         } else {
+            closeAudioOutputPicker()
+            navigationFrames.removeAll()
+            keyboardNavigationQuery = nil
+            visibleSearchScrollAnchorID = nil
+            scrollRestorationAnchorID = nil
             searchWorkItem?.cancel()
             localSearchTask?.cancel()
             universalSearchTask?.cancel()
@@ -322,6 +359,18 @@ final class LauncherViewModel: ObservableObject {
                 preferredRootSelectionID = nil
             }
         }
+    }
+
+    func openAudioOutputPicker() {
+        guard mode == .root else { return }
+        isAudioOutputPickerPresented = true
+        audioOutputPicker.start()
+    }
+
+    func closeAudioOutputPicker() {
+        guard isAudioOutputPickerPresented else { return }
+        isAudioOutputPickerPresented = false
+        audioOutputPicker.stop()
     }
 
     private func rootCatalogDidChange(_ source: CatalogSource? = nil) {
@@ -364,7 +413,6 @@ final class LauncherViewModel: ObservableObject {
         case .notes: items = noteItems()
         case .shelf: items = shelfItems()
         case .clipboard: items = clipboardItems()
-        case .workflows: items = workflowItems()
         case .outputs: items = outputItems()
         }
         catalogItemsBySource[source] = items
@@ -397,9 +445,10 @@ final class LauncherViewModel: ObservableObject {
                 let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
                 return LauncherSearchDocumentInput(
                     item: item, searchText: clipboardText[item.id],
-                    userAliases: aliasStore.aliases(for: item.id),
+                    userAliases: aliasStore.isEnabled(for: item.id) ? aliasStore.aliases(for: item.id) : [],
                     extensionAliases: extensionAliases[item.id] ?? [],
-                    rankingBonus: usage.score(for: item.id) + favoriteBonus
+                    rankingBonus: usage.score(for: item.id, sourceApplicationID: sourceApplicationID,
+                                              sourceApplicationName: sourceApplicationName) + favoriteBonus
                 )
             }
             catalogInputsBySource[source] = built
@@ -426,15 +475,96 @@ final class LauncherViewModel: ObservableObject {
     #endif
 
     func aliases(for commandID: String) -> [String] { aliasStore.aliases(for: commandID) }
+
+    func openAliasEditor(for item: LauncherItem) {
+        guard mode == .root, commandDescriptors.contains(where: { $0.id == item.id }) else { return }
+        closeActionPanel()
+        aliasEditorDraft = ""
+        aliasEditorError = nil
+        aliasEditorItem = item
+    }
+
+    func closeAliasEditor() {
+        aliasEditorItem = nil
+        aliasEditorDraft = ""
+        aliasEditorError = nil
+    }
+
+    @discardableResult
+    func saveAliasDraft() -> Bool {
+        guard let item = aliasEditorItem else { return false }
+        let alias = aliasEditorDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !alias.isEmpty, alias.count <= 64,
+              !alias.contains(","), !alias.contains("\n") else {
+            aliasEditorError = "Enter one alias of up to 64 characters without commas."
+            return false
+        }
+        if let error = setAliases(aliases(for: item.id) + [alias], for: item.id) {
+            aliasEditorError = error
+            return false
+        }
+        closeAliasEditor()
+        return true
+    }
+
+    func aliasesEnabled(for commandID: String) -> Bool { aliasStore.isEnabled(for: commandID) }
+
+    func aliasConflict(_ aliases: [String], for commandID: String) -> String? {
+        let normalized = CommandAliasStore.normalize(aliases)
+        for alias in normalized {
+            if let titleOwner = commandDescriptors.first(where: {
+                $0.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == alias
+            }) {
+                return "“\(alias)” matches the exact title of \(titleOwner.title)."
+            }
+            if let extensionOwner = extensionCommands.first(where: {
+                $0.command.aliases?.contains(where: {
+                    $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == alias
+                }) == true
+            }) {
+                return "“\(alias)” is provided by \(extensionOwner.command.title)."
+            }
+        }
+        if let conflict = aliasStore.conflict(for: normalized, excluding: commandID) {
+            let owner = commandDescriptors.first(where: { $0.id == conflict.commandID })?.title ?? conflict.commandID
+            return "“\(conflict.alias)” is already assigned to \(owner)."
+        }
+        return nil
+    }
+
     private func invalidateSearchDocuments() {
         searchCatalog = nil
         catalogInputsBySource.removeAll()
     }
 
-    func setAliases(_ aliases: [String], for commandID: String) { aliasStore.set(aliases, for: commandID); invalidateSearchDocuments(); refreshResults() }
+    @discardableResult
+    func setAliases(_ aliases: [String], for commandID: String) -> String? {
+        if let conflict = aliasConflict(aliases, for: commandID) { return conflict }
+        if let conflict = aliasStore.set(aliases, for: commandID) {
+            return "“\(conflict.alias)” is already assigned to another command."
+        }
+        invalidateSearchDocuments()
+        refreshResults()
+        return nil
+    }
+
+    func setAliasesEnabled(_ enabled: Bool, for commandID: String) {
+        objectWillChange.send()
+        aliasStore.setEnabled(enabled, for: commandID)
+        invalidateSearchDocuments()
+        refreshResults()
+    }
     func resetLearnedRanking() { usage.reset(); invalidateSearchDocuments(); refreshResults() }
     func forgetLearnedRanking(_ commandID: String) { usage.forget(commandID); invalidateSearchDocuments(); refreshResults() }
     func lastLearnedCommands(limit: Int = 10) -> [String] { usage.recentIdentifiers(limit: limit) }
+    var learnedSourceApplications: [SearchLearningApplication] { usage.knownSourceApplications }
+    func isSourceApplicationExcluded(_ id: String) -> Bool { usage.isExcluded(id) }
+    func setSourceApplicationExcluded(_ excluded: Bool, id: String) {
+        objectWillChange.send()
+        usage.setExcluded(excluded, id: id)
+        invalidateSearchDocuments()
+        if mode == .root && searchPresented { refreshResults() }
+    }
 
     var commandDescriptors: [ManagedCommandDescriptor] {
         var descriptors = builtInItems().map { ManagedCommandDescriptor(id: $0.id, title: $0.title, subtitle: $0.subtitle) }
@@ -449,6 +579,11 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func resetForPresentation() {
+        navigationFrames.removeAll()
+        keyboardNavigationQuery = nil
+        visibleSearchScrollAnchorID = nil
+        scrollRestorationAnchorID = nil
+        closeAliasEditor()
         searchWorkItem?.cancel()
         localSearchTask?.cancel()
         universalSearchTask?.cancel()
@@ -498,6 +633,10 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func resetToRoot() {
+        navigationFrames.removeAll()
+        preferredRootSelectionID = nil
+        visibleSearchScrollAnchorID = nil
+        scrollRestorationAnchorID = nil
         mode = .root
         query = ""
         selectedIndex = 0
@@ -534,6 +673,56 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func enter(_ newMode: LauncherMode) {
+        if newMode == .root {
+            navigationFrames.removeAll()
+        } else if newMode != mode {
+            navigationFrames.append(currentNavigationFrame())
+        }
+        transition(to: newMode, restoring: nil)
+    }
+
+    /// Pop exactly one launcher surface. At the root, the caller decides
+    /// whether Escape dismisses the panel; it never cancels background work.
+    @discardableResult
+    func navigateBack() -> Bool {
+        if aliasEditorItem != nil {
+            closeAliasEditor()
+            return true
+        }
+        if actionPanelItem != nil {
+            closeActionPanel()
+            return true
+        }
+        if let frame = navigationFrames.popLast() {
+            transition(to: frame.mode, restoring: frame)
+            return true
+        }
+        guard mode != .root else { return false }
+        transition(to: .root, restoring: nil)
+        return true
+    }
+
+    func recordSearchScrollAnchor(_ id: String?) {
+        guard mode == .root, scrollRestorationAnchorID == nil else { return }
+        visibleSearchScrollAnchorID = id
+    }
+
+    func consumeSearchScrollRestorationAnchor(_ id: String) {
+        guard scrollRestorationAnchorID == id else { return }
+        scrollRestorationAnchorID = nil
+        visibleSearchScrollAnchorID = id
+    }
+
+    private func currentNavigationFrame() -> LauncherNavigationFrame {
+        LauncherNavigationFrame(
+            mode: mode, query: query,
+            selectedResultID: selectedItem?.id,
+            selectedIndex: selectedIndex,
+            scrollAnchorID: mode == .root ? visibleSearchScrollAnchorID : nil
+        )
+    }
+
+    private func transition(to newMode: LauncherMode, restoring frame: LauncherNavigationFrame?) {
         searchWorkItem?.cancel()
         localSearchTask?.cancel()
         rootLocalSearchPending = false
@@ -545,14 +734,27 @@ final class LauncherViewModel: ObservableObject {
         rootUniversalSearchPending = false
         rootFileResults = []
         mode = newMode
-        query = ""
-        selectedIndex = 0
-        if newMode == .files,
-           let restoredQuery = SurfaceStateCache.shared.string(for: "files", key: "query"),
-           !restoredQuery.isEmpty {
-            query = restoredQuery
+        results = []
+        selectedIndex = frame?.selectedIndex ?? 0
+        preferredRootSelectionID = newMode == .root ? frame?.selectedResultID : nil
+        visibleSearchScrollAnchorID = newMode == .root ? frame?.scrollAnchorID : nil
+        scrollRestorationAnchorID = newMode == .root ? frame?.scrollAnchorID : nil
+        let nextQuery: String
+        if let frame {
+            nextQuery = frame.query
+        } else if newMode == .files {
+            nextQuery = SurfaceStateCache.shared.string(for: "files", key: "query") ?? ""
+        } else {
+            nextQuery = ""
+        }
+        if query != nextQuery {
+            query = nextQuery
         } else {
             refreshResults()
+        }
+        if newMode != .root, let id = frame?.selectedResultID,
+           let index = results.firstIndex(where: { $0.id == id }) {
+            selectedIndex = index
         }
     }
 
@@ -567,15 +769,11 @@ final class LauncherViewModel: ObservableObject {
         text: String,
         state: LauncherOutputState = .success
     ) {
-        mode = .output(title: title, text: text, state: state)
-        query = ""
-        results = []
+        enter(.output(title: title, text: text, state: state))
     }
 
     func showWritingReview(_ review: WritingReview) {
-        mode = .writingReview(review)
-        query = ""
-        results = []
+        enter(.writingReview(review))
     }
 
     func copyWritingResult(_ review: WritingReview) {
@@ -632,7 +830,12 @@ final class LauncherViewModel: ObservableObject {
         }
         guard !results.isEmpty else { return }
         selectedIndex = (selectedIndex + delta + results.count) % results.count
-        if mode == .root { preferredRootSelectionID = nil }
+        if mode == .root {
+            preferredRootSelectionID = selectedItem?.id
+            if renderedRootQuery == query.trimmingCharacters(in: .whitespacesAndNewlines) {
+                keyboardNavigationQuery = renderedRootQuery
+            }
+        }
         navigationGeneration += 1
     }
 
@@ -680,7 +883,7 @@ final class LauncherViewModel: ObservableObject {
         }
         guard results.indices.contains(index) else { return }
         selectedIndex = index
-        if mode == .root { preferredRootSelectionID = nil }
+        if mode == .root { preferredRootSelectionID = selectedItem?.id }
     }
 
     func openActionPanel(for item: LauncherItem? = nil) {
@@ -711,48 +914,35 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func actionPanelActions(for item: LauncherItem) -> [LauncherItemAction] {
+        var capabilities = LimaActionRegistry.Capabilities()
+        capabilities.isFavorite = CommandManager.shared.isFavorite(item.id)
+
         switch item.action {
-        case .fileAction(let url, _):
-            var actions = [
-                LauncherItemAction(id: "open", title: "Open", symbol: "arrow.up.forward.app", shortcut: nil, role: .primary, action: .fileAction(url, .open)),
-                LauncherItemAction(id: "quick-look", title: "Quick Look", symbol: "eye", shortcut: nil, role: .secondary, action: .fileAction(url, .quickLook)),
-                LauncherItemAction(id: "reveal", title: "Reveal in Finder", symbol: "finder", shortcut: nil, role: .secondary, action: .fileAction(url, .reveal)),
-                LauncherItemAction(id: "copy-path", title: "Copy Path", symbol: "doc.on.doc", shortcut: nil, role: .secondary, action: .fileAction(url, .copyPath)),
-                LauncherItemAction(id: "terminal", title: "Open Terminal Here", symbol: "terminal", shortcut: nil, role: .secondary, action: .fileAction(url, .openTerminalHere))
-            ]
-            if ["com.microsoft.VSCode", "com.visualstudio.code.oss"].contains(where: { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil }) {
-                actions.append(LauncherItemAction(id: "code", title: "Open in Code", symbol: "chevron.left.forwardslash.chevron.right", shortcut: nil, role: .secondary, action: .fileAction(url, .openInCode)))
-            }
-            if AIRequestPolicy.shared.isEnabled && AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url)) {
-                actions.append(LauncherItemAction(id: "describe-ai", title: "Describe with AI…", symbol: "text.magnifyingglass", shortcut: nil, role: .secondary, action: .fileAction(url, .describeWithAI)))
-                actions.append(LauncherItemAction(id: "ask-ai", title: "Ask AI About File…", symbol: "sparkles", shortcut: nil, role: .secondary, action: .fileAction(url, .askAIAboutFile)))
-            }
-            actions.append(LauncherItemAction(id: "shelf", title: "Add to Shelf", symbol: "tray.and.arrow.down", shortcut: nil, role: .secondary, action: .fileAction(url, .addToShelf)))
-            actions.append(LauncherItemAction(id: "note", title: "Append to Note", symbol: "note.text.badge.plus", shortcut: nil, role: .secondary, action: .fileAction(url, .sendToNote)))
-            return actions
+        case .fileAction(let url, _), .openFile(let url), .revealFile(let url):
+            capabilities.objectExists = FileManager.default.fileExists(atPath: url.path)
+            capabilities.canOpenInCode = capabilities.objectExists &&
+                ["com.microsoft.VSCode", "com.visualstudio.code.oss"].contains {
+                    NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) != nil
+                }
+            capabilities.canAttachFileToAI = capabilities.objectExists &&
+                AIRequestPolicy.shared.isEnabled &&
+                AIFileAttachmentPolicy.canAttach(AIContextCapture.attachment(for: url))
         case .launchApplication(let url):
-            let name = item.title
-            guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleURL == url || $0.localizedName == name }) else {
-                return [LauncherItemAction(id: "open", title: "Open", symbol: "arrow.up.forward.app", shortcut: nil, role: .primary, action: item.action)]
-            }
-            return [
-                LauncherItemAction(id: "open", title: "Open", symbol: "arrow.up.forward.app", shortcut: nil, role: .primary, action: item.action),
-                LauncherItemAction(id: "hide", title: "Hide", symbol: "eye.slash", shortcut: nil, role: .secondary, action: .applicationOperation(operation: "hide", processIdentifier: app.processIdentifier, name: name)),
-                LauncherItemAction(id: "quit", title: "Quit", symbol: "xmark.circle", shortcut: nil, role: .destructive, action: .applicationOperation(operation: "quit", processIdentifier: app.processIdentifier, name: name)),
-                LauncherItemAction(id: "force-quit", title: "Force Quit", symbol: "exclamationmark.octagon", shortcut: nil, role: .destructive, action: .applicationOperation(operation: "forceQuit", processIdentifier: app.processIdentifier, name: name))
-            ]
+            capabilities.objectExists = FileManager.default.fileExists(atPath: url.path)
+            capabilities.runningApplicationPID = NSWorkspace.shared.runningApplications.first {
+                $0.bundleURL == url || $0.localizedName == item.title
+            }?.processIdentifier
         default:
-            var actions = [LauncherItemAction(id: "run", title: LauncherSearchDesign.primaryTitle(for: item), symbol: "play.fill", shortcut: "↩", role: .primary, action: item.action)]
+            capabilities.canEditAlias = commandDescriptors.contains { $0.id == item.id }
             if let context = contextValue(for: item) {
-                actions.append(contentsOf: LimaCompatibilityRegistry.shared.actions(for: context).map {
-                    LauncherItemAction(id: "use-with.\($0.id)", title: $0.title, symbol: $0.symbol, shortcut: nil, role: .secondary, action: $0.action)
-                })
+                capabilities.contextActions = LimaCompatibilityRegistry.shared.actions(for: context).map {
+                    LauncherItemAction(id: "use-with.\($0.id)", title: $0.title,
+                                       symbol: $0.symbol, shortcut: nil,
+                                       role: .secondary, action: $0.action)
+                }
             }
-            let favoriteTitle = CommandManager.shared.isFavorite(item.id) ? "Unpin from Top" : "Pin to Top"
-            actions.append(LauncherItemAction(id: "favorite", title: favoriteTitle, symbol: CommandManager.shared.isFavorite(item.id) ? "pin.slash" : "pin", shortcut: nil, role: .secondary, action: .toggleFavorite(item.id)))
-            actions.append(LauncherItemAction(id: "forget", title: "Forget Ranking", symbol: "clock.badge.xmark", shortcut: nil, role: .destructive, action: .forgetRanking(item.id)))
-            return actions
         }
+        return LimaActionRegistry.actions(for: item, capabilities: capabilities)
     }
 
     private func contextValue(for item: LauncherItem) -> LimaContextValue? {
@@ -775,6 +965,9 @@ final class LauncherViewModel: ObservableObject {
             return LimaContextValue(id: note.id, kind: .note, title: note.title, value: note.content)
         case .shelfItem(let id):
             guard let shelf = ContextShelfStore.shared.items.first(where: { $0.id == id }) else { return nil }
+            // Mail references need a scoped resolver and disclosure review; the
+            // generic Use With path must not turn their preview into AI context.
+            if shelf.isMailReference { return nil }
             return LimaContextValue(kind: .shelfItem, title: shelf.title, value: shelf.textValue ?? shelf.preview)
         case .clipboardEntry(let id):
             guard let entry = clipboard.entries.first(where: { $0.id == id }) else { return nil }
@@ -789,6 +982,11 @@ final class LauncherViewModel: ObservableObject {
     func executeAction(_ action: LauncherItemAction) {
         guard let item = actionPanelItem ?? selectedItem else { return }
         closeActionPanel()
+        if case .editAlias(let id) = action.action {
+            guard id == item.id else { return }
+            openAliasEditor(for: item)
+            return
+        }
         recordUsage(for: item)
         delegate?.launcherViewModel(self, perform: action.action, item: item)
     }
@@ -809,7 +1007,8 @@ final class LauncherViewModel: ObservableObject {
         if item.id.hasPrefix("emoji."), case .pasteText(let emoji) = item.action {
             EmojiUsageStore.shared.record(emoji)
         } else {
-            usage.record(item.id, sourceApplication: NSWorkspace.shared.frontmostApplication?.localizedName)
+            usage.record(item.id, sourceApplicationID: sourceApplicationID,
+                         sourceApplicationName: sourceApplicationName)
             invalidateSearchDocuments()
         }
     }
@@ -847,19 +1046,14 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func handleEscape() {
-        if !query.isEmpty {
-            query = ""
-        } else if mode != .root {
-            enter(.root)
-        } else {
+        if !navigateBack() {
             delegate?.launcherViewModelDidRequestHide(self)
         }
     }
 
     func goBackIfPossible() -> Bool {
         guard query.isEmpty, mode != .root else { return false }
-        enter(.root)
-        return true
+        return navigateBack()
     }
 
     private func refreshResults() {
@@ -1037,13 +1231,17 @@ final class LauncherViewModel: ObservableObject {
             return
         }
         let selectedID = preferredRootSelectionID ?? selectedItem?.id
-        results = fresh
+        let previousIndex = selectedIndex
+        results = SearchSelectionCoordinator.orderedResults(
+            current: results,
+            incoming: fresh,
+            preserveCurrentOrder: keyboardNavigationQuery == query && renderedRootQuery == query
+        )
         renderedRootQuery = query
-        if let selectedID, let index = results.firstIndex(where: { $0.id == selectedID }) {
-            selectedIndex = index
-        } else {
-            selectedIndex = results.firstIndex(where: isActionable) ?? 0
-        }
+        selectedIndex = SearchSelectionCoordinator.selectedIndex(
+            in: results, preferredID: selectedID, previousIndex: previousIndex,
+            isActionable: isActionable
+        )
         if !rootLocalSearchPending && !rootFileSearchPending && !rootUniversalSearchPending {
             preferredRootSelectionID = nil
         }
@@ -1086,7 +1284,8 @@ final class LauncherViewModel: ObservableObject {
             let intentBonus: Double = normalizedTitle == normalizedQuery ? 100 : (normalizedTitle.hasPrefix(normalizedQuery) ? 24 : 0)
             let favoriteRank = CommandManager.shared.favoriteRank(item.id)
             let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
-            return (item, score + intentBonus + usage.score(for: item.id) + favoriteBonus)
+            return (item, score + intentBonus + usage.score(for: item.id, sourceApplicationID: sourceApplicationID,
+                                                    sourceApplicationName: sourceApplicationName) + favoriteBonus)
         }.sorted { first, second in
             if first.1 == second.1 { return first.0.title.localizedStandardCompare(second.0.title) == .orderedAscending }
             return first.1 > second.1
@@ -1122,6 +1321,9 @@ final class LauncherViewModel: ObservableObject {
             if let calculator = calculatorResult(for: cleanQuery) {
                 dynamic.append(calculator)
             }
+            if let conversion = measurementConversionResult(for: cleanQuery) {
+                dynamic.append(conversion)
+            }
             dynamic += directInvocationItems(for: cleanQuery)
         }
         dynamic += rootFileResults.map(fileItem)
@@ -1146,7 +1348,8 @@ final class LauncherViewModel: ObservableObject {
             rankedItem.aliasKind = provenance.kind
             let favoriteRank = CommandManager.shared.favoriteRank(item.id)
             let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
-            return (rankedItem, baseScore + provenance.bonus + usage.score(for: item.id) + favoriteBonus)
+            return (rankedItem, baseScore + provenance.bonus + usage.score(for: item.id, sourceApplicationID: sourceApplicationID,
+                                                               sourceApplicationName: sourceApplicationName) + favoriteBonus)
         }
         let ranked = (localRanked + dynamicRanked).sorted { first, second in
             if first.1 == second.1 {
@@ -1175,7 +1378,8 @@ final class LauncherViewModel: ObservableObject {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let title = item.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if title == normalizedQuery { return (.exactTitle, 100_000) }
-        if aliasStore.aliases(for: item.id).contains(where: { $0.lowercased() == normalizedQuery }) {
+        if aliasStore.isEnabled(for: item.id),
+           aliasStore.aliases(for: item.id).contains(where: { $0.lowercased() == normalizedQuery }) {
             return (.userAlias, 1_200)
         }
         if item.id.hasPrefix("extension."),
@@ -1657,12 +1861,6 @@ final class LauncherViewModel: ObservableObject {
         }
     }
 
-    private func workflowItems() -> [LauncherItem] {
-        WorkflowStore.shared.workflows.prefix(30).map { workflow in
-            LauncherItem(id: "workflow.\(workflow.id.uuidString)", title: workflow.name, subtitle: "\(workflow.steps.count) steps", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation"], action: .workflow(workflow.id), accessory: workflow.favorite ? "Favorite" : "Workflow", aliasKind: nil)
-        }
-    }
-
     private func outputItems() -> [LauncherItem] {
         ExtensionOutputStore.shared.outputs.prefix(30).map { output in
             LauncherItem(id: "output.\(output.id.uuidString)", title: output.title, subtitle: String(output.value.prefix(80)), icon: .system("text.quote"), keywords: ["output", output.descriptor.kind.rawValue], action: .extensionOutput(output.id), accessory: "Output", aliasKind: nil)
@@ -1697,10 +1895,9 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.screenshot-studio", title: "Screenshot Studio", subtitle: "Choose a window or display to capture, or browse history", icon: .system("camera.viewfinder"), keywords: ["screenshot", "capture screen", "capture window", "screen recording", "image history"], action: .system(.openScreenshotStudio)),
             LauncherItem(id: "builtin.quick-capture-region", title: "Quick Capture Region", subtitle: "Select a region and copy its image to the clipboard", icon: .system("rectangle.dashed"), keywords: ["screenshot", "region", "capture", "clipboard", "image"], action: .system(.quickCaptureRegion)),
             LauncherItem(id: "builtin.text-reader-region", title: "Text Reader Region", subtitle: "Select a region and copy locally recognized text", icon: .system("text.viewfinder"), keywords: ["ocr", "region", "text", "reader", "clipboard"], action: .system(.textReaderRegion)),
-            LauncherItem(id: "builtin.audio-output", title: "Switch Audio Output", subtitle: "Choose speakers, headphones, or another system output", icon: .system("speaker.wave.2"), keywords: ["audio", "sound", "speaker", "headphones", "output device"], action: .system(.openAudioOutput)),
+            LauncherItem(id: "builtin.audio-output", title: "Switch Audio Output", subtitle: "Choose speakers, headphones, or another system output", icon: .system("speaker.wave.2"), keywords: ["audio", "audio output", "sound", "speaker", "speakers", "headphones", "airpods", "output device"], action: .system(.openAudioOutput)),
             LauncherItem(id: "builtin.network-quality", title: "Internet Speed Test", subtitle: "Open network diagnostics; run a test only when you choose", icon: .system("speedometer"), keywords: ["speed", "internet", "network", "bandwidth", "latency", "connection"], action: .system(.openNetworkQuality)),
             LauncherItem(id: "builtin.add-selection-to-shelf", title: "Add Selection to Shelf", subtitle: "Capture highlighted text without opening Lima", icon: .system("text.badge.plus"), keywords: ["add", "selection", "capture", "shelf", "highlight"], action: .system(.addSelectionToShelf)),
-            LauncherItem(id: "builtin.workflows", title: "Workflows", subtitle: "Build and run multi-command workflows", icon: .system("arrow.trianglehead.2.clockwise.rotate.90"), keywords: ["workflow", "automation", "sequence"], action: .system(.openWorkflows)),
             LauncherItem(id: "builtin.permissions", title: "Permission Center", subtitle: "Review Accessibility, microphone, speech, automation, and login access", icon: .system("checkmark.shield"), keywords: ["permission", "privacy", "accessibility", "microphone", "automation"], action: .system(.openPermissionCenter)),
             LauncherItem(id: "builtin.diagnostics", title: "Export Diagnostics", subtitle: "Create a sanitized support bundle without private content", icon: .system("stethoscope"), keywords: ["diagnostics", "support", "debug", "report"], action: .system(.exportDiagnostics)),
             LauncherItem(id: "builtin.grammar-debugger", title: "Grammar Debugger", subtitle: "Inspect candidate cards, consensus, feedback, and seed analytics", icon: .system("ladybug"), keywords: ["grammar", "debug", "ensemble", "candidates", "analytics", "benchmark", "proofread", "fix writing", "correct"], action: .system(.openGrammarDebugger)),
@@ -1716,7 +1913,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func calculatorResult(for query: String) -> LauncherItem? {
-        let allowed = CharacterSet(charactersIn: "0123456789.,+-*/%^() πe")
+        let allowed = CharacterSet(charactersIn: "0123456789.,+-*/%^() πesqrtSQRT")
         guard query.unicodeScalars.allSatisfy(allowed.contains),
               query.unicodeScalars.contains(where: CharacterSet.decimalDigits.contains),
               let value = try? Calculator.evaluate(query) else { return nil }
@@ -1728,6 +1925,19 @@ final class LauncherViewModel: ObservableObject {
             icon: .system("equal.circle.fill"),
             keywords: [query],
             action: .copyText(formatted),
+            accessory: "Copy"
+        )
+    }
+
+    private func measurementConversionResult(for query: String) -> LauncherItem? {
+        guard let result = SearchMeasurementConversion.convert(query) else { return nil }
+        return LauncherItem(
+            id: "conversion.\(query)",
+            title: result.formatted,
+            subtitle: "Conversion — press Return to copy",
+            icon: .system("ruler"),
+            keywords: [query],
+            action: .copyText(result.formatted),
             accessory: "Copy"
         )
     }
@@ -1773,49 +1983,123 @@ private struct CommandUsageRecord: Codable {
     var sourceApplicationCounts: [String: Int]
 }
 
-private final class UsageStore {
+struct SearchLearningApplication: Identifiable, Equatable {
+    let id: String
+    let name: String
+}
+
+/// Local, bounded Search learning. A source app is metadata only: no window
+/// title, selection, document contents, or provider input is recorded here.
+final class UsageStore {
     private let recordsKey = "commandUsageRecords"
     private let historyKey = "commandHistory"
+    private let applicationNamesKey = "commandUsageApplicationNames"
+    private let excludedApplicationsKey = "commandUsageExcludedApplications"
+    private let defaults: UserDefaults
     private var records: [String: CommandUsageRecord]
     private var order: [String]
+    private var applicationNames: [String: String]
+    private var excludedApplications: Set<String>
 
-    init() {
-        if let data = LimaTestEnvironment.userDefaults.data(forKey: recordsKey),
+    init(defaults: UserDefaults = LimaTestEnvironment.userDefaults) {
+        self.defaults = defaults
+        if let data = defaults.data(forKey: recordsKey),
            let decoded = try? JSONDecoder().decode([String: CommandUsageRecord].self, from: data) {
             records = decoded
         } else { records = [:] }
-        order = LimaTestEnvironment.userDefaults.stringArray(forKey: historyKey) ?? []
+        order = defaults.stringArray(forKey: historyKey) ?? []
+        applicationNames = defaults.dictionary(forKey: applicationNamesKey) as? [String: String] ?? [:]
+        excludedApplications = Set(defaults.stringArray(forKey: excludedApplicationsKey) ?? [])
     }
 
-    func record(_ identifier: String, sourceApplication: String? = nil) {
+    var knownSourceApplications: [SearchLearningApplication] {
+        let recorded = Set(records.values.flatMap { $0.sourceApplicationCounts.keys })
+        let ids = Set(applicationNames.keys).union(recorded).union(excludedApplications)
+        return ids.map { SearchLearningApplication(id: $0, name: applicationNames[$0] ?? $0) }
+            .sorted {
+                let comparison = $0.name.localizedStandardCompare($1.name)
+                return comparison == .orderedSame ? $0.id < $1.id : comparison == .orderedAscending
+            }
+    }
+
+    func isExcluded(_ id: String) -> Bool { excludedApplications.contains(id) }
+
+    func setExcluded(_ excluded: Bool, id: String) {
+        guard !id.isEmpty else { return }
+        if excluded { excludedApplications.insert(id) } else { excludedApplications.remove(id) }
+        defaults.set(excludedApplications.sorted(), forKey: excludedApplicationsKey)
+    }
+
+    private func sourceKey(id: String?, name: String?) -> String? {
+        if let id, !id.isEmpty { return id }
+        if let name, !name.isEmpty { return name }
+        return nil
+    }
+
+    private func excludesSource(id: String?, name: String?) -> Bool {
+        (id.map(excludedApplications.contains) == true) ||
+        (name.map(excludedApplications.contains) == true)
+    }
+
+    func record(_ identifier: String, sourceApplicationID: String? = nil, sourceApplicationName: String? = nil) {
+        guard !excludesSource(id: sourceApplicationID, name: sourceApplicationName) else { return }
         let now = Date()
         var record = records[identifier] ?? CommandUsageRecord(totalInvocations: 0, lastUsedAt: now, recentUses: [], sourceApplicationCounts: [:])
         record.totalInvocations += 1
         record.lastUsedAt = now
         record.recentUses.insert(now, at: 0)
         record.recentUses = Array(record.recentUses.prefix(20))
-        if let sourceApplication, !sourceApplication.isEmpty { record.sourceApplicationCounts[sourceApplication, default: 0] += 1 }
+        if let source = sourceKey(id: sourceApplicationID, name: sourceApplicationName) {
+            if record.sourceApplicationCounts[source] != nil || record.sourceApplicationCounts.count < 64 {
+                record.sourceApplicationCounts[source, default: 0] += 1
+            }
+            if applicationNames[source] != nil || applicationNames.count < 128 {
+                applicationNames[source] = sourceApplicationName ?? source
+                defaults.set(applicationNames, forKey: applicationNamesKey)
+            }
+        }
         records[identifier] = record
         order.removeAll { $0 == identifier }; order.insert(identifier, at: 0)
         if order.count > 100 { order = Array(order.prefix(100)) }
-        if let data = try? JSONEncoder().encode(records) { LimaTestEnvironment.userDefaults.set(data, forKey: recordsKey) }
-        LimaTestEnvironment.userDefaults.set(order, forKey: historyKey)
+        if let data = try? JSONEncoder().encode(records) { defaults.set(data, forKey: recordsKey) }
+        defaults.set(order, forKey: historyKey)
     }
 
     func recentIdentifiers(limit: Int) -> [String] { Array(order.prefix(max(0, limit))) }
 
     func lastIdentifier() -> String? { order.first }
 
-    func forget(_ identifier: String) { records.removeValue(forKey: identifier); order.removeAll { $0 == identifier }; if let data = try? JSONEncoder().encode(records) { LimaTestEnvironment.userDefaults.set(data, forKey: recordsKey) }; LimaTestEnvironment.userDefaults.set(order, forKey: historyKey) }
+    func forget(_ identifier: String) {
+        records.removeValue(forKey: identifier)
+        order.removeAll { $0 == identifier }
+        if let data = try? JSONEncoder().encode(records) { defaults.set(data, forKey: recordsKey) }
+        defaults.set(order, forKey: historyKey)
+    }
 
-    func reset() { records.removeAll(); order.removeAll(); LimaTestEnvironment.userDefaults.removeObject(forKey: recordsKey); LimaTestEnvironment.userDefaults.removeObject(forKey: historyKey) }
+    /// Reset learned behavior without silently removing user-owned exclusions.
+    func reset() {
+        records.removeAll()
+        order.removeAll()
+        applicationNames.removeAll()
+        defaults.removeObject(forKey: recordsKey)
+        defaults.removeObject(forKey: historyKey)
+        defaults.removeObject(forKey: applicationNamesKey)
+    }
 
-    func score(for identifier: String) -> Double {
+    func score(for identifier: String, sourceApplicationID: String? = nil, sourceApplicationName: String? = nil) -> Double {
         guard let record = records[identifier] else { return 0 }
         let ageDays = max(0, Date().timeIntervalSince(record.lastUsedAt)) / 86_400
         let recency = min(120, max(0, 120 - ageDays * 8))
         let frequency = min(100, log1p(Double(record.totalInvocations)) * 18)
-        // Adaptive signals are intentionally bounded; fuzzy/title matching remains dominant.
-        return recency + frequency
+        // Context is a bounded tie-breaker; exact titles and explicit aliases
+        // keep their separate deterministic priority in LauncherSearchEngine.
+        guard !excludesSource(id: sourceApplicationID, name: sourceApplicationName),
+              let source = sourceKey(id: sourceApplicationID, name: sourceApplicationName) else {
+            return recency + frequency
+        }
+        let contextualUses = record.sourceApplicationCounts[source]
+            ?? (sourceApplicationName.flatMap { record.sourceApplicationCounts[$0] } ?? 0)
+        let context = min(80, log1p(Double(contextualUses)) * 24)
+        return recency + frequency + context
     }
 }

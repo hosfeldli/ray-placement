@@ -718,6 +718,15 @@ final class MarkdownNativeTableView: NSView, NSTextFieldDelegate {
             && (cell.layer?.borderColor?.alpha ?? 0) > 0
     }
 
+    func debugCellSurfaceColor(row: Int, column: Int) -> NSColor? {
+        let index = row * table.columnCount + column
+        guard cellAppearances.indices.contains(index) else { return nil }
+        let cell = cellAppearances[index]
+        cell.updateLayer()
+        guard let color = cell.layer?.backgroundColor else { return nil }
+        return NSColor(cgColor: color)
+    }
+
     func debugRenderedBitmap() -> NSBitmapImageRep? {
         updateAppearance()
         let bounds = self.bounds.integral
@@ -995,8 +1004,11 @@ private final class MarkdownTableCellView: NSView {
 
     override func updateLayer() {
         let surface = role == .header ? palette.elevatedSurface : palette.background
+        // Focus is indicated by the border, not a persistent cell fill. AppKit's
+        // shared field editor can outlive a cell's editing session, so using
+        // focus to change the surface leaves cells looking selected afterward.
         layer?.backgroundColor = NotesAppearancePalette
-            .resolved(isFocused ? palette.accentSoft : surface, appearance: resolvedAppearance)
+            .resolved(surface, appearance: resolvedAppearance)
             .cgColor
         layer?.borderWidth = isFocused ? 2 : 0
         layer?.borderColor = isFocused

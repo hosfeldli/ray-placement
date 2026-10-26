@@ -136,13 +136,23 @@ final class ScreenshotStudioModel: ObservableObject {
 
     func capture(_ target: ScreenshotCaptureTarget,
                  beforeCapture: @escaping () -> Void,
-                 afterCapture: @escaping (Bool) -> Void) {
-        guard !isWorking, let store else { return }
+                 captureAllowed: @escaping () -> Bool,
+                 afterCapture: @escaping (Bool) -> Void,
+                 onTakeover: @escaping () -> Void) {
+        guard !isWorking else { return }
         let selectedDestination = destination
         let selectedFormat = fileFormat
         let folderBookmark = LimaTestEnvironment.userDefaults.data(forKey: "lima.screenshot.saveFolderBookmark")
         if selectedDestination.includesFile && folderBookmark == nil {
             message = ScreenshotFileDestination.DestinationError.folderUnavailable.localizedDescription
+            // Region selection has already hidden Studio. Restore its error UI
+            // even when capture fails before the asynchronous work starts.
+            afterCapture(false)
+            return
+        }
+        guard let store else {
+            message = "The screenshot library is not ready. Reopen Screenshot Studio and try again."
+            afterCapture(false)
             return
         }
         isWorking = true
@@ -153,7 +163,9 @@ final class ScreenshotStudioModel: ObservableObject {
                 // Allow the picker window to leave the compositor before the
                 // selected display is sampled; selection is still revalidated.
                 try await Task.sleep(nanoseconds: 180_000_000)
+                guard captureAllowed() else { stopCaptureForTakeover(onTakeover); return }
                 let image = try await captureService.capture(target)
+                guard captureAllowed() else { stopCaptureForTakeover(onTakeover); return }
                 var failures: [String] = []
                 if selectedDestination.includesHistory {
                     do {
@@ -166,6 +178,7 @@ final class ScreenshotStudioModel: ObservableObject {
                     }
                     refreshHistory()
                 }
+                guard captureAllowed() else { stopCaptureForTakeover(onTakeover); return }
                 if selectedDestination.includesFile, let folderBookmark {
                     do {
                         let png = image.pngData
@@ -178,6 +191,7 @@ final class ScreenshotStudioModel: ObservableObject {
                         failures.append("File: \(error.localizedDescription)")
                     }
                 }
+                guard captureAllowed() else { stopCaptureForTakeover(onTakeover); return }
                 if selectedDestination.includesClipboard && !ScreenshotClipboard.copyPNG(image.pngData) {
                     failures.append("Clipboard: The image could not be copied as PNG data.")
                 }
@@ -185,11 +199,18 @@ final class ScreenshotStudioModel: ObservableObject {
                 message = failures.isEmpty ? nil : failures.joined(separator: "  ")
                 afterCapture(failures.isEmpty)
             } catch {
+                guard captureAllowed() else { stopCaptureForTakeover(onTakeover); return }
                 isWorking = false
                 message = error.localizedDescription
                 afterCapture(false)
             }
         }
+    }
+
+    private func stopCaptureForTakeover(_ onTakeover: () -> Void) {
+        isWorking = false
+        message = "Capture stopped because the app, display, or clipboard changed. An earlier destination may already contain the image."
+        onTakeover()
     }
 
     func copy(_ record: ScreenshotRecord) {
@@ -285,13 +306,14 @@ final class ScreenshotStudioWindowController: NSObject, NSWindowDelegate {
     private let model = ScreenshotStudioModel()
     private let regionSelection = ScreenshotRegionSelectionController()
     private var panel: NSPanel?
-    private weak var returnApplication: NSRunningApplication?
+    private var returnApplication: NSRunningApplication?
+    private var captureContext: ScreenshotCaptureContext?
 
     func present(returningTo application: NSRunningApplication? = nil) {
+        guard !model.isWorking else { return }
         regionSelection.dismiss(notifyCancel: false)
-        if let application, application.bundleIdentifier != Bundle.main.bundleIdentifier {
-            returnApplication = application
-        }
+        captureContext = nil
+        returnApplication = application?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : application
         if panel == nil {
             let panel = ScreenshotStudioPanel(
                 contentRect: NSRect(x: 0, y: 0, width: 730, height: 570),
@@ -305,8 +327,10 @@ final class ScreenshotStudioWindowController: NSObject, NSWindowDelegate {
             panel.contentView = NSHostingView(rootView: ScreenshotStudioView(
                 model: model,
                 selectRegion: { [weak self] in self?.startRegionSelection() },
-                beforeCapture: { [weak self] in self?.panel?.orderOut(nil) },
-                afterCapture: { [weak self] succeeded in self?.finishCapture(succeeded: succeeded) }
+                beforeCapture: { [weak self] in self?.beginCapture() },
+                captureAllowed: { [weak self] in self?.captureContext?.isCurrent == true },
+                afterCapture: { [weak self] succeeded in self?.finishCapture(succeeded: succeeded) },
+                onTakeover: { [weak self] in self?.stopForTakeover() }
             ))
             panel.center()
             self.panel = panel
@@ -318,23 +342,50 @@ final class ScreenshotStudioWindowController: NSObject, NSWindowDelegate {
 
     private func startRegionSelection() {
         guard model.isReady, !model.isWorking else { return }
-        panel?.orderOut(nil)
+        beginCapture()
         _ = regionSelection.present(
             displays: model.targets,
             onSelect: { [weak self] target in
                 guard let self else { return }
-                self.model.capture(target, beforeCapture: {}, afterCapture: { [weak self] succeeded in
-                    self?.finishCapture(succeeded: succeeded)
-                })
+                guard self.captureContext?.isCurrent == true else {
+                    self.stopForTakeover()
+                    return
+                }
+                self.model.capture(
+                    target, beforeCapture: {},
+                    captureAllowed: { [weak self] in self?.captureContext?.isCurrent == true },
+                    afterCapture: { [weak self] succeeded in self?.finishCapture(succeeded: succeeded) },
+                    onTakeover: { [weak self] in self?.stopForTakeover() }
+                )
             },
             onCancel: { [weak self] in
-                self?.panel?.makeKeyAndOrderFront(nil)
+                guard let self else { return }
+                guard self.captureContext?.isCurrent == true else {
+                    self.stopForTakeover()
+                    return
+                }
+                self.captureContext = nil
+                self.panel?.makeKeyAndOrderFront(nil)
                 NSApp.activate(ignoringOtherApps: true)
-            }
+            },
+            onTakeover: { [weak self] in self?.stopForTakeover() }
         )
     }
 
+    private func beginCapture() {
+        captureContext = ScreenshotCaptureContext(sourceProcessID: returnApplication?.processIdentifier)
+        panel?.orderOut(nil)
+    }
+
+    private func stopForTakeover() {
+        captureContext = nil
+        regionSelection.dismiss(notifyCancel: false)
+        panel?.orderOut(nil)
+        returnApplication = nil
+    }
+
     private func finishCapture(succeeded: Bool) {
+        captureContext = nil
         if succeeded {
             panel?.orderOut(nil)
             returnApplication?.activate(options: [.activateIgnoringOtherApps])
@@ -368,7 +419,9 @@ private struct ScreenshotStudioView: View {
     @ObservedObject var model: ScreenshotStudioModel
     let selectRegion: () -> Void
     let beforeCapture: () -> Void
+    let captureAllowed: () -> Bool
     let afterCapture: (Bool) -> Void
+    let onTakeover: () -> Void
 
     @State private var showingCaptureTargets = false
     @State private var pendingDelete: ScreenshotRecord?
@@ -531,7 +584,9 @@ private struct ScreenshotStudioView: View {
                                     model.capture(
                                         target.target,
                                         beforeCapture: beforeCapture,
-                                        afterCapture: afterCapture
+                                        captureAllowed: captureAllowed,
+                                        afterCapture: afterCapture,
+                                        onTakeover: onTakeover
                                     )
                                 } label: {
                                     HStack(spacing: 10) {

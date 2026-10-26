@@ -15,8 +15,8 @@ final class ExtensionFormWindowController: NSWindowController {
         )
         LimaWindowChrome.configure(
             window,
-            title: "Extension Workflow",
-            accessibilityLabel: "Lima extension workflow",
+            title: "Extension Form",
+            accessibilityLabel: "Lima extension form",
             minSize: NSSize(width: 620, height: 460)
         )
         self.init(window: window)

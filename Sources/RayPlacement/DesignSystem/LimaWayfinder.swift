@@ -7,26 +7,27 @@ struct LimaWorkspaceNavigation: Equatable {
     private(set) var previous: LimaWorkspaceModule?
 
     mutating func select(_ module: LimaWorkspaceModule) {
-        guard module != current else { return }
+        let destination: LimaWorkspaceModule = module == .workflows ? .home : module
+        guard destination != current else { return }
         previous = current
-        current = module
+        current = destination
     }
 }
 
 extension LimaWorkspaceModule {
-    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .notes, .ai, .browser, .context]
-    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .workflows, .extensions, .terminal, .grammar]
+    static let workspaceDestinations: [LimaWorkspaceModule] = [.home, .ai, .browser, .terminal, .notes]
+    static let toolDestinations: [LimaWorkspaceModule] = [.clipboard, .extensions, .grammar]
     static let primaryDestinations: [LimaWorkspaceModule] = workspaceDestinations + toolDestinations
-    static let hiddenDestinations: [LimaWorkspaceModule] = [.dictation, .formatter]
+    static let hiddenDestinations: [LimaWorkspaceModule] = [.context, .dictation, .formatter]
 
     var title: String {
         switch self {
         case .home: "Home"
         case .notes: "Notes"
-        case .ai: "AI"
+        case .ai: "AI Chat"
         case .browser: "Browser"
-        case .context: "Context"
-        case .grammar: "Grammar"
+        case .context: "Context Shelf"
+        case .grammar: "Writing Tools"
         case .dictation: "Dictation"
         case .workflows: "Workflows"
         case .extensions: "Extensions"
@@ -42,12 +43,12 @@ extension LimaWorkspaceModule {
         case .notes: "note.text"
         case .ai: "sparkles"
         case .browser: "globe"
-        case .context: "tray.full"
+        case .context: "square.stack.3d.up"
         case .grammar: "textformat.abc"
         case .dictation: "waveform"
-        case .workflows: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .workflows: "arrow.triangle.branch"
         case .extensions: "puzzlepiece.extension"
-        case .clipboard: "clipboard"
+        case .clipboard: "doc.on.clipboard"
         case .terminal: "terminal"
         case .formatter: "wand.and.stars"
         }
@@ -126,25 +127,30 @@ struct LimaWayfinderRail: View {
     var createWorkspaceProfile: (() -> Void)? = nil
     var aiSidecarVisible: Bool = false
     var toggleAISidecar: (() -> Void)? = nil
+    var openSearch: (() -> Void)? = nil
+    var openCaptures: (() -> Void)? = nil
+    var forceIconOnly: Bool = false
+    @State private var toolsExpanded = true
     @ObservedObject private var layout = WorkspaceLayoutStore.shared
     private let settings = SettingsStore.shared
     @State private var hovered: String?
     @ObservedObject private var typography = AppTypography.shared
 
     private var labeled: Bool {
+        if forceIconOnly { return false }
         switch layout.configuration.railPresentation {
-        case .adaptive: sizeClass == .expanded
-        case .icons: false
-        case .iconsAndLabels: true
+        case .adaptive: return sizeClass == .expanded
+        case .icons: return false
+        case .iconsAndLabels: return true
         }
     }
 
     private var configuredWidth: CGFloat {
-        let base = labeled ? max(sizeClass.moduleRailWidth, 48 + 114 * typography.scale) : sizeClass.moduleRailWidth
+        let base = labeled ? max(sizeClass.moduleRailWidth, 208 * typography.scale) : max(sizeClass.moduleRailWidth, 60)
         switch layout.configuration.railWidth {
-        case .compact: return max(labeled ? 160 : 44, base - 24)
+        case .compact: return labeled ? max(200, base - 8) : 58
         case .standard: return base
-        case .wide: return base + (labeled ? 48 : 12)
+        case .wide: return base + (labeled ? 24 : 4)
         }
     }
 
@@ -165,7 +171,18 @@ struct LimaWayfinderRail: View {
             .frame(height: 70)
             .frame(maxWidth: .infinity, alignment: labeled ? .leading : .center)
             .padding(.horizontal, labeled ? 9 : 0)
-            .padding(.bottom, 16)
+            .padding(.bottom, 6)
+
+            if let openSearch {
+                Button(action: openSearch) {
+                    railLabel("Search anything", symbol: "magnifyingglass", selected: false,
+                              hovered: hovered == "search", shortcut: "⌘K")
+                }
+                .buttonStyle(.plain)
+                .help("Search anything")
+                .accessibilityLabel("Search anything")
+                .onHover { hovered = $0 ? "search" : nil }
+            }
 
             if let selectWorkspaceProfile, !workspaceProfiles.isEmpty {
                 Menu {
@@ -202,29 +219,13 @@ struct LimaWayfinderRail: View {
             ScrollView(.vertical) {
                 VStack(spacing: 8) {
                     ForEach(layout.configuration.sections) { section in
-                        railGroup(section.name.uppercased(), destinations: section.modules)
+                        railGroup(section)
                     }
                 }
                 .padding(.vertical, 2)
             }
             .scrollIndicators(.hidden)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
-            Divider().padding(.horizontal, 8).padding(.vertical, 6)
-
-            Button {
-                if let previous { select(previous) }
-            } label: {
-                railLabel(labeled ? (previous?.title ?? "Return") : "Return", symbol: "arrow.uturn.backward",
-                          selected: false, hovered: hovered == "return")
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut("0", modifiers: [.command, .option])
-            .disabled(previous == nil)
-            .opacity(previous == nil ? 0.45 : 1)
-            .help(previous.map { "Return to \($0.title) · ⌥⌘0" } ?? "Switch workspaces to enable Return")
-            .accessibilityLabel(previous.map { "Return to \($0.title)" } ?? "Return to previous workspace")
-            .onHover { hovered = $0 ? "return" : nil }
 
             Spacer(minLength: 12)
 
@@ -236,19 +237,6 @@ struct LimaWayfinderRail: View {
                 .help("Open the same workspace in a resizable window")
                 .accessibilityLabel("Open in Window")
                 .onHover { hovered = $0 ? "window" : nil }
-            }
-
-            if current != .ai, let toggleAISidecar {
-                Button(action: toggleAISidecar) {
-                    railLabel(aiSidecarVisible ? "Hide AI" : "Show AI",
-                              symbol: "sidebar.right", selected: aiSidecarVisible,
-                              hovered: hovered == "ai-sidecar")
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("\\", modifiers: [.command])
-                .help(aiSidecarVisible ? "Hide AI sidecar · ⌘\\" : "Show AI sidecar · ⌘\\")
-                .accessibilityLabel(aiSidecarVisible ? "Hide AI sidecar" : "Show AI sidecar")
-                .onHover { hovered = $0 ? "ai-sidecar" : nil }
             }
 
             Button(action: openSettings) {
@@ -264,7 +252,6 @@ struct LimaWayfinderRail: View {
         .frame(width: configuredWidth)
         .frame(maxHeight: .infinity, alignment: .top)
         .limaGlassContainer(region: .sidebar, cornerRadius: 22)
-        .overlay { LimaPrismFrame(radius: 22).allowsHitTesting(false) }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Workspace navigation")
         .accessibilityIdentifier(LimaQAIdentifiers.Workspace.sidebar)
@@ -275,30 +262,87 @@ struct LimaWayfinderRail: View {
             }
         }
         .background {
-            // Keep established shortcuts working without showing these tools in the rail.
+            // Keep established shortcuts without showing layout controls as destinations.
+            if let previous {
+                Button("") { select(previous) }
+                    .keyboardShortcut("0", modifiers: [.command, .option])
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
+            if current != .ai, let toggleAISidecar {
+                Button("", action: toggleAISidecar)
+                    .keyboardShortcut("\\", modifiers: [.command])
+                    .hidden()
+                    .accessibilityHidden(true)
+            }
             ForEach(layout.configuration.hiddenModules, id: \.self) { module in
                 Button("") { select(module) }
                     .keyboardShortcut(KeyEquivalent(Character(layout.configuration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
                     .hidden()
                     .accessibilityHidden(true)
             }
+            if !toolsExpanded {
+                ForEach(layout.configuration.toolModules, id: \.self) { module in
+                    Button("") { select(module) }
+                        .keyboardShortcut(KeyEquivalent(Character(layout.configuration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
+                        .hidden()
+                        .accessibilityHidden(true)
+                }
+            }
         }
     }
 
     @ViewBuilder
-    private func railGroup(_ title: String, destinations: [LimaWorkspaceModule]) -> some View {
-        if labeled && layout.configuration.showsSectionNames {
-            Text(title)
-                .font(.system(size: 8.5, weight: .bold))
-                .tracking(0.9)
-                .foregroundStyle(LimaTheme.textTertiary)
+    private func railGroup(_ section: WorkspaceSectionConfiguration) -> some View {
+        let isTools = section.id == WorkspaceSectionConfiguration.toolsID
+        if isTools {
+            Button {
+                withAnimation(.easeInOut(duration: 0.16)) { toolsExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "square.grid.2x2")
+                        .font(.system(size: 17, weight: .medium))
+                        .frame(width: 24, height: 24)
+                    if labeled {
+                        Text(section.name.uppercased())
+                            .font(.system(size: 12, weight: .semibold))
+                        Spacer(minLength: 0)
+                        Image(systemName: toolsExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                }
+                .foregroundStyle(LimaTheme.textSecondary)
+                .padding(.horizontal, labeled ? 8 : 0)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+            }
+            .buttonStyle(.plain)
+            .help(toolsExpanded ? "Collapse Tools" : "Expand Tools")
+            .accessibilityLabel("Tools")
+            .accessibilityValue(toolsExpanded ? "Expanded" : "Collapsed")
+        } else if labeled && layout.configuration.showsSectionNames {
+            Text(section.name.uppercased())
+                .font(.system(size: 12, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(LimaTheme.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 11)
                 .padding(.top, 8)
                 .padding(.bottom, 1)
         }
 
-        ForEach(destinations, id: \.self) { module in
+        if !isTools || toolsExpanded {
+            if isTools, let openCaptures {
+                Button(action: openCaptures) {
+                    railLabel("Captures", symbol: "viewfinder", selected: false,
+                              hovered: hovered == "captures")
+                }
+                .buttonStyle(.plain)
+                .help("Open Screenshot Studio and history")
+                .accessibilityLabel("Captures")
+                .onHover { hovered = $0 ? "captures" : nil }
+            }
+            ForEach(section.modules, id: \.self) { module in
             Button { select(module) } label: {
                 railLabel(module.title, symbol: module.symbol, selected: module == current, hovered: hovered == module.rawValue,
                           shortcut: "⌥⌘\(layout.configuration.shortcutKey(for: module))")
@@ -319,17 +363,16 @@ struct LimaWayfinderRail: View {
             .accessibilityValue(module == current ? "Current workspace" : "")
             .accessibilityAddTraits(module == current ? [.isSelected] : [])
             .onHover { hovered = $0 ? module.rawValue : nil }
+            }
         }
     }
 
     private func railLabel(_ title: String, symbol: String, selected: Bool, hovered: Bool, shortcut: String? = nil) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol)
-                .resizable()
-                .scaledToFit()
-                .font(.system(size: 19, weight: selected ? .semibold : .regular))
-                .frame(width: 22, height: 22)
-                .frame(width: 24)
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 18, weight: selected ? .semibold : .medium))
+                .frame(width: 24, height: 24)
             if labeled {
                 VStack(alignment: .leading, spacing: 1) {
                     if symbol == "arrow.uturn.backward", previous != nil {
@@ -349,7 +392,7 @@ struct LimaWayfinderRail: View {
         .foregroundStyle(selected ? LimaTheme.accentInk : LimaTheme.textSecondary)
         .padding(.horizontal, labeled ? 8 : 0)
         .frame(maxWidth: .infinity)
-        .frame(minHeight: max(labeled ? 43 : 36, 32 * typography.scale))
+        .frame(minHeight: max(labeled ? 40 : 40, 32 * typography.scale))
         .limaSelection(selected, hovered: hovered, radius: LimaRadius.control)
         .overlay {
             if selected {

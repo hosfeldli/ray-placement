@@ -36,7 +36,12 @@ final class NativeCapabilityRouter {
         .audioListOutputs, .audioGetOutput, .audioSetOutput,
         .audioGetVolume, .audioSetVolume, .audioToggleMute,
         .networkTestStart, .networkTestStatus, .networkTestCancel,
-        .networkTestHistory, .networkConnectionInfo
+        .networkTestHistory, .networkConnectionInfo,
+        .calendarList, .calendarEvents, .calendarSearch, .calendarCheckConflicts,
+        .calendarCreateEvent, .calendarUpdateEvent, .calendarDeleteEvent,
+        .remindersListLists, .remindersSearch, .remindersList,
+        .remindersCreate, .remindersUpdate, .remindersComplete,
+        .remindersReopen, .remindersDelete, .locationCurrent
     ]
 
     private let authorizer = NativeCapabilityAuthorizer()
@@ -76,7 +81,11 @@ final class NativeCapabilityRouter {
         let installed = try currentExtensionAuthority(for: call)
         try await authorizer.authorize(
             call, approvalID: approvalID, installedExtension: installed,
-            osPermissionGranted: osPermissionGranted(for: call.operation)
+            // These services ask macOS only after the one-use Lima review is
+            // consumed. Their dispatch methods enforce the resulting TCC state.
+            osPermissionGranted: osPermissionGranted(for: call.operation) ||
+                EventKitCapabilityService.supportedOperations.contains(call.operation) ||
+                call.operation == .locationCurrent
         )
         return try await dispatch(call)
     }
@@ -149,6 +158,13 @@ final class NativeCapabilityRouter {
 
     private func dispatch(_ call: NativeCapabilityCall) async throws -> JSONValue {
         guard case .object(let args) = call.arguments else { throw RoutingError.invalidArguments }
+        if EventKitCapabilityService.supportedOperations.contains(call.operation) {
+            return try await EventKitCapabilityService.shared.execute(call.operation, arguments: args)
+        }
+        if call.operation == .locationCurrent {
+            guard args.isEmpty else { throw RoutingError.invalidArguments }
+            return try await CurrentLocationCapabilityService.shared.currentLocation()
+        }
         switch call.operation {
         case .audioListOutputs:
             return .object(["outputs": .array(try audio.listOutputs().map(audioJSON))])

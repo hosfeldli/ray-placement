@@ -83,7 +83,7 @@ actor UniversalSearchEngine {
         case "dictation": return kind == .dictation
         case "chat": return kind == .aiConversation
         case "terminal": return kind == .terminal
-        case "workflow", "command": return kind == .command
+        case "command": return kind == .command
         case "workspace": return kind == .workspace
         case "context": return kind == .context
         case "clipboard": return kind == .clipboard

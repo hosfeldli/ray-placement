@@ -15,7 +15,8 @@ import Testing
         )
         model.select(conversation.id)
         let routed = Set(model.routedNativeTools(for: "Explain this SQL").map(\.id))
-        #expect(routed == BrowserWorkspaceAITools.ids.union(AINotesTools.ids))
+        #expect(routed == BrowserWorkspaceAITools.ids.union(AINotesTools.readIDs))
+        #expect(!routed.contains("create_note"))
         #expect(routed == Set(model.routedNativeTools(for: "Read the current browser page").map(\.id)))
         #expect(routed == Set(model.routedNativeTools(for: "Search my notes").map(\.id)))
     }

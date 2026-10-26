@@ -3,9 +3,9 @@ import ApplicationServices
 import CoreGraphics
 import WebKit
 
-/// Native pointer delivery for the embedded Browser. This is deliberately not
-/// an AI tool: coordinate clicks and typing require a separate, complete
-/// financial/protected-data authorization path before they can be exposed.
+/// Native event delivery for the embedded Browser. Only the Browser model may
+/// call the committing methods after lease validation and its independent
+/// protected-data, task-scope, and financial authorization checks.
 enum BrowserNativePointerError: LocalizedError {
     case accessibilityRequired
     case staleForeground
@@ -65,6 +65,142 @@ enum BrowserNativePointerDriver {
         return result
     }
 
+    /// Tagged events are delivered to Lima only. The Browser's human-input
+    /// monitor ignores this tag; untagged user events revoke the input lease.
+    static let automationEventTag: Int64 = 0x4c494d41564953
+
+    private static func validatedQuartzPoint(
+        _ point: BrowserVisualInputPoint,
+        in webView: WKWebView,
+        expectedAnchor: BrowserVisualInputAnchor
+    ) throws -> CGPoint {
+        guard AXIsProcessTrusted() else {
+            throw BrowserNativePointerError.accessibilityRequired
+        }
+        guard BrowserVisualInputAnchor.foreground(for: webView) == expectedAnchor,
+              let window = webView.window,
+              let contentView = window.contentView,
+              let primaryScreenTop = NSScreen.screens.first?.frame.maxY else {
+            throw BrowserNativePointerError.staleForeground
+        }
+        let viewPoint = CGPoint(x: point.x, y: point.y)
+        guard webView.bounds.contains(viewPoint) else {
+            throw BrowserNativePointerError.invalidGeometry
+        }
+        let windowPoint = webView.convert(viewPoint, to: nil)
+        let contentPoint = contentView.convert(windowPoint, from: nil)
+        guard let hit = contentView.hitTest(contentPoint),
+              hit === webView || hit.isDescendant(of: webView) else {
+            throw BrowserNativePointerError.targetObscured
+        }
+        let projected = try quartzPoint(
+            point, anchor: expectedAnchor,
+            primaryScreenTop: Double(primaryScreenTop)
+        )
+        let actual = window.convertPoint(toScreen: windowPoint)
+        let actualQuartz = CGPoint(x: actual.x, y: primaryScreenTop - actual.y)
+        guard abs(projected.x - actualQuartz.x) <= 2,
+              abs(projected.y - actualQuartz.y) <= 2 else {
+            throw BrowserNativePointerError.invalidGeometry
+        }
+        return projected
+    }
+
+    static func click(
+        _ point: BrowserVisualInputPoint,
+        in webView: WKWebView,
+        expectedAnchor: BrowserVisualInputAnchor
+    ) throws {
+        let projected = try validatedQuartzPoint(point, in: webView, expectedAnchor: expectedAnchor)
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: projected, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                               mouseCursorPosition: projected, mouseButton: .left) else {
+            throw BrowserNativePointerError.eventUnavailable
+        }
+        down.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        up.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        down.postToPid(pid)
+        up.postToPid(pid)
+    }
+
+    static func typeText(
+        _ text: String,
+        at point: BrowserVisualInputPoint,
+        in webView: WKWebView,
+        expectedAnchor: BrowserVisualInputAnchor
+    ) throws {
+        guard !text.isEmpty, text.utf8.count <= 1024,
+              text.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) &&
+                  $0.value != 0x2028 && $0.value != 0x2029 }) else {
+            throw BrowserNativePointerError.invalidGeometry
+        }
+        let projected = try validatedQuartzPoint(point, in: webView, expectedAnchor: expectedAnchor)
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
+                                 mouseCursorPosition: projected, mouseButton: .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
+                               mouseCursorPosition: projected, mouseButton: .left) else {
+            throw BrowserNativePointerError.eventUnavailable
+        }
+        var keys: [(CGEvent, CGEvent)] = []
+        keys.reserveCapacity(text.count)
+        for character in text {
+            guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                  let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+                throw BrowserNativePointerError.eventUnavailable
+            }
+            let units = Array(String(character).utf16)
+            units.withUnsafeBufferPointer { buffer in
+                keyDown.keyboardSetUnicodeString(
+                    stringLength: buffer.count, unicodeString: buffer.baseAddress!
+                )
+                keyUp.keyboardSetUnicodeString(
+                    stringLength: buffer.count, unicodeString: buffer.baseAddress!
+                )
+            }
+            keyDown.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+            keyUp.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+            keys.append((keyDown, keyUp))
+        }
+        down.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        up.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        down.postToPid(pid)
+        up.postToPid(pid)
+        for (keyDown, keyUp) in keys {
+            keyDown.postToPid(pid)
+            keyUp.postToPid(pid)
+        }
+    }
+
+    static func scroll(
+        _ point: BrowserVisualInputPoint,
+        deltaX: Int32,
+        deltaY: Int32,
+        in webView: WKWebView,
+        expectedAnchor: BrowserVisualInputAnchor
+    ) throws {
+        let projected = try validatedQuartzPoint(point, in: webView, expectedAnchor: expectedAnchor)
+        guard abs(Int64(deltaX)) <= 1200, abs(Int64(deltaY)) <= 1200,
+              deltaX != 0 || deltaY != 0,
+              let source = CGEventSource(stateID: .combinedSessionState),
+              let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved,
+                                 mouseCursorPosition: projected, mouseButton: .left),
+              let wheel = CGEvent(scrollWheelEvent2Source: source, units: .pixel,
+                                  wheelCount: 2, wheel1: deltaY, wheel2: deltaX, wheel3: 0) else {
+            throw BrowserNativePointerError.invalidGeometry
+        }
+        move.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        wheel.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        wheel.location = projected
+        let pid = ProcessInfo.processInfo.processIdentifier
+        move.postToPid(pid)
+        wheel.postToPid(pid)
+    }
+
     /// Post only a non-committing move. The model repeats the screenshot safety
     /// preflight immediately before calling this method; this synchronous
     /// boundary then rechecks the foreground window and AppKit hit path.
@@ -111,6 +247,7 @@ enum BrowserNativePointerDriver {
               ) else {
             throw BrowserNativePointerError.eventUnavailable
         }
+        event.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
         // Address only Lima, never an arbitrary foreground application.
         event.postToPid(ProcessInfo.processInfo.processIdentifier)
     }

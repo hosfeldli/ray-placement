@@ -10,7 +10,6 @@ struct LauncherView: View {
     @ObservedObject var inlineExtensionSurfaceModel: InlineExtensionSurfaceModel
     @ObservedObject var formatterModel: FormatterWorkspaceModel
     @ObservedObject var extensionStoreModel: ExtensionStoreModel
-    @ObservedObject var workflowModel: WorkflowEditorModel
     @ObservedObject var surfaceSessionController: LauncherSurfaceSessionController
     let onSurfaceInteraction: () -> Void
     let onPinSurface: (Bool) -> Void
@@ -23,6 +22,7 @@ struct LauncherView: View {
     @ObservedObject private var settings = SettingsStore.shared
     @FocusState private var searchFocused: Bool
     @FocusState private var timezoneFocused: Bool
+    @FocusState private var aliasFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var hoveredEmojiID: String?
@@ -38,7 +38,6 @@ struct LauncherView: View {
         inlineExtensionSurfaceModel: InlineExtensionSurfaceModel,
         formatterModel: FormatterWorkspaceModel,
         extensionStoreModel: ExtensionStoreModel,
-        workflowModel: WorkflowEditorModel,
         surfaceSessionController: LauncherSurfaceSessionController,
         onSurfaceInteraction: @escaping () -> Void = {},
         onPinSurface: @escaping (Bool) -> Void = { _ in },
@@ -56,7 +55,6 @@ struct LauncherView: View {
         self.inlineExtensionSurfaceModel = inlineExtensionSurfaceModel
         self.formatterModel = formatterModel
         self.extensionStoreModel = extensionStoreModel
-        self.workflowModel = workflowModel
         self.surfaceSessionController = surfaceSessionController
         self.onSurfaceInteraction = onSurfaceInteraction
         self.onPinSurface = onPinSurface
@@ -79,7 +77,7 @@ struct LauncherView: View {
                                         openWorkspace: onOpenWorkspace,
                                         openSettings: onOpenSettings, createNote: onCreateNote,
                                         dismiss: onDismissSearch)
-                    .disabled(viewModel.actionPanelItem != nil)
+                    .disabled(viewModel.actionPanelItem != nil || viewModel.aliasEditorItem != nil)
             } else {
                 VStack(spacing: 5) {
                     LimaWindowDragRegion()
@@ -103,6 +101,10 @@ struct LauncherView: View {
             if viewModel.actionPanelItem != nil {
                 actionPanel
                     .transition(.opacity.combined(with: .move(edge: .trailing)))
+            }
+            if viewModel.aliasEditorItem != nil {
+                aliasEditor
+                    .transition(.opacity)
             }
         }
         .frame(
@@ -165,7 +167,7 @@ struct LauncherView: View {
             if viewModel.mode == .root { LimaWayfinderMark() }
             if viewModel.mode != .root {
                 Button {
-                    viewModel.enter(.root)
+                    viewModel.navigateBack()
                 } label: {
                     Image(systemName: "chevron.left")
                         .limaFont(.system(size: 14, weight: .bold))
@@ -274,7 +276,7 @@ struct LauncherView: View {
         Menu {
             Button("Back to Search") {
                 onSurfaceInteraction()
-                viewModel.enter(.root)
+                viewModel.navigateBack()
             }
             if isPinEligible {
                 Button(surfaceSessionController.isPinned ? "Unpin Surface" : "Keep Open") {
@@ -377,7 +379,16 @@ struct LauncherView: View {
         case .terminal:
             DeveloperTerminalView(model: terminalModel)
         case .contextShelf:
-            ContextShelfView(store: .shared, searchQuery: Binding(get: { viewModel.query }, set: { viewModel.query = $0 }))
+            ContextShelfView(
+                store: .shared,
+                searchQuery: Binding(get: { viewModel.query }, set: { viewModel.query = $0 }),
+                sendToAI: { items in
+                    let added = aiChatModel.prepareShelfItems(items, notes: .shared)
+                    if added > 0 { onOpenWorkspace(.ai) }
+                    return added
+                },
+                onNoteTransfer: { onOpenWorkspace(.notes) }
+            )
         case .picker(.emoji):
             emojiGrid
         case .picker(.applications):
@@ -407,10 +418,14 @@ struct LauncherView: View {
                 .onChange(of: extensionStoreModel.query) { _ in onSurfaceInteraction() }
                 .onSurfaceInteraction(onSurfaceInteraction)
         case .workflows:
-            WorkflowEditorView(model: workflowModel)
-                .onChange(of: workflowModel.selectedID) { _ in onSurfaceInteraction() }
-                .onChange(of: workflowModel.commandFilter) { _ in onSurfaceInteraction() }
-                .onSurfaceInteraction(onSurfaceInteraction)
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Workflows has been retired")
+                    .font(.headline)
+                Text("Saved definitions remain in the local archive and can be exported from Settings.")
+                    .foregroundStyle(.secondary)
+                Button("Open Settings", action: onOpenSettings)
+            }
+            .padding(20)
         case .extensionDevelopment:
             ExtensionDevelopmentView()
                 .onSurfaceInteraction(onSurfaceInteraction)
@@ -517,6 +532,45 @@ struct LauncherView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var aliasEditor: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .contentShape(Rectangle())
+                .onTapGesture { viewModel.closeAliasEditor() }
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Add Alias").limaFont(.headline)
+                if let item = viewModel.aliasEditorItem {
+                    Text("Create a local Search alias for \(item.title).")
+                        .limaFont(.caption)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                }
+                TextField("Alias", text: $viewModel.aliasEditorDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($aliasFocused)
+                    .accessibilityLabel("New Search alias")
+                    .onAppear { aliasFocused = true }
+                if let error = viewModel.aliasEditorError {
+                    Text(error).limaFont(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    Button("Cancel") { viewModel.closeAliasEditor() }
+                    Spacer()
+                    Button("Save Alias") { _ = viewModel.saveAliasDraft() }
+                        .keyboardShortcut(.return, modifiers: [])
+                }
+                Text("Return to save · Escape to cancel")
+                    .limaFont(.caption2)
+                    .foregroundStyle(LimaTheme.textSecondary)
+            }
+            .padding(16)
+            .frame(maxWidth: 380)
+            .background(LimaTheme.surfaceRaised, in: RoundedRectangle(cornerRadius: 18))
+            .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(LimaTheme.borderStrong, lineWidth: 0.5))
+            .shadow(color: LimaTheme.shadowFloating, radius: 20, y: 8)
+            .padding(16)
+        }
     }
 
     private var actionPanel: some View {

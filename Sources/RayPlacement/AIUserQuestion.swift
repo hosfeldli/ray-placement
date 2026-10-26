@@ -48,6 +48,7 @@ struct AIUserQuestionResponse: Equatable, Sendable {
     let selectedOptionIDs: [String]
     let text: String?
     var secureFields: [BrowserSecureFieldStatus]? = nil
+    var postHandoffNavigation = false
 
     func isValid(for question: AIUserQuestion) -> Bool {
         guard questionID == question.id, selectedOptionIDs.count <= 12,
@@ -57,20 +58,24 @@ struct AIUserQuestionResponse: Equatable, Sendable {
         switch question.kind {
         case .singleChoice:
             guard selectedOptionIDs.count == 1 else { return false }
-            return available.contains(selectedOptionIDs[0])
-                || (question.allowsOther && selectedOptionIDs == ["other"]
-                    && !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if selectedOptionIDs == ["other"] {
+                return question.allowsOther
+                    && !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+            return available.contains(selectedOptionIDs[0]) && text == nil
         case .multipleChoice:
             guard selectedOptionIDs.count >= question.minimumSelections,
                   selectedOptionIDs.allSatisfy({ available.contains($0) || (question.allowsOther && $0 == "other") })
             else { return false }
-            return !selectedOptionIDs.contains("other")
-                || !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            return selectedOptionIDs.contains("other")
+                ? !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                : text == nil
         case .freeResponse:
             return selectedOptionIDs.isEmpty
                 && !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         case .confirmation:
-            return selectedOptionIDs == ["confirm"] || selectedOptionIDs == ["cancel"]
+            return text == nil &&
+                (selectedOptionIDs == ["confirm"] || selectedOptionIDs == ["cancel"])
         }
     }
 
@@ -90,6 +95,10 @@ struct AIUserQuestionResponse: Equatable, Sendable {
             payload["values_redacted"] = true
             payload["fresh_browser_read_required"] = true
             payload["final_action_authorized"] = false
+            if postHandoffNavigation {
+                payload["post_handoff_navigation"] = true
+                payload["authentication_verified"] = false
+            }
         }
         return payload
     }
@@ -186,6 +195,18 @@ enum AIUserQuestionTools {
             }
         }
         guard Set(options.map(\.id)).count == options.count else { return nil }
+        // Every general form shape, including fixed choices and confirmation,
+        // must reject prompts for credentials or payment secrets. Only the
+        // secure Browser handoff may mention them; it never collects values.
+        if purpose != .secureBrowserInput {
+            let prompt = ([question, title ?? "", placeholder ?? "", confirmLabel ?? "", cancelLabel ?? ""]
+                          + options.flatMap { [$0.id, $0.label, $0.detail ?? ""] })
+                .joined(separator: " ")
+            let protectedPattern = #"\b(password|passcode|one[- ]?time[- ]?code|otp|verification[- ]?code|security[- ]?code|card[- ]?number|credit[- ]?card|debit[- ]?card|cvv|cvc|bank[- ]?account|routing[- ]?number|social[- ]?security|ssn|api[- ]?key|access[- ]?token|private[- ]?key|recovery[- ]?code|seed[- ]?phrase)\b"#
+            if prompt.range(of: protectedPattern, options: [.regularExpression, .caseInsensitive]) != nil {
+                return nil
+            }
+        }
         switch kind {
         case .singleChoice, .multipleChoice:
             guard options.count >= 2, minimum <= options.count + (allowsOther ? 1 : 0) else { return nil }
@@ -332,7 +353,7 @@ struct AIUserQuestionView: View {
                     .disabled(!currentResponse.isValid(for: question))
             case .confirmation:
                 HStack {
-                    Button(question.cancelLabel ?? "Keep existing version") {
+                    Button(question.cancelLabel ?? "Cancel") {
                         answer(AIUserQuestionResponse(questionID: question.id,
                             selectedOptionIDs: ["cancel"], text: nil))
                     }

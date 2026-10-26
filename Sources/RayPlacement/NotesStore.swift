@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import RayPlacementCore
 
 private func parseTaskLine(_ line: String) -> (checked: Bool, text: String)? {
@@ -212,6 +213,71 @@ final class NotesStore: ObservableObject {
         scheduleSave()
     }
 
+    /// Create a new editable report after an AI tool's exact-content review.
+    /// This path never overwrites an existing note or changes Mail state.
+    @discardableResult
+    func createAIReportNote(title: String, content: String) throws -> UUID {
+        let cleanTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = MarkdownNote.normalizedContent(content)
+        guard !cleanTitle.isEmpty, cleanTitle.count <= 200,
+              !normalized.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              normalized.count <= 32_000 else {
+            throw NSError(domain: "LimaNotes", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "The report needs a title and 1 to 32,000 characters of Markdown."
+            ])
+        }
+        guard notes.count < Self.maximumNotes else {
+            throw NSError(domain: "LimaNotes", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Lima Notes has reached its \(Self.maximumNotes)-note limit."
+            ])
+        }
+        let note = MarkdownNote(title: cleanTitle, content: normalized)
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        lastError = nil
+        scheduleSave()
+        return note.id
+    }
+
+    /// Append only when the note still matches the content the assistant read.
+    /// The existing Markdown, user edits, completion state, and revision history
+    /// remain intact; a stale proposal must be reviewed against a fresh read.
+    @discardableResult
+    func appendAIReportMarkdown(to identifier: UUID,
+                                expectedContentSHA256: String,
+                                content: String) throws -> Int {
+        guard let note = notes.first(where: { $0.id == identifier }) else {
+            throw NSError(domain: "LimaNotes", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "That local note is unavailable."
+            ])
+        }
+        let currentHash = SHA256.hash(data: Data(note.content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        guard currentHash == expectedContentSHA256 else {
+            throw NSError(domain: "LimaNotes", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "The note changed after it was read. Read it again before proposing an append."
+            ])
+        }
+        let addition = MarkdownNote.normalizedContent(content)
+        guard !addition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              addition.count <= 32_000 else {
+            throw NSError(domain: "LimaNotes", code: 6, userInfo: [
+                NSLocalizedDescriptionKey: "The append needs 1 to 32,000 characters of Markdown."
+            ])
+        }
+        let separator = note.content.isEmpty ? ""
+            : note.content.hasSuffix("\n\n") ? ""
+            : note.content.hasSuffix("\n") ? "\n" : "\n\n"
+        let updated = note.content + separator + addition
+        guard updated.count <= Self.maximumCharactersPerNote else {
+            throw NSError(domain: "LimaNotes", code: 7, userInfo: [
+                NSLocalizedDescriptionKey: "This append would exceed the note's character limit."
+            ])
+        }
+        updateNote(identifier) { $0.content = updated }
+        return updated.count
+    }
+
     func createQuickNote(with text: String) {
         let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
@@ -229,6 +295,35 @@ final class NotesStore: ObservableObject {
         selectedNoteID = note.id
         lastError = nil
         scheduleSave()
+    }
+
+    /// Called only after the user accepts a validated Mail action review.
+    /// Existing notes are never refreshed or overwritten by this operation.
+    @discardableResult
+    func createMailActionNote(_ draft: MailActionNoteDraft) throws -> UUID {
+        // A double-click or a late duplicate completion must never create a
+        // second note or overwrite edits to the first snapshot.
+        if let existing = notes.first(where: { $0.mailTaskProvenance == draft.provenance }) {
+            selectedNoteID = existing.id
+            return existing.id
+        }
+        guard notes.count < Self.maximumNotes,
+              draft.title.count <= 200,
+              draft.markdown.count <= Self.maximumCharactersPerNote,
+              !draft.provenance.isEmpty,
+              draft.provenance.count <= 50 else {
+            throw MailActionReviewError.invalidApproval
+        }
+        let note = MarkdownNote(
+            title: draft.title,
+            content: MarkdownNote.normalizedContent(draft.markdown),
+            mailTaskProvenance: draft.provenance
+        )
+        notes.insert(note, at: 0)
+        selectedNoteID = note.id
+        lastError = nil
+        scheduleSave()
+        return note.id
     }
 
     func replaceTags(_ tags: [String]) {
@@ -389,14 +484,13 @@ final class NotesStore: ObservableObject {
         }
     }
 
-    func appendShelfItems(_ items: [ContextShelfItem], to identifier: UUID? = nil) {
-        let markdown = ContextShelfMarkdownFormatter.format(items)
-        guard !markdown.isEmpty else { return }
-        if let identifier {
-            appendMarkdown(markdown, to: identifier)
-        } else {
-            appendMarkdown(markdown)
-        }
+    @discardableResult
+    func appendShelfItems(_ items: [ContextShelfItem], to identifier: UUID? = nil) -> Bool {
+        guard let markdown = authorizedShelfMarkdown(items),
+              let targetID = identifier ?? selectedNoteID,
+              let previous = notes.first(where: { $0.id == targetID })?.content else { return false }
+        appendMarkdown(markdown, to: targetID)
+        return notes.first(where: { $0.id == targetID })?.content != previous
     }
 
     /// Appends Shelf content to the note that Quick Note would currently target.
@@ -414,22 +508,40 @@ final class NotesStore: ObservableObject {
             selectedNoteID: selectedNoteID,
             notes: notes
         )
-        guard let targetID else { return nil }
-        appendShelfItems(items, to: targetID)
+        guard let targetID, appendShelfItems(items, to: targetID) else { return nil }
         LimaTestEnvironment.userDefaults.set(targetID.uuidString, forKey: "quickNoteTargetID")
         return targetID
     }
 
-    func createNoteFromShelf(_ items: [ContextShelfItem]) {
-        let markdown = ContextShelfMarkdownFormatter.format(items)
-        guard !markdown.isEmpty, notes.count < Self.maximumNotes else { return }
+    @discardableResult
+    func createNoteFromShelf(_ items: [ContextShelfItem]) -> UUID? {
+        guard let markdown = authorizedShelfMarkdown(items),
+              notes.count < Self.maximumNotes else { return nil }
+        let content = MarkdownNote.normalizedContent(markdown)
+        guard !content.isEmpty, content.count <= Self.maximumCharactersPerNote else { return nil }
         let note = MarkdownNote(
             title: "Shelf · \(Date().formatted(date: .abbreviated, time: .shortened))",
-            content: MarkdownNote.normalizedContent(markdown)
+            content: content
         )
         notes.insert(note, at: 0)
         selectedNoteID = note.id
         scheduleSave()
+        return note.id
+    }
+
+    /// Mail references remain metadata-only and require current selected-account
+    /// access at the moment of transfer, not just when captured on the Shelf.
+    private func authorizedShelfMarkdown(_ items: [ContextShelfItem]) -> String? {
+        guard !items.isEmpty else { return nil }
+        let policy = MailCapabilityPolicyStore.load()
+        for item in items where item.isMailReference {
+            guard item.kind == .mailReference,
+                  case .mailReference(let reference) = item.payload,
+                  policy.readEnabled,
+                  policy.selectedAccountIDs.contains(reference.accountID) else { return nil }
+        }
+        let markdown = ContextShelfMarkdownFormatter.format(items)
+        return markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : markdown
     }
 
     func togglePin() {

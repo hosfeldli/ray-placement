@@ -13,16 +13,30 @@ final class ContextShelfStore: ObservableObject {
 
     private let storageURL: URL
     private let fileStore = PrivateFileStore()
+    private var lastPersistedPinnedItems: [ContextShelfItem]?
     private let maxUnpinnedItems = 30
     private let maxTextCharacters = 100_000
     private let duplicateWindow: TimeInterval = 3
 
-    init(storageURL: URL = ApplicationPaths.contextShelf, loadPersisted: Bool = true) {
+    init(storageURL: URL = ApplicationPaths.contextShelf,
+         loadPersisted: Bool = true,
+         mailPolicy: MailCapabilityPolicy? = nil) {
         self.storageURL = storageURL
         guard loadPersisted else { return }
         let loaded = fileStore.loadJSON([ContextShelfItem].self, from: storageURL)
         guard let persisted = loaded.value else { return }
-        items = persisted.filter(\.isPinned)
+        let pinned = persisted.filter(\.isPinned)
+        let policy = mailPolicy ?? MailCapabilityPolicyStore.load()
+        items = pinned.filter { item in
+            guard item.isMailReference else { return true }
+            guard item.kind == .mailReference,
+                  case .mailReference(let reference) = item.payload else { return false }
+            return policy.readEnabled && policy.selectedAccountIDs.contains(reference.accountID)
+        }
+        // A policy change or interrupted disconnect cannot resurrect stale
+        // pinned Mail metadata from an earlier session.
+        lastPersistedPinnedItems = pinned
+        if items.count != pinned.count { persistPinnedItems() }
     }
 
     var selectedItems: [ContextShelfItem] {
@@ -165,9 +179,30 @@ final class ContextShelfStore: ObservableObject {
         persistPinnedItems()
     }
 
+    /// Forget selected Mail references, including pinned entries and undo buffers.
+    /// Disconnect must not leave metadata restorable through Shelf undo.
+    func removeMailReferences(accountIDs: Set<String>? = nil) {
+        func shouldRemove(_ item: ContextShelfItem) -> Bool {
+            guard item.isMailReference else { return false }
+            guard let accountIDs else { return true }
+            guard item.kind == .mailReference,
+                  case .mailReference(let reference) = item.payload else { return true }
+            return accountIDs.contains(reference.accountID)
+        }
+        let removedIDs = Set(items.filter(shouldRemove).map(\.id))
+        items.removeAll(where: shouldRemove)
+        selectedIDs.subtract(removedIDs)
+        lastRemoved.removeAll(where: shouldRemove)
+        lastCleared.removeAll(where: shouldRemove)
+        persistPinnedItems()
+    }
+
     func persistPinnedItems() {
+        let pinned = items.filter(\.isPinned)
+        guard pinned != lastPersistedPinnedItems else { return }
         do {
-            try fileStore.write(items.filter(\.isPinned), to: storageURL, backupExisting: false)
+            try fileStore.write(pinned, to: storageURL, backupExisting: false)
+            lastPersistedPinnedItems = pinned
         } catch {
             // Shelf capture must not interrupt the source application because
             // a local persistence write failed. The next pin or termination
@@ -186,7 +221,7 @@ final class ContextShelfStore: ObservableObject {
                 item.payload = .terminal(command: command, output: clipped)
             case .dictation:
                 item.payload = .dictation(transcript: clipped)
-            case .file, .note:
+            case .file, .note, .mailReference:
                 break
             }
             item.preview = ContextShelfTextFormatting.preview(for: clipped)
@@ -196,6 +231,13 @@ final class ContextShelfStore: ObservableObject {
     }
 
     private func recentDuplicate(of item: ContextShelfItem) -> ContextShelfItem? {
+        if case .mailReference(let reference) = item.payload {
+            return items.first { existing in
+                guard case .mailReference(let existingReference) = existing.payload else { return false }
+                return existingReference.id == reference.id &&
+                    existingReference.internetMessageID == reference.internetMessageID
+            }
+        }
         guard let text = item.textValue else { return nil }
         return items.first { existing in
             guard existing.kind == item.kind,
