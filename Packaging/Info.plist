@@ -19,9 +19,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>3.14.29</string>
+	<string>4.0.0</string>
 	<key>CFBundleVersion</key>
-	<string>3014029</string>
+	<string>4000000</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>13.0</string>
 	<key>LSUIElement</key>
@@ -40,23 +40,19 @@
 		<true/>
 	</dict>
 	<key>NSAppleEventsUsageDescription</key>
-		<string>Lima uses Apple Events for music controls you press and, when you explicitly set up Mail access, to discover Apple Mail accounts you choose. Lima does not read Mail at launch.</string>
-	<key>NSHighResolutionCapable</key>
-	<true/>
-	<key>NSHumanReadableCopyright</key>
-	<string>Built for personal use.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Lima accesses your calendar only when you review a Calendar tool call in AI Chat.</string>
+	<string>Lima uses Apple Events for music controls you press and, when you explicitly set up Mail access, to discover Apple Mail accounts you choose. Lima does not read Mail at launch.</string>
 	<key>NSCalendarsFullAccessUsageDescription</key>
 	<string>Lima reads and changes calendar events only when you review an exact Calendar tool call in AI Chat.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Lima accesses your calendar only when you review a Calendar tool call in AI Chat.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>Lima creates calendar events only when you review an exact Calendar tool call in AI Chat.</string>
 	<key>NSContactsUsageDescription</key>
 	<string>Lima accesses Contacts only after you review an exact Contacts tool call in AI Chat and macOS grants access.</string>
-	<key>NSRemindersUsageDescription</key>
-	<string>Lima accesses Apple Reminders only when you review a Reminders tool call in AI Chat.</string>
-	<key>NSRemindersFullAccessUsageDescription</key>
-	<string>Lima reads and changes Apple Reminders only when you review an exact Reminders tool call in AI Chat.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Built for personal use.</string>
 	<key>NSLocationUsageDescription</key>
 	<string>Lima requests your current location only when you review the Location tool call in AI Chat.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
@@ -65,6 +61,10 @@
 	<string>Lima records audio only after you press Dictate. Recordings stay on this Mac unless you explicitly choose OpenAI Cloud Transcription.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Lima reads and changes Apple Reminders only when you review an exact Reminders tool call in AI Chat.</string>
+	<key>NSRemindersUsageDescription</key>
+	<string>Lima accesses Apple Reminders only when you review a Reminders tool call in AI Chat.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Lima uses on-device speech recognition to transcribe short recorded segments into a separate local dictation conversation.</string>
 	<key>SUFeedURL</key>
