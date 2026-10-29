@@ -1041,7 +1041,8 @@ import Vision
     )
     model.draft = "Finish despite an open connection"
     model.send()
-    for _ in 0..<600 where model.isStreaming {
+    for _ in 0..<600 {
+        if model.executionRun?.state == .completed { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
@@ -1070,7 +1071,9 @@ import Vision
     )
     model.draft = "Preserve the partial answer on failure"
     model.send()
-    for _ in 0..<600 where model.isStreaming {
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last?.failure
+        if model.executionRun?.state == .waitingForConfiguration && failure != nil { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
