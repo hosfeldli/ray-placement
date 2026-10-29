@@ -537,11 +537,12 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
     let recorder = SearchExecutionRecorder()
     model.delegate = recorder
-    model.query = "notes"
-    await model.waitForLocalSearchForTesting()
-    let index = try #require(model.results.firstIndex { $0.id == "builtin.notes" })
-    model.select(index)
-    model.openActionPanel()
+    let index = model.selectedIndex
+    let target = LauncherItem(
+        id: "builtin.notes", title: "Lima Notes", subtitle: "Open Notes",
+        icon: .system("note.text"), keywords: ["notes"], action: .system(.openNotes)
+    )
+    model.openActionPanel(for: target)
     let item = try #require(model.actionPanelItem)
     let actions = model.actionPanelActions(for: item)
     let pinIndex = try #require(actions.firstIndex { $0.id == "favorite" })
@@ -558,7 +559,7 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     } else {
         Issue.record("Menu Return must run its selected action, not the primary result.")
     }
-    model.openActionPanel()
+    model.openActionPanel(for: target)
     model.moveActionPanelSelection(by: -100)
     #expect(model.actionPanelSelectedIndex == 0)
     model.moveActionPanelSelection(by: 100)
