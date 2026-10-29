@@ -39,6 +39,7 @@ ISOLATED_TESTS = {
     "browserAskForActionsRequiresNativeApproval",
     # Visual review must retain its exact capture; the process-wide screenshot
     # store has an eight-capture cap that concurrent WebKit fixtures can evict.
+    "browserVisualHitRequiresCaptureAndExactClickReview",
     "browserVisualShadowHitDispatchesToChildAndPrefersSemanticHost",
     # WebKit secure-handoff fixtures pass independently but can deadlock when
     # mixed with hosted Search/AppKit tests in the same concurrent process.
