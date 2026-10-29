@@ -68,6 +68,16 @@ private func mailFixtureRequest(accountIDs: Set<String> = ["work"],
                       limit: limit)
 }
 
+@Test func mailAIToolDefinitionsSerializeForStrictProviders() {
+    let policy = MailCapabilityPolicy(readEnabled: true,
+                                      selectedAccountIDs: ["work"], allowsAIRead: true)
+    let outgoing = MailOutgoingPolicy(sendEnabled: true, selectedAccountIDs: ["work"])
+    let definitions = AIMailTools.definitions(policy: policy, outgoing: outgoing)
+    #expect(Set(definitions.map(\.id)) == AIMailTools.ids)
+    #expect(definitions.allSatisfy { $0.responsePayload != nil })
+    #expect(AIMailTools.definitions(policy: .disabled, outgoing: outgoing).isEmpty)
+}
+
 @Test func mailAccountDiscoveryIsUIOnlyAndRejectsMalformedRecords() async throws {
     let provider = FixtureMailProvider()
     let service = MailCapabilityService(provider: provider)
@@ -185,17 +195,13 @@ private func mailFixtureRequest(accountIDs: Set<String> = ["work"],
     }
 }
 
-@Test func appleMailAdapterDoesNotExposeUnverifiedMessageOperations() async {
+@Test func appleMailAdapterAdvertisesImplementedNativeOperations() async {
     let adapter = AppleMailAdapter()
-    #expect(await adapter.supportedOperations() == [.listAccounts])
-    do {
-        _ = try await adapter.search(mailFixtureRequest())
-        Issue.record("Mail search must stay unavailable until its scoped script is QA-verified.")
-    } catch let error as MailCapabilityError {
-        #expect(error == .unavailable)
-    } catch {
-        Issue.record("Unexpected Mail adapter error: \(error)")
-    }
+    #expect(await adapter.supportedOperations() == [
+        .listAccounts, .listMailboxes, .search, .getMessage,
+        .openMessage, .createDraft, .reply, .forward, .send,
+        .move, .delete
+    ])
 }
 
 @Test func mailShelfReferenceRequiresCurrentSelectedUIAccessWithoutReadingBody() async throws {

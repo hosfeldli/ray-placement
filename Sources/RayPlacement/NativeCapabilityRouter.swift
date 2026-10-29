@@ -14,6 +14,7 @@ final class NativeCapabilityRouter {
         case invalidArguments
         case unavailable
         case aiDisabled
+        case screenshotAccessDisabled
         case extensionChanged
         case clipboardFailed
 
@@ -22,6 +23,7 @@ final class NativeCapabilityRouter {
             case .invalidArguments: return "The native operation arguments are invalid."
             case .unavailable: return "This native operation is not available yet."
             case .aiDisabled: return "Lima AI access is disabled."
+            case .screenshotAccessDisabled: return "Screenshot History access is disabled for Lima AI. Enable Screenshot History and its metadata tool before attaching a saved capture."
             case .extensionChanged: return "The extension changed or is no longer approved. Reload and review it again."
             case .clipboardFailed: return "The screenshot image could not be copied to the clipboard."
             }
@@ -32,7 +34,7 @@ final class NativeCapabilityRouter {
     /// executed by an extension, even if its manifest declares the capability.
     static let supportedOperations: Set<NativeCapabilityOperation> = [
         .screenshotTargets, .screenshotCapture, .screenshotList, .screenshotSearch, .screenshotInfo,
-        .screenshotCopy, .screenshotDelete,
+        .screenshotReadImage, .screenshotCopy, .screenshotDelete,
         .audioListOutputs, .audioGetOutput, .audioSetOutput,
         .audioGetVolume, .audioSetVolume, .audioToggleMute,
         .networkTestStart, .networkTestStatus, .networkTestCancel,
@@ -41,7 +43,9 @@ final class NativeCapabilityRouter {
         .calendarCreateEvent, .calendarUpdateEvent, .calendarDeleteEvent,
         .remindersListLists, .remindersSearch, .remindersList,
         .remindersCreate, .remindersUpdate, .remindersComplete,
-        .remindersReopen, .remindersDelete, .locationCurrent
+        .remindersReopen, .remindersDelete,
+        .contactsSearch, .contactsGet, .contactsFindEmail, .contactsFindPhone,
+        .contactsCreate, .contactsUpdate, .locationCurrent
     ]
 
     private let authorizer = NativeCapabilityAuthorizer()
@@ -63,6 +67,11 @@ final class NativeCapabilityRouter {
         case .ai:
             guard AIRequestPolicy.shared.isEnabled else { throw RoutingError.aiDisabled }
         case .extensionCommand:
+            // Pixel handoff is AI-only. Extension commands cannot claim this
+            // operation merely by declaring screenCapture in a manifest.
+            guard call.operation != .screenshotReadImage else {
+                throw NativeCapabilityAuthorizationError.invalidCall
+            }
             guard try currentExtensionAuthority(for: call)?.approved == true else {
                 throw RoutingError.extensionChanged
             }
@@ -72,7 +81,8 @@ final class NativeCapabilityRouter {
 
     func execute(_ call: NativeCapabilityCall,
                  approvalID: UUID? = nil) async throws -> JSONValue {
-        guard Self.supportedOperations.contains(call.operation) else {
+        guard Self.supportedOperations.contains(call.operation),
+              call.operation != .screenshotReadImage else {
             throw RoutingError.unavailable
         }
         if case .ai = call.origin {
@@ -85,9 +95,47 @@ final class NativeCapabilityRouter {
             // consumed. Their dispatch methods enforce the resulting TCC state.
             osPermissionGranted: osPermissionGranted(for: call.operation) ||
                 EventKitCapabilityService.supportedOperations.contains(call.operation) ||
+                ContactsCapabilityService.supportedOperations.contains(call.operation) ||
                 call.operation == .locationCurrent
         )
         return try await dispatch(call)
+    }
+
+    /// Deliver pixels only to the AI bridge after a consumed exact-call grant.
+    /// The ordinary JSON router deliberately cannot return this operation.
+    func executeReviewedScreenshotImage(
+        _ call: NativeCapabilityCall, approvalID: UUID
+    ) async throws -> ScreenshotProviderImage {
+        guard call.operation == .screenshotReadImage,
+              case .ai = call.origin,
+              case .object(let args) = call.arguments,
+              args.count == 1,
+              let id = args.uuid("id") else { throw RoutingError.invalidArguments }
+        guard AIRequestPolicy.shared.isEnabled else { throw RoutingError.aiDisabled }
+        try await authorizer.authorize(
+            call, approvalID: approvalID, installedExtension: nil,
+            osPermissionGranted: true
+        )
+        return try await history().providerImage(for: id)
+    }
+
+    /// Local Note attachment is separate from visual-provider sharing. The
+    /// Notes write has its own exact-call review, but Screenshot History must
+    /// still be enabled in the current AI tool scope.
+    func screenshotImageForNote(id: UUID) async throws -> (Data, ScreenshotImageFormat) {
+        guard AIRequestPolicy.shared.isEnabled else { throw RoutingError.aiDisabled }
+        guard AIComputerActionPolicy.shared.effectiveAccess(for: .screenshotHistory) != .disabled,
+              LimaAIToolStore.shared.effectiveEnabledToolIDs.contains("screenshot_info") else {
+            throw RoutingError.screenshotAccessDisabled
+        }
+        return try await history().boundedImageDataForNote(for: id)
+    }
+
+    func isSavedScreenshotCurrent(_ image: ScreenshotProviderImage) async -> Bool {
+        guard AIRequestPolicy.shared.isEnabled,
+              AIComputerActionPolicy.shared.effectiveAccess(for: .screenshotHistory) != .disabled,
+              let store = try? history() else { return false }
+        return await store.isProviderImageCurrent(image)
     }
 
     private func currentExtensionAuthority(for call: NativeCapabilityCall)
@@ -160,6 +208,9 @@ final class NativeCapabilityRouter {
         guard case .object(let args) = call.arguments else { throw RoutingError.invalidArguments }
         if EventKitCapabilityService.supportedOperations.contains(call.operation) {
             return try await EventKitCapabilityService.shared.execute(call.operation, arguments: args)
+        }
+        if ContactsCapabilityService.supportedOperations.contains(call.operation) {
+            return try await ContactsCapabilityService.shared.execute(call.operation, arguments: args)
         }
         if call.operation == .locationCurrent {
             guard args.isEmpty else { throw RoutingError.invalidArguments }

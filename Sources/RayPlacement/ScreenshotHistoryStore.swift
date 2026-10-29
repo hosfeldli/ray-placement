@@ -1,4 +1,6 @@
 import AppKit
+import CryptoKit
+import Darwin
 import Foundation
 import ImageIO
 import RayPlacementCore
@@ -55,6 +57,17 @@ struct ScreenshotRecord: Identifiable, Sendable {
     let pixelHeight: Int
     let byteCount: Int
     let isPinned: Bool
+}
+
+/// Image bytes are an ephemeral, reviewed AI handoff; no private file URL or
+/// original full-resolution screenshot enters the provider's text output.
+struct ScreenshotProviderImage: Sendable {
+    let id: UUID
+    let capturedAt: Date
+    let originalByteCount: Int
+    let originalSHA256: Data
+    let imageData: Data
+    let mediaType: String
 }
 
 struct ScreenshotMetadata: Sendable {
@@ -310,7 +323,93 @@ actor ScreenshotHistoryStore {
 
     func imageData(for id: UUID) throws -> (Data, ScreenshotImageFormat) {
         guard let record = try record(id: id) else { throw ScreenshotHistoryError.notFound }
-        return (try Data(contentsOf: record.imageURL), record.format)
+        return (try boundedOriginalImage(record), record.format)
+    }
+
+    /// Read one indexed capture for a reviewed local Note attachment without
+    /// copying arbitrary application-support paths or exceeding Notes' limit.
+    func boundedImageDataForNote(for id: UUID) throws -> (Data, ScreenshotImageFormat) {
+        guard let record = try record(id: id) else { throw ScreenshotHistoryError.notFound }
+        return (try boundedOriginalImage(record, maximumBytes: 20_000_000), record.format)
+    }
+
+    /// Prepare only one indexed capture, after native exact-call review. Bound
+    /// the original read and downsample before the provider ever sees pixels.
+    func providerImage(for id: UUID) throws -> ScreenshotProviderImage {
+        guard let record = try record(id: id) else { throw ScreenshotHistoryError.notFound }
+        let original = try boundedOriginalImage(record)
+        guard let source = CGImageSourceCreateWithData(original as CFData, nil),
+              let type = CGImageSourceGetType(source),
+              type as String == record.format.typeIdentifier else {
+            throw ScreenshotHistoryError.invalidImage
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 2_048
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw ScreenshotHistoryError.invalidImage
+        }
+        // Codex CLI accepts at most 4 MB of JPEG bytes. Use the same bound for
+        // every provider so a reviewed image cannot fail only after handoff.
+        var prepared: Data?
+        for quality in [0.82, 0.68, 0.52] {
+            let output = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(
+                output, UTType.jpeg.identifier as CFString, 1, nil
+            ) else { throw ScreenshotHistoryError.invalidImage }
+            CGImageDestinationAddImage(destination, image,
+                                       [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary)
+            guard CGImageDestinationFinalize(destination) else { throw ScreenshotHistoryError.invalidImage }
+            let candidate = output as Data
+            if !candidate.isEmpty, candidate.count <= 4_000_000 {
+                prepared = candidate
+                break
+            }
+        }
+        guard let prepared else { throw ScreenshotHistoryError.imageTooLarge }
+        return ScreenshotProviderImage(
+            id: id, capturedAt: record.capturedAt,
+            originalByteCount: record.byteCount,
+            originalSHA256: Data(SHA256.hash(data: original)),
+            imageData: prepared, mediaType: "image/jpeg"
+        )
+    }
+
+    /// A deleted or externally replaced capture must not be forwarded after a
+    /// pause between tool execution and provider continuation.
+    func isProviderImageCurrent(_ image: ScreenshotProviderImage) -> Bool {
+        guard let record = try? record(id: image.id),
+              record.capturedAt == image.capturedAt,
+              record.byteCount == image.originalByteCount,
+              let original = try? boundedOriginalImage(record) else { return false }
+        return Data(SHA256.hash(data: original)) == image.originalSHA256
+    }
+
+    private func boundedOriginalImage(
+        _ record: ScreenshotRecord, maximumBytes: Int = 50_000_000
+    ) throws -> Data {
+        guard record.byteCount > 0, record.byteCount <= maximumBytes else {
+            throw ScreenshotHistoryError.imageTooLarge
+        }
+        let descriptor = Darwin.open(record.imageURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { throw ScreenshotHistoryError.invalidImage }
+        var status = stat()
+        guard fstat(descriptor, &status) == 0,
+              (status.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              status.st_size == Int64(record.byteCount) else {
+            Darwin.close(descriptor)
+            throw ScreenshotHistoryError.invalidImage
+        }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumBytes + 1) ?? Data()
+        guard data.count == record.byteCount,
+              (try handle.read(upToCount: 1) ?? Data()).isEmpty else {
+            throw ScreenshotHistoryError.invalidImage
+        }
+        return data
     }
 
     private func enforceRetention(now: Date = Date()) throws {

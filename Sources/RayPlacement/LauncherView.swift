@@ -387,7 +387,12 @@ struct LauncherView: View {
                     if added > 0 { onOpenWorkspace(.ai) }
                     return added
                 },
-                onNoteTransfer: { onOpenWorkspace(.notes) }
+                onNoteTransfer: { onOpenWorkspace(.notes) },
+                onOpenBrowserReference: { reference in
+                    guard reference.reopenInBrowser() else { return false }
+                    onOpenWorkspace(.browser)
+                    return true
+                }
             )
         case .picker(.emoji):
             emojiGrid
@@ -433,8 +438,14 @@ struct LauncherView: View {
             GrammarDebuggerView(settings: settings)
                 .onSurfaceInteraction(onSurfaceInteraction)
         case .aiChat:
-            AIChatWorkspaceView(model: aiChatModel, isEmbedded: true)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            AIChatWorkspaceView(
+                model: aiChatModel, isEmbedded: true,
+                onOpenNote: { id in
+                    NotesStore.shared.selectNote(id)
+                    onOpenWorkspace(.notes)
+                }
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         default:
             InlineLauncherSurfacePlaceholder(session: session)
         }

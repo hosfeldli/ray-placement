@@ -22,12 +22,16 @@ enum BrowserWorkspaceAITools {
         "browser_pointer_click", "browser_visual_click", "browser_visual_type"
     ]
     nonisolated static let ids = readIDs.union(navigationIDs).union(interactionIDs)
-    /// Only these tools return page-derived content that may become a private,
-    /// tab-scoped blob. Navigation acknowledgements must remain returnable
-    /// after they revoke the old page snapshot.
+    /// Page-derived results, including fresh observations after interactions,
+    /// remain private tab-scoped blobs. Navigation acknowledgements stay outside
+    /// this set so they can be returned even after revoking the old snapshot.
     nonisolated static let contentResultIDs: Set<String> = [
         "browser_read", "browser_observe", "browser_form_read", "browser_find", "browser_wait", "browser_result_read",
-        "browser_screenshot", "browser_hit_test", "browser_scroll", "browser_visual_scroll", "browser_scan"
+        "browser_screenshot", "browser_hit_test", "browser_scroll", "browser_visual_scroll", "browser_scan",
+        "browser_click", "browser_focus", "browser_type", "browser_set_value", "browser_clear",
+        "browser_select", "browser_toggle", "browser_press_key", "browser_submit",
+        "browser_pointer_click", "browser_visual_click", "browser_visual_type",
+        "browser_activate"
     ]
 
     static let definitions: [LimaAIToolDefinition] = [
@@ -420,10 +424,12 @@ enum BrowserWorkspaceAITools {
                 let tab = try tabID(arguments)
                 let x = try requiredPixel("x", in: arguments)
                 let y = try requiredPixel("y", in: arguments)
-                return try encoded(await browser.nativeVisualClick(
-                    taskID: runID, tabID: tab, captureID: captureID,
-                    pixelX: x, pixelY: y, commitApproved: commitApproved
-                ), browserTabID: tab)
+                return try await observedResult(
+                    await browser.nativeVisualClick(
+                        taskID: runID, tabID: tab, captureID: captureID,
+                        pixelX: x, pixelY: y, commitApproved: commitApproved
+                    ), browser: browser, tabID: tab
+                )
             case "browser_visual_type":
                 guard let runID,
                       let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
@@ -433,10 +439,12 @@ enum BrowserWorkspaceAITools {
                 let x = try requiredPixel("x", in: arguments)
                 let y = try requiredPixel("y", in: arguments)
                 let text = try requiredString("text", in: arguments)
-                return try encoded(await browser.nativeVisualType(
-                    taskID: runID, tabID: tab, captureID: captureID,
-                    pixelX: x, pixelY: y, text: text, commitApproved: commitApproved
-                ), browserTabID: tab)
+                return try await observedResult(
+                    await browser.nativeVisualType(
+                        taskID: runID, tabID: tab, captureID: captureID,
+                        pixelX: x, pixelY: y, text: text, commitApproved: commitApproved
+                    ), browser: browser, tabID: tab
+                )
             case "browser_visual_scroll":
                 guard let runID,
                       let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
@@ -447,10 +455,12 @@ enum BrowserWorkspaceAITools {
                 let y = try requiredPixel("y", in: arguments)
                 let dx = try requiredBoundedDelta("delta_x", in: arguments)
                 let dy = try requiredBoundedDelta("delta_y", in: arguments)
-                return try encoded(await browser.nativeVisualScroll(
-                    taskID: runID, tabID: tab, captureID: captureID,
-                    pixelX: x, pixelY: y, deltaX: dx, deltaY: dy
-                ), browserTabID: tab)
+                return try await observedResult(
+                    await browser.nativeVisualScroll(
+                        taskID: runID, tabID: tab, captureID: captureID,
+                        pixelX: x, pixelY: y, deltaX: dx, deltaY: dy
+                    ), browser: browser, tabID: tab
+                )
             case "browser_hit_test":
                 let tab = try tabID(arguments)
                 let rawCaptureID = try requiredString("capture_id", in: arguments)
@@ -529,7 +539,7 @@ enum BrowserWorkspaceAITools {
                 switch try await browser.activate(tab, targetID: target, disposition: disposition,
                                                   commitApproved: commitApproved) {
                 case .interacted(let outcome):
-                    return try encoded(outcome, browserTabID: tab)
+                    return try await observedResult(outcome, browser: browser, tabID: tab)
                 case .navigated(let opened):
                     let openedTab = try browser.tab(opened)
                     let browserVisible = disposition == .backgroundTab ? false : browser.revealAIForegroundTab(opened)
@@ -606,8 +616,10 @@ enum BrowserWorkspaceAITools {
                 }
                 let fraction = try optionalDouble("fraction", in: arguments) ?? 0.8
                 let frameID = try optionalString("frame_id", in: arguments) ?? "main"
-                return try encoded(await browser.scroll(tab, direction: direction, fraction: fraction, frameID: frameID),
-                                   browserTabID: tab)
+                return try await observedResult(
+                    await browser.scroll(tab, direction: direction, fraction: fraction, frameID: frameID),
+                    browser: browser, tabID: tab
+                )
             case "browser_scan":
                 let tab = try tabID(arguments)
                 let passes = try optionalScanPasses("max_passes", in: arguments) ?? 10
@@ -621,9 +633,10 @@ enum BrowserWorkspaceAITools {
                 guard let hitID = UUID(uuidString: rawHitID) else {
                     throw BrowserWorkspaceToolError.invalidArguments
                 }
-                return try encoded(await browser.pointerClick(tab, hitID: hitID,
-                                                               commitApproved: commitApproved),
-                                   browserTabID: tab)
+                return try await observedResult(
+                    await browser.pointerClick(tab, hitID: hitID, commitApproved: commitApproved),
+                    browser: browser, tabID: tab
+                )
             case "browser_click", "browser_focus", "browser_type", "browser_set_value",
                  "browser_clear", "browser_select", "browser_toggle", "browser_press_key", "browser_submit":
                 let tab = try tabID(arguments)
@@ -648,15 +661,65 @@ enum BrowserWorkspaceAITools {
                 case .pressKey: text = try requiredString("key", in: arguments)
                 default: text = nil
                 }
-                return try encoded(await browser.interact(tab, targetID: target, action: action, text: text,
-                                                         commitApproved: commitApproved),
-                                   browserTabID: tab)
+                return try await observedResult(
+                    await browser.interact(tab, targetID: target, action: action, text: text,
+                                           commitApproved: commitApproved),
+                    browser: browser, tabID: tab
+                )
             default:
                 throw BrowserWorkspaceToolError.invalidArguments
             }
         } catch {
             return failure(for: error).toolExecution(state: error is CancellationError ? .cancelled : .failed)
         }
+    }
+
+    /// Re-read after an interaction so the next step sees the current page, not
+    /// a stale target or merely a successful event dispatch. A failed re-read
+    /// never turns an uncertain remote action into a retryable operation.
+    private static func observedResult<T: Encodable>(
+        _ outcome: T, browser: BrowserWorkspaceModel, tabID: UUID
+    ) async throws -> LimaAIToolExecution {
+        guard var payload = try jsonObject(outcome) as? [String: Any] else {
+            throw BrowserWorkspaceToolError.invalidArguments
+        }
+        payload["tab_id"] = tabID.uuidString
+        payload["remote_outcome_verified"] = false
+        do {
+            let page = try requireComplete(await browser.read(tabID))
+            payload["page_state_verified"] = true
+            payload["post_action_observation"] = actionPageSummary(page)
+            payload["next_action"] = "Use the fresh page evidence to check the intended outcome before continuing. A page change alone does not confirm a remote transaction."
+        } catch {
+            payload["state"] = error is CancellationError
+                ? AIToolResultState.cancelled.rawValue : AIToolResultState.partiallyCompleted.rawValue
+            payload["page_state_verified"] = false
+            payload["observation_error"] = failure(for: error).jsonObject
+            payload["retry_safe"] = false
+            payload["next_action"] = "Do not repeat the action. Resume Browser access if paused, then call browser_read to determine whether it took effect."
+        }
+        return .json(payload, browserTabID: tabID)
+    }
+
+    private static func actionPageSummary(_ page: BrowserPageSnapshot) -> [String: Any] {
+        let targets = (page.controls + page.links).filter { !$0.confidential && !$0.sensitive }
+        return [
+            "title": String(page.title.prefix(240)),
+            "url": publicURL(page.identity.url),
+            "readiness": page.readiness.rawValue,
+            "text_excerpt": String(page.text.prefix(2_000)),
+            "headings": Array(page.headings.prefix(12)).map { String($0.prefix(160)) },
+            "rows": Array(page.rows.prefix(16)).map { String($0.text.prefix(240)) },
+            "active_dialog": page.activeDialog.map { String($0.label.prefix(240)) } as Any? ?? NSNull(),
+            "targets": Array(targets.prefix(32)).map { target in
+                [
+                    "target_id": target.id,
+                    "role": target.role,
+                    "label": String(target.label.prefix(160)),
+                    "frame_id": target.frameID
+                ]
+            }
+        ]
     }
 
     private static func verifiedNavigation(_ browser: BrowserWorkspaceModel, tabID: UUID,

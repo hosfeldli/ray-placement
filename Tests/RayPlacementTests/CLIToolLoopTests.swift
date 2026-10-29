@@ -9,7 +9,8 @@ import Testing
             store: AIConversationStore(fixtures: [conversation]),
             credentials: AIChatCredentialStore(configuration: .fixture),
                         nativeToolStore: LimaAIToolStore(fixtures: [
-                "browser_tabs", "browser_current", "browser_read", "search_notes", "read_note"
+                "browser_tabs", "browser_current", "browser_read", "search_notes", "read_note",
+                "notes_find_duplicates"
             ]),
             transport: FixtureAITransport.standard
         )

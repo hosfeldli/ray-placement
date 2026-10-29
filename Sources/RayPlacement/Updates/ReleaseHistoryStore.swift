@@ -86,6 +86,7 @@ struct LimaReleaseManifest: Codable, Equatable, Identifiable {
             && !title.isEmpty && title.count <= 160
             && summary.count <= 600
             && highlights.count <= 8
+            && Set(highlights.map(\.id)).count == highlights.count
             && highlights.allSatisfy { $0.id.count <= 80 && !$0.id.isEmpty && $0.title.count <= 160 && !$0.title.isEmpty }
             && channel.count <= 40
             && (onboardingID?.count ?? 0) <= 80

@@ -10,6 +10,13 @@ enum MailTaskStatus: String, Codable, Sendable {
     case uncertain
 }
 
+enum MailTaskPriority: String, Codable, Sendable {
+    case low
+    case normal
+    case high
+    case urgent
+}
+
 struct MailTaskEvidence: Codable, Hashable, Sendable {
     let reference: MailMessageReference
     let excerpt: String
@@ -28,6 +35,7 @@ struct ExtractedMailTask: Codable, Hashable, Sendable, Identifiable {
     let status: MailTaskStatus
     let inferred: Bool
     let evidence: [MailTaskEvidence]
+    var priority: MailTaskPriority? = nil
 }
 
 enum MailActionReviewError: Error, Equatable {
@@ -81,11 +89,21 @@ struct MailActionReview: Sendable {
             for evidence in task.evidence {
                 guard isParagraph(evidence.excerpt, maximum: 350),
                       let source = sources[evidence.reference.id],
-                      source.reference == evidence.reference,
+                      source.reference.identifiesSameMessage(as: evidence.reference),
                       source.body.contains(evidence.excerpt) else {
                     throw MailActionReviewError.unverifiedEvidence
                 }
             }
+        }
+        // A repeated title in one extraction is not a second task merely
+        // because it appeared in another message or conversation. The model
+        // must consolidate its evidence into one reviewed candidate.
+        let normalizedTitles = candidates.map { task in
+            task.title.split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ").lowercased()
+        }
+        guard Set(normalizedTitles).count == normalizedTitles.count else {
+            throw MailActionReviewError.invalidProposal
         }
         return MailActionReview(tasks: candidates, capturedAt: capturedAt)
     }
@@ -106,14 +124,28 @@ struct MailActionReview: Sendable {
             throw MailActionReviewError.invalidApproval
         }
         var lines = ["# \(Self.escapeMarkdown(title))", "", "## Action items", ""]
-        var provenance: [MarkdownMailTaskProvenance] = []
+        var entries: [MailActionNoteEntry] = []
         for task in approved {
-            lines.append("- [ ] \(Self.escapeMarkdown(task.title))")
+            var taskLines = ["- [ ] \(Self.escapeMarkdown(task.title))"]
+            if let details = task.details {
+                let singleLine = details.split(whereSeparator: { $0.isNewline })
+                    .joined(separator: " ")
+                taskLines.append("  - Details: \(Self.escapeMarkdown(singleLine))")
+            }
             if let owner = task.owner {
-                lines.append("  - Owner: \(Self.escapeMarkdown(owner))")
+                taskLines.append("  - Owner: \(Self.escapeMarkdown(owner))")
             }
             if let due = task.dueDate {
-                lines.append("  - Due: \(due.formatted(date: .abbreviated, time: .omitted))\(task.inferred ? " (inferred)" : "")")
+                taskLines.append("  - Due: \(due.formatted(date: .abbreviated, time: .omitted))\(task.inferred ? " (inferred)" : "")")
+            }
+            if let dueDateSource = task.dueDateSource {
+                taskLines.append("  - Due basis: \(Self.escapeMarkdown(dueDateSource))")
+            }
+            if let priority = task.priority {
+                taskLines.append("  - Priority: \(priority.rawValue.capitalized)")
+            }
+            if task.status == .uncertain {
+                taskLines.append("  - Status: Needs confirmation")
             }
             let sources = task.evidence.map { evidence in
                 MarkdownMailSource(
@@ -126,12 +158,23 @@ struct MailActionReview: Sendable {
                     receivedAt: evidence.reference.receivedAt
                 )
             }
-            provenance.append(MarkdownMailTaskProvenance(
+            for source in sources {
+                let subject = source.subject.isEmpty ? "(No subject)" : source.subject
+                taskLines.append("  - Email: \(Self.escapeMarkdown(subject)) — \(Self.escapeMarkdown(source.sender))")
+            }
+            let provenance = MarkdownMailTaskProvenance(
                 taskID: task.id,
                 sourceMessages: sources,
                 evidenceExcerpts: task.evidence.map(\.excerpt),
-                capturedAt: capturedAt
+                capturedAt: capturedAt, taskTitle: task.title,
+                owner: task.owner, dueDate: task.dueDate,
+                dueDateSource: task.dueDateSource, inferred: task.inferred,
+                priority: task.priority?.rawValue, status: task.status.rawValue
+            )
+            entries.append(MailActionNoteEntry(
+                title: task.title, markdownLines: taskLines, provenance: provenance
             ))
+            lines.append(contentsOf: taskLines)
         }
         lines += ["", "## Sources", ""]
         let references = Dictionary(
@@ -144,7 +187,8 @@ struct MailActionReview: Sendable {
         return MailActionNoteDraft(
             title: title,
             markdown: lines.joined(separator: "\n"),
-            provenance: provenance
+            provenance: entries.map(\.provenance),
+            entries: entries
         )
     }
 
@@ -165,11 +209,15 @@ struct MailActionReview: Sendable {
             !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) })
     }
 
-    private static func escapeMarkdown(_ text: String) -> String {
+    static func escapeMarkdown(_ text: String) -> String {
         text.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "[", with: "\\[")
             .replacingOccurrences(of: "]", with: "\\]")
             .replacingOccurrences(of: "*", with: "\\*")
+            .replacingOccurrences(of: "_", with: "\\_")
+            .replacingOccurrences(of: "<", with: "\\<")
+            .replacingOccurrences(of: ">", with: "\\>")
+            .replacingOccurrences(of: "&", with: "\\&")
             .replacingOccurrences(of: "`", with: "\\`")
     }
 }
@@ -184,13 +232,13 @@ struct MailManualActionNoteProposal: Sendable {
     let taskID: UUID
     let capturedAt: Date
 
-    func draft(from message: MailMessage) throws -> MailActionNoteDraft {
+    func reviewedTask(from message: MailMessage) throws -> ExtractedMailTask {
         guard !evidenceExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               evidenceExcerpt.count <= 350,
               !evidenceExcerpt.unicodeScalars.contains(where: { $0.value == 0 || $0.value == 0x7F }) else {
             throw MailActionReviewError.invalidProposal
         }
-        guard message.reference == source else {
+        guard message.reference.identifiesSameMessage(as: source) else {
             throw MailActionReviewError.unverifiedEvidence
         }
         let task = ExtractedMailTask(
@@ -199,6 +247,14 @@ struct MailManualActionNoteProposal: Sendable {
             status: .proposed, inferred: false,
             evidence: [MailTaskEvidence(reference: source, excerpt: evidenceExcerpt)]
         )
+        _ = try MailActionReview.build(
+            candidates: [task], from: [message], capturedAt: capturedAt
+        )
+        return task
+    }
+
+    func draft(from message: MailMessage) throws -> MailActionNoteDraft {
+        let task = try reviewedTask(from: message)
         let review = try MailActionReview.build(
             candidates: [task], from: [message], capturedAt: capturedAt
         )
@@ -206,14 +262,24 @@ struct MailManualActionNoteProposal: Sendable {
     }
 }
 
+struct MailActionNoteEntry: Sendable {
+    let title: String
+    let markdownLines: [String]
+    let provenance: MarkdownMailTaskProvenance
+}
+
 struct MailActionNoteDraft: Sendable {
     let title: String
     let markdown: String
     let provenance: [MarkdownMailTaskProvenance]
+    let entries: [MailActionNoteEntry]
 
-    fileprivate init(title: String, markdown: String, provenance: [MarkdownMailTaskProvenance]) {
+    fileprivate init(title: String, markdown: String,
+                     provenance: [MarkdownMailTaskProvenance],
+                     entries: [MailActionNoteEntry]) {
         self.title = title
         self.markdown = markdown
         self.provenance = provenance
+        self.entries = entries
     }
 }

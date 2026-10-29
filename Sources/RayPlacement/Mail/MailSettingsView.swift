@@ -97,8 +97,15 @@ struct MailSettingsView: View {
                           (!hasDiscoveredAccounts || policy.selectedAccountIDs.isEmpty ||
                            !policy.selectedAccountIDs.isSubset(of: Set(accounts.map(\.id)))))
             Text(supportedOperations.contains(.search) && supportedOperations.contains(.getMessage)
-                 ? "Selected-account Mail search and message reading are available. AI access, drafts, sending, and mailbox changes remain separately controlled."
-                 : "Mailbox search and message reading are not available in this build while scoped Apple Mail scripts await synthetic-account QA. AI access, drafts, and mailbox changes remain off; sending is controlled separately below when supported.")
+                 ? "Selected-account Mail search and message reading are available. AI access and sending remain separately controlled."
+                 : "Mailbox search and message reading are unavailable in this build. AI access and sending remain off until their native operations are available.")
+                .limaFont(.caption)
+                .foregroundStyle(LimaTheme.textSecondary)
+
+            Toggle("Allow selected-account Mail in AI conversations", isOn: aiReadBinding)
+                .disabled(!policy.readEnabled || !supportedOperations.contains(.search) ||
+                          !supportedOperations.contains(.getMessage))
+            Text("When on, an AI tool may read Mail from only your selected accounts. Message content may be sent to your configured AI provider when you use it in a conversation. Turning this off stops new AI Mail reads.")
                 .limaFont(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)
 
@@ -114,6 +121,9 @@ struct MailSettingsView: View {
             }
 
             Section("Writing") {
+            Toggle("Allow draft creation", isOn: draftEnabledBinding)
+                .disabled(!supportedOperations.contains(.createDraft) || outgoingPolicy.selectedAccountIDs.isEmpty)
+                .accessibilityIdentifier("mail-enable-drafts")
             Toggle("Enable email sending", isOn: sendEnabledBinding)
                 .disabled(!supportedOperations.contains(.send) || outgoingPolicy.selectedAccountIDs.isEmpty)
                 .accessibilityIdentifier("mail-enable-sending")
@@ -122,13 +132,13 @@ struct MailSettingsView: View {
                 .limaFont(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)
 
-            if supportedOperations.contains(.send) {
+            if supportedOperations.contains(.send) || supportedOperations.contains(.createDraft) {
                 if hasDiscoveredAccounts {
                     ForEach(accounts.filter { policy.selectedAccountIDs.contains($0.id) }) { account in
-                        Toggle("Allow sending from \(account.name)", isOn: sendSelectionBinding(for: account.id))
+                        Toggle("Allow drafts or sending from \(account.name)", isOn: writingSelectionBinding(for: account.id))
                     }
                 }
-                if outgoingPolicy.sendEnabled && hasDiscoveredAccounts {
+                if (outgoingPolicy.sendEnabled || outgoingPolicy.draftEnabled) && hasDiscoveredAccounts {
                     ForEach(accounts.filter { outgoingPolicy.selectedAccountIDs.contains($0.id) }) { account in
                         Button("Compose from \(account.name)") {
                             Task { await beginCompose(accountID: account.id) }
@@ -136,11 +146,11 @@ struct MailSettingsView: View {
                         .disabled(isOpeningComposer)
                     }
                 }
-                Text("Sending has its own selected-account policy. Replies also require read access to the source message. AI and extensions cannot send directly.")
+                Text("Draft creation and sending are separate switches for selected accounts. Replies and forwards also require source-message read access. AI and extensions cannot send directly.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             } else {
-                Text("Sending and replies are unavailable in this build. The review path remains off until Apple Mail send scripts and signed-app behavior pass synthetic-account QA.")
+                Text("Sending, drafts, replies, and forwards are unavailable in this build. The final-message review remains off until native Mail operations are present.")
                     .limaFont(.caption)
                     .foregroundStyle(LimaTheme.textSecondary)
             }
@@ -205,7 +215,20 @@ struct MailSettingsView: View {
                 save(MailCapabilityPolicy(
                     readEnabled: enabled,
                     selectedAccountIDs: policy.selectedAccountIDs,
-                    allowsAIRead: false
+                    allowsAIRead: enabled && policy.allowsAIRead
+                ))
+            }
+        )
+    }
+
+    private var aiReadBinding: Binding<Bool> {
+        Binding(
+            get: { policy.allowsAIRead },
+            set: { enabled in
+                save(MailCapabilityPolicy(
+                    readEnabled: policy.readEnabled,
+                    selectedAccountIDs: policy.selectedAccountIDs,
+                    allowsAIRead: enabled && policy.readEnabled
                 ))
             }
         )
@@ -224,15 +247,29 @@ struct MailSettingsView: View {
                 save(MailCapabilityPolicy(
                     readEnabled: policy.readEnabled && !ids.isEmpty,
                     selectedAccountIDs: ids,
-                    allowsAIRead: false
+                    allowsAIRead: policy.allowsAIRead && policy.readEnabled && !ids.isEmpty
                 ))
                 if !selected && outgoingPolicy.selectedAccountIDs.contains(accountID) {
                     let remaining = outgoingPolicy.selectedAccountIDs.subtracting([accountID])
                     saveOutgoing(MailOutgoingPolicy(
+                        draftEnabled: outgoingPolicy.draftEnabled && !remaining.isEmpty,
                         sendEnabled: outgoingPolicy.sendEnabled && !remaining.isEmpty,
                         selectedAccountIDs: remaining
                     ))
                 }
+            }
+        )
+    }
+
+    private var draftEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { supportedOperations.contains(.createDraft) && outgoingPolicy.draftEnabled },
+            set: { enabled in
+                saveOutgoing(MailOutgoingPolicy(
+                    draftEnabled: enabled,
+                    sendEnabled: outgoingPolicy.sendEnabled,
+                    selectedAccountIDs: outgoingPolicy.selectedAccountIDs
+                ))
             }
         )
     }
@@ -242,6 +279,7 @@ struct MailSettingsView: View {
             get: { supportedOperations.contains(.send) && outgoingPolicy.sendEnabled },
             set: { enabled in
                 saveOutgoing(MailOutgoingPolicy(
+                    draftEnabled: outgoingPolicy.draftEnabled,
                     sendEnabled: enabled,
                     selectedAccountIDs: outgoingPolicy.selectedAccountIDs
                 ))
@@ -249,13 +287,14 @@ struct MailSettingsView: View {
         )
     }
 
-    private func sendSelectionBinding(for accountID: String) -> Binding<Bool> {
+    private func writingSelectionBinding(for accountID: String) -> Binding<Bool> {
         Binding(
             get: { outgoingPolicy.selectedAccountIDs.contains(accountID) },
             set: { selected in
                 var ids = outgoingPolicy.selectedAccountIDs
                 if selected { ids.insert(accountID) } else { ids.remove(accountID) }
                 saveOutgoing(MailOutgoingPolicy(
+                    draftEnabled: outgoingPolicy.draftEnabled && !ids.isEmpty,
                     sendEnabled: outgoingPolicy.sendEnabled && !ids.isEmpty,
                     selectedAccountIDs: ids
                 ))
@@ -269,7 +308,7 @@ struct MailSettingsView: View {
             outgoingPolicy = next
             statusMessage = nil
         } catch {
-            statusMessage = "Lima could not save the selected Mail sending accounts."
+            statusMessage = "Lima could not save the selected Mail writing accounts."
         }
     }
 
@@ -301,7 +340,7 @@ struct MailSettingsView: View {
                 accountID: accountID, origin: .userInterface
             )
             guard generation == discoveryGeneration,
-                  outgoingPolicy.sendEnabled,
+                  (outgoingPolicy.sendEnabled || outgoingPolicy.draftEnabled),
                   outgoingPolicy.selectedAccountIDs.contains(accountID) else { return }
             composeSheet = MailComposeSheet(proposal: MailOutgoingRequest(
                 kind: .newMessage, accountID: accountID,

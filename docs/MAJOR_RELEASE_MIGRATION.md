@@ -18,7 +18,7 @@ The focused fake-HAL tests verify UID switching, failure to claim success when t
 
 ## Mail safety gate
 
-Apple Mail account discovery and outgoing-policy/review scaffolding exist, but the native adapter still advertises account discovery only. Mail Settings shows local app availability, selected-account scope, and a nonprompting Automation status snapshot for a running Mail process; only the user-initiated Find Accounts or Test Connection action may request macOS consent. Live sending, replies, and associated Settings enablement **must remain fail-closed** until synthetic-account Apple Events, signed-app Automation, account identity, attachment handling, timeout uncertainty, and no-duplicate behavior are validated. Do not use a real recipient as a test.
+Source now includes account-scoped Mail reading, draft creation, and reviewed send/reply paths with a persistent pending-send journal. Sending defaults off, and an Apple Mail acceptance result is not proof of delivery. A single user-requested self-addressed live test appeared in Inbox, but Mail had no matching Sent item and retained an outgoing item; the result remains unreconciled and the send must not be repeated merely to investigate it. Synthetic-account Apple Events, signed-app Automation, account identity, attachment handling, timeout uncertainty, no-duplicate behavior, and final-build send/reply acceptance still require validation. Do not use a third-party recipient as a test.
 
 The release may not be accepted or published as the requested major release while this gate is open.
 

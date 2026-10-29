@@ -38,6 +38,15 @@ import Testing
     #expect(selfTest?["checks"] is [[String: Any]])
 }
 
+@Test @MainActor func workbenchProviderToolOutputUsesContinuationEnvelope() {
+    let output = AIWorkbenchSelfTest.providerToolOutput(
+        callID: "call-123", output: #"{"ok":true}"#
+    )
+    #expect(output["type"] as? String == "function_call_output")
+    #expect(output["call_id"] as? String == "call-123")
+    #expect(output["output"] as? String == #"{"ok":true}"#)
+}
+
 @Test @MainActor func liveCodexAppServerWorkbenchBridgeSmoke() async throws {
     guard ProcessInfo.processInfo.environment["LIMA_WORKBENCH_LIVE_CODEX"] == "1" else { return }
     try await AIWorkbenchSelfTest.checkProvider(provider: .codexCLI, model: "default", endpoint: "")
@@ -141,8 +150,10 @@ import Testing
     ]]
     let resumed = AIProviderStreamWatchdog.bounded(client.streamToolOutputs(
         apiKey: "", model: "default", previousResponseID: threadID, history: [],
-        outputs: [["call_id": firstCallID, "output": #"{"ok":true}"#],
-                  ["call_id": secondCallID, "output": #"{"ok":true}"#], screenshotInput],
+        outputs: [["type": "function_call_output", "call_id": firstCallID,
+                   "output": #"{"ok":true}"#],
+                  ["type": "function_call_output", "call_id": secondCallID,
+                   "output": #"{"ok":true}"#], screenshotInput],
         reasoningEffort: .low, localTools: [tool], systemInstructions: "Use the tool."
     ), after: .seconds(5))
     var secondText = ""

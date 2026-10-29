@@ -1,11 +1,52 @@
 import CryptoKit
 import Foundation
 
-/// A reply is tied to one exact message. There is no reply-all or attachment
-/// support until those operations have their own account and content review.
+/// Replies and forwards retain an exact source-message reference. Recipients
+/// and complete content are still reviewed as one immutable outgoing request.
 enum MailOutgoingKind: Codable, Hashable, Sendable {
     case newMessage
     case reply(MailMessageReference)
+    case forward(MailMessageReference)
+}
+
+/// A selected local file is rehashed before review and before Mail receives the
+/// Apple Event. No file bytes or bookmark enter the send journal or AI context.
+struct MailOutgoingAttachment: Codable, Hashable, Sendable {
+    let path: String
+    let displayName: String
+    let byteCount: Int64
+    let sha256: String
+
+    static func capture(_ url: URL) throws -> MailOutgoingAttachment {
+        guard url.isFileURL else { throw MailCapabilityError.invalidOutgoingMessage }
+        let resolved = url.standardizedFileURL.resolvingSymlinksInPath()
+        let values = try resolved.resourceValues(forKeys: [
+            .isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey
+        ])
+        guard values.isRegularFile == true, values.isSymbolicLink != true,
+              let size = values.fileSize, size > 0, size <= 20 * 1_024 * 1_024,
+              resolved.path.utf8.count <= 2_048,
+              !resolved.path.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              }),
+              !resolved.lastPathComponent.isEmpty,
+              resolved.lastPathComponent.utf8.count <= 255 else {
+            throw MailCapabilityError.invalidOutgoingMessage
+        }
+        let data = try Data(contentsOf: resolved, options: .mappedIfSafe)
+        guard data.count == size else { throw MailCapabilityError.invalidOutgoingMessage }
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return MailOutgoingAttachment(path: resolved.path,
+                                      displayName: resolved.lastPathComponent,
+                                      byteCount: Int64(size), sha256: digest)
+    }
+
+    func verifyCurrent() throws {
+        guard let observed = try? Self.capture(URL(fileURLWithPath: path)),
+              observed == self else {
+            throw MailCapabilityError.attachmentChanged
+        }
+    }
 }
 
 struct MailOutgoingRequest: Codable, Hashable, Sendable {
@@ -17,32 +58,81 @@ struct MailOutgoingRequest: Codable, Hashable, Sendable {
     let bcc: [String]
     let subject: String
     let body: String
+    let attachments: [MailOutgoingAttachment]
 
-    func validate() throws {
+    init(kind: MailOutgoingKind, accountID: String, senderAddress: String,
+         to: [String], cc: [String], bcc: [String], subject: String, body: String,
+         attachments: [MailOutgoingAttachment] = []) {
+        self.kind = kind
+        self.accountID = accountID
+        self.senderAddress = senderAddress
+        self.to = to
+        self.cc = cc
+        self.bcc = bcc
+        self.subject = subject
+        self.body = body
+        self.attachments = attachments
+    }
+
+    func validate(allowIncompleteDraft: Bool = false) throws {
         guard Self.isMetadata(accountID, maximum: 256),
               Self.isAddress(senderAddress),
-              !to.isEmpty, to.count <= 20,
+              (allowIncompleteDraft || !to.isEmpty), to.count <= 20,
               cc.count <= 20, bcc.count <= 20,
               to.count + cc.count + bcc.count <= 40,
               (to + cc + bcc).allSatisfy(Self.isAddress),
               Set((to + cc + bcc).map { $0.lowercased() }).count == to.count + cc.count + bcc.count,
-              Self.isMetadata(subject, maximum: 500),
-              !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              subject.utf8.count <= 500,
+              !subject.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0)
+              }),
+              (allowIncompleteDraft ||
+               !subject.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+              (allowIncompleteDraft ||
+               !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty),
+              (body.isEmpty ? attachments.isEmpty : true),
               body.utf8.count <= 128 * 1_024,
-              !body.unicodeScalars.contains(where: { $0.value == 0 || $0.value == 0x7F }) else {
+              !body.unicodeScalars.contains(where: {
+                  CharacterSet.controlCharacters.contains($0) &&
+                      $0.value != 9 && $0.value != 10 && $0.value != 13
+              }),
+              attachments.count <= 4,
+              Set(attachments.map(\.path)).count == attachments.count,
+              attachments.allSatisfy({ item in
+                  item.path.hasPrefix("/") && item.path.utf8.count <= 2_048 &&
+                  !item.path.unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0)
+                  }) &&
+                  !item.displayName.isEmpty && item.displayName.utf8.count <= 255 &&
+                  item.byteCount > 0 && item.byteCount <= 20 * 1_024 * 1_024 &&
+                  item.sha256.count == 64 &&
+                  item.sha256.allSatisfy(\.isHexDigit)
+              }),
+              attachments.reduce(Int64(0), { $0 + $1.byteCount }) <= 40 * 1_024 * 1_024 else {
             throw MailCapabilityError.invalidOutgoingMessage
         }
-        if case .reply(let reference) = kind {
-            guard reference.accountID == accountID,
-                  Self.isMetadata(reference.mailboxID, maximum: 256),
-                  reference.messageID > 0,
-                  reference.subject.utf8.count <= 500,
-                  reference.sender.utf8.count <= 300,
-                  (reference.internetMessageID?.utf8.count ?? 0) <= 512,
-                  reference.receivedAt.timeIntervalSince1970.isFinite,
-                  reference.capturedAt.timeIntervalSince1970.isFinite,
-                  to.count == 1, cc.isEmpty, bcc.isEmpty else {
+        let source: MailMessageReference?
+        switch kind {
+        case .newMessage:
+            source = nil
+        case .reply(let reference), .forward(let reference):
+            source = reference
+        }
+        if let source {
+            guard source.accountID == accountID,
+                  Self.isMetadata(source.mailboxID, maximum: 256),
+                  source.messageID > 0,
+                  source.subject.utf8.count <= 500,
+                  !source.subject.unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0)
+                  }),
+                  Self.isMetadata(source.sender, maximum: 300),
+                  (source.internetMessageID?.utf8.count ?? 0) <= 512,
+                  !(source.internetMessageID ?? "").unicodeScalars.contains(where: {
+                      CharacterSet.controlCharacters.contains($0)
+                  }),
+                  source.receivedAt.timeIntervalSince1970.isFinite,
+                  source.capturedAt.timeIntervalSince1970.isFinite else {
                 throw MailCapabilityError.invalidOutgoingMessage
             }
         }
@@ -88,23 +178,78 @@ struct MailSendReceipt: Hashable, Sendable {
     let providerMessageID: String?
 }
 
+struct MailDraftReceipt: Hashable, Sendable {
+    let savedAt: Date
+}
+
+enum MailDraftOutcome: Hashable, Sendable {
+    case saved(MailDraftReceipt)
+    /// Mail may have saved a draft; do not create a duplicate automatically.
+    case uncertain
+}
+
 enum MailSendOutcome: Hashable, Sendable {
     case accepted(MailSendReceipt)
     /// The Apple Event may have sent the message. Lima must not retry it.
     case uncertain
 }
 
-/// Read selection and outgoing authority are independent. AI, workflows, and
-/// extensions may propose text but cannot acquire this direct-send grant.
+/// Draft creation and sending are separate local grants. Neither can be
+/// acquired by AI, workflows, or extensions; those callers may propose text
+/// only for a visible user-controlled composer.
+enum MailOutgoingGrant: Sendable {
+    case compose
+    case draft
+    case send
+}
+
 struct MailOutgoingPolicy: Codable, Equatable, Sendable {
+    let draftEnabled: Bool
     let sendEnabled: Bool
     let selectedAccountIDs: Set<String>
 
+    init(draftEnabled: Bool = false, sendEnabled: Bool,
+         selectedAccountIDs: Set<String>) {
+        self.draftEnabled = draftEnabled
+        self.sendEnabled = sendEnabled
+        self.selectedAccountIDs = selectedAccountIDs
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case draftEnabled, sendEnabled, selectedAccountIDs
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        // Existing policies granted sending only. Migration must not silently
+        // turn on a new draft-writing capability.
+        draftEnabled = try container.decodeIfPresent(Bool.self, forKey: .draftEnabled) ?? false
+        sendEnabled = try container.decode(Bool.self, forKey: .sendEnabled)
+        selectedAccountIDs = try container.decode(Set<String>.self, forKey: .selectedAccountIDs)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(draftEnabled, forKey: .draftEnabled)
+        try container.encode(sendEnabled, forKey: .sendEnabled)
+        try container.encode(selectedAccountIDs, forKey: .selectedAccountIDs)
+    }
+
     static let disabled = MailOutgoingPolicy(sendEnabled: false, selectedAccountIDs: [])
 
-    func authorize(accountID: String, origin: MailReadOrigin) throws {
+    func authorize(accountID: String, origin: MailReadOrigin,
+                   grant: MailOutgoingGrant = .send) throws {
         guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
-        guard sendEnabled else { throw MailCapabilityError.outgoingDisabled }
+        switch grant {
+        case .compose:
+            guard draftEnabled || sendEnabled else {
+                throw MailCapabilityError.outgoingDisabled
+            }
+        case .draft:
+            guard draftEnabled else { throw MailCapabilityError.draftDisabled }
+        case .send:
+            guard sendEnabled else { throw MailCapabilityError.outgoingDisabled }
+        }
         guard selectedAccountIDs.contains(accountID) else {
             throw MailCapabilityError.accountNotSelected
         }
@@ -117,7 +262,8 @@ enum MailOutgoingPolicyStore {
     private static func isValid(_ policy: MailOutgoingPolicy) -> Bool {
         policy.selectedAccountIDs.count <= 100 &&
             policy.selectedAccountIDs.allSatisfy({ !$0.isEmpty && $0.utf8.count <= 256 }) &&
-            (!policy.sendEnabled || !policy.selectedAccountIDs.isEmpty)
+            (!(policy.draftEnabled || policy.sendEnabled) ||
+             !policy.selectedAccountIDs.isEmpty)
     }
 
     static func load(defaults: UserDefaults = LimaTestEnvironment.userDefaults) -> MailOutgoingPolicy {

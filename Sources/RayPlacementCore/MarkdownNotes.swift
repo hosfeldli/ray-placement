@@ -5,12 +5,18 @@ public struct NoteRevision: Codable, Identifiable, Hashable, Sendable {
     public let title: String
     public let content: String
     public let timestamp: Date
+    /// Nil in older revisions means provenance was not captured by that format.
+    /// A captured empty array means Undo should remove newly added Mail links.
+    public let mailTaskProvenance: [MarkdownMailTaskProvenance]?
 
-    public init(id: UUID = UUID(), title: String, content: String, timestamp: Date = Date()) {
+    public init(id: UUID = UUID(), title: String, content: String,
+                timestamp: Date = Date(),
+                mailTaskProvenance: [MarkdownMailTaskProvenance]? = nil) {
         self.id = id
         self.title = title
         self.content = content
         self.timestamp = timestamp
+        self.mailTaskProvenance = mailTaskProvenance
     }
 }
 
@@ -324,13 +330,31 @@ public struct MarkdownMailTaskProvenance: Codable, Hashable, Sendable {
     public let sourceMessages: [MarkdownMailSource]
     public let evidenceExcerpts: [String]
     public let capturedAt: Date
+    public let taskTitle: String?
+    public let owner: String?
+    public let dueDate: Date?
+    public let dueDateSource: String?
+    public let inferred: Bool?
+    public let priority: String?
+    public let status: String?
 
     public init(taskID: UUID, sourceMessages: [MarkdownMailSource],
-                evidenceExcerpts: [String], capturedAt: Date) {
+                evidenceExcerpts: [String], capturedAt: Date,
+                taskTitle: String? = nil, owner: String? = nil,
+                dueDate: Date? = nil, dueDateSource: String? = nil,
+                inferred: Bool? = nil, priority: String? = nil,
+                status: String? = nil) {
         self.taskID = taskID
         self.sourceMessages = sourceMessages
         self.evidenceExcerpts = evidenceExcerpts
         self.capturedAt = capturedAt
+        self.taskTitle = taskTitle
+        self.owner = owner
+        self.dueDate = dueDate
+        self.dueDateSource = dueDateSource
+        self.inferred = inferred
+        self.priority = priority
+        self.status = status
     }
 }
 

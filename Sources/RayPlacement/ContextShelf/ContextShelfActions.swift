@@ -26,6 +26,12 @@ enum ContextShelfMarkdownFormatter {
             let subject = escapeMailMetadata(reference.subject.isEmpty ? "(No subject)" : reference.subject)
             let sender = escapeMailMetadata(reference.sender)
             return "Mail reference (body not stored): \(subject) — \(sender)"
+        case .browserReference(let reference):
+            guard reference.isValid else { return "Browser reference unavailable" }
+            return "Browser reference (page body not stored): \(escapeMailMetadata(reference.title)) — <\(reference.sourceURL)>"
+        case .messageReference(let reference):
+            guard reference.isValid else { return "Messages reference unavailable" }
+            return "Messages \(reference.kind.rawValue) reference (history not stored): \(escapeMailMetadata(item.title))"
         }
     }
 
@@ -42,6 +48,10 @@ enum ContextShelfMarkdownFormatter {
         case .dictation(let transcript): return transcript
         case .mailReference(let reference):
             return "Mail reference: \(reference.subject.isEmpty ? "(No subject)" : reference.subject) — \(reference.sender)"
+        case .browserReference(let reference):
+            return reference.isValid ? reference.sourceURL : "Browser reference unavailable"
+        case .messageReference(let reference):
+            return reference.isValid ? "Messages \(reference.kind.rawValue) reference: \(item.title)" : "Messages reference unavailable"
         }
     }
 
@@ -238,14 +248,17 @@ struct ContextShelfView: View {
     @State private var destinationMode: DestinationMode?
     let sendToAI: (([ContextShelfItem]) -> Int)?
     let onNoteTransfer: (() -> Void)?
+    let onOpenBrowserReference: ((BrowserPageReference) -> Bool)?
 
     init(store: ContextShelfStore, searchQuery: Binding<String> = .constant(""),
          sendToAI: (([ContextShelfItem]) -> Int)? = nil,
-         onNoteTransfer: (() -> Void)? = nil) {
+         onNoteTransfer: (() -> Void)? = nil,
+         onOpenBrowserReference: ((BrowserPageReference) -> Bool)? = nil) {
         self.store = store
         self._searchQuery = searchQuery
         self.sendToAI = sendToAI
         self.onNoteTransfer = onNoteTransfer
+        self.onOpenBrowserReference = onOpenBrowserReference
     }
 
     fileprivate enum DestinationMode: Identifiable {
@@ -549,6 +562,17 @@ struct ContextShelfView: View {
         }
         .contextMenu {
             Button("Inspect") { detailItem = item }
+            if item.isBrowserReference, onOpenBrowserReference != nil {
+                Button("Open in Lima Browser", systemImage: "globe") {
+                    guard case .browserReference(let reference) = item.payload,
+                          item.kind == .browserReference, reference.isValid,
+                          onOpenBrowserReference?(reference) == true else {
+                        errorMessage = "This Browser source could not be reopened."
+                        return
+                    }
+                    errorMessage = nil
+                }
+            }
             if sendToAI != nil {
                 Button("Add to AI Draft", systemImage: "sparkles") { transferToAI([item]) }
             }
@@ -607,6 +631,8 @@ struct ContextShelfView: View {
         case .noteReference: return "note.text"
         case .plainText: return "text.alignleft"
         case .mailReference: return "envelope"
+        case .browserReference: return "globe"
+        case .messageReference: return "message"
         }
     }
 }

@@ -48,7 +48,7 @@ private func processToolPayload(_ execution: LimaAIToolExecution) throws -> [Str
 
 @Test @MainActor func aiProcessToolsOnlyInspectAndKillOwnedSessions() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard files.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = files.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaProcessTools-\(UUID().uuidString)", isDirectory: true)
     try files.createDirectory(at: root, withIntermediateDirectories: false)

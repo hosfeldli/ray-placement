@@ -325,6 +325,16 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         notesWindow.presentExpanded()
     }
 
+    /// Open the exact Note returned by a reviewed cross-feature action.
+    @discardableResult
+    func openNote(_ id: UUID) -> Bool {
+        guard notesWindow.store.notes.contains(where: { $0.id == id }) else { return false }
+        hide()
+        notesWindow.selectNote(id)
+        notesWindow.present(module: .notes)
+        return true
+    }
+
     func showNotes() {
         hide()
         notesWindow.selectModule(.notes)
@@ -536,6 +546,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .universalSearch(let result):
             routeUniversalSearchResult(result)
+
+        case .messagesAction(let operation, let result):
+            Task { @MainActor [weak self] in
+                await self?.routeMessagesAction(operation, result: result)
+            }
 
         case .builtinInvocation(let invocation):
             executeBuiltinInvocation(invocation)
@@ -2798,6 +2813,76 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         completion()
     }
 
+    private func routeMessagesAction(_ operation: MessagesLauncherAction,
+                                     result: LimaSearchResult) async {
+        guard result.kind == .messages,
+              let source = MessagesSearchResultID.decode(result.id),
+              MessagesCapabilityPolicyStore.load().permits(source.conversationGUID) else {
+            presentError(title: result.title,
+                         message: "This Messages conversation is no longer in the selected scope.")
+            return
+        }
+        do {
+            switch operation {
+            case .composeReply:
+                let participants = try await MessagesCapabilityService.shared.participants(
+                    in: source.conversationGUID, origin: .userInterface
+                )
+                let live = MessagesCapabilityPolicyStore.load()
+                guard !Task.isCancelled, live.permits(source.conversationGUID),
+                      live.sendEnabled, !participants.isEmpty else {
+                    throw MessagesCapabilityError.destinationChanged
+                }
+                let proposal = MessagesOutgoingRequest(
+                    destination: .existingConversation(guid: source.conversationGUID,
+                                                       participants: participants),
+                    text: ""
+                )
+                guard MessagesComposeWindowController.shared.present(
+                    proposal, conversationTitle: result.title
+                ) else {
+                    presentError(title: result.title,
+                                 message: "Another Messages composer is open. Finish or close it first.")
+                    return
+                }
+                hide()
+
+            case .addToContext:
+                let participants = try await MessagesCapabilityService.shared.participants(
+                    in: source.conversationGUID, origin: .userInterface
+                )
+                guard !Task.isCancelled,
+                      MessagesCapabilityPolicyStore.load().permits(source.conversationGUID) else {
+                    throw MessagesCapabilityError.conversationNotPermitted
+                }
+                let reference = MessageContextReference(
+                    kind: source.messageGUID == nil ? .conversation : .message,
+                    conversationGUID: source.conversationGUID,
+                    messageGUID: source.messageGUID, selectedText: nil,
+                    participantLabels: participants, messageDate: nil,
+                    service: nil, capturedAt: Date()
+                )
+                guard ContextShelfIntegration.addMessageReference(
+                    reference, title: result.title
+                ) != nil else {
+                    throw MessagesCapabilityError.invalidRequest
+                }
+                hide()
+                toast.show("Added Messages reference to Context Shelf")
+
+            case .createNote:
+                let id = try await MessagesNoteBridge.createRecentExcerpt(
+                    conversationGUID: source.conversationGUID, title: result.title
+                )
+                hide()
+                notesWindow.selectNote(id)
+                notesWindow.present()
+            }
+        } catch {
+            presentError(title: result.title, message: error.localizedDescription)
+        }
+    }
+
     private func routeUniversalSearchResult(_ result: LimaSearchResult) {
         switch result.kind {
         case .note:
@@ -2868,6 +2953,25 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             clipboard.copy(entry.text)
             hide()
             toast.show("Copied from clipboard history")
+
+        case .messages:
+            guard let source = MessagesSearchResultID.decode(result.id),
+                  MessagesCapabilityPolicyStore.load().permits(source.conversationGUID) else {
+                presentError(title: result.title, message: "This Messages conversation is no longer in the selected scope.")
+                return
+            }
+            if MessagesSearchResultID.isReply(result.id) {
+                Task { @MainActor [weak self] in
+                    await self?.routeMessagesAction(.composeReply, result: result)
+                }
+                return
+            }
+            hide()
+            MessagesConversationWindowController.shared.present(
+                conversationGUID: source.conversationGUID,
+                title: result.title,
+                selectedMessageGUID: source.messageGUID
+            )
 
         case .screenshot:
             guard result.id.hasPrefix("screenshot:"),

@@ -80,7 +80,8 @@ private func compatibleFrame(_ object: [String: Any]) throws -> AIProviderSSEFra
     #expect(content.last?["type"] as? String == "image")
 
     let responseImage = AIEngineScreenshotInput(
-        callID: "capture", mediaType: "image/jpeg", base64: "fixture"
+        callID: "capture", mediaType: "image/jpeg", base64: "fixture",
+        sourceDescription: "Browser screenshot from tool call capture."
     ).responseInput
     let responseParts = try #require(responseImage["content"] as? [[String: Any]])
     #expect(responseParts.last?["type"] as? String == "input_image")
@@ -151,6 +152,8 @@ private func compatibleFrame(_ object: [String: Any]) throws -> AIProviderSSEFra
         #expect(!model.isStreaming)
         #expect(model.streamError != nil)
         #expect(model.selectedConversation?.activities.contains { $0.kind == .toolStarted || $0.kind == .toolCompleted } == false)
-        #expect(registry.activeTasks.isEmpty)
+        #expect(registry.activeTasks.count == 1)
+        #expect(registry.activeTasks.first?.state == .waiting)
+        #expect(model.executionRun?.state != .completed)
     }
 }

@@ -53,7 +53,7 @@ struct AIChatTerminalMonitor: View {
                         Text("AI Terminal")
                             .limaFont(.caption.weight(.semibold))
                             .foregroundStyle(LimaColors.primaryText)
-                        Text(session.isBoundedExternal ? "Approved external command" : "Sandboxed AI Workspace")
+                        Text(session.isBoundedExternal ? "Bounded developer command" : "AI Workspace shell session")
                             .limaFont(.caption2)
                             .foregroundStyle(LimaColors.secondaryText)
                     }

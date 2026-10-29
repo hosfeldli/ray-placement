@@ -58,6 +58,7 @@ struct AIExecutionRunFailure: Codable, Hashable, Sendable {
     let safeMessage: String
     let invalidParameter: String?
     let retryability: Retryability
+    let recoveryEvent: AIProviderFailureEvent?
 
     var provider: String { originalRequestConfiguration.providerID }
     var model: String { originalRequestConfiguration.modelID }
@@ -72,7 +73,8 @@ struct AIExecutionRunFailure: Codable, Hashable, Sendable {
         httpStatus: Int? = nil,
         safeMessage: String,
         invalidParameter: String? = nil,
-        retryability: Retryability = .manual
+        retryability: Retryability = .manual,
+        recoveryEvent: AIProviderFailureEvent? = nil
     ) {
         self.category = category
         self.originalRequestConfiguration = originalRequestConfiguration
@@ -80,10 +82,11 @@ struct AIExecutionRunFailure: Codable, Hashable, Sendable {
         self.safeMessage = String(safeMessage.prefix(1_000))
         self.invalidParameter = invalidParameter.flatMap(AIProviderFailure.parameter)
         self.retryability = retryability
+        self.recoveryEvent = recoveryEvent
     }
 
     private enum CodingKeys: String, CodingKey {
-        case category, originalRequestConfiguration, httpStatus, safeMessage, invalidParameter, retryability
+        case category, originalRequestConfiguration, httpStatus, safeMessage, invalidParameter, retryability, recoveryEvent
     }
 
     init(from decoder: Decoder) throws {
@@ -101,7 +104,8 @@ struct AIExecutionRunFailure: Codable, Hashable, Sendable {
             httpStatus: try values.decodeIfPresent(Int.self, forKey: .httpStatus),
             safeMessage: try values.decode(String.self, forKey: .safeMessage),
             invalidParameter: try values.decodeIfPresent(String.self, forKey: .invalidParameter),
-            retryability: try values.decodeIfPresent(Retryability.self, forKey: .retryability) ?? .manual
+            retryability: try values.decodeIfPresent(Retryability.self, forKey: .retryability) ?? .manual,
+            recoveryEvent: try values.decodeIfPresent(AIProviderFailureEvent.self, forKey: .recoveryEvent)
         )
     }
 }
@@ -128,6 +132,11 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     case reasoning
     case runningTools
     case writing
+    case diagnosingFailure
+    case recovering
+    case waitingForProvider
+    case waitingForConfiguration
+    case resuming
     case waitingForApproval
     case waitingForUserInput
     case completed
@@ -137,7 +146,9 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     var isTerminal: Bool {
         switch self {
         case .completed, .failed, .cancelled: true
-        case .preparing, .reasoning, .runningTools, .writing, .waitingForApproval, .waitingForUserInput: false
+        case .preparing, .reasoning, .runningTools, .writing, .diagnosingFailure, .recovering,
+             .waitingForProvider, .waitingForConfiguration, .resuming,
+             .waitingForApproval, .waitingForUserInput: false
         }
     }
 
@@ -146,16 +157,26 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
     /// Approval pauses execution without making the run appear to be actively streaming.
     var isStreaming: Bool {
         switch self {
-        case .preparing, .reasoning, .runningTools, .writing: true
-        case .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled: false
+        case .preparing, .reasoning, .runningTools, .writing, .recovering, .resuming: true
+        case .diagnosingFailure, .waitingForProvider, .waitingForConfiguration,
+             .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled: false
         }
     }
 
     fileprivate func canTransition(to next: Self) -> Bool {
         if self == next { return true }
+        if !isTerminal && next == .diagnosingFailure { return true }
+        if [.diagnosingFailure, .recovering, .resuming].contains(self),
+           [.recovering, .waitingForProvider, .waitingForConfiguration, .resuming,
+            .reasoning, .runningTools, .writing, .completed, .failed, .cancelled].contains(next) {
+            return true
+        }
+        if [.waitingForProvider, .waitingForConfiguration].contains(self),
+           [.resuming, .recovering, .failed, .cancelled].contains(next) { return true }
         switch self {
         case .preparing:
-            return [.reasoning, .runningTools, .writing, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
+            return [.reasoning, .runningTools, .writing, .waitingForProvider, .waitingForConfiguration,
+                    .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .reasoning:
             return [.runningTools, .writing, .waitingForApproval, .waitingForUserInput, .completed, .failed, .cancelled].contains(next)
         case .runningTools:
@@ -166,6 +187,8 @@ enum AIExecutionRunState: String, Codable, CaseIterable, Sendable {
             return [.reasoning, .runningTools, .writing, .failed, .cancelled].contains(next)
         case .waitingForUserInput:
             return [.runningTools, .failed, .cancelled].contains(next)
+        case .diagnosingFailure, .recovering, .waitingForProvider, .waitingForConfiguration, .resuming:
+            return false
         case .completed, .failed, .cancelled:
             return false
         }

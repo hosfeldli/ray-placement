@@ -7,6 +7,8 @@ enum ContextShelfPayload: Codable, Equatable {
     case terminal(command: String?, output: String)
     case dictation(transcript: String)
     case mailReference(MailMessageReference)
+    case browserReference(BrowserPageReference)
+    case messageReference(MessageContextReference)
 
     private enum CodingKeys: String, CodingKey {
         case type
@@ -28,6 +30,8 @@ enum ContextShelfPayload: Codable, Equatable {
         case terminal
         case dictation
         case mailReference
+        case browserReference
+        case messageReference
     }
 
     func encode(to encoder: Encoder) throws {
@@ -53,6 +57,12 @@ enum ContextShelfPayload: Codable, Equatable {
             try container.encode(transcript, forKey: .transcript)
         case .mailReference(let reference):
             try container.encode(PayloadType.mailReference, forKey: .type)
+            try container.encode(reference, forKey: .reference)
+        case .browserReference(let reference):
+            try container.encode(PayloadType.browserReference, forKey: .type)
+            try container.encode(reference, forKey: .reference)
+        case .messageReference(let reference):
+            try container.encode(PayloadType.messageReference, forKey: .type)
             try container.encode(reference, forKey: .reference)
         }
     }
@@ -81,6 +91,10 @@ enum ContextShelfPayload: Codable, Equatable {
             self = .dictation(transcript: try container.decode(String.self, forKey: .transcript))
         case .mailReference:
             self = .mailReference(try container.decode(MailMessageReference.self, forKey: .reference))
+        case .browserReference:
+            self = .browserReference(try container.decode(BrowserPageReference.self, forKey: .reference))
+        case .messageReference:
+            self = .messageReference(try container.decode(MessageContextReference.self, forKey: .reference))
         }
     }
 }

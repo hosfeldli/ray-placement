@@ -10,6 +10,7 @@ struct AIProviderSettingsView: View {
     @ObservedObject private var browser = BrowserWorkspaceModel.shared
     @ObservedObject private var terminal = AIWorkspaceTerminalCoordinator.shared
     @ObservedObject private var workbench = AIWorkbenchSelfTest.shared
+    @ObservedObject private var recovery = AIRecoveryPreferences.shared
     @ObservedObject private var credentials: AIProviderCredentialStore
     @ObservedObject private var legacyWebSearchCredentials = LegacyWebSearchCredentialStore.shared
     @State private var apiKey = ""
@@ -37,7 +38,20 @@ struct AIProviderSettingsView: View {
                 Text("Turning this off stops AI chats, provider requests, AI tools, and grammar assistance. Local dictation, search, files, notes, and saved chats remain available. Keys, model preferences, and action choices are retained.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            Section("Recovery") {
+                Toggle("Retry safe provider interruptions automatically", isOn: $recovery.automaticRetryEnabled)
+                Text("Lima preserves the unfinished task and honors provider retry times. It does not automatically replay uncertain tool effects, change credentials, or switch providers.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+            }
             Section("Tool Access") {
+                HStack {
+                    Text("How tool access works")
+                    AIInlineGuide(title: "Tool Access", steps: [
+                        "Off prevents a tool category from running. Ask requires review before eligible actions.",
+                        "Full Control skips ordinary Lima action prompts, but Browser controls and protected final actions remain separate.",
+                        "macOS privacy grants and connection-specific permissions still apply in every mode."
+                    ])
+                }
                 Picker("Mode", selection: Binding(
                     get: { toolStore.accessMode },
                     set: { toolStore.setAccessMode($0) }
@@ -46,14 +60,23 @@ struct AIProviderSettingsView: View {
                         Text(mode.title).tag(mode)
                     }
                 }
+                .limaOnboardingTarget("ai")
                 Text(toolStore.accessMode.detail)
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 Text(toolStore.accessMode == .fullControl
-                    ? "Full Control exposes implemented Lima tools and skips ordinary per-action prompts. Final Browser actions and visual clicks still require exact-call review. Saved category choices return when you leave this mode. Browser AI Control, macOS permissions, sandbox boundaries, and execution limits still apply."
+                    ? "Full Control exposes implemented Lima tools and skips ordinary per-action prompts. Final Browser actions and visual clicks still require exact-call review. Saved category choices return when you leave this mode. Browser AI Control, macOS permissions, and execution limits still apply."
                     : "Changing modes does not erase existing tool selections. Outside Full Control, disabled computer-action categories remain unavailable and required Lima prompts remain in effect.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Agent execution") {
+                HStack {
+                    Text("How parallel agents work")
+                    AIInlineGuide(title: "Parallel agents", steps: [
+                        "Independent child requests can run at the same time, up to the selected limit.",
+                        "A child uses the parent run's routed Lima tools and may pause for user review under the active policy.",
+                        "The limit is simultaneous work, not a cap on total sequential child requests."
+                    ])
+                }
                 Picker("Maximum simultaneous agents", selection: $settings.aiMaximumConcurrentSubagents) {
                     ForEach(1...AIExecutionSubagentBudget.maximumConcurrentCeiling, id: \.self) { count in
                         Text("\(count)").tag(count)
@@ -83,8 +106,8 @@ struct AIProviderSettingsView: View {
             }
             Section("Computer actions") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Label("Outside Full Control, Terminal and code start Off. AI Workspace sessions remain sandboxed without network or unrelated home access in every mode.", systemImage: "terminal")
-                    Label("Outside Full Control, saved memory starts at Ask every time. Full Control can save stable user-supplied context without a Lima prompt.", systemImage: "brain.head.profile")
+                    Label("Outside Full Control, Terminal and code start Off. When enabled, AI Workspace shells use your normal filesystem and network access after any required review.", systemImage: "terminal")
+                    Label("Outside Full Control, saved memory starts at Ask every time. Lima can retain useful user-provided names, email addresses, addresses, and other lasting details; credentials stay excluded.", systemImage: "brain.head.profile")
                     Label("Browser AI access is controlled separately in Browser settings and the Browser toolbar.", systemImage: "globe")
                 }
                 .font(.caption)
@@ -115,7 +138,7 @@ struct AIProviderSettingsView: View {
                 }
                 Text("Full Control makes implemented computer action tools available without ordinary Lima prompts. Final Browser actions and visual clicks still require exact-call review; Browser AI Control and sensitive-field protections remain separate. Outside Full Control, the category choices above govern other computer actions.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-                Text("All AI terminal commands appear in Terminal. AI Workspace commands use a no-network macOS sandbox with writes confined to the session's current working directory and unrelated home reads denied. Outside Full Control, Allow in Directory can cover one session until revoked or its directory changes. Full Control skips Lima prompts, including for the older unsandboxed Run Terminal Command compatibility tool. A timeout may not stop child processes started by code.")
+                Text("All AI terminal commands appear in Terminal. AI Workspace shells have the same filesystem and network access as your user account; the selected Project or Scratch folder is only the starting directory. Outside Full Control, each terminal action still needs Lima review when enabled. Directory-scoped grants do not apply to unrestricted commands. A timeout may not stop child processes started by code.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Conversation configuration") {
@@ -139,7 +162,8 @@ struct AIProviderSettingsView: View {
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
-                    Text("Uses your local CLI sign-in. Lima tools follow the active Tool Access mode; embedded Browser actions also follow Browser AI Control. Full Control skips ordinary Lima computer-action prompts, not exact-call final Browser or visual-click reviews. Codex CLI accepts explicitly attached images; Claude CLI remains text-only. ‘CLI default’ lets the CLI choose a model.")
+                    AIProviderSetupChecklist(provider: model.provider)
+                    Text("Both CLIs use Lima's authorized tool catalog and Tool Access policy. CLI default lets the CLI choose a model. Codex CLI can receive attached images here; Claude CLI remains text-only in this adapter.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 if model.provider == .openAICompatible {
@@ -170,6 +194,14 @@ struct AIProviderSettingsView: View {
             }
             if !model.provider.isCLI {
             Section("Provider credentials") {
+                if !credentials.hasAPIKey(for: model.provider) {
+                    AIProviderSetupChecklist(provider: model.provider)
+                }
+                HStack {
+                    Text("API key setup")
+                    AIInlineGuide(title: "API key setup",
+                                  steps: AIProviderSetupInstructions.steps(for: model.provider))
+                }
                 SecureField(credentials.hasAPIKey(for: model.provider) ? "Replacement API key" : "API key", text: $apiKey)
                     .disabled(busy)
                 HStack {
@@ -223,6 +255,14 @@ struct AIProviderSettingsView: View {
                 }
             }
             Section("Connection") {
+                HStack {
+                    Text("Connection checks")
+                    AIInlineGuide(title: "Connection checks", steps: [
+                        "Test Connection verifies the selected provider and model without changing the current chat.",
+                        "Refresh Models updates the picker where the provider offers a model catalog.",
+                        "A successful basic test does not guarantee every model, tool, or attachment type is available on your account."
+                    ])
+                }
                 HStack {
                     Button("Test Connection") { message = nil; model.testConnection() }
                         .disabled(!settings.aiEnabled || busy || !model.hasProviderAPIKey || configurationChanged)

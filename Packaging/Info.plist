@@ -51,6 +51,8 @@
 	<string>Lima reads and changes calendar events only when you review an exact Calendar tool call in AI Chat.</string>
 	<key>NSCalendarsWriteOnlyAccessUsageDescription</key>
 	<string>Lima creates calendar events only when you review an exact Calendar tool call in AI Chat.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Lima accesses Contacts only after you review an exact Contacts tool call in AI Chat and macOS grants access.</string>
 	<key>NSRemindersUsageDescription</key>
 	<string>Lima accesses Apple Reminders only when you review a Reminders tool call in AI Chat.</string>
 	<key>NSRemindersFullAccessUsageDescription</key>

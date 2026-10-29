@@ -598,3 +598,13 @@ private func isolatedMailDefaults() throws -> (UserDefaults, String) {
     #expect(await provider.searchCallCount == 1)
     #expect(await provider.messageCallCount == 1)
 }
+
+@Test func mailOutgoingScriptAllowsOnlyObservedMailBodySuffix() throws {
+    let source = try AppleMailWriteScripts.outgoingSource(
+        outgoingRequest(), saveOnly: false
+    )
+    #expect(source.contains("set actualBody to (content of outgoingItem as text)"))
+    #expect(source.contains("if actualBody is not outgoingBody and actualBody is not (outgoingBody & \" \") then error number -1728"))
+    #expect(source.contains("if (address of every to recipient of outgoingItem) is not requestedTo then error number -1728"))
+    #expect(source.contains("set acceptedByMail to (send outgoingItem)"))
+}

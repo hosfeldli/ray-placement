@@ -115,6 +115,7 @@ final class UpdateService: ObservableObject {
 
     var onReleaseAvailable: ((Release) -> Void)?
     var onReleaseDiscovered: ((Release) -> Void)?
+    var onReleaseAvailabilityChanged: ((Release?) -> Void)?
     var onInstallStarted: (() -> Void)?
     private let resultFile = ApplicationPaths.updates.appendingPathComponent("last-update-result.txt")
     private let progressFile = ApplicationPaths.updates.appendingPathComponent("update-progress.txt")
@@ -316,10 +317,12 @@ final class UpdateService: ObservableObject {
         latestVersion = release.versionText
         guard installedVersion < remoteVersion else {
             availableRelease = nil
+            onReleaseAvailabilityChanged?(nil)
             statusText = "Lima \(currentVersion) is up to date."
             return
         }
         availableRelease = release
+        onReleaseAvailabilityChanged?(release)
         statusText = "Lima \(release.versionText) is available."
         onReleaseDiscovered?(release)
         if manual { onReleaseAvailable?(release) }

@@ -15,6 +15,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let sparkleUpdateService = SparkleUpdateService.shared
     private var launcher: LauncherController!
     private var statusItem: NSStatusItem?
+    private var statusUpdateMenuItem: NSMenuItem?
+    private var appUpdateMenuItem: NSMenuItem?
     private var observers: [NSObjectProtocol] = []
     private var registeredActivationShortcut: ShortcutSpec?
     private var registeredExpandedWorkspaceShortcut: ShortcutSpec?
@@ -106,6 +108,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @discardableResult
+    func openReviewedNote(_ id: UUID) -> Bool {
+        launcher?.openNote(id) ?? false
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -142,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleNoteDictation() { launcher.showNotesAndToggleDictation() }
     @objc func showTerminal() { launcher.showDeveloperTerminal() }
     @objc func checkForUpdates() { updateService.checkForUpdates(manual: true) }
+    @objc func reviewAvailableUpdate() { updateService.reviewAvailableRelease() }
     @objc func reloadExtensions() { launcher.viewModel.reloadExtensions() }
     @objc func stopCurrentTask() { TaskRegistry.shared.cancelMostRecent() }
     @objc func quit() { NSApp.terminate(nil) }
@@ -558,6 +566,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let reload = NSMenuItem(title: "Reload Extensions", action: #selector(reloadExtensions), keyEquivalent: "")
         reload.target = self
         menu.addItem(reload)
+        let availableUpdate = NSMenuItem(title: "Review Available Update…", action: #selector(reviewAvailableUpdate), keyEquivalent: "")
+        availableUpdate.target = self
+        availableUpdate.isHidden = true
+        menu.addItem(availableUpdate)
+        statusUpdateMenuItem = availableUpdate
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
         menu.addItem(updates)
@@ -597,6 +610,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let store = NSMenuItem(title: "Extension Store…", action: #selector(showExtensionStore), keyEquivalent: "")
         store.target = self
         appMenu.addItem(store)
+        let availableUpdate = NSMenuItem(title: "Review Available Update…", action: #selector(reviewAvailableUpdate), keyEquivalent: "")
+        availableUpdate.target = self
+        availableUpdate.isHidden = true
+        appMenu.addItem(availableUpdate)
+        appUpdateMenuItem = availableUpdate
         let updates = NSMenuItem(title: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
         appMenu.addItem(updates)
@@ -629,6 +647,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func configureUpdates() -> Bool {
+        updateService.onReleaseAvailabilityChanged = { [weak self] release in
+            self?.updateReleaseNotice(release)
+        }
         updateService.onReleaseDiscovered = { release in
             let manifest = LimaReleaseNotesParser.fromGitHubRelease(
                 version: release.versionText, name: release.name,
@@ -691,6 +712,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         return false
+    }
+
+    private func updateReleaseNotice(_ release: UpdateService.Release?) {
+        let title = release.map { "Review Lima \($0.versionText) Update…" } ?? "Review Available Update…"
+        for item in [statusUpdateMenuItem, appUpdateMenuItem] {
+            item?.title = title
+            item?.isHidden = release == nil
+        }
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: release == nil ? "sparkle.magnifyingglass" : "arrow.down.circle.fill",
+            accessibilityDescription: release == nil ? "Lima" : "Lima update available"
+        )
+        statusItem?.button?.toolTip = release.map { "Lima \($0.versionText) update available. Open this menu to review it." } ?? "Lima"
     }
 
     private func presentUpdateConfirmation(_ release: UpdateService.Release) {

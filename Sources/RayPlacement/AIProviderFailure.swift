@@ -34,6 +34,9 @@ enum AIProviderFailure {
         "rate_limit_exceeded": "The provider rate limit was reached. Try again later.",
         "rate_limit_error": "The provider rate limit was reached. Try again later.",
         "insufficient_quota": "The provider quota is exhausted. Check the account's billing settings.",
+        "billing_hard_limit_reached": "The provider billing limit was reached. Check the account's billing settings.",
+        "usage_limit_reached": "The provider usage limit was reached.",
+        "invalid_tool_schema": "The provider rejected a Lima tool schema.",
         "context_length_exceeded": "The conversation exceeds the model's context limit. Start a shorter conversation.",
         "unsupported_parameter": "The selected model does not support a requested option.",
         "overloaded_error": "The provider is busy. Try again later.",
@@ -222,8 +225,17 @@ enum AIProviderFailure {
     }
 
     static func details(error: [String: Any]? = nil, status: Int? = nil) -> Details {
+        // Some app-server envelopes put a recognized provider code inside
+        // error.data.error. Inspect only fixed metadata keys; never surface the
+        // enclosing free-form message, body, or tool arguments.
+        let data = error?["data"] as? [String: Any]
+        let nested = data?["error"] as? [String: Any]
         let knownCode = code(error?["code"]) ?? code(error?["type"])
+            ?? code(data?["code"]) ?? code(data?["type"])
+            ?? code(nested?["code"]) ?? code(nested?["type"])
         let rawParameter = (error?["param"] as? String) ?? (error?["parameter"] as? String)
+            ?? (data?["param"] as? String) ?? (data?["parameter"] as? String)
+            ?? (nested?["param"] as? String) ?? (nested?["parameter"] as? String)
         let parameter = parameter(rawParameter)
         let message: String
         if let knownCode, let knownMessage = messages[knownCode] {
@@ -368,7 +380,18 @@ enum AIProviderFailure {
             "No internet connection is available.",
             "The provider could not be reached. Check the endpoint and connection.",
             "The provider's secure connection could not be verified.",
-            "The provider connection failed. Try again."
+            "The provider connection failed. Try again.",
+            "The CLI process failed before Lima received a complete reply.",
+            "Codex CLI is not installed.",
+            "Claude CLI is not installed.",
+            "The CLI response was incomplete or invalid.",
+            "Codex app-server disconnected.",
+            "Codex app-server returned an invalid response.",
+            "Codex app-server request failed.",
+            "Codex app-server error.",
+            "Codex app-server is already handling a turn.",
+            "Codex rejected a tool continuation because the pending calls did not match.",
+            "Codex turn interrupted."
         ]
         if fixed.contains(raw) || messages.values.contains(raw) || raw == message(status: status) { return raw }
         return message(status: status)
@@ -383,7 +406,12 @@ enum AIProviderFailure {
             "response.reasoning_summary_part.added", "response.reasoning_summary_text.done",
             "response.reasoning_summary_part.done", "response.content_part.added", "response.content_part.done",
             "response.output_item.added", "response.output_item.done",
-            "response.function_call_arguments.delta", "response.function_call_arguments.done"
+            "response.function_call_arguments.delta", "response.function_call_arguments.done",
+            "cli_process_failure", "cli_unclassified_failure", "cli_text_diagnostic",
+            "cli_executable_missing", "cli_protocol_failure",
+            "app_server_disconnected", "app_server_error", "app_server_busy",
+            "provider_turn_failed", "tool_continuation_rejected",
+            "network_unavailable", "interrupted_stream"
         ]
         return known.contains(raw) ? raw : "unknown"
     }

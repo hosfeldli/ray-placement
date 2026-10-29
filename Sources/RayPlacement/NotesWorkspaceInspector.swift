@@ -45,6 +45,7 @@ struct NotesWorkspaceInspector: View {
     let appendClipboard: () -> Void
     let openAI: () -> Void
     @State private var tab: NotesInspectorTab = .assistant
+    @State private var mailSourceError: String?
 
     var body: some View {
         ScrollView {
@@ -54,7 +55,7 @@ struct NotesWorkspaceInspector: View {
                     switch tab {
                     case .assistant: assistantPane(note)
                     case .context: contextPane(note)
-                    case .references: referencesPane()
+                    case .references: referencesPane(note)
                     }
                 }
             }
@@ -237,16 +238,18 @@ struct NotesWorkspaceInspector: View {
         }
     }
 
-    private func referencesPane() -> some View {
+    private func referencesPane(_ note: MarkdownNote) -> some View {
         let outgoing = store.referencedNotes()
         let incoming = store.backlinks().filter { backlink in
             !outgoing.contains { $0.id == backlink.id }
         }
+        let mailSources = Array(Set(note.mailTaskProvenance.flatMap(\.sourceMessages)))
+            .sorted { $0.receivedAt > $1.receivedAt }
         return LimaWorkspaceCard {
             VStack(alignment: .leading, spacing: 10) {
                 Label("Referenced notes", systemImage: "link")
                     .limaFont(.callout.weight(.semibold))
-                if outgoing.isEmpty && incoming.isEmpty {
+                if outgoing.isEmpty && incoming.isEmpty && mailSources.isEmpty {
                     Text("No linked notes yet. Add a wiki link in the editor to connect your work.")
                         .limaFont(.caption)
                         .foregroundStyle(LimaTheme.textSecondary)
@@ -262,6 +265,43 @@ struct NotesWorkspaceInspector: View {
                         store.selectNote(linked.id)
                     })
                 }
+                if !mailSources.isEmpty {
+                    Divider()
+                    Label("Source emails", systemImage: "envelope")
+                        .limaFont(.callout.weight(.semibold))
+                    ForEach(mailSources, id: \.self) { source in
+                        LimaWorkspaceActionRow(
+                            title: source.subject.isEmpty ? "(No subject)" : source.subject,
+                            detail: "\(source.sender) · \(source.receivedAt.formatted(date: .abbreviated, time: .omitted))",
+                            symbol: "envelope.open"
+                        ) {
+                            openMailSource(source)
+                        }
+                    }
+                    if let mailSourceError {
+                        Text(mailSourceError)
+                            .limaFont(.caption)
+                            .foregroundStyle(.orange)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+    }
+
+    private func openMailSource(_ source: MarkdownMailSource) {
+        let reference = MailMessageReference(
+            accountID: source.accountID, mailboxID: source.mailboxID,
+            messageID: source.messageID, internetMessageID: source.internetMessageID,
+            subject: source.subject, sender: source.sender,
+            receivedAt: source.receivedAt, capturedAt: Date()
+        )
+        Task { @MainActor in
+            do {
+                try await MailCapabilityService.shared.openInMail(reference, origin: .userInterface)
+                mailSourceError = nil
+            } catch {
+                mailSourceError = "This source could not be reopened. It may have moved or Mail access changed: \(error.localizedDescription)"
             }
         }
     }

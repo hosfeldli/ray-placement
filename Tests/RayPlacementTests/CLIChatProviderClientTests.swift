@@ -222,6 +222,40 @@ private func fixtureCLITool() -> LimaAIToolDefinition {
     }
 }
 
+@Test func cliProviderToolBatchPreservesOrderAndRejectsUnknownTools() throws {
+    let tool = fixtureCLITool()
+    func envelope(_ calls: [[String: Any]]) throws -> String {
+        let encodedCalls = try JSONSerialization.data(withJSONObject: calls)
+        let payload: [String: Any] = [
+            "kind": "tool_calls", "text": "", "tool": "",
+            "arguments": String(decoding: encodedCalls, as: UTF8.self)
+        ]
+        return String(decoding: try JSONSerialization.data(withJSONObject: payload), as: UTF8.self)
+    }
+
+    let reply = try envelope([
+        ["tool": tool.name, "arguments": ["key": "first"]],
+        ["tool": tool.name, "arguments": ["key": "second"]]
+    ])
+    let events = try CLIChatProviderClient.events(from: reply, localTools: [tool])
+    let calls = events.compactMap { event -> AIOutputItem? in
+        if case .outputItem(let item) = event { return item }
+        return nil
+    }
+    #expect(calls.count == 2)
+    #expect(calls.compactMap(\.name) == [tool.name, tool.name])
+    #expect(calls.map { $0.arguments?.contains("first") == true } == [true, false])
+    #expect(Set(calls.compactMap(\.callID)).count == 2)
+
+    let unknown = try envelope([
+        ["tool": tool.name, "arguments": ["key": "first"]],
+        ["tool": "not_enabled", "arguments": [:] as [String: String]]
+    ])
+    #expect(throws: CLIChatProviderClient.Failure.self) {
+        _ = try CLIChatProviderClient.events(from: unknown, localTools: [tool])
+    }
+}
+
 @Test func cliProviderPromptCarriesActualToolResult() throws {
     let tool = fixtureCLITool()
     let history = [

@@ -378,7 +378,7 @@ private func toolFields(_ result: LimaAIToolExecution) throws -> [String: Any] {
 
 @Test @MainActor func terminalScopesScratchAndProjectWithoutImplicitProjects() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard files.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = files.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaTerminalWorkScope-\(UUID().uuidString)", isDirectory: true)
     defer { try? files.removeItem(at: root) }
@@ -416,7 +416,7 @@ private func toolFields(_ result: LimaAIToolExecution) throws -> [String: Any] {
 
 @Test @MainActor func projectArchiveWaitsForInteractivePTYExitAfterOutput() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard files.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = files.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaProjectPTYArchive-\(UUID().uuidString)", isDirectory: true)
     defer { try? files.removeItem(at: root) }

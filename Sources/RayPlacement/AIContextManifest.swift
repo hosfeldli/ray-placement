@@ -55,6 +55,8 @@ struct AIContextManifest: Codable, Hashable, Sendable {
         browserToolRouted: Bool,
         hasPriorConversation: Bool,
         permissionsSnapshot: AIContextPermissionsSnapshot,
+        selectedShelfMailCount: Int = 0,
+        selectedShelfMessageCount: Int = 0,
         createdAt: Date = Date()
     ) {
         self.conversationID = conversationID
@@ -81,6 +83,30 @@ struct AIContextManifest: Codable, Hashable, Sendable {
                     : "Page contents are not attached. No Browser read tool is routed for this request.",
                 delivery: .availableThroughTool,
                 availability: browserToolRouted ? .ready : .unavailable
+            ))
+        }
+        if selectedShelfMailCount > 0 {
+            let routed = permissionsSnapshot.routedToolIDs.contains("mail_context")
+            entries.append(AIContextEntry(
+                id: "selected-shelf-mail",
+                title: "\(selectedShelfMailCount) selected Mail reference\(selectedShelfMailCount == 1 ? "" : "s")",
+                detail: routed
+                    ? "Message bodies are not attached. An authorized Mail tool can resolve each reference and detect a changed or missing source."
+                    : "Message bodies are not attached. The scoped Mail resolver is not routed for this request.",
+                delivery: .availableThroughTool,
+                availability: routed ? .ready : .unavailable
+            ))
+        }
+        if selectedShelfMessageCount > 0 {
+            let routed = permissionsSnapshot.routedToolIDs.contains("messages_context")
+            entries.append(AIContextEntry(
+                id: "selected-shelf-messages",
+                title: "\(selectedShelfMessageCount) selected Messages reference\(selectedShelfMessageCount == 1 ? "" : "s")",
+                detail: routed
+                    ? "Conversation histories are not attached. An authorized Messages tool can re-read each selected source within the current scope."
+                    : "Conversation histories are not attached. The scoped Messages resolver is not routed for this request.",
+                delivery: .availableThroughTool,
+                availability: routed ? .ready : .unavailable
             ))
         }
         if hasPriorConversation {

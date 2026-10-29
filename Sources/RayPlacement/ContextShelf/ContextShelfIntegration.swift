@@ -22,7 +22,9 @@ enum ContextShelfIntegration {
         _ = ContextShelfStore.shared.addText(clean, title: "Clipboard", kind: .clipboard, source: source)
     }
 
-    static func addURL(_ url: URL, sourceApplication: String? = nil) {
+    @discardableResult
+    static func addURL(_ url: URL, sourceApplication: String? = nil,
+                       title: String? = nil) -> UUID {
         let source = ContextShelfSource(
             type: .application,
             applicationName: sourceApplication,
@@ -32,9 +34,9 @@ enum ContextShelfIntegration {
             noteID: nil,
             capturedAt: Date()
         )
-        _ = ContextShelfStore.shared.addText(
+        return ContextShelfStore.shared.addText(
             url.absoluteString,
-            title: url.host ?? url.absoluteString,
+            title: title ?? url.host ?? url.absoluteString,
             kind: .plainText,
             source: source
         )
@@ -105,6 +107,23 @@ enum ContextShelfIntegration {
         _ = ContextShelfStore.shared.add(item)
     }
 
+    /// Reuse a completed AI result only after an explicit user action. Do not
+    /// silently truncate generated content or persist an unfinished response.
+    @discardableResult
+    static func addAIResponse(_ output: String, messageID: UUID,
+                              conversationTitle: String? = nil) -> UUID? {
+        let clean = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.count <= 100_000 else { return nil }
+        let now = Date()
+        let source = ContextShelfSource(
+            type: .lima, applicationName: "Lima AI", bundleIdentifier: Bundle.main.bundleIdentifier,
+            commandID: "ai-message:\(messageID.uuidString)", extensionID: nil,
+            noteID: nil, capturedAt: now
+        )
+        let title = conversationTitle.map { "AI Response · \(String($0.prefix(80)))" } ?? "AI Response"
+        return ContextShelfStore.shared.addText(clean, title: title, kind: .plainText, source: source)
+    }
+
     /// Store only a previously authorized Mail reference. The caller must use
     /// MailCapabilityService.referenceForShelf immediately before this handoff.
     @discardableResult
@@ -120,6 +139,44 @@ enum ContextShelfIntegration {
             preview: "From: \(reference.sender) · \(reference.receivedAt.formatted(date: .abbreviated, time: .shortened))",
             payload: .mailReference(reference), source: source,
             createdAt: now, isPinned: false
+        )
+        return (store ?? .shared).add(item)
+    }
+
+    @discardableResult
+    static func addMessageReference(_ reference: MessageContextReference,
+                                    title: String,
+                                    store: ContextShelfStore? = nil) -> UUID? {
+        let policy = MessagesCapabilityPolicyStore.load()
+        guard reference.isValid, policy.permits(reference.conversationGUID),
+              !title.isEmpty, title.utf8.count <= 200 else { return nil }
+        let source = ContextShelfSource.application(
+            name: "Messages", bundleIdentifier: "com.apple.iChat",
+            capturedAt: reference.capturedAt
+        )
+        let item = ContextShelfItem(
+            id: UUID(), kind: .messageReference, title: title,
+            preview: "Messages \(reference.kind.rawValue) reference · content not stored",
+            payload: .messageReference(reference), source: source,
+            createdAt: reference.capturedAt, isPinned: false
+        )
+        return (store ?? .shared).add(item)
+    }
+
+    @discardableResult
+    static func addBrowserReference(_ reference: BrowserPageReference,
+                                    store: ContextShelfStore? = nil) -> UUID? {
+        guard reference.isValid else { return nil }
+        let source = ContextShelfSource.application(
+            name: "Lima Browser", bundleIdentifier: Bundle.main.bundleIdentifier,
+            capturedAt: reference.capturedAt
+        )
+        let item = ContextShelfItem(
+            id: UUID(), kind: .browserReference,
+            title: reference.title,
+            preview: reference.sourceOrigin,
+            payload: .browserReference(reference), source: source,
+            createdAt: reference.capturedAt, isPinned: false
         )
         return (store ?? .shared).add(item)
     }
@@ -155,7 +212,7 @@ struct ContextShelfExtensionContext: Codable, Sendable {
     }
 
     /// Legacy contextShelf extensions receive bounded text and file items,
-    /// never Mail references. Mail access needs a separate scoped resolver.
+    /// never Mail or Browser references. Those require scoped resolvers.
     @MainActor
     static func exportableItems(_ items: [ContextShelfItem]) -> [Item] {
         boundedContext(from: items).items
@@ -166,7 +223,7 @@ struct ContextShelfExtensionContext: Codable, Sendable {
         var exported: [Item] = []
         var remainingBytes = maximumMarkdownBytes
         var omitted = 0
-        for item in items where !item.isMailReference {
+        for item in items where !item.isMailReference && !item.isBrowserReference && !item.isMessageReference {
             guard exported.count < maximumItems, remainingBytes >= 128 else {
                 omitted += 1
                 continue

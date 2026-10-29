@@ -4,7 +4,7 @@ import Testing
 @testable import RayPlacement
 
 @Test @MainActor func nativeCapabilityDefinitionsAreStrictAndOptIn() {
-    #expect(NativeCapabilityAITools.ids.count == 34)
+    #expect(NativeCapabilityAITools.ids.count == 41)
     #expect(NativeCapabilityAITools.definitions.count == NativeCapabilityAITools.ids.count)
     for definition in NativeCapabilityAITools.definitions {
         #expect(definition.responsePayload != nil)
@@ -14,6 +14,7 @@ import Testing
                 definition.actionCategory == .networkQuality ||
                 definition.actionCategory == .calendar ||
                 definition.actionCategory == .reminders ||
+                definition.actionCategory == .contacts ||
                 definition.actionCategory == .location)
         #expect(AIComputerActionPolicy.shared.requiresApproval(
             for: definition, toolAccessMode: .fullControl

@@ -33,7 +33,7 @@ struct AIMemoryInspector: View {
             DisclosureGroup(isExpanded: $expanded) {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(tools.effectiveEnabledToolIDs.contains("memory_search")
-                         ? "AI can read these entries and, when Memory changes is enabled, save stable facts you tell it under Tool Access controls. You can edit or forget entries here; earlier messages may still contain previously shared context."
+                         ? "AI can read these entries and, when Memory changes is enabled, save lasting details you provide, including names, email addresses, and postal addresses, under Tool Access controls. Credentials remain excluded. You can edit or forget entries here; earlier messages may still contain previously shared context."
                          : "Memory read is off. Saved entries remain here for review and direct editing.")
                         .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)

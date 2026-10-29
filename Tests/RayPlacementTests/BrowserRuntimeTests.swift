@@ -83,7 +83,13 @@ private final class BrowserLoopbackFixture {
         tabs.append(tab)
     }
 
-    let root = NSHostingView(rootView: BrowserWorkspaceView(model: model))
+    let root = NSHostingView(rootView: BrowserWorkspaceView(
+        model: model,
+        onCreateNote: { _ in throw BrowserPageHandoffError.aiDraftUnavailable },
+        onCreateTableNote: { _ in throw BrowserPageHandoffError.aiDraftUnavailable },
+        onPrepareAI: { _, _ in false },
+        onOpenShelf: {}
+    ))
     root.frame = CGRect(x: 0, y: 0, width: 1100, height: 760)
     let window = NSWindow(contentRect: root.frame, styleMask: [.titled], backing: .buffered, defer: false)
     window.contentView = root

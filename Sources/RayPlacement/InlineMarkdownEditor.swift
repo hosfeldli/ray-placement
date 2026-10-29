@@ -235,6 +235,14 @@ struct InlineMarkdownEditor: NSViewRepresentable {
             scheduleInlineGrammarCheck()
         }
 
+        func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+            let reference = (link as? URL)?.absoluteString ?? (link as? String)
+            guard let reference, reference.hasPrefix("lima-note-asset://") else { return false }
+            guard let fileURL = MarkdownNoteAssetStore.managedFileURL(for: reference) else { return true }
+            NSWorkspace.shared.open(fileURL)
+            return true
+        }
+
         func tableDidChange() {
             guard !isApplyingExternalUpdate, let textView else { return }
             let markdown = MarkdownTableDocumentCodec.markdown(from: textView.attributedString())

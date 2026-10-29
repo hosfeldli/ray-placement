@@ -152,10 +152,10 @@ private struct AIWorkspaceCommandResult: Sendable {
 
 /// Owns AI command sessions displayed by the Terminal workspace. Bounded
 /// commands remain isolated one-shot processes; opt-in interactive sessions
-/// share one visible SwiftTerm PTY between user and AI. Both paths use the
-/// dedicated macOS sandbox. Production roots are managed Projects or per-run
-/// Scratch directories under Application Support; the legacy Desktop tree is
-/// never used for new AI work.
+/// share one visible SwiftTerm PTY between user and AI. Tool Access and
+/// per-call review gate launches; the shell itself uses the user's normal
+/// filesystem and network access. Projects and Scratch provide an initial
+/// working directory, not a sandbox boundary.
 @MainActor
 final class AIWorkspaceTerminalCoordinator: ObservableObject {
     static let shared = AIWorkspaceTerminalCoordinator()
@@ -178,19 +178,6 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     func sessions(for conversationID: UUID?) -> [AIWorkspaceTerminalSnapshot] {
         guard let conversationID else { return [] }
         return sessions.filter { $0.belongs(to: conversationID) }
-    }
-
-    /// Leaving Full Control withdraws the authority that launched a networked
-    /// session. Stop those sessions rather than letting a persistent PTY retain
-    /// broader network access after the user changes modes.
-    func revokeNetworkSessions() {
-        for session in sessionByID.values where session.networkEnabled && session.state == .running {
-            if session.isInteractivePTY {
-                _ = try? terminate(sessionID: session.id)
-            } else {
-                session.box?.cancel()
-            }
-        }
     }
 
     // Tests supply an isolated, preexisting physical root. Production resolves
@@ -301,11 +288,11 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
 
         var errorDescription: String? {
             switch self {
-            case .unavailable: return "The AI Workspace folder or macOS sandbox is unavailable."
+            case .unavailable: return "The AI Workspace folder or shell is unavailable."
             case .invalidDirectory: return "Use an existing directory inside the AI Workspace."
             case .invalidWorkspaceName: return "Use a short, visible workspace name with letters, numbers, spaces, hyphens, or underscores."
             case .workspaceExists: return "That AI Workspace already exists; choose another name or start a session in it."
-            case .outsideWorkspace: return "AI terminal sessions cannot leave the AI Workspace."
+            case .outsideWorkspace: return "The selected starting directory must be inside the AI Workspace."
             case .symlink: return "AI terminal sessions do not follow symbolic links in workspace paths."
             case .tooManySessions: return "The AI Workspace session limit has been reached."
             case .tooManyCommands: return "Too many AI Workspace commands are running."
@@ -379,7 +366,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         if interactive, sessionByID.values.filter({ $0.state == .running }).count >= Self.maximumConcurrentCommands {
             throw WorkspaceError.tooManyCommands
         }
-        guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else {
+        guard FileManager.default.isExecutableFile(atPath: "/bin/zsh") else {
             throw WorkspaceError.unavailable
         }
         guard relativeDirectory == nil || newWorkspace == nil else { throw WorkspaceError.invalidDirectory }
@@ -437,7 +424,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         }
         let environment: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
-            "HOME": session.directory.path,
+            "HOME": manager.homeDirectoryForCurrentUser.path,
             "TMPDIR": temporary.path + "/",
             "XDG_CACHE_HOME": cache.path,
             "npm_config_cache": cache.appendingPathComponent("npm").path,
@@ -447,10 +434,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             "TERM": "xterm-256color",
             "TERM_PROGRAM": "Lima"
         ]
-        session.networkEnabled = toolAccessStore.accessMode == .fullControl
+        session.networkEnabled = true
         view.startProcess(
-            executable: "/usr/bin/sandbox-exec",
-            args: ["-p", Self.sandboxProfile(root: session.directory, networkEnabled: session.networkEnabled), "/bin/zsh", "-f", "-i"],
+            executable: "/bin/zsh",
+            args: ["-f", "-i"],
             environment: environment.map { "\($0.key)=\($0.value)" },
             currentDirectory: session.directory.path
         )
@@ -566,8 +553,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return session.snapshot
     }
 
-    /// The older, narrowly allowlisted command path remains available outside
-    /// the sandboxed Workspace, but uses this same visible session/read model.
+    /// The older, narrowly allowlisted command path uses the same user access
+    /// and visible session/read model as AI Workspace shells.
     /// Only AILocalCommandRunner may create or feed these one-shot sessions.
     func startBoundedExternal(directory: URL, conversationID: UUID? = nil,
                               onCancel: @escaping () -> Void) throws -> AIWorkspaceTerminalSnapshot {
@@ -767,11 +754,10 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             ? "."
             : String(session.directory.path.dropFirst(session.root.path.count + 1))
         session.directory = try Self.validDirectory(relativeDirectory, root: session.root)
-        // Each command, including Allow Once, can write only in the current
-        // directory. A parent Workspace root must not silently enlarge a
-        // project-directory grant.
-        session.networkEnabled = toolAccessStore.accessMode == .fullControl
-        let profile = Self.sandboxProfile(root: session.directory, networkEnabled: session.networkEnabled)
+        // Working directories are launch defaults only. The command inherits
+        // the user's normal filesystem and network access after Tool Access
+        // and any exact-call review have been satisfied.
+        session.networkEnabled = true
         let box = AIWorkspaceProcessBox()
         session.box = box
         session.state = .running
@@ -802,7 +788,6 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             }
             let result = await Self.execute(
                 command: command,
-                profile: profile,
                 root: root,
                 directory: directory,
                 timeoutSeconds: timeoutSeconds,
@@ -906,28 +891,6 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         return candidate
     }
 
-    static func sandboxProfile(root: URL, networkEnabled: Bool = false) -> String {
-        let networkRule = networkEnabled ? "(allow network*)" : ""
-        let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL.resolvingSymlinksInPath()
-        func quoted(_ value: String) -> String {
-            "\"" + value.replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"") + "\""
-        }
-        return """
-        (version 1)
-        (deny default)
-        (allow process*)
-        \(networkRule)
-        (allow file-read*)
-        (deny file-read* (subpath \(quoted(home.path))))
-        (allow file-read* (subpath \(quoted(root.path))))
-        (allow file-write* (subpath \(quoted(root.path))))
-        (allow file-read* file-write* (literal "/dev/null"))
-        (allow file-ioctl)
-        (allow sysctl*)
-        """
-    }
-
     private static func safeCommandLabel(_ command: String) -> String {
         let words = command.split(whereSeparator: \.isWhitespace)
         guard let first = words.first else { return "Approved command" }
@@ -949,7 +912,6 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
 
     private nonisolated static func execute(
         command: String,
-        profile: String,
         root: URL,
         directory: URL,
         timeoutSeconds: Int,
@@ -960,8 +922,8 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             await withCheckedContinuation { continuation in
                 DispatchQueue.global(qos: .utility).async {
                     let process = Process()
-                    process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-                    process.arguments = ["-p", profile, "/bin/zsh", "-f", "-c", command]
+                    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+                    process.arguments = ["-f", "-c", command]
                     process.currentDirectoryURL = directory
                     process.qualityOfService = .utility
                     let temporary = root.appendingPathComponent(".tmp", isDirectory: true)
@@ -983,7 +945,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
                     }
                     process.environment = [
                         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin",
-                        "HOME": root.path,
+                        "HOME": manager.homeDirectoryForCurrentUser.path,
                         "TMPDIR": temporary.path + "/",
                         "XDG_CACHE_HOME": cache.path,
                         "npm_config_cache": cache.appendingPathComponent("npm").path,

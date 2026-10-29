@@ -30,6 +30,17 @@ struct MailMessageReference: Codable, Hashable, Sendable, Identifiable {
     var id: String {
         "\(accountID.utf8.count):\(accountID)\(mailboxID.utf8.count):\(mailboxID)\(messageID)"
     }
+
+    /// Capture time is a freshness marker, not part of Mail's message identity.
+    func identifiesSameMessage(as other: MailMessageReference) -> Bool {
+        accountID == other.accountID &&
+            mailboxID == other.mailboxID &&
+            messageID == other.messageID &&
+            internetMessageID == other.internetMessageID &&
+            subject == other.subject &&
+            sender == other.sender &&
+            receivedAt == other.receivedAt
+    }
 }
 
 struct MailMessageSummary: Codable, Hashable, Sendable, Identifiable {
@@ -88,7 +99,9 @@ enum MailCapabilityError: LocalizedError, Equatable, Sendable {
     case automationDenied
     case malformedResponse
     case outgoingDisabled
+    case draftDisabled
     case invalidOutgoingMessage
+    case attachmentChanged
     case reviewExpired
     case reviewMismatch
     case sendOutcomeUncertain
@@ -122,8 +135,12 @@ enum MailCapabilityError: LocalizedError, Equatable, Sendable {
             return "Apple Mail returned an unreadable response."
         case .outgoingDisabled:
             return "Sending Mail is off in Lima."
+        case .draftDisabled:
+            return "Saving Apple Mail drafts is off in Lima."
         case .invalidOutgoingMessage:
-            return "Review the sender, recipients, subject, and message before sending."
+            return "Review the sender, recipients, subject, message, and up to four selected attachments before continuing."
+        case .attachmentChanged:
+            return "A selected attachment changed or is no longer readable. Choose it again before saving or sending."
         case .reviewExpired:
             return "This email review expired. Review the exact message again."
         case .reviewMismatch:
@@ -141,8 +158,10 @@ enum MailOperation: String, CaseIterable, Sendable {
     case listMailboxes
     case search
     case getMessage
+    case openMessage
     case createDraft
     case reply
+    case forward
     case send
     case flag
     case move
@@ -158,7 +177,10 @@ protocol MailProvider: Sendable {
     func message(_ reference: MailMessageReference) async throws -> MailMessage
     func sendingIdentities(accountID: String) async throws -> [String]
     func replyTarget(_ reference: MailMessageReference) async throws -> MailReplyTarget
+    func openMessage(_ reference: MailMessageReference) async throws
+    func saveDraft(_ request: MailOutgoingRequest) async throws -> MailDraftReceipt
     func send(_ request: MailOutgoingRequest) async throws -> MailSendReceipt
+    func applyMessageAction(_ request: MailMessageActionRequest) async throws
 }
 
 extension MailProvider {
@@ -170,7 +192,19 @@ extension MailProvider {
         throw MailCapabilityError.unavailable
     }
 
+    func openMessage(_ reference: MailMessageReference) async throws {
+        throw MailCapabilityError.unavailable
+    }
+
+    func saveDraft(_ request: MailOutgoingRequest) async throws -> MailDraftReceipt {
+        throw MailCapabilityError.unavailable
+    }
+
     func send(_ request: MailOutgoingRequest) async throws -> MailSendReceipt {
+        throw MailCapabilityError.unavailable
+    }
+
+    func applyMessageAction(_ request: MailMessageActionRequest) async throws {
         throw MailCapabilityError.unavailable
     }
 }
@@ -251,6 +285,7 @@ actor MailCapabilityService {
     private let sendJournalDefaults: UserDefaults
     private let clock: @Sendable () -> Date
     private var pendingOutgoingReviews: [UUID: MailOutgoingReview] = [:]
+    private var pendingMessageActionReviews: [UUID: MailMessageActionReview] = [:]
     private let maximumBodyBytes = 128 * 1_024
 
     init(provider: any MailProvider, policy: MailCapabilityPolicy = .disabled,
@@ -382,17 +417,110 @@ actor MailCapabilityService {
         let message = try await provider.message(reference)
         try Task.checkCancellation()
         try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
-        guard message.reference.accountID == reference.accountID,
-              message.reference.mailboxID == reference.mailboxID,
-              message.reference.messageID == reference.messageID,
-              (reference.internetMessageID == nil ||
-               message.reference.internetMessageID == reference.internetMessageID) else {
+        guard message.reference.identifiesSameMessage(as: reference) else {
+            // A Shelf or search result may point to a message that changed,
+            // moved, disappeared, or was replaced. Never return a different
+            // message body under an older reference.
             throw MailCapabilityError.providerScopeViolation
         }
         guard message.body.utf8.count <= maximumBodyBytes else {
             throw MailCapabilityError.messageTooLarge
         }
         return message
+    }
+
+    /// Open only the exact selected-account message in Apple Mail. The provider
+    /// re-resolves source identity immediately before opening its native window.
+    func openInMail(_ reference: MailMessageReference,
+                    origin: MailReadOrigin) async throws {
+        guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
+        try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
+        guard !reference.mailboxID.isEmpty, reference.messageID > 0 else {
+            throw MailCapabilityError.invalidRequest
+        }
+        let operations = await provider.supportedOperations()
+        guard operations.contains(.openMessage) else { throw MailCapabilityError.unavailable }
+        try Task.checkCancellation()
+        try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
+        try await provider.openMessage(reference)
+    }
+
+    /// Stage an exact source and destination for a visible, one-shot review.
+    /// No AI, background, or extension caller can obtain a mutation review.
+    func stageMessageAction(_ request: MailMessageActionRequest,
+                            origin: MailReadOrigin) async throws -> MailMessageActionReview {
+        guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
+        try await validateMessageAction(request, origin: origin)
+        try Task.checkCancellation()
+        let now = clock()
+        pendingMessageActionReviews = pendingMessageActionReviews.filter {
+            $0.value.expiresAt > now
+        }
+        guard pendingMessageActionReviews.count < 20 else { throw MailCapabilityError.busy }
+        let review = MailMessageActionReview(
+            id: UUID(), request: request, expiresAt: now.addingTimeInterval(120)
+        )
+        pendingMessageActionReviews[review.id] = review
+        return review
+    }
+
+    func discardMessageActionReview(_ id: UUID) {
+        pendingMessageActionReviews.removeValue(forKey: id)
+    }
+
+    /// Consume the review before dispatching the Apple Event. An error or
+    /// timeout after dispatch is uncertain; Lima never replays the operation.
+    func applyReviewedMessageAction(_ review: MailMessageActionReview,
+                                    origin: MailReadOrigin) async throws -> MailMessageActionOutcome {
+        guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
+        guard let staged = pendingMessageActionReviews[review.id] else {
+            throw MailCapabilityError.reviewExpired
+        }
+        guard staged == review else { throw MailCapabilityError.reviewMismatch }
+        guard clock() < staged.expiresAt else {
+            pendingMessageActionReviews.removeValue(forKey: review.id)
+            throw MailCapabilityError.reviewExpired
+        }
+        try await validateMessageAction(staged.request, origin: origin)
+        try Task.checkCancellation()
+        guard pendingMessageActionReviews[review.id] == staged,
+              clock() < staged.expiresAt else {
+            pendingMessageActionReviews.removeValue(forKey: review.id)
+            throw MailCapabilityError.reviewExpired
+        }
+        pendingMessageActionReviews.removeValue(forKey: review.id)
+        do {
+            try await provider.applyMessageAction(staged.request)
+            return .completed(MailMessageActionReceipt(
+                request: staged.request, completedAt: clock()
+            ))
+        } catch {
+            return .uncertain
+        }
+    }
+
+    private func validateMessageAction(_ request: MailMessageActionRequest,
+                                       origin: MailReadOrigin) async throws {
+        try request.validate()
+        try effectivePolicy().authorize(accountIDs: [request.reference.accountID], origin: origin)
+        let operations = await provider.supportedOperations()
+        guard operations.contains(request.kind.requiredOperation) else {
+            throw MailCapabilityError.unavailable
+        }
+        if let destination = request.kind.targetMailbox {
+            let current = try await mailboxes(
+                accountID: request.reference.accountID, origin: origin
+            )
+            guard current.contains(destination) else {
+                throw MailCapabilityError.invalidRequest
+            }
+        }
+        let currentMessage = try await message(request.reference, origin: origin)
+        guard currentMessage.reference.identifiesSameMessage(as: request.reference) else {
+            throw MailCapabilityError.providerScopeViolation
+        }
+        try Task.checkCancellation()
+        try effectivePolicy().authorize(accountIDs: [request.reference.accountID], origin: origin)
     }
 
     /// Authorize a lightweight Shelf reference without reading or retaining a
@@ -424,14 +552,16 @@ actor MailCapabilityService {
     /// Called only after a user opens a compose surface. This returns configured
     /// sender addresses for one already-selected account, not message content.
     func availableSenders(accountID: String, origin: MailReadOrigin) async throws -> [String] {
-        try effectiveOutgoingPolicy().authorize(accountID: accountID, origin: origin)
+        try effectiveOutgoingPolicy().authorize(accountID: accountID, origin: origin, grant: .compose)
         guard effectivePolicy().selectedAccountIDs.contains(accountID) else {
             throw MailCapabilityError.accountNotSelected
         }
         let operations = await provider.supportedOperations()
-        guard operations.contains(.send) else { throw MailCapabilityError.unavailable }
+        guard operations.contains(.send) || operations.contains(.createDraft) else {
+            throw MailCapabilityError.unavailable
+        }
         let identities = try await provider.sendingIdentities(accountID: accountID)
-        try effectiveOutgoingPolicy().authorize(accountID: accountID, origin: origin)
+        try effectiveOutgoingPolicy().authorize(accountID: accountID, origin: origin, grant: .compose)
         guard effectivePolicy().selectedAccountIDs.contains(accountID) else {
             throw MailCapabilityError.accountNotSelected
         }
@@ -449,7 +579,7 @@ actor MailCapabilityService {
                        origin: MailReadOrigin) async throws -> MailOutgoingRequest {
         guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
         try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
-        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin)
+        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin, grant: .compose)
         guard !reference.mailboxID.isEmpty, reference.messageID > 0,
               reference.subject.utf8.count <= 500,
               reference.sender.utf8.count <= 300,
@@ -460,14 +590,15 @@ actor MailCapabilityService {
         }
         try Task.checkCancellation()
         let operations = await provider.supportedOperations()
-        guard operations.contains(.send), operations.contains(.reply) else {
+        guard (operations.contains(.send) || operations.contains(.createDraft)),
+              operations.contains(.reply) else {
             throw MailCapabilityError.unavailable
         }
         let senders = try await availableSenders(accountID: reference.accountID, origin: origin)
         let target = try await provider.replyTarget(reference)
         try Task.checkCancellation()
         try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
-        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin)
+        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin, grant: .compose)
         guard target.reference == reference,
               MailOutgoingRequest.isAddress(target.recipientAddress) else {
             throw MailCapabilityError.providerScopeViolation
@@ -488,6 +619,52 @@ actor MailCapabilityService {
             senderAddress: senders[0], to: [target.recipientAddress],
             cc: [], bcc: [], subject: subject, body: ""
         )
+    }
+
+    /// Prefill an editable forward, preserving the source identity without
+    /// giving this proposal any authority to send.
+    func forwardProposal(of reference: MailMessageReference,
+                         origin: MailReadOrigin) async throws -> MailOutgoingRequest {
+        guard case .userInterface = origin else { throw MailCapabilityError.originUnsupported }
+        try effectivePolicy().authorize(accountIDs: [reference.accountID], origin: origin)
+        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin, grant: .compose)
+        let operations = await provider.supportedOperations()
+        guard (operations.contains(.send) || operations.contains(.createDraft)),
+              operations.contains(.forward) else {
+            throw MailCapabilityError.unavailable
+        }
+        let senders = try await availableSenders(accountID: reference.accountID, origin: origin)
+        let observed = try await message(reference, origin: origin)
+        guard observed.reference.subject == reference.subject,
+              observed.reference.sender == reference.sender else {
+            throw MailCapabilityError.providerScopeViolation
+        }
+        try effectiveOutgoingPolicy().authorize(accountID: reference.accountID, origin: origin, grant: .compose)
+        let sourceSubject = reference.subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = sourceSubject.lowercased().hasPrefix("fwd:") ? sourceSubject :
+            (sourceSubject.utf8.count <= 495 ? "Fwd: " + sourceSubject : sourceSubject)
+        return MailOutgoingRequest(
+            kind: .forward(reference), accountID: reference.accountID,
+            senderAddress: senders[0], to: [], cc: [], bcc: [],
+            subject: subject, body: ""
+        )
+    }
+
+    /// Save even an incomplete draft only from the visible composer. A timeout
+    /// or provider error may mean Mail saved it; Lima never retries automatically.
+    func saveDraft(_ request: MailOutgoingRequest,
+                   origin: MailReadOrigin) async throws -> MailDraftOutcome {
+        try request.validate(allowIncompleteDraft: true)
+        try authorizeOutgoing(request, origin: origin, grant: .draft)
+        try Task.checkCancellation()
+        try await verifyOutgoingProvider(request, requiredOperation: .createDraft)
+        try Task.checkCancellation()
+        try authorizeOutgoing(request, origin: origin, grant: .draft)
+        do {
+            return .saved(try await provider.saveDraft(request))
+        } catch {
+            return .uncertain
+        }
     }
 
     /// Prepare display data for one exact outgoing message. This never sends.
@@ -568,22 +745,37 @@ actor MailCapabilityService {
     }
 
     private func authorizeOutgoing(_ request: MailOutgoingRequest,
-                                   origin: MailReadOrigin) throws {
-        try effectiveOutgoingPolicy().authorize(accountID: request.accountID, origin: origin)
+                                   origin: MailReadOrigin,
+                                   grant: MailOutgoingGrant = .send) throws {
+        try effectiveOutgoingPolicy().authorize(accountID: request.accountID,
+                                                origin: origin, grant: grant)
         let readPolicy = effectivePolicy()
         guard readPolicy.selectedAccountIDs.contains(request.accountID) else {
             throw MailCapabilityError.accountNotSelected
         }
-        if case .reply(let reference) = request.kind {
+        switch request.kind {
+        case .newMessage:
+            break
+        case .reply(let reference), .forward(let reference):
             try readPolicy.authorize(accountIDs: [reference.accountID], origin: origin)
         }
     }
 
-    private func verifyOutgoingProvider(_ request: MailOutgoingRequest) async throws {
+    private func verifyOutgoingProvider(_ request: MailOutgoingRequest,
+                                        requiredOperation: MailOperation = .send) async throws {
+        let attachments = request.attachments
+        try await Task.detached(priority: .utility) {
+            for attachment in attachments { try attachment.verifyCurrent() }
+        }.value
         let operations = await provider.supportedOperations()
-        guard operations.contains(.send) else { throw MailCapabilityError.unavailable }
-        if case .reply = request.kind {
+        guard operations.contains(requiredOperation) else { throw MailCapabilityError.unavailable }
+        switch request.kind {
+        case .newMessage:
+            break
+        case .reply:
             guard operations.contains(.reply) else { throw MailCapabilityError.unavailable }
+        case .forward:
+            guard operations.contains(.forward) else { throw MailCapabilityError.unavailable }
         }
         let identities = try await provider.sendingIdentities(accountID: request.accountID)
         guard !identities.isEmpty, identities.count <= 20,
@@ -596,11 +788,26 @@ actor MailCapabilityService {
         }) else {
             throw MailCapabilityError.providerScopeViolation
         }
-        if case .reply(let reference) = request.kind {
+        switch request.kind {
+        case .newMessage:
+            break
+        case .reply(let reference):
             let target = try await provider.replyTarget(reference)
             guard target.reference == reference,
                   MailOutgoingRequest.isAddress(target.recipientAddress),
-                  request.to[0].caseInsensitiveCompare(target.recipientAddress) == .orderedSame else {
+                  (requiredOperation == .createDraft && request.to.isEmpty ||
+                   request.to.first?.caseInsensitiveCompare(target.recipientAddress) == .orderedSame) else {
+                throw MailCapabilityError.providerScopeViolation
+            }
+        case .forward(let reference):
+            let observed = try await provider.message(reference)
+            guard observed.reference.accountID == reference.accountID,
+                  observed.reference.mailboxID == reference.mailboxID,
+                  observed.reference.messageID == reference.messageID,
+                  observed.reference.subject == reference.subject,
+                  observed.reference.sender == reference.sender,
+                  (reference.internetMessageID == nil ||
+                   observed.reference.internetMessageID == reference.internetMessageID) else {
                 throw MailCapabilityError.providerScopeViolation
             }
         }

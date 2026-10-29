@@ -20,14 +20,26 @@ final class ContextShelfStore: ObservableObject {
 
     init(storageURL: URL = ApplicationPaths.contextShelf,
          loadPersisted: Bool = true,
-         mailPolicy: MailCapabilityPolicy? = nil) {
+         mailPolicy: MailCapabilityPolicy? = nil,
+         messagePolicy: MessagesCapabilityPolicy? = nil) {
         self.storageURL = storageURL
         guard loadPersisted else { return }
         let loaded = fileStore.loadJSON([ContextShelfItem].self, from: storageURL)
         guard let persisted = loaded.value else { return }
         let pinned = persisted.filter(\.isPinned)
         let policy = mailPolicy ?? MailCapabilityPolicyStore.load()
+        let messagesPolicy = messagePolicy ?? MessagesCapabilityPolicyStore.load()
         items = pinned.filter { item in
+            if item.isMessageReference {
+                guard item.kind == .messageReference,
+                      case .messageReference(let reference) = item.payload else { return false }
+                return reference.isValid && messagesPolicy.permits(reference.conversationGUID)
+            }
+            if item.isBrowserReference {
+                guard item.kind == .browserReference,
+                      case .browserReference(let reference) = item.payload else { return false }
+                return reference.isValid
+            }
             guard item.isMailReference else { return true }
             guard item.kind == .mailReference,
                   case .mailReference(let reference) = item.payload else { return false }
@@ -197,6 +209,24 @@ final class ContextShelfStore: ObservableObject {
         persistPinnedItems()
     }
 
+    /// Forget Messages metadata, including pinned entries and undo buffers.
+    /// Pending send-journal entries are intentionally not affected.
+    func removeMessageReferences(conversationGUIDs: Set<String>? = nil) {
+        func shouldRemove(_ item: ContextShelfItem) -> Bool {
+            guard item.isMessageReference else { return false }
+            guard let conversationGUIDs else { return true }
+            guard item.kind == .messageReference,
+                  case .messageReference(let reference) = item.payload else { return true }
+            return conversationGUIDs.contains(reference.conversationGUID)
+        }
+        let removedIDs = Set(items.filter(shouldRemove).map(\.id))
+        items.removeAll(where: shouldRemove)
+        selectedIDs.subtract(removedIDs)
+        lastRemoved.removeAll(where: shouldRemove)
+        lastCleared.removeAll(where: shouldRemove)
+        persistPinnedItems()
+    }
+
     func persistPinnedItems() {
         let pinned = items.filter(\.isPinned)
         guard pinned != lastPersistedPinnedItems else { return }
@@ -221,7 +251,7 @@ final class ContextShelfStore: ObservableObject {
                 item.payload = .terminal(command: command, output: clipped)
             case .dictation:
                 item.payload = .dictation(transcript: clipped)
-            case .file, .note, .mailReference:
+            case .file, .note, .mailReference, .browserReference, .messageReference:
                 break
             }
             item.preview = ContextShelfTextFormatting.preview(for: clipped)
@@ -236,6 +266,21 @@ final class ContextShelfStore: ObservableObject {
                 guard case .mailReference(let existingReference) = existing.payload else { return false }
                 return existingReference.id == reference.id &&
                     existingReference.internetMessageID == reference.internetMessageID
+            }
+        }
+        if case .browserReference(let reference) = item.payload {
+            return items.first { existing in
+                guard case .browserReference(let other) = existing.payload else { return false }
+                return other.tabID == reference.tabID && other.sourceURL == reference.sourceURL
+            }
+        }
+        if case .messageReference(let reference) = item.payload {
+            return items.first { existing in
+                guard case .messageReference(let other) = existing.payload else { return false }
+                return other.kind == reference.kind &&
+                    other.conversationGUID == reference.conversationGUID &&
+                    other.messageGUID == reference.messageGUID &&
+                    other.selectedText == reference.selectedText
             }
         }
         guard let text = item.textValue else { return nil }

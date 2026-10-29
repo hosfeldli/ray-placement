@@ -533,7 +533,7 @@ import Vision
     let assistant = store.conversations.first?.messages.last(where: { $0.role == .assistant })
     #expect(model.pendingApproval == nil)
     #expect(!model.canEndTask)
-    #expect(assistant?.text == "Task ended before the requested tool was run.")
+    #expect(assistant?.text == "Task ended before the requested tool was run. Any earlier actions were not undone.")
     #expect(assistant?.activities?.contains(where: { $0.title == "Task ended" }) == true)
     #expect(model.currentTaskState.title == "Task ended")
     #expect(model.approvalContinuationContextForTesting == nil)
@@ -601,7 +601,7 @@ import Vision
     #expect(!model.isStreaming)
     #expect(!model.canEndTask)
     #expect(model.executionRun?.state == .failed)
-    #expect(model.streamError == "AI Chat couldn’t continue this tool request because its response session is unavailable.")
+    #expect(model.streamError == "AI Chat couldn’t continue this tool request because its original response session or call batch is unavailable.")
     #expect(model.executionRun?.failure?.safeMessage == model.streamError)
     #expect(model.selectedConversation?.messages.last?.failure?.safeMessage == model.streamError)
 }
@@ -997,7 +997,9 @@ import Vision
     )
     model.draft = "Keep this prompt"
     model.send()
-    for _ in 0..<300 where model.isStreaming {
+    for _ in 0..<300 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
@@ -1011,9 +1013,13 @@ import Vision
     #expect(!model.canRetryLastRequest)
     model.retryLastRequest()
     #expect(model.selectedConversationID == conversation.id)
+    #expect(model.canEndTask)
+    #expect(!model.prepareEditedRetry(assistantMessageID: assistant.id))
+    model.endTask()
+    let endedConversation = try #require(model.selectedConversation)
     #expect(model.prepareEditedRetry(assistantMessageID: assistant.id))
     #expect(model.draft == "Keep this prompt")
-    #expect(store.conversation(id: conversation.id)?.messages == conversation.messages)
+    #expect(store.conversation(id: conversation.id)?.messages == endedConversation.messages)
 }
 
 @Test @MainActor func terminalProviderEventFinishesRunEvenWhenConnectionStaysOpen() async throws {
@@ -1045,7 +1051,7 @@ import Vision
     #expect(model.streamError == nil)
 }
 
-@Test @MainActor func failedProviderEventFinishesRunEvenWhenConnectionStaysOpen() async throws {
+@Test @MainActor func failedProviderEventSuspendsRunEvenWhenConnectionStaysOpen() async throws {
     let store = AIConversationStore(fixtures: [])
     var transport = FixtureAITransport(events: [])
     transport.replyStream = { _, _ in
@@ -1068,8 +1074,8 @@ import Vision
         try await Task.sleep(for: .milliseconds(5))
     }
 
-    #expect(!model.canEndTask)
-    #expect(model.executionRun?.state == .failed)
+    #expect(model.canEndTask)
+    #expect(model.executionRun?.state == .waitingForConfiguration)
     #expect(model.selectedConversation?.messages.last?.text == "Partial answer")
     #expect(model.selectedConversation?.messages.last?.failure != nil)
 }
@@ -1175,19 +1181,23 @@ import Vision
     )
     model.draft = "Do not lose my prompt or partial answer"
     model.send()
-    for _ in 0..<1000 where model.isStreaming {
+    for _ in 0..<1000 {
+        let failure = model.selectedConversation?.messages
+            .last(where: { $0.role == .assistant })?.failure
+        if !model.isStreaming, model.executionRun?.state == .waitingForProvider,
+           failure != nil { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
     let conversation = try #require(model.selectedConversation)
     let assistant = try #require(conversation.messages.last(where: { $0.role == .assistant }))
-    #expect(!model.canEndTask)
-    #expect(model.executionRun?.state == .failed)
+    #expect(model.canEndTask)
+    #expect(model.executionRun?.state == .waitingForProvider)
     #expect(assistant.text == "Partial answer")
     #expect(assistant.failure?.category == .timedOut)
     #expect(assistant.failure?.retryability == .safe)
     #expect(conversation.messages.contains { $0.role == .user && $0.text == "Do not lose my prompt or partial answer" })
-    #expect(model.canRetryLastRequest)
+    #expect(!model.canRetryLastRequest)
 }
 
 @Test @MainActor func providerTimeoutCreatesRestartableDurableFailure() async throws {
@@ -1211,7 +1221,8 @@ import Vision
     #expect(assistant.failure?.category == .timedOut)
     #expect(assistant.failure?.retryability == .safe)
     #expect(assistant.failure?.safeMessage.contains("request timed out") == true)
-    #expect(model.canRetryLastRequest)
+    #expect(model.canEndTask)
+    #expect(!model.canRetryLastRequest)
 }
 
 @Test @MainActor func rateLimitRemainsRetryableAfterDelay() async throws {
@@ -1240,7 +1251,8 @@ import Vision
     #expect(assistant.failure?.category == .rateLimited)
     #expect(assistant.failure?.retryability == .afterDelay)
     #expect(assistant.failure?.safeMessage.contains("rate limited") == true)
-    #expect(model.canRetryLastRequest)
+    #expect(model.canEndTask)
+    #expect(!model.canRetryLastRequest)
 }
 
 @Test @MainActor func retryActionDoesNotResurrectOlderFailureAfterSuccessfulTurn() {
@@ -2150,8 +2162,19 @@ private func outputItemEvent(_ eventType: String, item: [String: Any]) -> [AICha
         if index % 10 == 0 {
             model.cancel()
         } else {
-            for _ in 0..<500 where model.canEndTask {
+            for _ in 0..<500 {
+                let state = model.executionRun?.state
+                if state?.isTerminal == true ||
+                    state == .waitingForProvider ||
+                    state == .waitingForConfiguration {
+                    break
+                }
                 try await Task.sleep(for: .milliseconds(2))
+            }
+            if model.canEndTask {
+                #expect(model.executionRun?.state == .waitingForProvider ||
+                        model.executionRun?.state == .waitingForConfiguration)
+                model.endTask()
             }
         }
         #expect(model.executionRun?.state.isTerminal == true)

@@ -116,7 +116,7 @@ import Testing
     let external = try #require(LimaAIToolRegistry.definition(for: "run_terminal_command"))
     #expect(wait.displayName == "Wait for command")
     #expect(wait.userSummary.contains("verified completion"))
-    #expect(external.userSummary.contains("outside the sandbox"))
+    #expect(external.userSummary.contains("allowlisted developer command"))
     #expect(store.effectiveEnabledToolIDs.isSuperset(of: BrowserWorkspaceAITools.ids))
     #expect(store.enabledToolIDs.isDisjoint(with: BrowserWorkspaceAITools.ids))
     let browserRead = try #require(LimaAIToolRegistry.definition(for: "browser_read"))

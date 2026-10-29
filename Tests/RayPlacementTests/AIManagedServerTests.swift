@@ -77,7 +77,7 @@ private let serverTestLoopbackCommand = #"""
 """#
 
 @Test @MainActor func managedServerRejectsUnrelatedLoopbackListener() async throws {
-    guard FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard FileManager.default.isExecutableFile(atPath: "/bin/zsh") else { return }
     let workspace = try serverTestWorkspace()
     defer { try? FileManager.default.removeItem(at: workspace.root) }
     let listener = try ServerTestLoopbackListener()
@@ -122,7 +122,7 @@ private let serverTestLoopbackCommand = #"""
 
 @Test @MainActor func managedServerOpensReusesAndStopsOwnedLoopbackProcess() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
+    guard files.isExecutableFile(atPath: "/bin/zsh"),
           files.isExecutableFile(atPath: "/usr/bin/perl"),
           files.isExecutableFile(atPath: "/usr/sbin/lsof") else { return }
     let workspace = try serverTestWorkspace()
@@ -197,7 +197,7 @@ private let serverTestLoopbackCommand = #"""
 
 @Test @MainActor func projectArchiveStopsManagedServerAndPreservesFiles() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
+    guard files.isExecutableFile(atPath: "/bin/zsh"),
           files.isExecutableFile(atPath: "/usr/bin/perl"),
           files.isExecutableFile(atPath: "/usr/sbin/lsof") else { return }
     let workspace = try serverTestWorkspace()

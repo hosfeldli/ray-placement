@@ -11,6 +11,15 @@ private func parseTaskLine(_ line: String) -> (checked: Bool, text: String)? {
     return (String(line[stateRange]).lowercased() == "x", String(line[textRange]))
 }
 
+struct MailActionNoteUpdateResult: Sendable {
+    let noteID: UUID
+    let addedTaskCount: Int
+    let skippedDuplicateCount: Int
+    /// Only reviewed tasks represented by a checklist line and matching Mail
+    /// provenance in the saved Note may be linked to new Reminders.
+    let reminderEligibleTaskIDs: Set<UUID>
+}
+
 @MainActor
 final class NotesStore: ObservableObject {
     static let shared = NotesStore()
@@ -274,8 +283,469 @@ final class NotesStore: ObservableObject {
                 NSLocalizedDescriptionKey: "This append would exceed the note's character limit."
             ])
         }
-        updateNote(identifier) { $0.content = updated }
+        return try applyReviewedAIContent(
+            to: identifier, expectedContentSHA256: expectedContentSHA256
+        ) { _ in updated }
+    }
+
+    /// Replace one complete, uniquely identified line-aligned block. The hash
+    /// comparison and mutation run together on the main actor, so a concurrent
+    /// user edit cannot be silently overwritten after the AI's read.
+    @discardableResult
+    func replaceAIBlock(in identifier: UUID, expectedContentSHA256: String,
+                        oldText: String, newText: String) throws -> Int {
+        guard !oldText.isEmpty, oldText.count <= 32_000, newText.count <= 32_000,
+              !newText.unicodeScalars.contains(where: { $0.value == 0 || $0.value == 0x7F }) else {
+            throw aiEditError(8, "A block edit needs 1 to 32,000 characters of existing text and at most 32,000 replacement characters.")
+        }
+        return try applyReviewedAIContent(to: identifier, expectedContentSHA256: expectedContentSHA256) { content in
+            guard let range = content.range(of: oldText),
+                  content.range(of: oldText, range: range.upperBound..<content.endIndex) == nil else {
+                throw aiEditError(9, "The exact block is missing or appears more than once. Read the note again and choose a unique block.")
+            }
+            let startsOnLine = range.lowerBound == content.startIndex ||
+                content[content.index(before: range.lowerBound)] == "\n"
+            let endsOnLine = range.upperBound == content.endIndex ||
+                content[range.upperBound] == "\n"
+            guard startsOnLine && endsOnLine else {
+                throw aiEditError(10, "Replace a complete line, paragraph, table row, or section rather than part of a line.")
+            }
+            return content.replacingCharacters(in: range, with: newText)
+        }
+    }
+
+    /// Add native Markdown checklists to one existing section without replacing
+    /// its other content or re-adding tasks already present in the note.
+    @discardableResult
+    func addAITasks(to identifier: UUID, expectedContentSHA256: String,
+                    sectionHeading: String, tasks: [String]) throws -> Int {
+        guard (1...25).contains(tasks.count),
+              sectionHeading.count <= 200,
+              !sectionHeading.contains("\n"),
+              tasks.allSatisfy({ task in
+                  let clean = task.trimmingCharacters(in: .whitespacesAndNewlines)
+                  return task == clean && !clean.isEmpty && clean.count <= 500 &&
+                      !task.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+                      !task.contains("![") && !task.localizedCaseInsensitiveContains("<img")
+              }) else {
+            throw aiEditError(11, "Add 1 to 25 plain-text task titles of at most 500 characters under one existing heading.")
+        }
+        let titles = tasks
+        guard Set(titles.map { $0.lowercased() }).count == titles.count else {
+            throw aiEditError(12, "The proposed checklist contains duplicate tasks.")
+        }
+        return try applyReviewedAIContent(to: identifier, expectedContentSHA256: expectedContentSHA256) { content in
+            var lines = content.components(separatedBy: "\n")
+            let visibleLines = visibleMarkdownLineIndices(lines)
+            let headingPositions = lines.indices.filter {
+                visibleLines.contains($0) && lines[$0] == sectionHeading
+            }
+            let level = sectionHeading.prefix(while: { $0 == "#" }).count
+            let headingTitle = String(sectionHeading.dropFirst(level))
+                .trimmingCharacters(in: .whitespaces)
+            guard headingPositions.count == 1, (1...6).contains(level),
+                  sectionHeading.dropFirst(level).hasPrefix(" "),
+                  !headingTitle.isEmpty else {
+                throw aiEditError(13, "The exact section heading is missing or ambiguous. Read the note again.")
+            }
+            let headingIndex = headingPositions[0]
+            let existingTasks = Set(lines.compactMap { parseTaskLine($0)?.text.lowercased() })
+            guard titles.allSatisfy({ !existingTasks.contains($0.lowercased()) }) else {
+                throw aiEditError(14, "A proposed task already exists in this note.")
+            }
+            var sectionEnd = lines.count
+            for index in (headingIndex + 1)..<lines.count {
+                let candidate = lines[index]
+                let candidateLevel = candidate.prefix(while: { $0 == "#" }).count
+                if visibleLines.contains(index),
+                   (1...level).contains(candidateLevel),
+                   candidate.dropFirst(candidateLevel).hasPrefix(" ") {
+                    sectionEnd = index
+                    break
+                }
+            }
+            var insertAt = sectionEnd
+            while insertAt > headingIndex + 1 &&
+                lines[insertAt - 1].trimmingCharacters(in: .whitespaces).isEmpty {
+                insertAt -= 1
+            }
+            var additions = titles.map { "- [ ] " + $0 }
+            if insertAt > headingIndex + 1 && !lines[insertAt - 1].isEmpty {
+                additions.insert("", at: 0)
+            }
+            if insertAt < lines.count && !lines[insertAt].isEmpty {
+                additions.append("")
+            }
+            lines.insert(contentsOf: additions, at: insertAt)
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    /// Complete exactly one unchecked checklist line. A stale hash or repeated
+    /// task title fails closed instead of checking an unintended item.
+    @discardableResult
+    func completeAITask(in identifier: UUID, expectedContentSHA256: String,
+                        taskLine: String) throws -> Int {
+        guard taskLine.count <= 600, !taskLine.contains("\n"),
+              let parsed = parseTaskLine(taskLine), !parsed.checked,
+              !parsed.text.trimmingCharacters(in: .whitespaces).isEmpty else {
+            throw aiEditError(15, "Choose one exact, unchecked Markdown checklist line from the note.")
+        }
+        return try applyReviewedAIContent(to: identifier, expectedContentSHA256: expectedContentSHA256) { content in
+            var lines = content.components(separatedBy: "\n")
+            let visibleLines = visibleMarkdownLineIndices(lines)
+            let matches = lines.indices.filter {
+                visibleLines.contains($0) && lines[$0] == taskLine
+            }
+            guard matches.count == 1, let checkbox = lines[matches[0]].range(of: "[ ]") else {
+                throw aiEditError(16, "The unchecked task is missing or ambiguous. Read the note again.")
+            }
+            lines[matches[0]].replaceSubrange(checkbox, with: "[x]")
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    /// Update one exact native checklist row and its direct Due/Priority
+    /// metadata. Unrelated child rows and other tasks remain byte-for-byte
+    /// intact; the full Note hash still guards against concurrent user edits.
+    @discardableResult
+    func updateAITask(
+        in identifier: UUID, expectedContentSHA256: String,
+        taskLine: String, newTitle: String?,
+        deadline: String, priority: String, completion: String
+    ) throws -> Int {
+        let titleValid = newTitle.map { title in
+            title == title.trimmingCharacters(in: .whitespacesAndNewlines) &&
+                !title.isEmpty && title.count <= 500 &&
+                !title.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) &&
+                !title.contains("![") && !title.localizedCaseInsensitiveContains("<img")
+        } ?? true
+        let dateFormatter = ISO8601DateFormatter()
+        dateFormatter.formatOptions = [.withFullDate]
+        let dateValid = deadline == "keep" || deadline == "none" ||
+            (dateFormatter.date(from: deadline).map { dateFormatter.string(from: $0) == deadline } ?? false)
+        let indentation = String(taskLine.prefix(while: { $0 == " " }))
+        guard taskLine.count <= 600, !taskLine.contains("\n"),
+              let parsed = parseTaskLine(taskLine),
+              taskLine.hasPrefix(indentation + "- ["), indentation.count <= 16,
+              titleValid, dateValid,
+              ["keep", "none", "low", "normal", "high", "urgent"].contains(priority),
+              ["keep", "open", "done"].contains(completion),
+              newTitle != nil || deadline != "keep" || priority != "keep" || completion != "keep" else {
+            throw aiEditError(24, "Choose one exact checklist row and valid title, YYYY-MM-DD deadline, priority, or completion change.")
+        }
+        return try applyReviewedAIContent(
+            to: identifier, expectedContentSHA256: expectedContentSHA256
+        ) { content in
+            var lines = content.components(separatedBy: "\n")
+            let visible = visibleMarkdownLineIndices(lines)
+            let matches = lines.indices.filter {
+                visible.contains($0) && lines[$0] == taskLine
+            }
+            guard matches.count == 1 else {
+                throw aiEditError(16, "The task row is missing or ambiguous. Read the Note again.")
+            }
+            let index = matches[0]
+            var updatedLine = taskLine
+            if let newTitle {
+                guard updatedLine.hasSuffix(parsed.text) else {
+                    throw aiEditError(24, "The checklist title could not be identified safely.")
+                }
+                updatedLine = String(updatedLine.dropLast(parsed.text.count)) + newTitle
+            }
+            if completion != "keep" {
+                guard let marker = updatedLine.range(of: #"\[[ xX]\]"#, options: .regularExpression) else {
+                    throw aiEditError(24, "The checklist state could not be identified safely.")
+                }
+                updatedLine.replaceSubrange(marker, with: completion == "done" ? "[x]" : "[ ]")
+            }
+            lines[index] = updatedLine
+
+            let duePrefix = indentation + "  - Due:"
+            let priorityPrefix = indentation + "  - Priority:"
+            var dueRows: [Int] = []
+            var priorityRows: [Int] = []
+            if index + 1 < lines.count {
+                for row in (index + 1)..<lines.count {
+                    let line = lines[row]
+                    if line.trimmingCharacters(in: .whitespaces).isEmpty { continue }
+                    let depth = line.prefix(while: { $0 == " " }).count
+                    if depth <= indentation.count || parseTaskLine(line) != nil { break }
+                    guard visible.contains(row) else { continue }
+                    if line.hasPrefix(duePrefix) { dueRows.append(row) }
+                    if line.hasPrefix(priorityPrefix) { priorityRows.append(row) }
+                }
+            }
+            guard dueRows.count <= 1, priorityRows.count <= 1 else {
+                throw aiEditError(25, "This task has repeated Due or Priority rows. Resolve them manually before updating it.")
+            }
+
+            var replacements: [(index: Int, value: String?)] = []
+            var additions: [String] = []
+            if deadline != "keep" {
+                let value = deadline == "none" ? nil : duePrefix + " " + deadline
+                if let row = dueRows.first {
+                    replacements.append((row, value))
+                } else if let value {
+                    additions.append(value)
+                }
+            }
+            if priority != "keep" {
+                let value = priority == "none" ? nil : priorityPrefix + " " + priority.capitalized
+                if let row = priorityRows.first {
+                    replacements.append((row, value))
+                } else if let value {
+                    additions.append(value)
+                }
+            }
+            for replacement in replacements.sorted(by: { $0.index > $1.index }) {
+                if let value = replacement.value {
+                    lines[replacement.index] = value
+                } else {
+                    lines.remove(at: replacement.index)
+                }
+            }
+            lines.insert(contentsOf: additions, at: index + 1)
+            return lines.joined(separator: "\n")
+        }
+    }
+
+    /// Apply a reviewed set of exact, non-overlapping block edits as one
+    /// revision. Every old block must appear once in the content the agent read.
+    @discardableResult
+    func updateAIBlocks(
+        in identifier: UUID, expectedContentSHA256: String,
+        edits: [(oldText: String, newText: String)]
+    ) throws -> Int {
+        guard (1...10).contains(edits.count),
+              edits.reduce(0, { $0 + $1.oldText.count + $1.newText.count }) <= 64_000,
+              edits.allSatisfy({ edit in
+                  !edit.oldText.isEmpty && edit.oldText.count <= 32_000 &&
+                  edit.newText.count <= 32_000 &&
+                  !edit.newText.unicodeScalars.contains(where: {
+                      $0.value == 0 || $0.value == 0x7F
+                  })
+              }) else {
+            throw aiEditError(18, "Update 1 to 10 exact blocks with at most 32,000 characters each and 64,000 reviewed characters total.")
+        }
+        return try applyReviewedAIContent(
+            to: identifier, expectedContentSHA256: expectedContentSHA256
+        ) { content in
+            var located: [(range: Range<String.Index>, replacement: String)] = []
+            for edit in edits {
+                guard let range = content.range(of: edit.oldText),
+                      content.range(of: edit.oldText,
+                          range: range.upperBound..<content.endIndex) == nil else {
+                    throw aiEditError(9, "An old block is missing or repeated. Read the Note again and choose unique blocks.")
+                }
+                let beginsOnLine = range.lowerBound == content.startIndex ||
+                    content[content.index(before: range.lowerBound)] == "\n"
+                let endsOnLine = range.upperBound == content.endIndex ||
+                    content[range.upperBound] == "\n"
+                guard beginsOnLine && endsOnLine else {
+                    throw aiEditError(10, "Each update must replace complete lines or blocks.")
+                }
+                located.append((range, edit.newText))
+            }
+            located.sort { $0.range.lowerBound < $1.range.lowerBound }
+            for pair in zip(located, located.dropFirst()) {
+                guard pair.0.range.upperBound <= pair.1.range.lowerBound else {
+                    throw aiEditError(19, "The proposed block edits overlap.")
+                }
+            }
+            var output = ""
+            var cursor = content.startIndex
+            for edit in located {
+                output += content[cursor..<edit.range.lowerBound]
+                output += edit.replacement
+                cursor = edit.range.upperBound
+            }
+            output += content[cursor..<content.endIndex]
+            return output
+        }
+    }
+
+    struct AIMoveResult: Sendable {
+        let sourceCharacters: Int
+        let destinationCharacters: Int
+    }
+
+    /// Move one complete exact block between two unchanged Notes. Both hashes
+    /// are checked before either Note changes, then both revisions are saved
+    /// together on the main actor.
+    @discardableResult
+    func moveAIBlock(
+        from sourceID: UUID, sourceSHA256: String,
+        to destinationID: UUID, destinationSHA256: String,
+        block: String, afterText: String?
+    ) throws -> AIMoveResult {
+        guard sourceID != destinationID,
+              !block.isEmpty, block.count <= 32_000,
+              let sourceIndex = notes.firstIndex(where: { $0.id == sourceID }),
+              let destinationIndex = notes.firstIndex(where: { $0.id == destinationID }) else {
+            throw aiEditError(20, "Choose two different available Notes and one nonempty block.")
+        }
+        let source = notes[sourceIndex]
+        let destination = notes[destinationIndex]
+        func hash(_ text: String) -> String {
+            SHA256.hash(data: Data(text.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+        }
+        guard hash(source.content) == sourceSHA256,
+              hash(destination.content) == destinationSHA256 else {
+            throw aiEditError(5, "A Note changed after it was read. Read both Notes again before moving content.")
+        }
+        guard let range = source.content.range(of: block),
+              source.content.range(of: block,
+                  range: range.upperBound..<source.content.endIndex) == nil else {
+            throw aiEditError(9, "The source block is missing or repeated.")
+        }
+        let beginsOnLine = range.lowerBound == source.content.startIndex ||
+            source.content[source.content.index(before: range.lowerBound)] == "\n"
+        let endsOnLine = range.upperBound == source.content.endIndex ||
+            source.content[range.upperBound] == "\n"
+        guard beginsOnLine && endsOnLine else {
+            throw aiEditError(10, "Move a complete line-aligned paragraph, table, or section.")
+        }
+        // Mail-linked tasks have separate structured source identity. A
+        // checklist block in a Note with Mail provenance cannot be moved by
+        // text alone, including after its user-visible title was edited.
+        let containsChecklist = block.components(separatedBy: "\n")
+            .contains { parseTaskLine($0) != nil }
+        guard source.mailTaskProvenance.isEmpty || !containsChecklist else {
+            throw aiEditError(21, "A Mail-linked checklist needs a provenance-aware move. Leave it in this Note.")
+        }
+        let linkedTitles = source.mailTaskProvenance.compactMap(\.taskTitle)
+        guard !linkedTitles.contains(where: { block.localizedCaseInsensitiveContains($0) }) else {
+            throw aiEditError(21, "A Mail-linked task needs a provenance-aware move. Leave it in this Note.")
+        }
+        let sourceUpdated = source.content.replacingCharacters(in: range, with: "")
+        let destinationUpdated: String
+        if let afterText {
+            guard !afterText.isEmpty, afterText.count <= 32_000,
+                  let anchor = destination.content.range(of: afterText),
+                  destination.content.range(of: afterText,
+                      range: anchor.upperBound..<destination.content.endIndex) == nil else {
+                throw aiEditError(22, "The destination anchor is missing or repeated.")
+            }
+            let anchorOnLine = anchor.lowerBound == destination.content.startIndex ||
+                destination.content[destination.content.index(before: anchor.lowerBound)] == "\n"
+            let anchorEndsOnLine = anchor.upperBound == destination.content.endIndex ||
+                destination.content[anchor.upperBound] == "\n"
+            guard anchorOnLine && anchorEndsOnLine else {
+                throw aiEditError(23, "Choose a complete destination line or block as the anchor.")
+            }
+            destinationUpdated = String(destination.content[..<anchor.upperBound]) +
+                "\n\n" + block + String(destination.content[anchor.upperBound...])
+        } else {
+            let separator = destination.content.isEmpty ? "" :
+                destination.content.hasSuffix("\n\n") ? "" :
+                destination.content.hasSuffix("\n") ? "\n" : "\n\n"
+            destinationUpdated = destination.content + separator + block
+        }
+        guard destinationUpdated.count <= Self.maximumCharactersPerNote else {
+            throw aiEditError(7, "The destination Note would exceed its character limit.")
+        }
+        recordImmediateAIRevision(at: sourceIndex)
+        recordImmediateAIRevision(at: destinationIndex)
+        notes[sourceIndex].content = sourceUpdated
+        notes[destinationIndex].content = destinationUpdated
+        let now = Date()
+        notes[sourceIndex].modifiedAt = now
+        notes[destinationIndex].modifiedAt = now
+        selectedNoteID = destinationID
+        lastError = nil
+        scheduleSave()
+        return AIMoveResult(
+            sourceCharacters: sourceUpdated.count,
+            destinationCharacters: destinationUpdated.count
+        )
+    }
+
+    /// Commit a separate undoable revision for an approved AI edit. Any pending
+    /// user-edit snapshot is committed first, so the AI change has its own
+    /// restore point in the existing Note revision history.
+    private func applyReviewedAIContent(
+        to identifier: UUID, expectedContentSHA256: String,
+        transform: (String) throws -> String
+    ) throws -> Int {
+        guard let index = notes.firstIndex(where: { $0.id == identifier }) else {
+            throw aiEditError(4, "That local note is unavailable.")
+        }
+        let before = notes[index]
+        let currentHash = SHA256.hash(data: Data(before.content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        guard currentHash == expectedContentSHA256 else {
+            throw aiEditError(5, "The note changed after it was read. Read it again before proposing an edit.")
+        }
+        let updated = try transform(before.content)
+        guard updated != before.content else {
+            throw aiEditError(17, "The proposed edit would not change the note.")
+        }
+        guard updated.count <= Self.maximumCharactersPerNote else {
+            throw aiEditError(7, "This edit would exceed the note's character limit.")
+        }
+        recordImmediateAIRevision(at: index)
+        notes[index].content = updated
+        notes[index].modifiedAt = Date()
+        lastError = nil
+        scheduleSave()
         return updated.count
+    }
+
+    private func recordImmediateAIRevision(at index: Int) {
+        let before = notes[index]
+        let identifier = before.id
+        if let pending = pendingRevisionSnapshots.removeValue(forKey: identifier) {
+            revisionWorkItems[identifier]?.cancel()
+            revisionWorkItems.removeValue(forKey: identifier)
+            revisionGenerations.removeValue(forKey: identifier)
+            notes[index].revisionHistory.append(pending)
+        }
+        notes[index].revisionHistory.append(NoteRevision(
+            title: before.title, content: before.content,
+            mailTaskProvenance: before.mailTaskProvenance
+        ))
+        notes[index].revisionHistory = Array(notes[index].revisionHistory.suffix(Self.maximumRevisionsPerNote))
+    }
+
+    private func aiEditError(_ code: Int, _ message: String) -> NSError {
+        NSError(domain: "LimaNotes", code: code, userInfo: [NSLocalizedDescriptionKey: message])
+    }
+
+    /// A bounded Markdown fence scan for checklist edits. A different marker
+    /// inside an open fence is content, not the fence's closing delimiter.
+    private func visibleMarkdownLineIndices(_ lines: [String]) -> Set<Int> {
+        var visible = Set<Int>()
+        var fenceMarker: Character?
+        var fenceLength = 0
+        for (index, line) in lines.enumerated() {
+            let indentation = line.prefix(while: { $0 == " " }).count
+            if indentation <= 3 {
+                let remainder = line.dropFirst(indentation)
+                if let first = remainder.first,
+                   first.asciiValue == 96 || first.asciiValue == 126 {
+                    let runLength = remainder.prefix(while: { $0 == first }).count
+                    if runLength >= 3 {
+                        if let openMarker = fenceMarker {
+                            if first == openMarker, runLength >= fenceLength,
+                               String(remainder.dropFirst(runLength))
+                                .trimmingCharacters(in: .whitespaces).isEmpty {
+                                fenceMarker = nil
+                                fenceLength = 0
+                                continue
+                            }
+                        } else {
+                            fenceMarker = first
+                            fenceLength = runLength
+                            continue
+                        }
+                    }
+                }
+            }
+            if fenceMarker == nil { visible.insert(index) }
+        }
+        return visible
     }
 
     func createQuickNote(with text: String) {
@@ -307,6 +777,38 @@ final class NotesStore: ObservableObject {
             selectedNoteID = existing.id
             return existing.id
         }
+        // A later AI run assigns fresh proposal UUIDs and capture times. Match
+        // reviewed task titles plus an original source identity so processing
+        // the same conversation again does not create a duplicate Note.
+        func normalized(_ title: String) -> String {
+            title.split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ").lowercased()
+        }
+        func sameSource(_ a: MarkdownMailSource, _ b: MarkdownMailSource) -> Bool {
+            guard a.accountID == b.accountID else { return false }
+            if let left = a.internetMessageID, let right = b.internetMessageID {
+                return left == right
+            }
+            return a.mailboxID == b.mailboxID && a.messageID == b.messageID
+        }
+        if !draft.entries.isEmpty,
+           let existing = notes.first(where: { note in
+               draft.entries.allSatisfy { entry in
+                   note.mailTaskProvenance.contains { prior in
+                       guard prior.taskTitle.map(normalized) == normalized(entry.title) else {
+                           return false
+                       }
+                       return prior.sourceMessages.contains { oldSource in
+                           entry.provenance.sourceMessages.contains { newSource in
+                               sameSource(oldSource, newSource)
+                           }
+                       }
+                   }
+               }
+           }) {
+            selectedNoteID = existing.id
+            return existing.id
+        }
         guard notes.count < Self.maximumNotes,
               draft.title.count <= 200,
               draft.markdown.count <= Self.maximumCharactersPerNote,
@@ -324,6 +826,137 @@ final class NotesStore: ObservableObject {
         lastError = nil
         scheduleSave()
         return note.id
+    }
+
+    /// Append only new, reviewed Mail tasks to an existing note. A stale content
+    /// hash fails before either Markdown or provenance changes. Existing prose,
+    /// checked boxes, and user-authored task lines are never rewritten.
+    @discardableResult
+    func updateMailActionNote(
+        _ draft: MailActionNoteDraft, in identifier: UUID,
+        expectedContentSHA256: String
+    ) throws -> MailActionNoteUpdateResult {
+        guard let index = notes.firstIndex(where: { $0.id == identifier }),
+              !draft.entries.isEmpty, draft.entries.count <= 50 else {
+            throw MailActionReviewError.invalidApproval
+        }
+        let note = notes[index]
+        let currentHash = SHA256.hash(data: Data(note.content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        guard currentHash == expectedContentSHA256 else {
+            throw aiEditError(5, "The note changed during Mail review. Review the current note before adding these tasks.")
+        }
+        func key(_ title: String) -> String {
+            title.split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ").lowercased()
+        }
+        let checklistLines = note.content.components(separatedBy: .newlines)
+            .compactMap(parseTaskLine)
+        let checklistTitles = Set(checklistLines.map { key($0.text) })
+        let openChecklistTitles = Set(checklistLines.filter { !$0.checked }.map { key($0.text) })
+        var knownTitles = Set(note.mailTaskProvenance.compactMap(\.taskTitle).map(key))
+        knownTitles.formUnion(checklistTitles)
+        func sameSource(_ a: MarkdownMailSource, _ b: MarkdownMailSource) -> Bool {
+            guard a.accountID == b.accountID else { return false }
+            if let left = a.internetMessageID, let right = b.internetMessageID {
+                return left == right
+            }
+            return a.mailboxID == b.mailboxID && a.messageID == b.messageID
+        }
+        var additions: [MailActionNoteEntry] = []
+        var reminderEligibleTaskIDs: Set<UUID> = []
+        for entry in draft.entries {
+            let title = key(entry.title)
+            let markdownTitle = key(MailActionReview.escapeMarkdown(entry.title))
+            if knownTitles.contains(title) || knownTitles.contains(markdownTitle) {
+                // A matching user-written title or stale provenance is not a
+                // source-backed Note task and must not create a linked Reminder.
+                let represented = (openChecklistTitles.contains(title) ||
+                    openChecklistTitles.contains(markdownTitle)) &&
+                    note.mailTaskProvenance.contains { prior in
+                        prior.taskTitle.map(key) == title &&
+                            prior.sourceMessages.contains { oldSource in
+                                entry.provenance.sourceMessages.contains { newSource in
+                                    sameSource(oldSource, newSource)
+                                }
+                            }
+                    }
+                if represented { reminderEligibleTaskIDs.insert(entry.provenance.taskID) }
+                continue
+            }
+            guard !entry.markdownLines.isEmpty else {
+                throw MailActionReviewError.invalidApproval
+            }
+            knownTitles.insert(title)
+            knownTitles.insert(markdownTitle)
+            additions.append(entry)
+            reminderEligibleTaskIDs.insert(entry.provenance.taskID)
+        }
+        selectedNoteID = identifier
+        guard !additions.isEmpty else {
+            return MailActionNoteUpdateResult(
+                noteID: identifier, addedTaskCount: 0,
+                skippedDuplicateCount: draft.entries.count,
+                reminderEligibleTaskIDs: reminderEligibleTaskIDs
+            )
+        }
+        let section = (["## Mail action items", ""] +
+            additions.flatMap(\.markdownLines)).joined(separator: "\n")
+        _ = try appendAIReportMarkdown(
+            to: identifier, expectedContentSHA256: expectedContentSHA256,
+            content: section
+        )
+        guard let updatedIndex = notes.firstIndex(where: { $0.id == identifier }) else {
+            throw aiEditError(4, "That local note is unavailable.")
+        }
+        notes[updatedIndex].mailTaskProvenance.append(contentsOf: additions.map(\.provenance))
+        notes[updatedIndex].modifiedAt = Date()
+        lastError = nil
+        scheduleSave()
+        return MailActionNoteUpdateResult(
+            noteID: identifier, addedTaskCount: additions.count,
+            skippedDuplicateCount: draft.entries.count - additions.count,
+            reminderEligibleTaskIDs: reminderEligibleTaskIDs
+        )
+    }
+
+    /// Recheck the live Note immediately before a user-invoked Mail task is
+    /// linked to Reminders. Provenance alone may outlive an edited or completed
+    /// checkbox, so both the open checklist line and original source must match.
+    func containsOpenMailTask(_ task: ExtractedMailTask, in identifier: UUID) -> Bool {
+        guard let note = notes.first(where: { $0.id == identifier }),
+              !task.evidence.isEmpty else { return false }
+        func key(_ title: String) -> String {
+            title.split(whereSeparator: { $0.isWhitespace })
+                .joined(separator: " ").lowercased()
+        }
+        let title = key(task.title)
+        let markdownTitle = key(MailActionReview.escapeMarkdown(task.title))
+        guard note.content.components(separatedBy: .newlines)
+            .compactMap(parseTaskLine)
+            .contains(where: { !$0.checked &&
+                (key($0.text) == title || key($0.text) == markdownTitle) }) else { return false }
+        return note.mailTaskProvenance.contains { prior in
+            guard prior.taskTitle.map(key) == title else { return false }
+            return prior.sourceMessages.contains { source in
+                task.evidence.contains { evidence in
+                    let reference = evidence.reference
+                    guard source.accountID == reference.accountID else { return false }
+                    if let left = source.internetMessageID,
+                       let right = reference.internetMessageID {
+                        return left == right
+                    }
+                    return source.mailboxID == reference.mailboxID &&
+                        source.messageID == reference.messageID
+                }
+            }
+        }
+    }
+
+    func contentSHA256(for identifier: UUID) -> String? {
+        guard let note = notes.first(where: { $0.id == identifier }) else { return nil }
+        return SHA256.hash(data: Data(note.content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
     }
 
     func replaceTags(_ tags: [String]) {
@@ -364,6 +997,9 @@ final class NotesStore: ObservableObject {
         updateNote(selectedNoteID) { note in
             note.title = revision.title
             note.content = revision.content
+            if let provenance = revision.mailTaskProvenance {
+                note.mailTaskProvenance = provenance
+            }
         }
     }
 
@@ -540,6 +1176,18 @@ final class NotesStore: ObservableObject {
                   policy.readEnabled,
                   policy.selectedAccountIDs.contains(reference.accountID) else { return nil }
         }
+        for item in items where item.isBrowserReference {
+            guard item.kind == .browserReference,
+                  case .browserReference(let reference) = item.payload,
+                  reference.isValid else { return nil }
+        }
+        let messagesPolicy = MessagesCapabilityPolicyStore.load()
+        for item in items where item.isMessageReference {
+            guard item.kind == .messageReference,
+                  case .messageReference(let reference) = item.payload,
+                  reference.isValid,
+                  messagesPolicy.permits(reference.conversationGUID) else { return nil }
+        }
         let markdown = ContextShelfMarkdownFormatter.format(items)
         return markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : markdown
     }
@@ -623,7 +1271,10 @@ final class NotesStore: ObservableObject {
 
     private func queueRevision(_ identifier: UUID, before: MarkdownNote) {
         if pendingRevisionSnapshots[identifier] == nil {
-            pendingRevisionSnapshots[identifier] = NoteRevision(title: before.title, content: before.content)
+            pendingRevisionSnapshots[identifier] = NoteRevision(
+                title: before.title, content: before.content,
+                mailTaskProvenance: before.mailTaskProvenance
+            )
         }
         revisionWorkItems[identifier]?.cancel()
         let generation = UUID()

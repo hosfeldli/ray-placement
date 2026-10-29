@@ -228,6 +228,10 @@ final class AIWorkbenchSelfTest: ObservableObject {
         }
     }
 
+    static func providerToolOutput(callID: String, output: String) -> [String: Any] {
+        ["type": "function_call_output", "call_id": callID, "output": output]
+    }
+
     static func checkProvider(provider: AIProvider, model: String, endpoint: String) async throws {
         guard !LimaTestEnvironment.isEnabled || LimaTestEnvironment.allowsLiveAI else {
             throw Failure("Live provider checks are disabled in this test environment.")
@@ -276,7 +280,7 @@ final class AIWorkbenchSelfTest: ObservableObject {
         guard !result.isError else { throw Failure("The capability tool failed during provider continuation.") }
         let continuation = AIProviderStreamWatchdog.bounded(client.streamToolOutputs(
             apiKey: key, model: model, previousResponseID: responseID, history: [],
-            outputs: [["call_id": callID, "output": result.output]],
+            outputs: [providerToolOutput(callID: callID, output: result.output)],
             reasoningEffort: .low, localTools: [capability],
             systemInstructions: "Finish the Workbench self-test after receiving the Lima tool result."
         ), after: .seconds(45))

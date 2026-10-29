@@ -1,33 +1,60 @@
 import AppKit
 import Foundation
 
-/// The only Mail Apple Events endpoint. Account discovery is implemented first;
-/// search, body reads, and all writes remain unavailable until scoped scripts
-/// have been validated with synthetic accounts on the macOS QA machine.
+/// The only Mail Apple Events endpoint. Reads return source identity for
+/// policy revalidation; writes are separately gated by the capability service.
 actor AppleMailAdapter: MailProvider {
     private let runner = AppleMailScriptRunner()
 
-    func supportedOperations() async -> Set<MailOperation> { [.listAccounts] }
+    func supportedOperations() async -> Set<MailOperation> {
+        [.listAccounts, .listMailboxes, .search, .getMessage,
+         .openMessage, .createDraft, .reply, .forward, .send,
+         .move, .delete]
+    }
 
     func accounts() async throws -> [MailAccount] {
         try await runner.accounts()
     }
 
     func mailboxes(accountID: String) async throws -> [MailMailbox] {
-        throw MailCapabilityError.unavailable
+        try await runner.mailboxes(accountID: accountID)
     }
 
     func search(_ request: MailSearchRequest) async throws -> MailSearchResult {
-        throw MailCapabilityError.unavailable
+        try await runner.search(request)
     }
 
     func message(_ reference: MailMessageReference) async throws -> MailMessage {
-        throw MailCapabilityError.unavailable
+        try await runner.message(reference)
+    }
+
+    func sendingIdentities(accountID: String) async throws -> [String] {
+        try await runner.sendingIdentities(accountID: accountID)
+    }
+
+    func replyTarget(_ reference: MailMessageReference) async throws -> MailReplyTarget {
+        try await runner.replyTarget(reference)
+    }
+
+    func openMessage(_ reference: MailMessageReference) async throws {
+        try await runner.openMessage(reference)
+    }
+
+    func saveDraft(_ request: MailOutgoingRequest) async throws -> MailDraftReceipt {
+        try await runner.saveDraft(request)
+    }
+
+    func send(_ request: MailOutgoingRequest) async throws -> MailSendReceipt {
+        try await runner.send(request)
+    }
+
+    func applyMessageAction(_ request: MailMessageActionRequest) async throws {
+        try await runner.applyMessageAction(request)
     }
 }
 
 /// NSAppleScript is synchronous. One dedicated serial queue keeps it off the
-/// main actor, and a single in-flight slot prevents unbounded queued reads.
+/// main actor, and a single in-flight slot prevents overlapping Mail events.
 /// A timeout or cancellation stops waiting; it does not claim that macOS
 /// interrupted an Apple Event already executing.
 private final class AppleMailScriptRunner: @unchecked Sendable {
@@ -73,6 +100,133 @@ private final class AppleMailScriptRunner: @unchecked Sendable {
                         return
                     }
                     let result = Self.discoverAccountRows()
+                    release()
+                    completion.finish(result)
+                }
+            }
+        } onCancel: {
+            completion.finish(.failure(CancellationError()))
+        }
+    }
+
+    func mailboxes(accountID: String) async throws -> [MailMailbox] {
+        let source = try AppleMailReadScripts.mailboxesSource(accountID: accountID)
+        return try await perform(source: source, deadline: 12) {
+            try AppleMailReadScripts.parseMailboxes($0, accountID: accountID)
+        }
+    }
+
+    func search(_ request: MailSearchRequest) async throws -> MailSearchResult {
+        let source = try AppleMailReadScripts.searchSource(request)
+        return try await perform(source: source, deadline: 20) {
+            try AppleMailReadScripts.parseSearch($0, request: request)
+        }
+    }
+
+    func message(_ reference: MailMessageReference) async throws -> MailMessage {
+        let source = try AppleMailReadScripts.messageSource(reference)
+        return try await perform(source: source, deadline: 10) {
+            try AppleMailReadScripts.parseMessage($0, reference: reference)
+        }
+    }
+
+    func sendingIdentities(accountID: String) async throws -> [String] {
+        let source = try AppleMailWriteScripts.sendingIdentitiesSource(accountID: accountID)
+        return try await perform(source: source, deadline: 10) {
+            try AppleMailWriteScripts.parseSendingIdentities($0)
+        }
+    }
+
+    func replyTarget(_ reference: MailMessageReference) async throws -> MailReplyTarget {
+        let source = try AppleMailWriteScripts.replyTargetSource(reference)
+        return try await perform(source: source, deadline: 10) {
+            try AppleMailWriteScripts.parseReplyTarget($0, reference: reference)
+        }
+    }
+
+    func openMessage(_ reference: MailMessageReference) async throws {
+        let source = try AppleMailWriteScripts.openSource(reference)
+        try await perform(source: source, deadline: 10) {
+            try AppleMailWriteScripts.parseOpen($0)
+        }
+    }
+
+    func saveDraft(_ request: MailOutgoingRequest) async throws -> MailDraftReceipt {
+        for attachment in request.attachments { try attachment.verifyCurrent() }
+        let source = try AppleMailWriteScripts.outgoingSource(request, saveOnly: true)
+        return try await perform(source: source, deadline: 30) {
+            try AppleMailWriteScripts.parseDraft($0)
+        }
+    }
+
+    func send(_ request: MailOutgoingRequest) async throws -> MailSendReceipt {
+        for attachment in request.attachments { try attachment.verifyCurrent() }
+        let source = try AppleMailWriteScripts.outgoingSource(request, saveOnly: false)
+        return try await perform(source: source, deadline: 30) {
+            try AppleMailWriteScripts.parseSend($0)
+        }
+    }
+
+    func applyMessageAction(_ request: MailMessageActionRequest) async throws {
+        let source = try AppleMailWriteScripts.messageActionSource(request)
+        try await perform(source: source, deadline: 20) {
+            try AppleMailWriteScripts.parseMessageAction($0, kind: request.kind)
+        }
+    }
+
+    /// The serial slot remains occupied after a caller stops waiting until the
+    /// underlying Apple Event actually returns. A timed-out call cannot queue
+    /// another script behind a still-running Mail operation.
+    private func perform<Value: Sendable>(
+        source: String, deadline: TimeInterval,
+        parse: @escaping @Sendable (NSAppleEventDescriptor) throws -> Value
+    ) async throws -> Value {
+        let completion = MailCallCompletion<Value>()
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                completion.install(continuation)
+                if Task.isCancelled {
+                    completion.finish(.failure(CancellationError()))
+                    return
+                }
+                guard claim() else {
+                    completion.finish(.failure(MailCapabilityError.busy))
+                    return
+                }
+                deadlineQueue.asyncAfter(deadline: .now() + deadline) {
+                    completion.finish(.failure(MailCapabilityError.timedOut))
+                }
+                queue.async { [self] in
+                    guard !completion.isFinished else {
+                        release()
+                        return
+                    }
+                    let result: Result<Value, Error>
+                    if let script = NSAppleScript(source: source) {
+                        var errorInfo: NSDictionary?
+                        let descriptor = script.executeAndReturnError(&errorInfo)
+                        if let errorInfo {
+                            let number = errorInfo["NSAppleScriptErrorNumber"] as? Int
+                            switch number {
+                            case -1743:
+                                result = .failure(MailCapabilityError.automationDenied)
+                            case -1712:
+                                result = .failure(MailCapabilityError.timedOut)
+                            case -128:
+                                result = .failure(CancellationError())
+                            case -1728:
+                                result = .failure(MailCapabilityError.invalidRequest)
+                            default:
+                                // Raw diagnostics may include private message
+                                // text, account names, or mailbox names.
+                                result = .failure(MailCapabilityError.unavailable)
+                            }
+                        } else {
+                            result = Result { try parse(descriptor) }
+                        }
+                    } else {
+                        result = .failure(MailCapabilityError.unavailable)
+                    }
                     release()
                     completion.finish(result)
                 }

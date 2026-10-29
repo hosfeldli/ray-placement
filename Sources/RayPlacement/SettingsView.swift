@@ -109,7 +109,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         case .appearance:
             return ["appearance", "theme", "text size", "density", "animation", "motion", "accent"]
         case .capabilities:
-            return ["capabilities", "mail", "apple mail", "accounts", "sending", "email", "automation"]
+            return ["capabilities", "mail", "apple mail", "accounts", "sending", "email", "automation", "messages", "texts", "imessage", "full disk access"]
         case .advanced:
             return ["advanced", "experimental", "browser interaction", "performance", "privacy", "permissions", "usage", "logs", "developer", "secrets", "diagnostics", "clipboard"]
         }
@@ -256,6 +256,10 @@ struct SettingsView: View {
         switch step {
         case .mail:
             selectedSection = .capabilities
+        case .aiAccess:
+            selectedSection = .ai
+        case .browser:
+            selectedSection = .browser
         case .welcome, .audio, .noteDemo, .versionHistory, .finish:
             selectedSection = .general
         }
@@ -527,6 +531,7 @@ struct SettingsView: View {
     private var capabilitiesTab: some View {
         Form {
             MailSettingsView()
+            MessagesSettingsView()
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
@@ -1940,6 +1945,10 @@ struct SettingsView: View {
             HStack {
                 Button("Check for Updates") { updateService.checkForUpdates(manual: true) }
                     .disabled(updateService.isBusy || updateService.isInstalling)
+                if updateService.availableRelease != nil {
+                    Button("Review Available Update") { updateService.reviewAvailableRelease() }
+                        .disabled(updateService.isInstalling)
+                }
                 Button("View Releases") { NSWorkspace.shared.open(UpdateService.releasesURL) }
             }
             if updateService.isBusy && !updateService.isInstalling { ProgressView().controlSize(.small) }

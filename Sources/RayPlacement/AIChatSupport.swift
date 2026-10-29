@@ -308,6 +308,7 @@ enum AIAttachmentSourceRoute: String, Codable, Hashable, Sendable {
     case dictation
     case terminal
     case extensionOutput
+    case browser
 
     var title: String {
         switch self {
@@ -317,6 +318,7 @@ enum AIAttachmentSourceRoute: String, Codable, Hashable, Sendable {
         case .dictation: return "Dictation"
         case .terminal: return "Terminal"
         case .extensionOutput: return "Extension"
+        case .browser: return "Lima Browser"
         }
     }
 }
@@ -501,8 +503,19 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "read_screen_context": return "Screen context"
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
+        case "notes_find_duplicates": return "Find Duplicate Notes"
+        case "mail_prepare_message": return "Prepare Mail message"
+        case "mail_prepare_action_note": return "Review Mail action items"
         case "create_note": return "Create Note"
         case "append_to_note": return "Append to Note"
+        case "notes_update": return "Update Note"
+        case "notes_replace_block": return "Replace Note Block"
+        case "notes_move_content": return "Move Note Content"
+        case "notes_add_tasks": return "Add Note Tasks"
+        case "notes_update_task": return "Update Note Task"
+        case "notes_attach": return "Attach to Note"
+        case "screenshot_read_image": return "Read Screenshot Image"
+        case "notes_complete_task": return "Complete Note Task"
         case "search_files": return "Find files"
         case "search_workspace_text": return "Search file contents"
         case "inspect_directory_tree": return "Inspect project tree"
@@ -675,6 +688,10 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
     var toolName: String?
     var errorCode: String?
     var errorParameter: String?
+    var retryAfter: Date?
+    var retryAfterSource: String?
+    var cliExitCode: Int32?
+    var correlationID: String?
     var message: String
     var createdAt: Date
 
@@ -690,6 +707,10 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         toolName: String? = nil,
         errorCode: String? = nil,
         errorParameter: String? = nil,
+        retryAfter: Date? = nil,
+        retryAfterSource: String? = nil,
+        cliExitCode: Int32? = nil,
+        correlationID: String? = nil,
         message: String,
         createdAt: Date = Date()
     ) {
@@ -707,13 +728,21 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         self.toolName = AIProviderFailure.localToolName(toolName)
         self.errorCode = AIProviderFailure.code(errorCode)
         self.errorParameter = AIProviderFailure.parameter(errorParameter)
+        self.retryAfter = retryAfter.flatMap { abs($0.timeIntervalSince(createdAt)) <= 604_800 ? $0 : nil }
+        self.retryAfterSource = ["retry-after", "rate-limit-reset", "periodic-reset", "cli-reported"].contains(retryAfterSource ?? "") ? retryAfterSource : nil
+        self.cliExitCode = cliExitCode
+        self.correlationID = correlationID.flatMap { value in
+            (8...128).contains(value.count) && value.unicodeScalars.allSatisfy {
+                CharacterSet.alphanumerics.contains($0) || $0 == "-" || $0 == "_"
+            } ? value : nil
+        }
         self.message = AIProviderFailure.diagnosticMessage(message, status: self.httpStatus)
         self.createdAt = createdAt
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, stage, endpoint, httpStatus, model, responseID, eventType, outputItemType
-        case toolName, errorCode, errorParameter, message, createdAt
+        case toolName, errorCode, errorParameter, retryAfter, retryAfterSource, cliExitCode, correlationID, message, createdAt
     }
 
     init(from decoder: Decoder) throws {
@@ -728,6 +757,10 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
             toolName: try c.decodeIfPresent(String.self, forKey: .toolName),
             errorCode: try c.decodeIfPresent(String.self, forKey: .errorCode),
             errorParameter: try c.decodeIfPresent(String.self, forKey: .errorParameter),
+            retryAfter: try c.decodeIfPresent(Date.self, forKey: .retryAfter),
+            retryAfterSource: try c.decodeIfPresent(String.self, forKey: .retryAfterSource),
+            cliExitCode: try c.decodeIfPresent(Int32.self, forKey: .cliExitCode),
+            correlationID: try c.decodeIfPresent(String.self, forKey: .correlationID),
             message: try c.decode(String.self, forKey: .message),
             createdAt: try c.decode(Date.self, forKey: .createdAt)
         )
@@ -743,6 +776,9 @@ struct AIChatDiagnostic: Codable, Hashable, Identifiable, Sendable {
         if let toolName { fields.append("Tool: \(toolName)") }
         if let errorCode { fields.append("Code: \(errorCode)") }
         if let errorParameter { fields.append("Parameter: \(errorParameter)") }
+        if let retryAfter { fields.append("Retry after: \(retryAfter.formatted())") }
+        if let cliExitCode { fields.append("CLI exit: \(cliExitCode)") }
+        if let correlationID { fields.append("Request: \(correlationID)") }
         fields.append(message)
         return fields.joined(separator: " · ")
     }
@@ -757,7 +793,7 @@ enum AILocalToolRisk: String, Codable, Sendable {
     case navigation
     /// Narrow local workspace mutation, controlled by the Memory capability.
     case memory
-    /// Bounded API request with no child tools or inherited context.
+    /// Bounded API request with parent-routed tools, but no inherited conversation history.
     case delegation
     case localAction
     case write
@@ -1546,13 +1582,16 @@ struct LimaAIToolExecution: Sendable {
     let browserTabID: UUID?
     /// Ephemeral typed handoff; image pixels never enter the textual tool output.
     let browserScreenshot: BrowserScreenshotResult?
+    let savedScreenshot: ScreenshotProviderImage?
 
     init(output: String, isError: Bool, browserTabID: UUID? = nil,
-         browserScreenshot: BrowserScreenshotResult? = nil) {
+         browserScreenshot: BrowserScreenshotResult? = nil,
+         savedScreenshot: ScreenshotProviderImage? = nil) {
         self.output = output
         self.isError = isError
         self.browserTabID = browserTabID
         self.browserScreenshot = browserScreenshot
+        self.savedScreenshot = savedScreenshot
     }
 
     static func json(_ object: Any, isError: Bool = false, browserTabID: UUID? = nil) -> Self {
@@ -1573,7 +1612,7 @@ enum AIReadOnlyPolicy {
     static let assistantInstructions = """
     You are Lima’s private assistant. Treat supplied tools as your primary way to inspect, act, verify, and complete the user’s task. Use relevant routed tools proactively without requiring a keyword or a separate request for each necessary step.
     \(toolUseInstructions)
-    Use tools only for their declared purpose; do not bypass a missing tool, Browser AI Control mode, user-interaction pause, path rule, sandbox, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. For Browser tools, distinguish a tab or loaded page from a visible window: claim that the user can see the Browser only when browser_visible is true. You may draft extension code or manifests in chat for review, but never install or run them.
+    Use tools only for their declared purpose; do not bypass a missing tool, Browser AI Control mode, user-interaction pause, path rule, macOS permission, or an approval required by the active mode. Supported extension adapters are read-only. Subagents inherit only this turn’s routed Lima tools and current grants; they cannot bypass the active policy or delegate again. Do not attempt tools outside the supplied list. For Browser tools, distinguish a tab or loaded page from a visible window: claim that the user can see the Browser only when browser_visible is true. You may draft extension code or manifests in chat for review, but never install or run them.
     """
 
 }
@@ -1730,6 +1769,8 @@ enum LimaAIToolRegistry {
             + AIProjectFileTools.definitions
             + AIContextTools.definitions
             + AINotesTools.definitions
+            + AIMailTools.definitions
+            + AIMessagesTools.definitions
             + BrowserWorkspaceAITools.definitions
             + AILocalComputerActionTools.definitions
             + AIWorkspaceActionTools.definitions
@@ -1761,6 +1802,8 @@ enum LimaAIToolRegistry {
             .union(AIProjectFileTools.readIDs)
             .union(AIContextTools.ids)
             .union(AINotesTools.readIDs)
+            .union(AIMailTools.ids)
+            .union(AIMessagesTools.ids)
             .union(AIWorkspaceActionTools.readIDs)
             .union(AIProcessTools.readIDs)
             .union(AIManagedServerTools.readIDs)
@@ -1781,7 +1824,8 @@ enum LimaAIToolRegistry {
             // Schema exposure is a capability snapshot, not a live permission
             // decision. Browser mode and action-category grants are rechecked
             // immediately before execution.
-            if BrowserWorkspaceAITools.ids.contains(definition.id) { return true }
+            if BrowserWorkspaceAITools.ids.contains(definition.id) ||
+                MessagesAIActionTools.ids.contains(definition.id) { return true }
             if toolAccessMode == .fullControl { return true }
             return definition.actionCategory != nil || definition.risk == .read ||
                 AIContextTools.delegationIDs.contains(definition.id) ||
@@ -1869,6 +1913,14 @@ enum LimaAIToolRegistry {
         }
         if AINotesTools.ids.contains(definition.id) {
             return await AINotesTools.execute(call, approvalGranted: approvalGranted)
+        }
+        if AIMailTools.ids.contains(definition.id) {
+            return await AIMailTools.execute(call, approvalGranted: approvalGranted,
+                                             runID: runID)
+        }
+        if AIMessagesTools.ids.contains(definition.id) {
+            return await AIMessagesTools.execute(call, approvalGranted: approvalGranted,
+                                                 runID: runID)
         }
         if BrowserWorkspaceAITools.ids.contains(definition.id) {
             return await BrowserWorkspaceAITools.execute(call, approvalGranted: approvalGranted, runID: runID)
@@ -2269,12 +2321,20 @@ struct LimaAIToolGroup: Identifiable, Hashable {
               symbol: "person.2", toolIDs: AIContextTools.delegationIDs),
         .init(id: "notes", title: "Notes", summary: "Search and read local Notes when relevant",
               symbol: "note.text", toolIDs: AINotesTools.readIDs),
-        .init(id: "notes-writing", title: "Write Notes", summary: "Create a new editable report after exact-content review",
+        .init(id: "mail-reading", title: "Apple Mail", summary: "Search and read selected accounts only when Mail for AI is enabled",
+              symbol: "envelope", toolIDs: AIMailTools.ids),
+        .init(id: "messages-reading", title: "Messages", summary: "Search selected local conversations and prepare reviewed replies",
+              symbol: "message", toolIDs: AIMessagesTools.ids),
+        .init(id: "notes-writing", title: "Write Notes", summary: "Create, append, replace a block, or edit checklists after exact-content review",
               symbol: "square.and.pencil", toolIDs: AINotesTools.writeIDs),
         .init(id: "calendar", title: "Calendar", summary: "Find, create, change, or delete events with exact-call review",
               symbol: "calendar", toolIDs: NativeCapabilityAITools.calendarIDs),
         .init(id: "reminders", title: "Reminders", summary: "Find, create, complete, change, or delete reminders with exact-call review",
               symbol: "checklist", toolIDs: NativeCapabilityAITools.reminderIDs),
+        .init(id: "contacts", title: "Contacts", summary: "Find and change macOS Contacts with exact-call review and live permission",
+              symbol: "person.crop.circle", toolIDs: NativeCapabilityAITools.contactsIDs),
+        .init(id: "screenshot-history", title: "Screenshot History", summary: "Inspect saved captures and share one image with a visual AI provider only after exact-call review",
+              symbol: "photo.on.rectangle", toolIDs: NativeCapabilityAITools.screenshotHistoryIDs),
         .init(id: "location", title: "Current location", summary: "Read one current location with macOS access and exact-call review",
               symbol: "location", toolIDs: NativeCapabilityAITools.locationIDs),
         .init(
@@ -2323,14 +2383,14 @@ struct LimaAIToolGroup: Identifiable, Hashable {
         .init(
             id: "terminal",
             title: "Terminal and code",
-            summary: "Run one bounded developer command outside the AI Workspace sandbox",
+            summary: "Run one allowlisted developer command with normal user access",
             symbol: "terminal",
             toolIDs: ["run_terminal_command"]
         ),
         .init(
             id: "ai-workspace-terminal",
             title: "AI Workspace terminal",
-            summary: "Start and monitor visible sandboxed sessions under the active mode",
+            summary: "Start and monitor visible shell sessions with normal user access",
             symbol: "terminal.fill",
             toolIDs: AIWorkspaceActionTools.ids
         ),
@@ -2406,8 +2466,19 @@ extension LimaAIToolDefinition {
         case "read_screen_context": return "Screen context"
         case "search_notes": return "Search Notes"
         case "read_note": return "Read Note"
+        case "notes_find_duplicates": return "Find Duplicate Notes"
+        case "mail_prepare_message": return "Prepare Mail message"
+        case "mail_prepare_action_note": return "Review Mail action items"
         case "create_note": return "Create Note"
         case "append_to_note": return "Append to Note"
+        case "notes_update": return "Update Note"
+        case "notes_replace_block": return "Replace Note Block"
+        case "notes_move_content": return "Move Note Content"
+        case "notes_add_tasks": return "Add Note Tasks"
+        case "notes_update_task": return "Update Note Task"
+        case "notes_attach": return "Attach to Note"
+        case "screenshot_read_image": return "Read Screenshot Image"
+        case "notes_complete_task": return "Complete Note Task"
         case "search_files": return "Find files"
         case "search_workspace_text": return "Search file contents"
         case "inspect_directory_tree": return "Inspect project tree"
@@ -2441,8 +2512,24 @@ extension LimaAIToolDefinition {
         case "read_screen_context": return "App, window, and selected text"
         case "search_notes": return "Titles and short matching excerpts"
         case "read_note": return "One bounded local note range"
+        case "notes_find_duplicates": return "Likely duplicate Notes with bounded shared-line evidence"
+        case "mail_context": return "Short-lived handles for authorized Mail references in Context Shelf"
+        case "mail_scope": return "Selected Apple Mail account IDs for this AI task"
+        case "mail_list_mailboxes": return "Mailbox names and paths in one selected Mail account"
+        case "mail_search": return "Bounded search of selected Apple Mail accounts"
+        case "mail_read": return "One scoped message range from this AI run"
+        case "mail_prepare_message": return "Open an editable local Mail composer; saving and sending stay user-controlled"
+        case "mail_prepare_action_note": return "Open an evidence-backed task review; Notes change only after the user saves"
         case "create_note": return "Create one editable Markdown report after review"
         case "append_to_note": return "Append reviewed Markdown if the note has not changed"
+        case "notes_update": return "Update up to ten exact blocks in one unchanged Note"
+        case "notes_replace_block": return "Replace one exact block in an unchanged Note"
+        case "notes_move_content": return "Move one exact block between two unchanged Notes"
+        case "notes_add_tasks": return "Add reviewed checklist items to one Note section"
+        case "notes_update_task": return "Revise one exact checklist task and its Due/Priority metadata"
+        case "notes_attach": return "Attach a reviewed local file or saved screenshot as a managed Note asset, or add a source link"
+        case "screenshot_read_image": return "Share one saved capture's bounded pixels with the selected visual AI provider after review"
+        case "notes_complete_task": return "Check off one exact task in an unchanged Note"
         case "search_files", "find_files": return "Names and paths only"
         case "search_workspace_text": return "Bounded text matches with line numbers"
         case "inspect_directory_tree": return "Bounded safe paths to four levels"
@@ -2461,9 +2548,9 @@ extension LimaAIToolDefinition {
         case "create_text_file": return "Create a text file"
         case "replace_text_file": return "Replace a text file"
         case "edit_text_file": return "Replace one unique text span"
-        case "run_terminal_command": return "Approved developer command outside the sandbox"
-        case "terminal_start": return "Create a visible, sandboxed AI-owned session"
-        case "terminal_run": return "Run in the sandbox; optionally allow this directory"
+        case "run_terminal_command": return "Run one allowlisted developer command"
+        case "terminal_start": return "Create a visible AI-owned shell session"
+        case "terminal_run": return "Run a bounded shell command with normal user access"
         case "terminal_status": return "Read state and verified exit status"
         case "terminal_read": return "Read up to 32 KB of session output"
         case "terminal_wait": return "Wait briefly for verified completion and output"
@@ -2482,8 +2569,13 @@ extension LimaAIToolDefinition {
         case "memory_search", "memory_save", "memory_update", "memory_forget": return "brain.head.profile"
         case "agent_models", "agent_delegate": return "person.2"
         case "read_screen_context": return "rectangle.on.rectangle"
-        case "search_notes", "read_note": return "note.text"
-        case "create_note", "append_to_note": return "square.and.pencil"
+        case "search_notes", "read_note", "notes_find_duplicates": return "note.text"
+        case "mail_context", "mail_scope", "mail_list_mailboxes", "mail_search", "mail_read",
+             "mail_prepare_message", "mail_prepare_action_note": return "envelope"
+        case "create_note", "append_to_note", "notes_update", "notes_replace_block",
+             "notes_move_content", "notes_add_tasks", "notes_update_task",
+             "notes_attach", "notes_complete_task": return "square.and.pencil"
+        case "screenshot_read_image": return "photo.on.rectangle"
         case "search_files", "find_files", "list_directory", "inspect_directory_tree": return "folder"
         case "search_workspace_text": return "text.magnifyingglass"
         case "file_metadata": return "doc.badge.gearshape"
@@ -2587,6 +2679,60 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(AINotesTools.readIDs)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: readMigrationKey)
+        }
+        // Extend a preexisting Custom "Write Notes" choice once. Do not turn
+        // Notes writing on for installations that only selected read tools.
+        let notesEditingMigrationKey = "lima.ai.notes-editing-v1"
+        if !defaults.bool(forKey: notesEditingMigrationKey) {
+            if enabledToolIDs.isSuperset(of: ["create_note", "append_to_note"]) {
+                enabledToolIDs.formUnion(["notes_replace_block", "notes_add_tasks", "notes_complete_task"])
+                defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            }
+            defaults.set(true, forKey: notesEditingMigrationKey)
+        }
+        // Extend an existing Custom Notes choice once without turning on
+        // writing for users who did not select the full prior edit group.
+        let notesAdditionalToolsMigrationKey = "lima.ai.notes-editing-v2"
+        if !defaults.bool(forKey: notesAdditionalToolsMigrationKey) {
+            if enabledToolIDs.contains("read_note") {
+                enabledToolIDs.insert("notes_find_duplicates")
+            }
+            if enabledToolIDs.isSuperset(of: [
+                "create_note", "append_to_note", "notes_replace_block",
+                "notes_add_tasks", "notes_complete_task"
+            ]) {
+                enabledToolIDs.formUnion(["notes_update", "notes_move_content", "notes_update_task"])
+            }
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: notesAdditionalToolsMigrationKey)
+        }
+        // Extend only a previously selected full Notes editing set; never
+        // enable a new write tool for read-only or limited Custom grants.
+        let notesAttachmentMigrationKey = "lima.ai.notes-attachment-v1"
+        if !defaults.bool(forKey: notesAttachmentMigrationKey) {
+            if enabledToolIDs.isSuperset(of: [
+                "create_note", "append_to_note", "notes_update",
+                "notes_replace_block", "notes_move_content",
+                "notes_add_tasks", "notes_update_task", "notes_complete_task"
+            ]) {
+                enabledToolIDs.insert("notes_attach")
+                defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            }
+            defaults.set(true, forKey: notesAttachmentMigrationKey)
+        }
+        // Mail's separate selected-account and AI-content switches remain the
+        // live authority. This only makes its read tools selectable in AI.
+        let mailReadMigrationKey = "lima.ai.mail-read-tools-v1"
+        if !defaults.bool(forKey: mailReadMigrationKey) {
+            enabledToolIDs.formUnion(AIMailTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: mailReadMigrationKey)
+        }
+        let messagesReadMigrationKey = "lima.ai.messages-read-tools-v1"
+        if !defaults.bool(forKey: messagesReadMigrationKey) {
+            enabledToolIDs.formUnion(AIMessagesTools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: messagesReadMigrationKey)
         }
         let workspaceTerminalMigrationKey = "lima.ai.workspace-terminal-v1"
         if !defaults.bool(forKey: workspaceTerminalMigrationKey) {
@@ -2723,12 +2869,8 @@ final class LimaAIToolStore: ObservableObject {
 
     func setAccessMode(_ mode: LimaAIToolAccessMode) {
         guard accessMode != mode else { return }
-        let leavingFullControl = accessMode == .fullControl && mode != .fullControl
         accessMode = mode
         defaults?.set(mode.rawValue, forKey: accessModeKey)
-        if leavingFullControl && self === Self.shared {
-            AIWorkspaceTerminalCoordinator.shared.revokeNetworkSessions()
-        }
     }
 
     func isEnabled(_ definition: LimaAIToolDefinition) -> Bool {
@@ -3376,7 +3518,7 @@ struct AIToolApprovalView: View {
                      ? "Confirm Financial Action permits only this reviewed action. It does not verify that payment or booking succeeded."
                      : request.directoryGrantPath == nil
                         ? "Allow Once runs only this request; its result appears in Activity."
-                        : "Allow Once runs only this command. Allow in Directory permits later commands in this session's current sandboxed directory until revoked, changed, or closed.")
+                                                 : "Allow Once runs only this command. An unrestricted Terminal command cannot receive a directory-scoped grant.")
                     .limaFont(.caption2)
                     .foregroundStyle(LimaColors.tertiaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -3435,6 +3577,36 @@ struct AIToolApprovalView: View {
         case "append_to_note":
             let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
             return "Append \(characterCount(arguments["content"])) characters of Markdown to Note \(target), only if it has not changed. Review the full content below."
+        case "notes_update":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            let count = (arguments["edits"] as? [[String: Any]])?.count ?? 0
+            return "Update \(count) exact block\(count == 1 ? "" : "s") in Note \(target), only if it has not changed. Review all old and new Markdown below."
+        case "notes_replace_block":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            return "Replace one exact block in Note \(target) only if it has not changed. Review the full old and new Markdown below."
+        case "notes_move_content":
+            let source = compactQuoted(arguments["note_id"] as? String) ?? "the source Note"
+            let destination = compactQuoted(arguments["destination_note_id"] as? String) ?? "the destination Note"
+            return "Move one exact block from Note \(source) to Note \(destination), only if both are unchanged. Review the block and insertion anchor below."
+        case "notes_add_tasks":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            let count = (arguments["tasks"] as? [String])?.count ?? 0
+            return "Add \(count) checklist task\(count == 1 ? "" : "s") to Note \(target) only if it has not changed. Review every task below."
+        case "notes_update_task":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            return "Revise one exact checklist task in Note \(target) only if it has not changed. Review its title, deadline, priority, and completion choices below."
+        case "notes_attach":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            let kind = arguments["source_kind"] as? String ?? "source"
+            let label = compactQuoted(arguments["label"] as? String) ?? "the selected label"
+            let sourceValue = (arguments["source_path"] as? String)
+                ?? (arguments["source_url"] as? String)
+                ?? (arguments["screenshot_id"] as? String)
+            let source = compactQuoted(sourceValue) ?? "the selected source"
+            return "Attach \(kind) \(source) to Note \(target) as \(label), only if the Note is unchanged. Review the exact source details below."
+        case "notes_complete_task":
+            let target = compactQuoted(arguments["note_id"] as? String) ?? "the selected note"
+            return "Complete one exact checklist task in Note \(target) only if it has not changed. Review the task below."
         case "memory_save":
             let title = compactQuoted(arguments["title"] as? String) ?? "a new entry"
             let scope = arguments["scope"] as? String ?? "selected"
@@ -3462,15 +3634,15 @@ struct AIToolApprovalView: View {
         case "terminal_start":
             let directory = compactQuoted(arguments["directory"] as? String)
             if let projectID = compactQuoted(arguments["project_id"] as? String) {
-                return "Start a visible sandboxed AI terminal session in Project \(projectID)\(directory.map { " at \($0)" } ?? "")."
+                return "Start a visible AI terminal session in Project \(projectID)\(directory.map { " at \($0)" } ?? "") with your normal filesystem and network access."
             }
-            return "Start a visible sandboxed AI terminal session in temporary Scratch work."
+            return "Start a visible AI terminal session in temporary Scratch work with your normal filesystem and network access."
         case "terminal_run":
             let command = compactQuoted(arguments["command"] as? String) ?? "the requested command"
             if let directory = request.directoryGrantPath {
                 return "Run \(command) in \(compactQuoted(directory) ?? "the current directory"). You can allow only this command or future commands in this session and directory."
             }
-            return "Run \(command) in the sandboxed AI Workspace. Review the full command before allowing."
+            return "Run \(command) with your normal filesystem and network access. Review the full command before allowing."
         case "terminal_set_directory":
             return "Move the AI session to \(compactQuoted(arguments["directory"] as? String) ?? "the requested Workspace directory")."
         case "terminal_interrupt":
@@ -3490,6 +3662,8 @@ struct AIToolApprovalView: View {
             return "Search saved screenshots for \(compactQuoted(arguments["query"] as? String) ?? "the requested text"), including local OCR text."
         case "screenshot_info":
             return "Read metadata for saved screenshot \(compactQuoted(arguments["id"] as? String) ?? "the requested ID")."
+        case "screenshot_read_image":
+            return "Read the pixels of one saved screenshot and share a bounded image with the selected AI provider. The image may contain private content; review the exact capture ID below."
         case "screenshot_copy":
             return "Copy saved screenshot \(compactQuoted(arguments["id"] as? String) ?? "the requested ID") as image data to the clipboard."
         case "screenshot_delete":

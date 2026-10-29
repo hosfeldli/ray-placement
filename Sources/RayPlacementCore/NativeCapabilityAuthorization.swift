@@ -4,7 +4,7 @@ import Foundation
 /// Host-side authority for native operations. Manifest declarations never grant execution.
 public enum NativeCapabilityOperation: String, Codable, CaseIterable, Sendable {
     case screenshotTargets, screenshotCapture, screenshotList, screenshotSearch, screenshotInfo
-    case screenshotCopy, screenshotSave, screenshotDelete
+    case screenshotReadImage, screenshotCopy, screenshotSave, screenshotDelete
     case audioListOutputs, audioGetOutput, audioSetOutput
     case audioGetVolume, audioSetVolume, audioToggleMute
     case networkTestStart, networkTestStatus, networkTestCancel
@@ -14,12 +14,14 @@ public enum NativeCapabilityOperation: String, Codable, CaseIterable, Sendable {
     case remindersListLists, remindersSearch, remindersList
     case remindersCreate, remindersUpdate, remindersComplete
     case remindersReopen, remindersDelete
+    case contactsSearch, contactsGet, contactsFindEmail, contactsFindPhone
+    case contactsCreate, contactsUpdate
     case locationCurrent
 
     public var capability: ExtensionManifest.Capability {
         switch self {
         case .screenshotTargets, .screenshotCapture, .screenshotList, .screenshotSearch, .screenshotInfo,
-             .screenshotCopy, .screenshotSave, .screenshotDelete: return .screenCapture
+             .screenshotReadImage, .screenshotCopy, .screenshotSave, .screenshotDelete: return .screenCapture
         case .audioListOutputs, .audioGetOutput, .audioSetOutput,
              .audioGetVolume, .audioSetVolume, .audioToggleMute: return .audioOutput
         case .networkTestStart, .networkTestStatus, .networkTestCancel,
@@ -30,6 +32,8 @@ public enum NativeCapabilityOperation: String, Codable, CaseIterable, Sendable {
         case .remindersListLists, .remindersSearch, .remindersList,
              .remindersCreate, .remindersUpdate, .remindersComplete,
              .remindersReopen, .remindersDelete: return .reminders
+        case .contactsSearch, .contactsGet, .contactsFindEmail, .contactsFindPhone,
+             .contactsCreate, .contactsUpdate: return .contacts
         case .locationCurrent: return .location
         }
     }

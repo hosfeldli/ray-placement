@@ -27,93 +27,47 @@ import Testing
     }
 }
 
-@Test @MainActor func aiWorkspaceSandboxConfinesWritesAndDeniesUnrelatedHomeReads() throws {
+@Test @MainActor func aiWorkspaceTerminalCanWriteOutsideStartingDirectory() async throws {
     let manager = FileManager.default
-    let desktop = manager.homeDirectoryForCurrentUser
-        .standardizedFileURL.resolvingSymlinksInPath()
-        .appendingPathComponent("Desktop", isDirectory: true)
-    guard manager.fileExists(atPath: desktop.path),
-          manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
-    let suffix = UUID().uuidString
-    let root = desktop.appendingPathComponent("LimaSandboxFixture-\(suffix)", isDirectory: true)
-    let outside = desktop.appendingPathComponent("LimaSandboxOutside-\(suffix).txt")
-    let secret = desktop.appendingPathComponent("LimaSandboxSecret-\(suffix).txt")
-    try manager.createDirectory(at: root, withIntermediateDirectories: false)
-    try Data("private test value".utf8).write(to: secret)
-    defer {
-        try? manager.removeItem(at: root)
-        try? manager.removeItem(at: outside)
-        try? manager.removeItem(at: secret)
-    }
-    let temporary = root.appendingPathComponent(".tmp", isDirectory: true)
-    try manager.createDirectory(at: temporary, withIntermediateDirectories: false)
-    let inside = root.appendingPathComponent("inside.txt")
-    let profile = AIWorkspaceTerminalCoordinator.sandboxProfile(root: root)
+    let parent = manager.temporaryDirectory
+        .appendingPathComponent("LimaUnrestrictedTerminal-\(UUID().uuidString)", isDirectory: true)
+    let root = parent.appendingPathComponent("root", isDirectory: true)
+    let outside = parent.appendingPathComponent("outside.txt")
+    try manager.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? manager.removeItem(at: parent) }
 
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-    process.arguments = [
-        "-p", profile, "/bin/zsh", "-f", "-c",
-        """
-        printf inside > "$1"
-        if printf outside > "$2" 2>/dev/null; then echo outside-write-allowed; else echo outside-write-denied; fi
-        if /bin/cat "$3" >/dev/null 2>&1; then echo home-read-allowed; else echo home-read-denied; fi
-        """,
-        "_", inside.path, outside.path, secret.path
-    ]
-    process.currentDirectoryURL = root
-    process.environment = [
-        "HOME": root.path, "TMPDIR": temporary.path + "/",
-        "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"
-    ]
-    let output = Pipe()
-    process.standardOutput = output
-    process.standardError = output
-    try process.run()
-    process.waitUntilExit()
-    let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-
-    #expect(process.terminationStatus == 0)
-    #expect(manager.fileExists(atPath: inside.path))
-    #expect(!manager.fileExists(atPath: outside.path))
-    #expect(text.contains("outside-write-denied"))
-    #expect(text.contains("home-read-denied"))
-}
-
-@Test @MainActor func aiWorkspaceNetworkProfileRequiresExplicitFullControlSelection() {
-    let root = FileManager.default.temporaryDirectory.appendingPathComponent("LimaNetworkProfileFixture")
-    let defaultProfile = AIWorkspaceTerminalCoordinator.sandboxProfile(root: root)
-    let fullControlProfile = AIWorkspaceTerminalCoordinator.sandboxProfile(root: root, networkEnabled: true)
-    #expect(!defaultProfile.contains("(allow network*)"))
-    #expect(fullControlProfile.contains("(allow network*)"))
-    #expect(defaultProfile.contains("(deny default)"))
-    #expect(fullControlProfile.contains("(deny default)"))
-    #expect(fullControlProfile.contains("(deny file-read*"))
-    #expect(fullControlProfile.contains("(allow file-write* (subpath"))
-}
-
-@Test @MainActor func aiWorkspaceNetworkSandboxDeniesLoopbackWithoutFullControlRule() async throws {
-    let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec"),
-          files.isExecutableFile(atPath: "/usr/bin/perl") else { return }
-    let root = files.temporaryDirectory.resolvingSymlinksInPath()
-        .appendingPathComponent("LimaNetworkDenied-\(UUID().uuidString)", isDirectory: true)
-    defer { try? files.removeItem(at: root) }
-    let paths = AIWorkspacePaths(root: root)
-    let store = AIWorkspaceStore(fixtures: [])
-    let toolAccess = LimaAIToolStore(fixtures: [], accessMode: .automatic)
-    let terminal = AIWorkspaceTerminalCoordinator(paths: paths, projectStore: store,
-        toolAccessStore: toolAccess)
+    let terminal = AIWorkspaceTerminalCoordinator(testRoot: root)
     let session = try terminal.start(conversationID: UUID())
-    _ = try terminal.run(sessionID: session.id,
-        command: #"/usr/bin/perl -MIO::Socket::INET -e 'IO::Socket::INET->new(LocalAddr=>"127.0.0.1",LocalPort=>0,Listen=>128) or die "bind denied: $!";'"#,
+    let quotedOutside = "'" + outside.path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    let launched = try terminal.run(
+        sessionID: session.id, command: "printf outside > \(quotedOutside)", timeoutSeconds: 8
+    )
+    #expect(launched.networkEnabled)
+    let finished = try await waitForAIWorkspaceCommand(terminal, sessionID: session.id)
+    #expect(finished.state == .completed)
+    #expect(finished.exitStatus == 0)
+    #expect(try String(contentsOf: outside, encoding: .utf8) == "outside")
+    try terminal.close(sessionID: session.id)
+}
+
+@Test @MainActor func aiWorkspaceTerminalAllowsLocalNetworkOutsideFullControl() async throws {
+    let manager = FileManager.default
+    guard manager.isExecutableFile(atPath: "/usr/bin/perl") else { return }
+    let root = manager.temporaryDirectory
+        .appendingPathComponent("LimaTerminalNetwork-\(UUID().uuidString)", isDirectory: true)
+    try manager.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? manager.removeItem(at: root) }
+
+    let toolAccess = LimaAIToolStore(fixtures: [], accessMode: .automatic)
+    let terminal = AIWorkspaceTerminalCoordinator(testRoot: root, toolAccessStore: toolAccess)
+    let session = try terminal.start(conversationID: UUID())
+    let launched = try terminal.run(sessionID: session.id,
+        command: #"/usr/bin/perl -MIO::Socket::INET -e 'IO::Socket::INET->new(LocalAddr=>"127.0.0.1",LocalPort=>0,Listen=>128) or die "bind failed: $!";'"#,
         timeoutSeconds: 8)
-    _ = try await terminal.wait(sessionID: session.id, from: nil, maxWaitSeconds: 8)
-    let result = try terminal.status(sessionID: session.id)
-    #expect(result.networkEnabled == false)
-    #expect(result.state == .failed)
-    #expect(result.exitStatus != 0)
-    #expect(result.output.contains("Operation not permitted"))
+    #expect(launched.networkEnabled)
+    let finished = try await waitForAIWorkspaceCommand(terminal, sessionID: session.id)
+    #expect(finished.state == .completed)
+    #expect(finished.exitStatus == 0)
     try terminal.close(sessionID: session.id)
 }
 
@@ -133,7 +87,7 @@ import Testing
 
 @Test @MainActor func terminalKillOnlyStopsAnApprovedConversationOwnedSession() async throws {
     let files = FileManager.default
-    guard files.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard files.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = files.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaTerminalKill-\(UUID().uuidString)", isDirectory: true)
     try files.createDirectory(at: root, withIntermediateDirectories: false)
@@ -211,7 +165,7 @@ private func waitForPTYText(
 
 @Test @MainActor func aiWorkspaceInteractivePTYIsSharedAndKeepsShellState() async throws {
     let manager = FileManager.default
-    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard manager.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = manager.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaWorkspacePTYTests-\(UUID().uuidString)", isDirectory: true)
     let project = root.appendingPathComponent("project", isDirectory: true)
@@ -308,7 +262,7 @@ private func waitForPTYText(
 
 @Test @MainActor func aiWorkspaceRuntimeStreamsVerifiedResultsAndCancellationToVisibleSessions() async throws {
     let manager = FileManager.default
-    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard manager.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = manager.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaWorkspaceRuntimeTests-\(UUID().uuidString)", isDirectory: true)
     try manager.createDirectory(at: root, withIntermediateDirectories: false)
@@ -385,7 +339,7 @@ private func waitForPTYText(
 
 @Test @MainActor func aiWorkspaceOutputDrainPreservesOrderingBeforeCompletion() async throws {
     let manager = FileManager.default
-    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard manager.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = manager.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaWorkspaceOutputDrainTests-\(UUID().uuidString)", isDirectory: true)
     try manager.createDirectory(at: root, withIntermediateDirectories: false)
@@ -410,7 +364,7 @@ private func waitForPTYText(
 
 @Test @MainActor func aiTerminalStartRequestsTheVisibleSharedSessionAndReportsItsObservation() async throws {
     let manager = FileManager.default
-    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
+    guard manager.isExecutableFile(atPath: "/bin/zsh") else { return }
     let root = manager.temporaryDirectory.resolvingSymlinksInPath()
         .appendingPathComponent("LimaTerminalRevealTests-\(UUID().uuidString)", isDirectory: true)
     try manager.createDirectory(at: root, withIntermediateDirectories: false)
@@ -607,13 +561,10 @@ private func waitForPTYText(
     #expect(coordinator.sessions(for: conversationA).isEmpty)
 }
 
-@Test @MainActor func aiWorkspaceDirectoryGrantIsOwnedRevocableAndWriteConfined() async throws {
+@Test @MainActor func aiWorkspaceUnrestrictedCommandStillRequiresExactReview() async throws {
     let manager = FileManager.default
-    guard manager.isExecutableFile(atPath: "/usr/bin/sandbox-exec") else { return }
-    let desktop = manager.homeDirectoryForCurrentUser.standardizedFileURL
-        .resolvingSymlinksInPath().appendingPathComponent("Desktop", isDirectory: true)
-    guard manager.fileExists(atPath: desktop.path) else { return }
-    let root = desktop.appendingPathComponent("LimaDirectoryGrantTests-\(UUID().uuidString)", isDirectory: true)
+    let root = manager.temporaryDirectory
+        .appendingPathComponent("LimaTerminalApproval-\(UUID().uuidString)", isDirectory: true)
     let project = root.appendingPathComponent("project", isDirectory: true)
     let sibling = root.appendingPathComponent("sibling", isDirectory: true)
     try manager.createDirectory(at: project, withIntermediateDirectories: true)
@@ -621,99 +572,53 @@ private func waitForPTYText(
     defer { try? manager.removeItem(at: root) }
 
     let coordinator = AIWorkspaceTerminalCoordinator(testRoot: root)
-    let suite = "AIDirectoryGrantPolicy.\(UUID().uuidString)"
+    let suite = "AITerminalApproval.\(UUID().uuidString)"
     let defaults = try #require(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let policy = AIComputerActionPolicy(defaults: defaults)
     policy.setAccess(.askEveryTime, for: .terminal)
     let owner = UUID()
-    let other = UUID()
     let session = try coordinator.start(directory: "project", conversationID: owner)
-    let command = "printf inside > inside.txt; if printf escape > ../sibling/escaped.txt 2>/dev/null; then echo escape-allowed; else echo escape-denied; fi"
-    let call = AIOutputItem(phase: .completed, apiType: "function_call", callID: "directory-run",
+    let command = "printf escaped > ../sibling/escaped.txt"
+    let call = AIOutputItem(phase: .completed, apiType: "function_call", callID: "reviewed-run",
                             name: "terminal_run", arguments: """
                             {"session_id":"\(session.id.uuidString)","command":"\(command)"}
                             """)
+
     #expect(AIWorkspaceActionTools.directoryGrantPath(
         for: call, conversationID: owner, actionPolicy: policy, runtime: coordinator
-    ) == project.path)
-    #expect(AIWorkspaceActionTools.directoryGrantPath(
-        for: call, conversationID: other, actionPolicy: policy, runtime: coordinator
     ) == nil)
-    let unapproved = await AIWorkspaceActionTools.execute(
-        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
-    )
-    #expect(unapproved.isError)
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-
-    let granted = try AIWorkspaceActionTools.grantDirectory(
-        for: call, conversationID: owner, expectedDirectory: project.path,
-        actionPolicy: policy, runtime: coordinator
-    )
-    #expect(granted.directoryGrantActive)
-    #expect(coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: other))
     #expect(throws: AIWorkspaceTerminalCoordinator.WorkspaceError.self) {
         try AIWorkspaceActionTools.grantDirectory(
-            for: call, conversationID: other, expectedDirectory: project.path,
+            for: call, conversationID: owner, expectedDirectory: project.path,
             actionPolicy: policy, runtime: coordinator
         )
     }
-    let launched = await AIWorkspaceActionTools.execute(
+    // Even a previously recorded directory grant cannot authorize an
+    // unrestricted command without the exact action review.
+    _ = try coordinator.grantDirectory(
+        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
+    )
+    #expect(!AIWorkspaceActionTools.hasApplicableDirectoryGrant(
+        for: call, conversationID: owner, actionPolicy: policy, runtime: coordinator
+    ))
+    let denied = await AIWorkspaceActionTools.execute(
         call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
+    )
+    #expect(denied.isError)
+    #expect(!manager.fileExists(atPath: sibling.appendingPathComponent("escaped.txt").path))
+
+    let launched = await AIWorkspaceActionTools.execute(
+        call, approvalGranted: true, actionPolicy: policy, conversationID: owner, runtime: coordinator
     )
     #expect(!launched.isError)
     let finished = try await waitForAIWorkspaceCommand(coordinator, sessionID: session.id)
     #expect(finished.state == .completed)
-    #expect(finished.output.contains("escape-denied"))
-    #expect(manager.fileExists(atPath: project.appendingPathComponent("inside.txt").path),
-            "Command output: \(finished.output)")
-    #expect(!manager.fileExists(atPath: sibling.appendingPathComponent("escaped.txt").path))
-
-    let startAgain = AIOutputItem(phase: .completed, apiType: "function_call", callID: "start-again",
-                                  name: "terminal_start", arguments: "{}")
-    let blockedStart = await AIWorkspaceActionTools.execute(
-        startAgain, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
-    )
-    #expect(blockedStart.isError)
-    let changeCall = AIOutputItem(phase: .completed, apiType: "function_call", callID: "change-dir",
-                                  name: "terminal_set_directory",
-                                  arguments: "{\"session_id\":\"\(session.id.uuidString)\",\"directory\":\"sibling\"}")
-    let blockedChange = await AIWorkspaceActionTools.execute(
-        changeCall, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
-    )
-    #expect(blockedChange.isError)
-
-    coordinator.revokeDirectoryGrants(for: other)
-    #expect(coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-    coordinator.revokeDirectoryGrants(for: owner)
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-    _ = try coordinator.grantDirectory(
-        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
-    )
-    coordinator.revokeDirectoryGrant(sessionID: session.id)
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-    let revoked = await AIWorkspaceActionTools.execute(
-        call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
-    )
-    #expect(revoked.isError)
-    _ = try coordinator.grantDirectory(
-        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
-    )
-    _ = try coordinator.setDirectory(sessionID: session.id, relativeDirectory: "sibling")
-    _ = try coordinator.setDirectory(sessionID: session.id, relativeDirectory: "project")
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
-    _ = try coordinator.grantDirectory(
-        sessionID: session.id, conversationID: owner, expectedDirectory: project.path
-    )
+    #expect(manager.fileExists(atPath: sibling.appendingPathComponent("escaped.txt").path))
     policy.setAccess(.disabled, for: .terminal)
-    #expect(!AIWorkspaceActionTools.hasApplicableDirectoryGrant(
-        for: call, conversationID: owner, actionPolicy: policy, runtime: coordinator
-    ))
     let disabled = await AIWorkspaceActionTools.execute(
         call, approvalGranted: false, actionPolicy: policy, conversationID: owner, runtime: coordinator
     )
     #expect(disabled.isError)
     try coordinator.close(sessionID: session.id)
-    #expect(!coordinator.hasDirectoryGrant(sessionID: session.id, conversationID: owner))
 }

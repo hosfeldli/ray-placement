@@ -98,15 +98,41 @@ enum MarkdownNoteAssetStore {
         return persist(data: data, extension: ext)
     }
 
+    /// Persist bytes from a separately reviewed, bounded local file read.
+    /// Generic files are links, never decoded or executed by Notes.
+    static func importManagedData(_ data: Data, pathExtension ext: String, isImage: Bool) -> String? {
+        guard !data.isEmpty, data.count <= 20_000_000,
+              (1...10).contains(ext.count),
+              ext.utf8.allSatisfy({ (48...57).contains($0) || (97...122).contains($0) }),
+              !isImage || NSImage(data: data) != nil else { return nil }
+        return persist(data: data, extension: ext, prefix: isImage ? "image" : "file")
+    }
+
     static func image(for reference: String) -> NSImage? {
         guard let url = resolve(reference) else { return nil }
         return NSImage(contentsOf: url)
     }
 
-    private static func persist(data: Data, extension ext: String) -> String? {
+    /// Only managed assets may be opened from a Markdown link. Ordinary file
+    /// URLs remain outside this route, even though legacy image rendering
+    /// continues to support images the user inserted directly.
+    static func managedFileURL(for reference: String) -> URL? {
+        guard reference.hasPrefix("lima-note-asset://"),
+              let url = resolve(reference),
+              let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true else { return nil }
+        return url
+    }
+
+    static func discardUnlinkedImport(_ reference: String) {
+        guard let url = managedFileURL(for: reference) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    private static func persist(data: Data, extension ext: String, prefix: String = "image") -> String? {
         do {
             try ApplicationPaths.prepare()
-            let name = "image-\(UUID().uuidString).\(ext)"
+            let name = "\(prefix)-\(UUID().uuidString).\(ext)"
             let destination = ApplicationPaths.noteAssets.appendingPathComponent(name)
             try data.write(to: destination, options: [.atomic])
             return "lima-note-asset://\(name)"

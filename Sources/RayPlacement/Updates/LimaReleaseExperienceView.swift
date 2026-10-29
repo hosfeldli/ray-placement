@@ -12,6 +12,18 @@ struct LimaReleaseNotesView: View {
             Text(manifest.summary)
                 .limaFont(.body)
                 .foregroundStyle(LimaTheme.textSecondary)
+            if !manifest.highlights.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Highlights")
+                        .limaFont(.headline)
+                        .foregroundStyle(LimaTheme.textPrimary)
+                    ForEach(manifest.highlights) { highlight in
+                        Label(highlight.title, systemImage: "checkmark.circle")
+                            .limaFont(.callout)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                    }
+                }
+            }
             if manifest.sections.isEmpty {
                 Text("Detailed notes are not available for this release.")
                     .limaFont(.callout)
@@ -148,7 +160,7 @@ struct LimaUpdateAvailableView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Lima Update Available")
                         .limaFont(.title2.weight(.semibold))
-                    Text("Version \(release.versionText)")
+                    Text("Version \(release.versionText) · \(manifest.importance == .major ? "Major update" : "Published update")")
                         .limaFont(.callout)
                         .foregroundStyle(LimaTheme.textSecondary)
                 }
@@ -181,6 +193,17 @@ struct LimaUpdateAvailableView: View {
                             .limaFont(.callout)
                             .foregroundStyle(LimaTheme.textSecondary)
                     }
+                    if manifest.requiresOnboarding {
+                        Label("An optional introductory tour will be available after this update is installed.",
+                              systemImage: "sparkles.rectangle.stack")
+                            .limaFont(.callout)
+                            .foregroundStyle(LimaTheme.textSecondary)
+                    }
+                    if SparkleMigrationBoundary.activeBackend == .sparkle {
+                        Text("Continue to the signed updater to review and install this release.")
+                            .limaFont(.caption)
+                            .foregroundStyle(LimaTheme.textTertiary)
+                    }
                     if let sizeText {
                         Text("Update size: \(sizeText)")
                             .limaFont(.caption)
@@ -203,7 +226,7 @@ struct LimaUpdateAvailableView: View {
                 .buttonStyle(.borderless)
                 Spacer()
                 Button("Later", action: dismiss)
-                Button("Install Update", action: install)
+                Button(SparkleMigrationBoundary.activeBackend == .sparkle ? "Continue to Signed Updater" : "Install Update", action: install)
                     .buttonStyle(.borderedProminent)
                     .disabled(SparkleMigrationBoundary.activeBackend == .legacy && release.updateAsset == nil)
             }

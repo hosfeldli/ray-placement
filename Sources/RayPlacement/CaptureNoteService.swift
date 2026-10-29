@@ -6,6 +6,8 @@ enum CaptureNoteService {
     enum Source {
         case clipboard
         case selection(applicationName: String?)
+        case browser(pageTitle: String)
+        case dictation(startedAt: Date)
         case aiResponse(conversationTitle: String?)
 
         var title: String {
@@ -20,6 +22,13 @@ enum CaptureNoteService {
                     return "Captured Selection"
                 }
                 return "Captured Selection · \(String(cleanName.prefix(80)))"
+            case .browser(let pageTitle):
+                let cleanTitle = pageTitle.replacingOccurrences(of: "\n", with: " ")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleanTitle.isEmpty ? "Captured Browser Page" :
+                    "Browser · \(String(cleanTitle.prefix(80)))"
+            case .dictation(let startedAt):
+                return "Dictation · \(startedAt.formatted(date: .abbreviated, time: .shortened))"
             case .aiResponse(let conversationTitle):
                 let cleanTitle = conversationTitle?
                     .replacingOccurrences(of: "\n", with: " ")

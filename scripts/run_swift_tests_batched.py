@@ -37,6 +37,9 @@ ISOLATED_TESTS = {
     "embeddedBrowserWaitForNewTabReturnsTheOpenedTabIdentity",
     "embeddedBrowserWebKitReadsLinksShadowControlsAndRejectsStaleTargets",
     "browserAskForActionsRequiresNativeApproval",
+    # Visual review must retain its exact capture; the process-wide screenshot
+    # store has an eight-capture cap that concurrent WebKit fixtures can evict.
+    "browserVisualShadowHitDispatchesToChildAndPrefersSemanticHost",
     # WebKit secure-handoff fixtures pass independently but can deadlock when
     # mixed with hosted Search/AppKit tests in the same concurrent process.
     "secureBrowserHandoffResumesSameRunWithoutReturningFieldValues",
@@ -49,6 +52,13 @@ ISOLATED_TESTS = {
     # This launcher fixture passes alone but can race other hosted Search
     # fixtures that mutate the process-wide search catalog in a mixed batch.
     "searchPreviewNeverExecutesUntilExplicitAction",
+    # AI view-model fixtures can stall the Swift Testing helper when initialized
+    # together after hosted WebKit batches; keep each in a bounded process.
+    "embeddedNoteContentsReachOpenAIAndClaudeWithoutAPath",
+    "emptyProviderCompletionIsTerminalAndComposerReady",
+    "enabledNotesToolsRemainVisibleForEveryPrompt",
+    "enabledToolsRemainVisibleRegardlessOfPromptWording",
+    "endingPendingApprovalClearsPauseWithoutRunningTool",
 }
 
 
@@ -143,6 +153,8 @@ def main() -> int:
         groups.append(pending)
 
     print(f"Discovered {len(names)} Swift tests in {len(groups)} bounded groups.", flush=True)
+    continue_after_failure = os.environ.get("LIMA_SWIFT_TEST_CONTINUE_AFTER_FAILURE") == "1"
+    failed_batches: list[tuple[int, int]] = []
     completed = 0
     for index, expected in enumerate(groups, start=1):
         pattern = "|".join(re.escape(name) for name in expected)
@@ -158,10 +170,16 @@ def main() -> int:
             )
             return 2
         if code:
-            print(f"Swift test batch exited with status {code}.", file=sys.stderr, flush=True)
-            return code
+            print(f"Swift test batch {index} exited with status {code}.", file=sys.stderr, flush=True)
+            if not continue_after_failure:
+                return code
+            failed_batches.append((index, code))
         completed += len(expected)
 
+    if failed_batches:
+        print(f"All {completed} discovered Swift tests started exactly once; failed batches: {failed_batches}.",
+              file=sys.stderr, flush=True)
+        return 1
     print(f"All {completed} discovered Swift tests started exactly once and passed.", flush=True)
     return 0
 

@@ -128,6 +128,11 @@ struct BrowserSemanticItem: Codable, Equatable, Sendable {
     let linkTargetIDs: [String]
     let controlTargetIDs: [String]
     var frameID: String? = nil
+    /// Bounded, redacted visible table cells; nil for non-table rows or rows
+    /// whose structure cannot be transferred without silently truncating data.
+    var tableCells: [String]? = nil
+    var tableID: String? = nil
+    var isTableHeader: Bool? = nil
 }
 
 struct BrowserFrameContext: Codable, Equatable, Sendable {
@@ -980,18 +985,36 @@ enum BrowserSemanticScript {
       }
       return (hash >>> 0).toString(36);
     };
+    const tableGroups = new Map();
     const rows = rowElements.map(({element, role}) => {
-      const rowText = redact(element.innerText || "").replace(/\s+/g, " ").trim().slice(0, 500);
+      const rowText = redact(element.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 500);
       const linkTargetIDs = links.filter(target => element.contains(state.targets.get(target.id))).map(target => target.id);
       const controlTargetIDs = controls.filter(target => element.contains(state.targets.get(target.id))).map(target => target.id);
       const evidence = redact(element.getAttribute("data-key") || element.getAttribute("data-id") ||
         element.id || element.getAttribute("aria-rowindex") ||
         element.querySelector("a[href]")?.getAttribute("href") || rowText);
+      const table = element.closest("table,[role=table],[role=grid]");
+      let tableID = null;
+      let tableCells = null;
+      let isTableHeader = null;
+      if (table && (element.localName === "tr" || role === "row")) {
+        if (!tableGroups.has(table)) tableGroups.set(table, tableGroups.size + 1);
+        tableID = state.frameID + ":table:" + tableGroups.get(table);
+        const cellElements = Array.from(element.children).filter(child =>
+          child.matches("th,td,[role=cell],[role=columnheader],[role=rowheader]"));
+        const values = cellElements.map(cell =>
+          redact(cell.innerText || "").replace(/\\s+/g, " ").trim());
+        if (values.length >= 2 && values.length <= 16 && values.every(value => value.length <= 300)) {
+          tableCells = values;
+          isTableHeader = cellElements.every(cell => cell.matches("th,[role=columnheader]"));
+        }
+      }
       return {
         stableKey: "row_" + stableHash(state.frameID + ":" + role + ":" + evidence), role,
-        text: rowText, linkTargetIDs, controlTargetIDs, frameID: state.frameID
+        text: rowText, linkTargetIDs, controlTargetIDs, frameID: state.frameID,
+        tableID, tableCells, isTableHeader
       };
-    }).filter(row => row.text || row.linkTargetIDs.length || row.controlTargetIDs.length);
+    }).filter(row => row.text || row.linkTargetIDs.length || row.controlTargetIDs.length || row.tableCells || row.tableID);
     const activeDialog = activeDialogElement ? {
       role: activeDialogElement.getAttribute("role") ||
         (activeDialogElement.localName === "dialog" ? "dialog" : "popover"),

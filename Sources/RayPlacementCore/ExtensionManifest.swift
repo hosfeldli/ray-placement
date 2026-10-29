@@ -25,6 +25,7 @@ public struct ExtensionManifest: Codable, Sendable {
         case audioOutput
         case calendar
         case reminders
+        case contacts
         case location
         case networkQuality
         /// Grants read-only access to the current Context Shelf through the host contract.

@@ -1,3 +1,4 @@
+import CryptoKit
 import EventKit
 import Foundation
 import RayPlacementCore
@@ -23,6 +24,8 @@ final class EventKitCapabilityService {
         case readOnly
         case recurringEvent
         case noDefaultList
+        case reminderReadFailed
+        case linkedNoteChanged
 
         var errorDescription: String? {
             switch self {
@@ -32,6 +35,8 @@ final class EventKitCapabilityService {
             case .readOnly: return "The selected calendar or reminders list cannot be changed."
             case .recurringEvent: return "Lima does not modify recurring calendar series. Edit this occurrence in Calendar instead."
             case .noDefaultList: return "No writable default calendar or reminders list is available."
+            case .reminderReadFailed: return "Existing Reminders could not be read. Retry after Reminders access is available."
+            case .linkedNoteChanged: return "The linked Lima Note changed after review. Review its current tasks before creating Reminders."
             }
         }
     }
@@ -125,9 +130,10 @@ final class EventKitCapabilityService {
         case .remindersList, .remindersSearch:
             let calendars = try selectedCalendars(arguments, type: .reminder)
             let predicate = store.predicateForReminders(in: calendars)
-            var reminders = await withCheckedContinuation { continuation in
-                store.fetchReminders(matching: predicate) { continuation.resume(returning: $0 ?? []) }
+            let fetched: [EKReminder]? = await withCheckedContinuation { continuation in
+                store.fetchReminders(matching: predicate) { continuation.resume(returning: $0) }
             }
+            guard var reminders = fetched else { throw Failure.reminderReadFailed }
             if Self.boolean(arguments, "include_completed") != true {
                 reminders.removeAll { $0.isCompleted }
             }
@@ -197,6 +203,241 @@ final class EventKitCapabilityService {
         default:
             throw Failure.invalidArguments
         }
+    }
+
+    /// Called only from the explicit Mail task review after its evidence has
+    /// been re-read. A full existing-Reminder read is required before creating
+    /// anything, so a failed fetch cannot silently produce duplicates.
+    func createMailLinkedReminders(
+        from tasks: [ExtractedMailTask], noteID: UUID,
+        expectedNoteContentSHA256: String
+    ) async throws -> MailReminderCreationResult {
+        guard !tasks.isEmpty, tasks.count <= 50,
+              tasks.allSatisfy({ task in
+                  [.proposed, .active, .uncertain].contains(task.status) &&
+                  !task.title.isEmpty && task.title.count <= 160 &&
+                  !task.evidence.isEmpty && task.evidence.count <= 10
+              }), expectedNoteContentSHA256.count == 64 else { throw Failure.invalidArguments }
+        guard NotesStore.shared.contentSHA256(for: noteID) == expectedNoteContentSHA256 else {
+            throw Failure.linkedNoteChanged
+        }
+        try await ensureRemindersAccess()
+        let calendar = try writableCalendar([:], type: .reminder)
+        let predicate = store.predicateForReminders(in: nil)
+        let fetched: [EKReminder]? = await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: predicate) { continuation.resume(returning: $0) }
+        }
+        guard let fetched else { throw Failure.reminderReadFailed }
+        var identifiersByMarker: [String: String] = [:]
+        var identifiersByNoteAndTitle: [String: String] = [:]
+        for reminder in fetched {
+            for line in (reminder.notes ?? "").components(separatedBy: .newlines)
+                where line.hasPrefix("Lima Mail task v1: ") {
+                identifiersByMarker[line] = reminder.calendarItemIdentifier
+            }
+            if Self.linkedMailNoteID(in: reminder.notes) == noteID.uuidString {
+                identifiersByNoteAndTitle[Self.normalizedMailTaskTitle(reminder.title)] =
+                    reminder.calendarItemIdentifier
+            }
+        }
+        var created: [String] = []
+        var existing: [String] = []
+        for task in tasks {
+            if Task.isCancelled {
+                return MailReminderCreationResult(createdIDs: created, existingIDs: existing,
+                                                  stopped: true, failure: nil)
+            }
+            guard NotesStore.shared.contentSHA256(for: noteID) == expectedNoteContentSHA256,
+                  NotesStore.shared.containsOpenMailTask(task, in: noteID) else {
+                return MailReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "The Lima Note changed or no longer contains this open, source-backed Mail task. Review the Note before creating more Reminders."
+                )
+            }
+            let markers = Self.mailTaskMarkers(task)
+            let titleKey = Self.normalizedMailTaskTitle(task.title)
+            if let match = markers.compactMap({ identifiersByMarker[$0] }).sorted().first ??
+                identifiersByNoteAndTitle[titleKey] {
+                existing.append(match)
+                continue
+            }
+            let reminder = EKReminder(eventStore: store)
+            reminder.calendar = calendar
+            reminder.title = task.title
+            var lines = markers.sorted()
+            lines.append("Lima Note ID: \(noteID.uuidString)")
+            if let details = task.details {
+                lines.append("Details: " + details.split(whereSeparator: \.isNewline).joined(separator: " "))
+            }
+            if let owner = task.owner { lines.append("Owner: \(owner)") }
+            if let priority = task.priority { lines.append("Priority: \(priority.rawValue)") }
+            if let dueDateSource = task.dueDateSource {
+                lines.append("Due basis: \(dueDateSource)\(task.inferred ? " (inferred)" : "")")
+            }
+            lines.append("Open the Lima Note for verified Mail source links and evidence.")
+            for evidence in task.evidence.prefix(3) {
+                lines.append("Mail source: \(evidence.reference.subject) — \(evidence.reference.sender)")
+            }
+            reminder.notes = lines.joined(separator: "\n")
+            if let due = task.dueDate {
+                reminder.dueDateComponents = Self.dueComponents(due)
+                reminder.addAlarm(EKAlarm(absoluteDate: due))
+            }
+            do {
+                try store.save(reminder, commit: true)
+            } catch {
+                return MailReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "EventKit could not confirm the next Reminder save. Do not retry automatically; inspect Reminders before trying again."
+                )
+            }
+            let identifier = reminder.calendarItemIdentifier
+            guard !identifier.isEmpty else {
+                return MailReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "EventKit accepted a Reminder but did not return its identifier. Inspect Reminders before trying again."
+                )
+            }
+            created.append(identifier)
+            for marker in markers { identifiersByMarker[marker] = identifier }
+            identifiersByNoteAndTitle[titleKey] = identifier
+        }
+        return MailReminderCreationResult(createdIDs: created, existingIDs: existing,
+                                          stopped: false, failure: nil)
+    }
+
+    /// Create approved Messages tasks only after their exact source quotes were
+    /// re-read by MessagesAIActionTools. Read every existing Reminder first so a
+    /// failed fetch never turns an uncertain prior result into a duplicate.
+    func createMessageLinkedReminders(
+        from tasks: [MessageReminderDraft], conversationGUID: String,
+        noteID: UUID?
+    ) async throws -> MessageReminderCreationResult {
+        guard (1...10).contains(tasks.count), !conversationGUID.isEmpty,
+              conversationGUID.utf8.count <= 512,
+              tasks.allSatisfy({ !$0.title.isEmpty && $0.title.utf8.count <= 160 &&
+                  !$0.messageGUID.isEmpty && $0.messageGUID.utf8.count <= 512 &&
+                  !$0.evidenceQuote.isEmpty && $0.evidenceQuote.utf8.count <= 500 }) else {
+            throw Failure.invalidArguments
+        }
+        try await ensureRemindersAccess()
+        let calendar = try writableCalendar([:], type: .reminder)
+        let predicate = store.predicateForReminders(in: nil)
+        let fetched: [EKReminder]? = await withCheckedContinuation { continuation in
+            store.fetchReminders(matching: predicate) { continuation.resume(returning: $0) }
+        }
+        guard let fetched else { throw Failure.reminderReadFailed }
+        var identifiersByMarker: [String: String] = [:]
+        for reminder in fetched {
+            for line in (reminder.notes ?? "").components(separatedBy: .newlines)
+                where line.hasPrefix("Lima Messages task v1: ") {
+                identifiersByMarker[line] = reminder.calendarItemIdentifier
+            }
+        }
+        var created: [String] = []
+        var existing: [String] = []
+        for task in tasks {
+            if Task.isCancelled {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "The task was canceled. Inspect Reminders before retrying."
+                )
+            }
+            let policy = MessagesCapabilityPolicyStore.load()
+            guard policy.aiReadEnabled, policy.permits(conversationGUID),
+                  noteID.map({ id in NotesStore.shared.notes.contains(where: { $0.id == id }) }) ?? true else {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "Messages access or the linked Note changed. Inspect Reminders before retrying."
+                )
+            }
+            let source: MessagesMessage
+            do {
+                source = try await MessagesCapabilityService.shared.message(
+                    task.messageGUID, in: conversationGUID, origin: .ai
+                )
+            } catch {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "A Messages source changed before the next Reminder. Inspect existing Reminders before retrying."
+                )
+            }
+            guard source.text?.contains(task.evidenceQuote) == true,
+                  MessagesCapabilityPolicyStore.load().aiReadEnabled,
+                  MessagesCapabilityPolicyStore.load().permits(conversationGUID),
+                  !Task.isCancelled else {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "A Messages quote or access changed before the next Reminder. Inspect existing Reminders before retrying."
+                )
+            }
+            let marker = Self.messageTaskMarker(conversationGUID: conversationGUID, task: task)
+            if let identifier = identifiersByMarker[marker] {
+                existing.append(identifier)
+                continue
+            }
+            let reminder = EKReminder(eventStore: store)
+            reminder.calendar = calendar
+            reminder.title = task.title
+            var notes = [
+                marker,
+                "Messages source: \(MessagesSearchResultID.message(task.messageGUID, in: conversationGUID))",
+                "Evidence quote: \(task.evidenceQuote.split(whereSeparator: \.isNewline).joined(separator: " "))"
+            ]
+            if let noteID { notes.append("Lima Note ID: \(noteID.uuidString)") }
+            reminder.notes = notes.joined(separator: "\n")
+            if let due = task.dueAt {
+                reminder.dueDateComponents = Self.dueComponents(due)
+                reminder.addAlarm(EKAlarm(absoluteDate: due))
+            }
+            do {
+                try store.save(reminder, commit: true)
+            } catch {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "EventKit could not confirm the next Reminder save. Inspect Reminders before retrying."
+                )
+            }
+            let identifier = reminder.calendarItemIdentifier
+            guard !identifier.isEmpty else {
+                return MessageReminderCreationResult(
+                    createdIDs: created, existingIDs: existing, stopped: true,
+                    failure: "A Reminder may have been saved without an identifier. Inspect Reminders before retrying."
+                )
+            }
+            created.append(identifier)
+            identifiersByMarker[marker] = identifier
+        }
+        return MessageReminderCreationResult(
+            createdIDs: created, existingIDs: existing, stopped: false, failure: nil
+        )
+    }
+
+    static func messageTaskMarker(conversationGUID: String,
+                                  task: MessageReminderDraft) -> String {
+        let normalizedTitle = task.title.split(whereSeparator: \.isWhitespace)
+            .joined(separator: " ").lowercased()
+        let identity = conversationGUID + "\u{1F}" + task.messageGUID + "\u{1F}" + normalizedTitle
+        let digest = SHA256.hash(data: Data(identity.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        return "Lima Messages task v1: " + digest
+    }
+
+    private static func normalizedMailTaskTitle(_ title: String) -> String {
+        title.split(whereSeparator: \.isWhitespace).joined(separator: " ").lowercased()
+    }
+
+    private static func mailTaskMarkers(_ task: ExtractedMailTask) -> Set<String> {
+        let title = normalizedMailTaskTitle(task.title)
+        return Set(task.evidence.map { evidence in
+            let source = evidence.reference
+            let identity = source.internetMessageID.map {
+                source.accountID + "\u{1F}" + $0.lowercased()
+            } ?? source.id
+            let data = Data((identity + "\u{1F}" + title).utf8)
+            let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+            return "Lima Mail task v1: " + digest
+        })
     }
 
     private func ensureCalendarAccess(createOnly: Bool) async throws {
@@ -307,9 +548,23 @@ final class EventKitCapabilityService {
             "list_id": .string(reminder.calendar.calendarIdentifier),
             "title": .string(reminder.title),
             "notes": reminder.notes.map { .string(String($0.prefix(10_000))) } ?? .null,
+            "lima_note_id": Self.linkedMailNoteID(in: reminder.notes).map(JSONValue.string) ?? .null,
             "due_at": reminder.dueDateComponents?.date.map { .string(Self.iso($0)) } ?? .null,
             "completed": .bool(reminder.isCompleted)
         ])
+    }
+
+    private static func linkedMailNoteID(in notes: String?) -> String? {
+        guard let notes else { return nil }
+        let lines = notes.components(separatedBy: .newlines)
+        guard lines.contains(where: { $0.hasPrefix("Lima Mail task v1: ") }) else { return nil }
+        let ids = lines.compactMap { line -> String? in
+            guard line.hasPrefix("Lima Note ID: ") else { return nil }
+            let raw = String(line.dropFirst("Lima Note ID: ".count))
+            guard let id = UUID(uuidString: raw), id.uuidString == raw else { return nil }
+            return raw
+        }
+        return ids.count == 1 ? ids[0] : nil
     }
 
     static func interval(_ arguments: [String: JSONValue], maximumDays: Double = 90) throws -> (Date, Date) {
@@ -383,4 +638,20 @@ final class EventKitCapabilityService {
         guard case .bool(let value)? = arguments[key] else { return nil }
         return value
     }
+}
+
+struct MailReminderCreationResult: Sendable {
+    let createdIDs: [String]
+    let existingIDs: [String]
+    let stopped: Bool
+    let failure: String?
+    var completed: Bool { !stopped && failure == nil }
+}
+
+struct MessageReminderCreationResult: Sendable {
+    let createdIDs: [String]
+    let existingIDs: [String]
+    let stopped: Bool
+    let failure: String?
+    var completed: Bool { !stopped && failure == nil }
 }

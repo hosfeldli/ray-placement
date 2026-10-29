@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import RayPlacementCore
 import SwiftUI
 import UniformTypeIdentifiers
@@ -806,6 +807,10 @@ private struct WorkspaceShellView: View {
                             notes: content.store,
                             dictation: content.dictation,
                             expand: { content.selectModule(.ai) },
+                            openNote: { id in
+                                content.store.selectNote(id)
+                                content.selectModule(.notes)
+                            },
                             close: { presentation.aiSidecarVisible = false }
                         )
                         .frame(width: chrome.sidecarWidth)
@@ -868,6 +873,7 @@ private struct WorkspaceAISidecar: View {
     let notes: NotesStore
     let dictation: NoteDictationService
     let expand: () -> Void
+    let openNote: (UUID) -> Void
     let close: () -> Void
     @State private var pane: Pane = .chat
 
@@ -912,7 +918,8 @@ private struct WorkspaceAISidecar: View {
                         model: model,
                         isEmbedded: true,
                         onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
-                        contextNotes: notes
+                        contextNotes: notes,
+                        onOpenNote: openNote
                     )
                 }
             }
@@ -1011,6 +1018,7 @@ private struct WorkspaceModuleHost: View {
     @State private var editingTemplate: MarkdownUserTemplate?
     @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
+    @State private var dictationHandoffError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.limaWorkspaceSizeClass) private var sizeClass
     @FocusState private var dictationEditorFocused: Bool
@@ -1357,17 +1365,56 @@ private struct WorkspaceModuleHost: View {
                         let added = aiChatModel.prepareShelfItems(items, notes: store)
                         if added > 0 { selectModule(.ai) }
                         return added
-                    }, onNoteTransfer: { selectModule(.notes) })
+                    }, onNoteTransfer: { selectModule(.notes) },
+                    onOpenBrowserReference: { reference in
+                        guard reference.reopenInBrowser() else { return false }
+                        selectModule(.browser)
+                        return true
+                    })
                     .background(Color.clear)
                 case .ai:
                     AIChatWorkspaceView(
                         model: aiChatModel,
                         isEmbedded: true,
                         onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
-                        contextNotes: store
+                        contextNotes: store,
+                        onOpenNote: { id in
+                            store.selectNote(id)
+                            selectModule(.notes)
+                        }
                     )
                 case .browser:
-                    BrowserWorkspaceView()
+                    BrowserWorkspaceView(
+                        onCreateNote: { handoff in
+                            let id = try CaptureNoteService.save(
+                                handoff.noteMarkdown,
+                                source: .browser(pageTitle: handoff.title),
+                                in: store
+                            )
+                            selectModule(.notes)
+                            return id
+                        },
+                        onCreateTableNote: { handoff in
+                            guard let markdown = handoff.tableMarkdown else {
+                                throw BrowserPageHandoffError.noStructuredTable
+                            }
+                            let id = try CaptureNoteService.save(
+                                markdown,
+                                source: .browser(pageTitle: handoff.title),
+                                in: store
+                            )
+                            selectModule(.notes)
+                            return id
+                        },
+                        onPrepareAI: { handoff, prompt in
+                            guard aiChatModel.prepareContextDraft(handoff.aiContext, prompt: prompt) else {
+                                return false
+                            }
+                            selectModule(.ai)
+                            return true
+                        },
+                        onOpenShelf: { selectModule(.context) }
+                    )
                 case .grammar:
                     GrammarWorkspaceView()
                         .background(Color.clear)
@@ -1858,6 +1905,45 @@ private struct WorkspaceModuleHost: View {
                     }
                     .frame(minHeight: 170, maxHeight: .infinity)
 
+                    if conversation.isComplete && conversation.hasContent {
+                        HStack(spacing: 8) {
+                            Menu {
+                                Button("Create Transcript Note", systemImage: "note.text.badge.plus") {
+                                    createDictationTranscriptNote(conversation)
+                                }
+                                Button("Append to Selected Note", systemImage: "text.append") {
+                                    appendDictationToSelectedNote(conversation)
+                                }
+                                .disabled(store.selectedNote == nil)
+                                if AIRequestPolicy.shared.isEnabled {
+                                    Divider()
+                                    Button("Summarize to Note…", systemImage: "sparkles") {
+                                        prepareDictationAI(conversation, prompt:
+                                            "Summarize this completed Dictation transcript into a concise Lima Note. Preserve decisions and action items, and do not claim a Note exists until a tool confirms it.")
+                                    }
+                                    Button("Extract Tasks…", systemImage: "checklist") {
+                                        prepareDictationAI(conversation, prompt:
+                                            "Extract actionable tasks from this completed Dictation transcript. Distinguish completed or canceled items; use reviewed Notes or Reminders operations only after the user approves them.")
+                                    }
+                                    Button("Draft Email…", systemImage: "envelope") {
+                                        prepareDictationAI(conversation, prompt:
+                                            "Prepare an email from this completed Dictation transcript in the reviewed Lima Mail composer. Resolve recipients explicitly and do not save or send without the user's separate action.")
+                                    }
+                                }
+                            } label: {
+                                Label("Use Transcript", systemImage: "square.and.arrow.up")
+                            }
+                            .menuStyle(.borderlessButton)
+                            Spacer(minLength: 0)
+                        }
+                        if let dictationHandoffError {
+                            Label(dictationHandoffError, systemImage: "exclamationmark.triangle")
+                                .limaFont(.caption)
+                                .foregroundStyle(LimaTheme.warning)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+
                     if !dictation.partialTranscript.isEmpty {
                         HStack(alignment: .top, spacing: 6) {
                             Label("Live preview", systemImage: "waveform")
@@ -1909,6 +1995,67 @@ private struct WorkspaceModuleHost: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func dictationMarkdown(_ conversation: DictationConversation) -> String? {
+        let transcript = conversation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard conversation.isComplete, !transcript.isEmpty, transcript.count <= 30_000 else { return nil }
+        return "## Transcript\n\nSource: Lima Dictation conversation `\(conversation.id.uuidString)`\n\n\(transcript)"
+    }
+
+    private func createDictationTranscriptNote(_ conversation: DictationConversation) {
+        guard let markdown = dictationMarkdown(conversation) else {
+            dictationHandoffError = "This transcript is empty or too long for a single Note. Select a shorter passage."
+            return
+        }
+        do {
+            _ = try CaptureNoteService.save(
+                markdown, source: .dictation(startedAt: conversation.startedAt), in: store
+            )
+            dictationHandoffError = nil
+            selectModule(.notes)
+        } catch {
+            dictationHandoffError = error.localizedDescription
+        }
+    }
+
+    private func appendDictationToSelectedNote(_ conversation: DictationConversation) {
+        guard let note = store.selectedNote, let markdown = dictationMarkdown(conversation),
+              markdown.count <= 32_000 else {
+            dictationHandoffError = "Select a Note and a completed transcript of 30,000 characters or fewer."
+            return
+        }
+        let contentHash = SHA256.hash(data: Data(note.content.utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        do {
+            _ = try store.appendAIReportMarkdown(
+                to: note.id, expectedContentSHA256: contentHash, content: markdown
+            )
+            dictationHandoffError = nil
+            selectModule(.notes)
+        } catch {
+            dictationHandoffError = error.localizedDescription
+        }
+    }
+
+    private func prepareDictationAI(_ conversation: DictationConversation, prompt: String) {
+        let transcript = conversation.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        let context = "Source: Lima Dictation conversation \(conversation.id.uuidString)\n\nTranscript:\n\n\(transcript)"
+        guard conversation.isComplete, !transcript.isEmpty, context.utf8.count <= 49_000 else {
+            dictationHandoffError = "This transcript is empty or too long for one AI draft. Select a shorter passage."
+            return
+        }
+        guard aiChatModel.prepareContextDraft(
+            LimaContextValue(id: conversation.id, kind: .text,
+                             title: conversation.title, value: context,
+                             sourceApplication: "Lima Dictation"),
+            prompt: prompt
+        ) else {
+            dictationHandoffError = "The AI draft is unavailable. Finish the active task or enable AI access, then try again."
+            return
+        }
+        dictationHandoffError = nil
+        selectModule(.ai)
     }
 
     @ViewBuilder

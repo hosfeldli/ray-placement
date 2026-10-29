@@ -148,7 +148,8 @@ import Testing
     #expect(!policy.requiresApproval(for: navigation, toolAccessMode: .askForActions))
     #expect(AIComputerActionCategory.allCases == [
         .localFiles, .savedMemory, .terminal, .screenshotHistory,
-        .screenCapture, .audioOutput, .networkQuality, .calendar, .reminders, .location
+        .screenCapture, .audioOutput, .networkQuality, .calendar, .reminders,
+        .contacts, .location, .mailCompose, .messagesCompose
     ])
 }
 

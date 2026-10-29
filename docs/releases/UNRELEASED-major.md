@@ -7,7 +7,7 @@ This is a working release-note entry. Replace this file with `docs/releases/vX.Y
 - Select connected macOS audio outputs from Search, General Settings, or the Activity Shelf when it is visible. The picker reports the actual system default and offers volume controls only when supported.
 - Review update highlights and release notes in Lima before using the signed installer. Previously installed notes are retained locally in Version History.
 - A skippable introductory tour can point to real Settings controls and uses synthetic Mail examples.
-- Mail Settings shows a nonprompting macOS Automation status snapshot for a running Mail app and offers explicit connection testing and an Automation Settings link.
+- Mail Settings offers account-scoped access and outgoing controls, a nonprompting Automation status snapshot, explicit connection testing, and an Automation Settings link. Reviewed compose and reply paths exist but are not yet release-accepted.
 
 ## Improvements
 
@@ -23,8 +23,8 @@ This is a working release-note entry. Replace this file with `docs/releases/vX.Y
 
 - Audio selection is verified against the system default before Lima reports success.
 - Update metadata cannot authorize installation or execute arbitrary internal routes. Sparkle and the recovery updater retain their existing signature/digest checks.
-- Live Apple Mail sending remains **disabled** pending synthetic-account and signed-app QA; this release must not be accepted as complete until it is safely enabled and validated.
+- Mail sending is off by default and requires exact-message review. Apple Mail accepting a send request does not prove delivery; one self-addressed test remains unreconciled, so it must not be retried automatically. Synthetic-account and signed-app Mail QA remain release blockers.
 
 ## Verification status
 
-Development checks: all 744 discovered Swift tests passed; `swift build -c release`, release-metadata consistency, and eight light/dark synthetic screenshot renders passed. These are not live acceptance checks. Apple Mail send/reply, real-device audio, signed-install/onboarding, live-window accessibility and appearance, hosted CI, signing, and publication remain pending.
+Development checks: all 756 discovered Swift tests and a warning-free `swift build -c release` passed. Release-metadata consistency, the deterministic Workbench gate, release dispatcher tests, and hosted-release configuration checks also passed; earlier light/dark synthetic screenshot renders are not final-build live acceptance. Apple Mail send/reply reconciliation, permissioned Messages QA, real-device audio, signed-install/onboarding, live-window accessibility and appearance, exact-commit hosted CI, signing, and publication remain pending.

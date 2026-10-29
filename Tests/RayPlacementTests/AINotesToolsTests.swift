@@ -3,6 +3,11 @@ import Testing
 @testable import RayPlacement
 import RayPlacementCore
 
+@Test func notesToolDefinitionsSerializeForStrictProviders() {
+    #expect(AINotesTools.definitions.count == AINotesTools.readIDs.union(AINotesTools.writeIDs).count)
+    #expect(AINotesTools.definitions.allSatisfy { $0.responsePayload != nil })
+}
+
 @Test @MainActor func notesToolsSearchAndReadAreBounded() async throws {
     let target = MarkdownNote(title: "Browser investigation", content: "The bridge navigation path needs an exact-site grant.", modifiedAt: .distantFuture)
     let extras = (0..<11).map { MarkdownNote(title: "Browser note \($0)", content: "Browser note fixture \($0)") }

@@ -105,6 +105,17 @@ enum AIProviderHTTP {
         AIProviderFailure.message(data: data, status: status)
     }
 
+    static func error(response: HTTPURLResponse, data: Data) -> NSError {
+        let diagnostic = AIProviderFailureClassifier.diagnostic(response: response, data: data)
+        var info: [String: Any] = [NSLocalizedDescriptionKey: diagnostic.message]
+        if let code = diagnostic.errorCode { info["lima.provider.code"] = code }
+        if let parameter = diagnostic.errorParameter { info["lima.provider.parameter"] = parameter }
+        if let retryAfter = diagnostic.retryAfter { info["lima.provider.retryAfter"] = retryAfter }
+        if let source = diagnostic.retryAfterSource { info["lima.provider.retryAfterSource"] = source }
+        if let requestID = diagnostic.correlationID { info["lima.provider.requestID"] = requestID }
+        return NSError(domain: "LimaAIProvider", code: response.statusCode, userInfo: info)
+    }
+
     static func validateBaseURL(_ raw: String) -> URL? {
         let value = raw.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let components = URLComponents(string: value),
@@ -322,7 +333,7 @@ struct AnthropicAIProviderClient: AIProviderClient {
             throw NSError(domain: "LimaAIProvider", code: 10, userInfo: [NSLocalizedDescriptionKey: "Anthropic returned an invalid response."])
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "LimaAIProvider", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: AIProviderHTTP.failure(http.statusCode, data)])
+            throw AIProviderHTTP.error(response: http, data: data)
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rows = object["data"] as? [[String: Any]] else {
@@ -404,7 +415,9 @@ struct AnthropicAIProviderClient: AIProviderClient {
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()
                         for try await byte in bytes { data.append(byte); if data.count >= 2_000 { break } }
-                        continuation.yield(.failed(AIProviderHTTP.failure(http.statusCode, data)))
+                        let diagnostic = AIProviderFailureClassifier.diagnostic(response: http, data: data, model: model)
+                        continuation.yield(.diagnostic(diagnostic))
+                        continuation.yield(.failed(diagnostic.message))
                         continuation.finish()
                         return
                     }
@@ -574,7 +587,9 @@ struct OpenAICompatibleAIProviderClient: AIProviderClient {
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()
                         for try await byte in bytes { data.append(byte); if data.count >= 2_000 { break } }
-                        continuation.yield(.failed(AIProviderHTTP.failure(http.statusCode, data)))
+                        let diagnostic = AIProviderFailureClassifier.diagnostic(response: http, data: data, model: model)
+                        continuation.yield(.diagnostic(diagnostic))
+                        continuation.yield(.failed(diagnostic.message))
                         continuation.finish()
                         return
                     }
@@ -622,7 +637,7 @@ struct GeminiAIProviderClient: AIProviderClient {
             throw NSError(domain: "LimaAIProvider", code: 20, userInfo: [NSLocalizedDescriptionKey: "Gemini returned an invalid response."])
         }
         guard (200..<300).contains(http.statusCode) else {
-            throw NSError(domain: "LimaAIProvider", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: AIProviderHTTP.failure(http.statusCode, data)])
+            throw AIProviderHTTP.error(response: http, data: data)
         }
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rows = object["models"] as? [[String: Any]] else {
@@ -744,7 +759,9 @@ struct GeminiAIProviderClient: AIProviderClient {
                     guard (200..<300).contains(http.statusCode) else {
                         var data = Data()
                         for try await byte in bytes { data.append(byte); if data.count >= 2_000 { break } }
-                        continuation.yield(.failed(AIProviderHTTP.failure(http.statusCode, data)))
+                        let diagnostic = AIProviderFailureClassifier.diagnostic(response: http, data: data, model: model)
+                        continuation.yield(.diagnostic(diagnostic))
+                        continuation.yield(.failed(diagnostic.message))
                         continuation.finish()
                         return
                     }

@@ -12,6 +12,7 @@ enum NativeCapabilityAITools {
         "screenshot_list": .screenshotList,
         "screenshot_search": .screenshotSearch,
         "screenshot_info": .screenshotInfo,
+        "screenshot_read_image": .screenshotReadImage,
         "screenshot_copy": .screenshotCopy,
         "screenshot_delete": .screenshotDelete,
         "audio_list_outputs": .audioListOutputs,
@@ -40,14 +41,29 @@ enum NativeCapabilityAITools {
         "reminders_complete": .remindersComplete,
         "reminders_reopen": .remindersReopen,
         "reminders_delete": .remindersDelete,
+        "contacts_search": .contactsSearch,
+        "contacts_get": .contactsGet,
+        "contacts_find_email": .contactsFindEmail,
+        "contacts_find_phone": .contactsFindPhone,
+        "contacts_create": .contactsCreate,
+        "contacts_update": .contactsUpdate,
         "location_current": .locationCurrent
     ]
 
     static let ids = Set(operations.keys)
+    static let exactApprovalIDs = ids.union(MessagesAIActionTools.exactApprovalIDs)
     nonisolated static let calendarIDs: Set<String> = ["calendar_list", "calendar_events", "calendar_search",
         "calendar_check_conflicts", "calendar_create_event", "calendar_update_event", "calendar_delete_event"]
     nonisolated static let reminderIDs: Set<String> = ["reminders_list_lists", "reminders_search", "reminders_list",
         "reminders_create", "reminders_update", "reminders_complete", "reminders_reopen", "reminders_delete"]
+    nonisolated static let screenshotHistoryIDs: Set<String> = [
+        "screenshot_list", "screenshot_search", "screenshot_info",
+        "screenshot_read_image", "screenshot_copy", "screenshot_delete"
+    ]
+    nonisolated static let contactsIDs: Set<String> = [
+        "contacts_search", "contacts_get", "contacts_find_email", "contacts_find_phone",
+        "contacts_create", "contacts_update"
+    ]
     nonisolated static let locationIDs: Set<String> = ["location_current"]
 
     private struct ExactApproval {
@@ -99,7 +115,7 @@ enum NativeCapabilityAITools {
     /// A changed tool, call ID, argument string, or stale review fails closed.
     static func matchesApproval(_ approval: AIToolApprovalRequest,
                                 call: AIOutputItem, now: Date = Date()) -> Bool {
-        guard let name = call.name, ids.contains(name),
+        guard let name = call.name, exactApprovalIDs.contains(name),
               let callID = call.callID, !callID.isEmpty,
               approval.decision == .pending,
               approval.localCallID == callID,
@@ -161,6 +177,8 @@ enum NativeCapabilityAITools {
               "limit": limit], required: ["query"], category: .screenshotHistory),
         tool("screenshot_info", "Read metadata for one saved Screenshot History capture, not the image pixels.",
              ["id": screenshotID], required: ["id"], category: .screenshotHistory),
+        tool("screenshot_read_image", "Read one saved Screenshot History image as bounded pixels for the selected visual AI provider after exact-call review. The screenshot may contain private content; image bytes are never returned as text or shared when the provider lacks visual input.",
+             ["id": screenshotID], required: ["id"], category: .screenshotHistory),
         tool("screenshot_copy", "Copy one saved screenshot as actual image data to the system clipboard.",
              ["id": screenshotID], required: ["id"], risk: .localAction, category: .screenshotHistory),
         tool("screenshot_delete", "Permanently delete one saved screenshot and its thumbnail.",
@@ -216,9 +234,9 @@ enum NativeCapabilityAITools {
              required: ["event_id", "expected_title"], risk: .destructive, category: .calendar),
         tool("reminders_list_lists", "List Apple Reminders lists and their writable status.",
              category: .reminders),
-        tool("reminders_list", "List up to 100 reminders in one list or across all lists; completed items are excluded unless requested.",
+        tool("reminders_list", "List up to 100 reminders in one list or across all lists; completed items are excluded unless requested. Mail-linked items include lima_note_id when their source Note link is valid.",
              ["list_id": listID, "include_completed": ["type": "boolean"]], category: .reminders),
-        tool("reminders_search", "Search reminder titles and notes in one list or across all lists.",
+        tool("reminders_search", "Search reminder titles and notes in one list or across all lists. Mail-linked results may include lima_note_id for a follow-up Notes read.",
              ["query": boundedTitle, "list_id": listID, "include_completed": ["type": "boolean"]],
              required: ["query"], category: .reminders),
         tool("reminders_create", "Create one Apple Reminder after exact-call review. A due time also creates one notification alarm. Use reminders_list_lists if the user named a list.",
@@ -238,6 +256,36 @@ enum NativeCapabilityAITools {
         tool("reminders_delete", "Permanently delete one reminder by exact ID and previously observed title.",
              ["reminder_id": reminderID, "expected_title": boundedTitle],
              required: ["reminder_id", "expected_title"], risk: .destructive, category: .reminders),
+        tool("contacts_search", "Search macOS Contacts by name after exact-call review and macOS Contacts access. Return up to 20 live matches. For Mail, use recipient_email only when recipient_resolution is resolved; ask the user to choose when contacts or email addresses are ambiguous.",
+             ["query": ["type": "string"]],
+             required: ["query"], category: .contacts),
+        tool("contacts_get", "Read one live contact by an exact ID from a prior Contacts result. Returns contact methods, freshness fingerprint, and recipient_resolution. Do not use this to bypass a multiple_contacts result without the user's choice; do not guess when recipient_email is null.",
+             ["contact_id": ["type": "string"]],
+             required: ["contact_id"], category: .contacts),
+        tool("contacts_find_email", "Find contacts matching one exact email address; returns at most 20 matches. Respect list-level recipient_resolution and do not choose among duplicate contacts.",
+             ["email": ["type": "string"]],
+             required: ["email"], category: .contacts),
+        tool("contacts_find_phone", "Find contacts by 4 to 20 digits of a phone number; returns at most 20 matches. Respect list-level recipient_resolution and ask the user if the match or email is ambiguous.",
+             ["phone": ["type": "string"]],
+             required: ["phone"], category: .contacts),
+        tool("contacts_create", "Create one macOS contact after exact-call review. Supply a name or organization and at least one email or phone. Search first; a duplicate email is rejected. Returns the live contact ID.",
+             ["given_name": ["type": "string"],
+              "family_name": ["type": "string"],
+              "organization": ["type": "string"],
+              "emails": ["type": "array", "maxItems": 5,
+                         "items": ["type": "string"]],
+              "phones": ["type": "array", "maxItems": 5,
+                         "items": ["type": "string"]]],
+             required: ["given_name", "family_name", "organization", "emails", "phones"],
+             risk: .write, category: .contacts),
+        tool("contacts_update", "Update one exact field of an existing macOS contact after exact-call review. Use contacts_get for its ID, current value, and fingerprint; old_value null appends an email or phone, and empty new_value removes an exact existing method. Unrelated fields are preserved.",
+             ["contact_id": ["type": "string"],
+              "expected_fingerprint": ["type": "string"],
+              "field": ["type": "string", "enum": ["given_name", "family_name", "organization", "email", "phone"]],
+              "old_value": ["type": ["string", "null"]],
+              "new_value": ["type": "string"]],
+             required: ["contact_id", "expected_fingerprint", "field", "old_value", "new_value"],
+             risk: .write, category: .contacts),
         tool("location_current", "Request one current location from macOS Location Services after exact-call review. Returns coordinates, accuracy, and observation time; Lima does not retain a location history.",
              category: .location)
     ]
@@ -268,6 +316,24 @@ enum NativeCapabilityAITools {
         )
         do {
             let approvalID = try await NativeCapabilityRouter.shared.recordReviewedCall(nativeCall)
+            if operation == .screenshotReadImage {
+                let image = try await NativeCapabilityRouter.shared.executeReviewedScreenshotImage(
+                    nativeCall, approvalID: approvalID
+                )
+                let metadata = JSONValue.object([
+                    "completed": .bool(true),
+                    "source": .string("screenshot_history"),
+                    "id": .string(image.id.uuidString),
+                    "captured_at": .string(ISO8601DateFormatter().string(from: image.capturedAt)),
+                    "media_type": .string(image.mediaType),
+                    "image_attached": .bool(false)
+                ])
+                let encoded = try JSONEncoder().encode(metadata)
+                return LimaAIToolExecution(
+                    output: String(decoding: encoded, as: UTF8.self),
+                    isError: false, savedScreenshot: image
+                )
+            }
             let result = try await NativeCapabilityRouter.shared.execute(
                 nativeCall, approvalID: approvalID
             )

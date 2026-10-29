@@ -325,6 +325,12 @@ enum LauncherFileAction: String, CaseIterable {
     }
 }
 
+enum MessagesLauncherAction {
+    case composeReply
+    case addToContext
+    case createNote
+}
+
 enum LauncherAction {
     case launchApplication(URL)
     case openFile(URL)
@@ -341,6 +347,7 @@ enum LauncherAction {
     case enterMode(LauncherMode)
     case extensionCommand(LoadedExtensionCommand)
     case universalSearch(LimaSearchResult)
+    case messagesAction(MessagesLauncherAction, LimaSearchResult)
     case builtinInvocation(BuiltinInvocation)
     case workflow(UUID)
     case macro(UUID)

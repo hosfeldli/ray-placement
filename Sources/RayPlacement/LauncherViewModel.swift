@@ -967,7 +967,7 @@ final class LauncherViewModel: ObservableObject {
             guard let shelf = ContextShelfStore.shared.items.first(where: { $0.id == id }) else { return nil }
             // Mail references need a scoped resolver and disclosure review; the
             // generic Use With path must not turn their preview into AI context.
-            if shelf.isMailReference { return nil }
+            if shelf.isMailReference || shelf.isMessageReference || shelf.isBrowserReference { return nil }
             return LimaContextValue(kind: .shelfItem, title: shelf.title, value: shelf.textValue ?? shelf.preview)
         case .clipboardEntry(let id):
             guard let entry = clipboard.entries.first(where: { $0.id == id }) else { return nil }
@@ -1259,6 +1259,8 @@ final class LauncherViewModel: ObservableObject {
         case .context: icon = .system("tray.full")
         case .clipboard: icon = .system("clipboard")
         case .screenshot: icon = .system("photo.on.rectangle")
+        case .messages: icon = .system(MessagesSearchResultID.isReply(result.id)
+                                                ? "square.and.pencil" : "message")
         default: icon = .system("magnifyingglass")
         }
         return LauncherItem(
@@ -1269,7 +1271,8 @@ final class LauncherViewModel: ObservableObject {
             keywords: result.keywords,
             action: result.kind == .note && UUID(uuidString: String(result.id.dropFirst("note:".count))) != nil
                 ? .note(UUID(uuidString: String(result.id.dropFirst("note:".count)))!) : .universalSearch(result),
-            accessory: result.kind == .screenshot ? "Copy Image" : "Open"
+            accessory: result.kind == .screenshot ? "Copy Image" :
+                (MessagesSearchResultID.isReply(result.id) ? "Review Reply" : "Open")
         )
     }
 

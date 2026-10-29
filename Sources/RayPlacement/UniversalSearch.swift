@@ -196,7 +196,9 @@ final class UniversalSearchCoordinator {
         }
         let indexed = await engine.search(rawQuery, revision: snapshotRevision, snapshot: snapshot)
         let captures = await screenshotResults(for: rawQuery)
-        return Array((indexed + captures).sorted { $0.score > $1.score }.prefix(24))
+        let messages = await messagesResults(for: rawQuery)
+        guard !Task.isCancelled else { return [] }
+        return Array((indexed + captures + messages).sorted { $0.score > $1.score }.prefix(24))
     }
 
     func screenshotImageData(for id: UUID) async throws -> (Data, ScreenshotImageFormat) {
@@ -250,6 +252,120 @@ final class UniversalSearchCoordinator {
                     score: score + (record.isPinned ? 15 : 0)
                 )
             }
+        } catch {
+            return []
+        }
+    }
+
+    /// Messages never enter the global snapshot. Explicit text commands query
+    /// only the current selected scope on the read adapter's background actor.
+    private func messagesResults(for rawQuery: String) async -> [LimaSearchResult] {
+        let policy = MessagesCapabilityPolicyStore.load()
+        guard policy.readEnabled,
+              !policy.selectedConversationGUIDs.subtracting(policy.excludedConversationGUIDs).isEmpty else {
+            return []
+        }
+        let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = clean.lowercased()
+        let parsed = Self.parse(clean)
+        let term: String
+        let groupsOnly: Bool
+        let lastOnly: Bool
+        if parsed.prefix == "messages" {
+            term = parsed.query
+            groupsOnly = false
+            lastOnly = false
+        } else if ["messages", "texts", "recent texts", "reply to last message"].contains(lower) {
+            term = ""
+            groupsOnly = false
+            lastOnly = lower == "reply to last message"
+        } else if lower == "text group" {
+            term = ""
+            groupsOnly = true
+            lastOnly = false
+        } else if let prefix = ["messages ", "texts ", "text ", "find texts about "].first(where: { lower.hasPrefix($0) }) {
+            term = String(clean.dropFirst(prefix.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+            groupsOnly = false
+            lastOnly = false
+        } else {
+            return []
+        }
+        let service = MessagesCapabilityService.shared
+        do {
+            if lastOnly {
+                guard policy.sendEnabled else { return [] }
+                let end = Date()
+                let recent = try await service.search(
+                    "", after: end.addingTimeInterval(-Double(policy.historyDays) * 86_400),
+                    before: end, limit: 50, origin: .userInterface
+                )
+                guard let incoming = recent.first(where: { !$0.isFromMe }) else { return [] }
+                let chats = try await service.listChats(origin: .userInterface, limit: 100)
+                let live = MessagesCapabilityPolicyStore.load()
+                guard !Task.isCancelled, live.sendEnabled,
+                      live.permits(incoming.conversationGUID) else { return [] }
+                let chat = chats.first { $0.guid == incoming.conversationGUID }
+                let title = chat?.title ?? "Selected conversation"
+                return [LimaSearchResult(
+                    id: MessagesSearchResultID.reply(
+                        to: incoming.guid, in: incoming.conversationGUID
+                    ),
+                    kind: .messages, title: "Reply to \(title)",
+                    subtitle: "Messages · Latest incoming in selected scope · Review before sending",
+                    keywords: ["reply to last message", "messages", "reply", "text"], score: 800
+                )]
+            }
+            if term.isEmpty {
+                let chats = try await service.listChats(origin: .userInterface, limit: 30)
+                let visible = groupsOnly ? chats.filter(\.isGroup) : chats
+                return Array(visible.prefix(12)).map { chat in
+                    LimaSearchResult(
+                        id: MessagesSearchResultID.chat(chat.guid), kind: .messages,
+                        title: chat.title,
+                        subtitle: "Messages · \(chat.isGroup ? "Group" : "Conversation") · \(chat.lastMessageAt?.formatted(date: .abbreviated, time: .shortened) ?? "No recent date")",
+                        keywords: ["messages", "texts", chat.service ?? ""], score: 450
+                    )
+                }
+            }
+            guard term.utf8.count <= 256 else { return [] }
+            let end = Date()
+            let matches = try await service.search(
+                term,
+                after: end.addingTimeInterval(-Double(policy.historyDays) * 86_400),
+                before: end, limit: 12, origin: .userInterface
+            )
+            guard !Task.isCancelled else { return [] }
+            let chats = (try? await service.listChats(origin: .userInterface, limit: 100)) ?? []
+            let live = MessagesCapabilityPolicyStore.load()
+            guard live.readEnabled, !Task.isCancelled else { return [] }
+            let visibleChats = chats.filter { live.permits($0.guid) }
+            let titles = visibleChats.reduce(into: [String: String]()) { map, chat in
+                map[chat.guid] = chat.title
+            }
+            let chatMatches = visibleChats.filter {
+                $0.title.localizedCaseInsensitiveContains(term)
+            }.prefix(5).map { chat in
+                LimaSearchResult(
+                    id: MessagesSearchResultID.chat(chat.guid), kind: .messages,
+                    title: chat.title,
+                    subtitle: "Messages · Conversation · \(chat.lastMessageAt?.formatted(date: .abbreviated, time: .shortened) ?? "No recent date")",
+                    keywords: ["messages", "texts", chat.service ?? ""], score: 650
+                )
+            }
+            let messageMatches = matches.enumerated().compactMap { index, message -> LimaSearchResult? in
+                guard live.permits(message.conversationGUID) else { return nil }
+                let title = titles[message.conversationGUID] ?? "Messages conversation"
+                let excerpt = message.text.map { String($0.prefix(180)) }
+                    ?? "Content unavailable (\(message.contentStatus))"
+                return LimaSearchResult(
+                    id: MessagesSearchResultID.message(message.guid, in: message.conversationGUID),
+                    kind: .messages, title: title,
+                    subtitle: "Messages · \(message.senderAddress ?? "Unknown sender") · \(excerpt)",
+                    keywords: ["messages", "texts", message.service ?? ""],
+                    score: 600 - Double(index)
+                )
+            }
+            return Array(chatMatches) + messageMatches
         } catch {
             return []
         }
@@ -334,9 +450,9 @@ final class UniversalSearchCoordinator {
 
     nonisolated static func parse(_ rawQuery: String) -> (prefix: String?, query: String) {
         let clean = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let known = ["note", "notes", "dictation", "terminal", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files", "screenshot", "screenshots"]
+        let known = ["note", "notes", "dictation", "terminal", "command", "commands", "workspace", "workspaces", "context", "shelf", "chat", "chats", "ai", "app", "apps", "clipboard", "file", "files", "screenshot", "screenshots", "message", "messages", "text", "texts"]
         for prefix in known where clean.lowercased().hasPrefix(prefix + ":") {
-            let canonical = ["notes": "note", "commands": "command", "workspaces": "workspace", "shelf": "context", "chats": "chat", "ai": "chat", "apps": "app", "files": "file", "screenshots": "screenshot"][prefix] ?? prefix
+            let canonical = ["notes": "note", "commands": "command", "workspaces": "workspace", "shelf": "context", "chats": "chat", "ai": "chat", "apps": "app", "files": "file", "screenshots": "screenshot", "message": "messages", "text": "messages", "texts": "messages"][prefix] ?? prefix
             return (canonical, String(clean.dropFirst(prefix.count + 1)).trimmingCharacters(in: .whitespacesAndNewlines))
         }
         return (nil, clean)

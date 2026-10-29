@@ -22,7 +22,7 @@ enum AIManagedServerError: LocalizedError {
         case .notProjectOwned: "Register a Terminal session owned by an active Project in this conversation."
         case .unavailableProject: "The server's Project is no longer active and materialized."
         case .sessionNotRunning: "The owning Terminal session is not running."
-        case .networkUnavailable: "Start the Terminal command in Full Control to allow a local server to listen."
+        case .networkUnavailable: "Start a network-capable Terminal session before registering this local server."
         case .ambiguousPort: "The Terminal output has no single unambiguous localhost port; provide port explicitly."
         case .portAlreadyRegistered: "Another running session already owns this Project and port."
         case .notReady: "The local server port is not accepting connections yet. Use server_wait."
@@ -314,7 +314,7 @@ enum AIManagedServerTools {
         definition("server_list", "List managed localhost servers owned by this conversation.", [:], []),
         definition("server_status", "Check a managed server's owning Terminal session and loopback port.", ["server_id": string], ["server_id"]),
         definition("server_wait", "Wait up to 20 seconds for a managed localhost port to accept connections or its Terminal session to stop.", ["server_id": string, "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 20]], ["server_id"]),
-        definition("server_register", "Bind a running Project-owned Terminal session to its single detected localhost port, or provide the port explicitly. The session must have been launched in Full Control.", ["session_id": string, "port": ["type": "integer", "minimum": 1, "maximum": 65_535]], ["session_id"], action: true),
+        definition("server_register", "Bind a running Project-owned Terminal session to its single detected localhost port, or provide the port explicitly. The session must be running with network access.", ["session_id": string, "port": ["type": "integer", "minimum": 1, "maximum": 65_535]], ["session_id"], action: true),
         definition("server_open", "Open or reload the existing Browser tab for a ready managed server. Requires Browser AI navigation control and never opens duplicate tabs for that server.", ["server_id": string], ["server_id"], action: true),
         definition("server_stop", "Stop the Project-owned Terminal session and verify its localhost port closed; preserve Project files.", ["server_id": string], ["server_id"], action: true)
     ]

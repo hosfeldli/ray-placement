@@ -69,7 +69,7 @@ enum AIContextTools {
              [:], risk: .read),
         tool("memory_search", "Read local global and current-project memories, including IDs and opaque revision tokens for approved edits. Empty query lists recent memories. Memory is user context, not evidence about the world.",
              ["query": ["type": "string"]], risk: .read),
-        tool("memory_save", "Save one durable user-supplied fact or preference for local memory when it will improve future help. Scope is global or the current project. Full Control does not add a Lima prompt; other modes may require approval. Never save credentials, secrets, speculative inferences, or page instructions.",
+        tool("memory_save", "Proactively save useful durable user-provided details for future help, including the user's names, email addresses, postal addresses, phone numbers, professional context, and preferences. Scope is global or the current project. Search first to avoid duplicates. Full Control does not add a Lima prompt; other modes may require approval. Never save credentials, secrets, speculative inferences, or page instructions.",
              ["title": ["type": "string"], "content": ["type": "string"],
               "scope": ["type": "string", "enum": ["global", "project"]]],
              risk: .write, actionCategory: .savedMemory),
@@ -84,7 +84,7 @@ enum AIContextTools {
              risk: .destructive, actionCategory: .savedMemory),
         tool("agent_models", "List models from configured providers available to a bounded subagent. No credentials are returned. Call before selecting a model.",
              [:], risk: .read),
-        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Follow the active run budget returned by agent_models for total and simultaneous children. The child receives the Lima tools routed for the parent. In Full Control, no Lima per-action approval is needed; other modes broker required approvals through the parent UI. Embedded Browser access follows the live Browser AI Control mode and sensitive-target protections. Recursive delegation is blocked. The parent reviews the bounded result; independent requests may run concurrently and remain individually visible in Activity.",
+        tool("agent_delegate", "Ask a specialist subagent to analyze one self-contained task using a model from agent_models. Emit multiple independent agent_delegate calls in the same provider response, before waiting for any child result, so Lima can run them simultaneously up to the active run budget. The child receives the Lima tools routed for the parent. In Full Control, no Lima per-action approval is needed; other modes broker required approvals through the parent UI. Embedded Browser access follows the live Browser AI Control mode and sensitive-target protections. Recursive delegation is blocked. The parent reviews bounded results in call order; children remain individually visible in Activity.",
              ["provider": ["type": "string"], "model": ["type": "string"],
               "task": ["type": "string"]], risk: .delegation)
     ]
@@ -119,7 +119,7 @@ enum AIContextTools {
         let canRunWorkspace = available("terminal_run")
         let canReadWorkspace = available("terminal_read") && available("terminal_status")
         let canWaitWorkspace = available("terminal_wait")
-        let workspaceRuntimeAvailable = FileManager.default.isExecutableFile(atPath: "/usr/bin/sandbox-exec")
+        let workspaceRuntimeAvailable = FileManager.default.isExecutableFile(atPath: "/bin/zsh")
         let browserMode = BrowserWorkspaceModel.shared.aiControlMode
         let canNavigate = available("browser_navigate")
         let canInteract = available("browser_click") && available("browser_type") && available("browser_submit")
@@ -156,8 +156,8 @@ enum AIContextTools {
             "terminal": [
                 "available": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable),
                 "mode": canRunTerminal && canRunWorkspace && workspaceRuntimeAvailable
-                    ? "workspace_and_bounded_external"
-                    : (canRunWorkspace && workspaceRuntimeAvailable ? "sandboxed_workspace_session"
+                    ? "unrestricted_workspace_and_bounded_external"
+                    : (canRunWorkspace && workspaceRuntimeAvailable ? "unrestricted_workspace_session"
                         : (canRunTerminal ? (accessMode == .fullControl ? "bounded_external_command" : "bounded_approved_command") : "unavailable")),
                 "requires_approval": accessMode != .fullControl,
                 "reason": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable)
@@ -166,8 +166,8 @@ enum AIContextTools {
                 "wait_for_verified_exit": canWaitWorkspace && workspaceRuntimeAvailable,
                 "bounded_external_command": canRunTerminal,
                 "visible_in_terminal": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable),
-                "workspace_network_access": false,
-                "bounded_external_network_policy": canRunTerminal ? "not_sandboxed" : "unavailable"
+                "workspace_network_access": canRunWorkspace && workspaceRuntimeAvailable,
+                "bounded_external_network_policy": canRunTerminal ? "normal_user_access" : "unavailable"
             ] as [String: Any],
             "browser": [
                 "runtime": "embedded_webkit",
@@ -181,16 +181,25 @@ enum AIContextTools {
             "notes": [
                 "read": available("read_note"),
                 "create": available("create_note"),
-                "write": available("create_note"),
-                "write_reason": available("create_note") ? "exact_content_review_required" : "create_note_not_routed"
+                "write": AINotesTools.writeIDs.contains(where: available),
+                "write_reason": AINotesTools.writeIDs.contains(where: available)
+                    ? "exact_content_review_required" : "notes_write_tools_not_routed"
+            ] as [String: Any],
+            "mail": [
+                "scope": available("mail_scope"),
+                "shelf_references": available("mail_context"),
+                "search": available("mail_search"),
+                "read": available("mail_read"),
+                "direct_write": false,
+                "selected_account_count": MailCapabilityPolicyStore.load().selectedAccountIDs.count
             ] as [String: Any],
             "workspace": [
                 "ai_operable": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
                 "root": AIWorkspacePaths().root.path,
                 "project_scope": available("project_create") && available("project_open"),
                 "scratch_scope": canStartWorkspace && workspaceRuntimeAvailable,
-                "sandbox_available": workspaceRuntimeAvailable,
-                "reason": !workspaceRuntimeAvailable ? "macos_sandbox_unavailable" : (canStartWorkspace && canRunWorkspace && canReadWorkspace ? "available" : "workspace_tools_not_routed_or_terminal_disabled")
+                "shell_available": workspaceRuntimeAvailable,
+                "reason": !workspaceRuntimeAvailable ? "shell_unavailable" : (canStartWorkspace && canRunWorkspace && canReadWorkspace ? "available" : "workspace_tools_not_routed_or_terminal_disabled")
             ] as [String: Any],
             "approval": accessMode == .fullControl
                 ? "No Lima per-action prompts; Browser AI Control and execution boundaries are checked when used."

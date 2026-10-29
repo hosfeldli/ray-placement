@@ -6,6 +6,8 @@ enum LimaOnboardingStep: Int, CaseIterable, Codable {
     case welcome
     case audio
     case mail
+    case aiAccess
+    case browser
     case noteDemo
     case versionHistory
     case finish
@@ -15,7 +17,9 @@ enum LimaOnboardingStep: Int, CaseIterable, Codable {
         case .welcome: return "Welcome to the New Lima"
         case .audio: return "Discover Sound Output"
         case .mail: return "Explore Apple Mail"
-        case .noteDemo: return "Mail and Notes"
+        case .aiAccess: return "Choose AI Tool Access"
+        case .browser: return "Control Browser Access"
+        case .noteDemo: return "Review Cross-App Tasks"
         case .versionHistory: return "Find Release Notes"
         case .finish: return "You're Ready"
         }
@@ -28,9 +32,13 @@ enum LimaOnboardingStep: Int, CaseIterable, Codable {
         case .audio:
             return "Use the real Sound Output control below, or the speaker icon when the Activity Shelf is visible. No output changes unless you select one."
         case .mail:
-            return "Apple Mail has independent account, reading, draft, and sending controls. Sending is never enabled or performed by this tour."
+            return "Choose which Apple Mail accounts Lima may read. Drafting and sending are separate controls; this tour neither reads Mail nor sends a message."
+        case .aiAccess:
+            return "Choose which Lima tools AI can use. Mail, Notes, Reminders, Contacts, and screenshots retain their own access boundaries; changing Tool Access does not grant Browser control."
+        case .browser:
+            return "Browser AI Control is separate from Tool Access. Choose a permission level here, then grant a tab in Browser. Pause AI on a tab whenever you need to take over."
         case .noteDemo:
-            return "A correspondence action list can become an editable Note. This example is synthetic; the tour does not read your Mail."
+            return "Review Mail action items before saving an editable Note. Creating linked Reminders is a separate, explicit action after the Note is saved. This example is synthetic."
         case .versionHistory:
             return "Open Version History here to revisit offline release notes for installed versions."
         case .finish:
@@ -42,6 +50,8 @@ enum LimaOnboardingStep: Int, CaseIterable, Codable {
         switch self {
         case .audio: return "audio"
         case .mail: return "mail"
+        case .aiAccess: return "ai"
+        case .browser: return "browser"
         case .versionHistory: return "history"
         default: return nil
         }
@@ -281,6 +291,8 @@ private struct LimaOnboardingSpotlight: View {
                     Text("Message: Please confirm the shipment window and send the revised ETA.")
                         .limaFont(.caption)
                     Text("Note: ☐ Confirm shipment window  ☐ Share revised ETA")
+                        .limaFont(.caption)
+                    Text("Optional next step: review and create linked Reminders.")
                         .limaFont(.caption)
                 }
                 .padding(9)

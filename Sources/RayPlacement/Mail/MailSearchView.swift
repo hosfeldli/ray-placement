@@ -11,13 +11,17 @@ private struct MailActionNoteSheet: Identifiable {
 }
 
 /// A deliberately user-initiated Mail browser. Opening this view does not
-/// issue Apple Events; each search is limited to one selected account, seven
-/// days, and 50 results. Message bodies live only in this view's state.
+/// issue Apple Events; each search is limited to one selected account, an
+/// explicit bounded date range, and 50 results. Bodies live only in view state.
 struct MailSearchView: View {
     let account: MailAccount
     let service: MailCapabilityService
 
     @State private var query = ""
+    @State private var daysBack = 7
+    @State private var mailboxes: [MailMailbox] = []
+    @State private var selectedMailboxIDs: Set<String> = []
+    @State private var isLoadingMailboxes = false
     @State private var results: [MailMessageSummary] = []
     @State private var coverage: MailSearchCoverage?
     @State private var selectedReference: MailMessageReference?
@@ -26,39 +30,89 @@ struct MailSearchView: View {
     @State private var isSearching = false
     @State private var isReading = false
     @State private var isPreparingReply = false
+    @State private var isOpeningInMail = false
     @State private var isAddingToContext = false
+    @State private var isPreparingMessageAction = false
+    @State private var messageActionReview: MailMessageActionReview?
     @State private var supportedOperations: Set<MailOperation> = []
     @State private var composeSheet: MailReplyComposeSheet?
     @State private var actionNoteSheet: MailActionNoteSheet?
     @State private var generation = UUID()
+    @State private var mailboxGeneration = UUID()
     @State private var searchTask: Task<Void, Never>?
+    @State private var mailboxTask: Task<Void, Never>?
     @State private var readTask: Task<Void, Never>?
     @State private var replyTask: Task<Void, Never>?
+    @State private var openTask: Task<Void, Never>?
     @State private var contextTask: Task<Void, Never>?
+    @State private var messageActionTask: Task<Void, Never>?
 
     init(account: MailAccount, service: MailCapabilityService = .shared) {
         self.account = account
         self.service = service
     }
 
+    private var canComposeInSelectedAccount: Bool {
+        let policy = MailOutgoingPolicyStore.load()
+        return policy.selectedAccountIDs.contains(account.id) &&
+            (policy.draftEnabled || policy.sendEnabled) &&
+            (supportedOperations.contains(.createDraft) || supportedOperations.contains(.send))
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Mail — \(account.name)")
                 .font(.title2.weight(.semibold))
-            Text("Search only this selected account's last seven days. Results may be partial; Lima never searches other accounts automatically.")
+            Text("Search only this selected account. Use sender:, recipient:, subject:, or content: to narrow a field. Results may be partial; Lima never searches other accounts automatically.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
             HStack {
-                TextField("Search subject or sender", text: $query)
+                TextField("Search Mail or use sender:, recipient:, subject:, content:", text: $query)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { startSearch() }
-                    .disabled(isSearching)
+                    .disabled(isSearching || isLoadingMailboxes)
                     .accessibilityLabel("Mail search query")
                 Button("Search Mail") { startSearch() }
-                    .disabled(isSearching || query.utf8.count > 256)
+                    .disabled(isSearching || isLoadingMailboxes || query.utf8.count > 256)
                 if isSearching {
                     Button("Cancel Search") { cancelSearch() }
+                }
+            }
+
+            HStack {
+                Picker("Date range", selection: $daysBack) {
+                    Text("Past day").tag(1)
+                    Text("Past 7 days").tag(7)
+                    Text("Past 14 days").tag(14)
+                    Text("Past 30 days").tag(30)
+                }
+                .frame(width: 180)
+                if mailboxes.isEmpty {
+                    Button(isLoadingMailboxes ? "Loading Mailboxes…" : "Load Mailboxes") {
+                        loadMailboxes()
+                    }
+                    .disabled(isLoadingMailboxes)
+                } else {
+                    Menu(selectedMailboxIDs.isEmpty
+                         ? "All Mailboxes"
+                         : "\(selectedMailboxIDs.count) Mailbox\(selectedMailboxIDs.count == 1 ? "" : "es")") {
+                        Button("All Mailboxes") { selectedMailboxIDs = [] }
+                        Divider()
+                        ForEach(mailboxes) { mailbox in
+                            Button {
+                                if selectedMailboxIDs.contains(mailbox.id) {
+                                    selectedMailboxIDs.remove(mailbox.id)
+                                } else {
+                                    selectedMailboxIDs.insert(mailbox.id)
+                                }
+                            } label: {
+                                Label(mailbox.path,
+                                      systemImage: selectedMailboxIDs.contains(mailbox.id)
+                                      ? "checkmark" : "tray")
+                            }
+                        }
+                    }
                 }
             }
 
@@ -118,6 +172,12 @@ struct MailSearchView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         HStack {
+                            if supportedOperations.contains(.openMessage) {
+                                Button("Open in Apple Mail") {
+                                    startOpenInMail(openedMessage.reference)
+                                }
+                                .disabled(isOpeningInMail)
+                            }
                             Button("Create Action Note…") {
                                 actionNoteSheet = MailActionNoteSheet(message: openedMessage)
                             }
@@ -125,13 +185,64 @@ struct MailSearchView: View {
                                 startAddToContext(openedMessage.reference)
                             }
                             .disabled(isAddingToContext)
-                            if supportedOperations.contains(.reply) && supportedOperations.contains(.send) {
+                            if supportedOperations.contains(.reply) && canComposeInSelectedAccount {
                                 Button("Reply…") {
                                     startReply(to: openedMessage.reference)
                                 }
                                 .disabled(isPreparingReply)
                             }
-                            if isPreparingReply {
+                            if supportedOperations.contains(.forward) && canComposeInSelectedAccount {
+                                Button("Forward…") {
+                                    startForward(openedMessage.reference)
+                                }
+                                .disabled(isPreparingReply)
+                            }
+                            if supportedOperations.contains(.move) ||
+                               supportedOperations.contains(.delete) {
+                                Menu("Organize") {
+                                    if supportedOperations.contains(.move) {
+                                        let archiveTargets = mailboxes.filter {
+                                            $0.id != openedMessage.reference.mailboxID &&
+                                                $0.name.localizedCaseInsensitiveCompare("Archive") == .orderedSame
+                                        }
+                                        if archiveTargets.count == 1,
+                                           let archive = archiveTargets.first {
+                                            Button("Archive…") {
+                                                startMessageAction(MailMessageActionRequest(
+                                                    reference: openedMessage.reference,
+                                                    kind: .archive(archive)
+                                                ))
+                                            }
+                                        }
+                                        if !mailboxes.isEmpty {
+                                            Menu("Move to") {
+                                                ForEach(mailboxes.filter {
+                                                    $0.id != openedMessage.reference.mailboxID
+                                                }) { mailbox in
+                                                    Button(mailbox.path) {
+                                                        startMessageAction(MailMessageActionRequest(
+                                                            reference: openedMessage.reference,
+                                                            kind: .move(mailbox)
+                                                        ))
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            Text("Load Mailboxes to move or archive")
+                                        }
+                                    }
+                                    if supportedOperations.contains(.delete) {
+                                        Button("Delete…", role: .destructive) {
+                                            startMessageAction(MailMessageActionRequest(
+                                                reference: openedMessage.reference,
+                                                kind: .delete
+                                            ))
+                                        }
+                                    }
+                                }
+                                .disabled(isPreparingMessageAction || isReading)
+                            }
+                            if isPreparingReply || isOpeningInMail || isPreparingMessageAction {
                                 ProgressView()
                                     .controlSize(.small)
                             }
@@ -152,20 +263,33 @@ struct MailSearchView: View {
         }
         .onDisappear {
             generation = UUID()
+            mailboxGeneration = UUID()
             searchTask?.cancel()
+            mailboxTask?.cancel()
             readTask?.cancel()
             replyTask?.cancel()
+            openTask?.cancel()
             contextTask?.cancel()
+            messageActionTask?.cancel()
             searchTask = nil
+            mailboxTask = nil
             readTask = nil
             replyTask = nil
+            openTask = nil
             contextTask = nil
+            messageActionTask = nil
             isSearching = false
             isReading = false
             isPreparingReply = false
+            isOpeningInMail = false
             isAddingToContext = false
+            isPreparingMessageAction = false
+            messageActionReview = nil
             selectedReference = nil
             openedMessage = nil
+            mailboxes = []
+            selectedMailboxIDs = []
+            isLoadingMailboxes = false
             results = []
             coverage = nil
             composeSheet = nil
@@ -177,17 +301,60 @@ struct MailSearchView: View {
         .sheet(item: $actionNoteSheet) { sheet in
             MailActionNoteReviewView(message: sheet.message, service: service)
         }
+        .sheet(item: $messageActionReview) { review in
+            MailMessageActionReviewView(review: review, service: service) { receipt in
+                handleMessageActionCompletion(receipt)
+            }
+        }
+    }
+
+    @MainActor
+    private func loadMailboxes() {
+        guard !isLoadingMailboxes else { return }
+        isLoadingMailboxes = true
+        status = nil
+        let currentGeneration = mailboxGeneration
+        mailboxTask = Task {
+            defer {
+                if mailboxGeneration == currentGeneration {
+                    isLoadingMailboxes = false
+                    mailboxTask = nil
+                }
+            }
+            do {
+                let result = try await service.mailboxes(
+                    accountID: account.id, origin: .userInterface
+                )
+                guard mailboxGeneration == currentGeneration, !Task.isCancelled else { return }
+                mailboxes = result.sorted {
+                    $0.path.localizedStandardCompare($1.path) == .orderedAscending
+                }
+                selectedMailboxIDs.formIntersection(Set(mailboxes.map(\.id)))
+            } catch is CancellationError {
+                return
+            } catch {
+                guard mailboxGeneration == currentGeneration else { return }
+                status = safeErrorText(error)
+            }
+        }
     }
 
     @MainActor
     private func startSearch() {
+        guard !isLoadingMailboxes else { return }
         searchTask?.cancel()
         readTask?.cancel()
         replyTask?.cancel()
+        openTask?.cancel()
         contextTask?.cancel()
+        messageActionTask?.cancel()
+        messageActionReview = nil
+        isPreparingMessageAction = false
         replyTask = nil
+        openTask = nil
         contextTask = nil
         isPreparingReply = false
+        isOpeningInMail = false
         isAddingToContext = false
         let nextGeneration = UUID()
         generation = nextGeneration
@@ -220,9 +387,9 @@ struct MailSearchView: View {
         }
         let end = Date()
         let request = MailSearchRequest(
-            accountIDs: [account.id], mailboxIDs: [],
+            accountIDs: [account.id], mailboxIDs: selectedMailboxIDs,
             query: query.trimmingCharacters(in: .whitespacesAndNewlines),
-            receivedAfter: end.addingTimeInterval(-7 * 24 * 60 * 60),
+            receivedAfter: end.addingTimeInterval(-Double(daysBack) * 24 * 60 * 60),
             receivedBefore: end, limit: 50
         )
         do {
@@ -243,10 +410,16 @@ struct MailSearchView: View {
     private func startRead(_ reference: MailMessageReference) {
         readTask?.cancel()
         replyTask?.cancel()
+        openTask?.cancel()
         contextTask?.cancel()
+        messageActionTask?.cancel()
+        messageActionReview = nil
+        isPreparingMessageAction = false
         replyTask = nil
+        openTask = nil
         contextTask = nil
         isPreparingReply = false
+        isOpeningInMail = false
         isAddingToContext = false
         let nextGeneration = UUID()
         generation = nextGeneration
@@ -278,6 +451,64 @@ struct MailSearchView: View {
     }
 
     @MainActor
+    private func startOpenInMail(_ reference: MailMessageReference) {
+        guard !isOpeningInMail else { return }
+        isOpeningInMail = true
+        status = nil
+        let currentGeneration = generation
+        openTask = Task {
+            defer {
+                if generation == currentGeneration {
+                    isOpeningInMail = false
+                    openTask = nil
+                }
+            }
+            do {
+                try await service.openInMail(reference, origin: .userInterface)
+                guard generation == currentGeneration, !Task.isCancelled,
+                      openedMessage?.reference == reference else { return }
+                status = "Opened the selected message in Apple Mail."
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == currentGeneration else { return }
+                status = safeErrorText(error)
+            }
+        }
+    }
+
+    @MainActor
+    private func startForward(_ reference: MailMessageReference) {
+        guard !isPreparingReply else { return }
+        isPreparingReply = true
+        status = nil
+        let currentGeneration = generation
+        replyTask = Task { await prepareForward(reference, generation: currentGeneration) }
+    }
+
+    @MainActor
+    private func prepareForward(_ reference: MailMessageReference,
+                                generation forwardGeneration: UUID) async {
+        defer {
+            if generation == forwardGeneration {
+                isPreparingReply = false
+                replyTask = nil
+            }
+        }
+        do {
+            let proposal = try await service.forwardProposal(of: reference, origin: .userInterface)
+            guard forwardGeneration == generation, !Task.isCancelled,
+                  openedMessage?.reference == reference else { return }
+            composeSheet = MailReplyComposeSheet(proposal: proposal)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard forwardGeneration == generation else { return }
+            status = safeErrorText(error)
+        }
+    }
+
+    @MainActor
     private func startReply(to reference: MailMessageReference) {
         guard !isPreparingReply else { return }
         isPreparingReply = true
@@ -304,6 +535,58 @@ struct MailSearchView: View {
         } catch {
             guard replyGeneration == generation else { return }
             status = safeErrorText(error)
+        }
+    }
+
+    @MainActor
+    private func startMessageAction(_ request: MailMessageActionRequest) {
+        guard !isPreparingMessageAction,
+              openedMessage?.reference == request.reference else { return }
+        isPreparingMessageAction = true
+        status = nil
+        let currentGeneration = generation
+        messageActionTask = Task {
+            defer {
+                if generation == currentGeneration {
+                    isPreparingMessageAction = false
+                    messageActionTask = nil
+                }
+            }
+            do {
+                let review = try await service.stageMessageAction(
+                    request, origin: .userInterface
+                )
+                guard generation == currentGeneration, !Task.isCancelled,
+                      openedMessage?.reference == request.reference else {
+                    await service.discardMessageActionReview(review.id)
+                    return
+                }
+                messageActionReview = review
+            } catch is CancellationError {
+                return
+            } catch {
+                guard generation == currentGeneration else { return }
+                status = safeErrorText(error)
+            }
+        }
+    }
+
+    @MainActor
+    private func handleMessageActionCompletion(_ receipt: MailMessageActionReceipt) {
+        guard let current = openedMessage?.reference,
+              current.identifiesSameMessage(as: receipt.request.reference) else { return }
+        results.removeAll {
+            $0.reference.identifiesSameMessage(as: receipt.request.reference)
+        }
+        selectedReference = nil
+        openedMessage = nil
+        switch receipt.request.kind {
+        case .move(let mailbox):
+            status = "Moved the selected message to \(mailbox.path) in Apple Mail."
+        case .archive:
+            status = "Archived the selected message in Apple Mail."
+        case .delete:
+            status = "Deleted the selected message in Apple Mail."
         }
     }
 

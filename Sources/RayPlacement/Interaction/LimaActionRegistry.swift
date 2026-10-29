@@ -22,9 +22,44 @@ enum LimaActionRegistry {
             return fileActions(for: url, capabilities: capabilities)
         case .launchApplication(let url):
             return applicationActions(for: item, url: url, capabilities: capabilities)
+        case .universalSearch(let result) where result.kind == .messages:
+            return messagesActions(for: item, result: result)
         default:
             return generalActions(for: item, capabilities: capabilities)
         }
+    }
+
+    private static func messagesActions(for item: LauncherItem,
+                                        result: LimaSearchResult) -> [LauncherItemAction] {
+        let isReply = MessagesSearchResultID.isReply(result.id)
+        var actions = [LauncherItemAction(
+            id: isReply ? "messages-reply" : "messages-open",
+            title: isReply ? "Compose Reviewed Reply" : "Open Conversation",
+            symbol: isReply ? "square.and.pencil" : "message",
+            shortcut: "↩", role: .primary, action: item.action
+        )]
+        guard let source = MessagesSearchResultID.decode(result.id),
+              MessagesCapabilityPolicyStore.load().permits(source.conversationGUID) else {
+            return actions
+        }
+        if !isReply && MessagesCapabilityPolicyStore.load().sendEnabled {
+            actions.append(LauncherItemAction(
+                id: "messages-compose", title: "Compose Reviewed Reply",
+                symbol: "square.and.pencil", shortcut: nil, role: .secondary,
+                action: .messagesAction(.composeReply, result)
+            ))
+        }
+        actions.append(LauncherItemAction(
+            id: "messages-context", title: "Add to Context Shelf",
+            symbol: "tray.and.arrow.down", shortcut: nil, role: .secondary,
+            action: .messagesAction(.addToContext, result)
+        ))
+        actions.append(LauncherItemAction(
+            id: "messages-note", title: "Create Note from Recent Messages",
+            symbol: "note.text.badge.plus", shortcut: nil, role: .secondary,
+            action: .messagesAction(.createNote, result)
+        ))
+        return actions
     }
 
     static func fileActions(for url: URL, capabilities: Capabilities) -> [LauncherItemAction] {

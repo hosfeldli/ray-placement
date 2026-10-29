@@ -22,7 +22,7 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_start",
-            "Start a Terminal session in an active materialized Project, or omit project_id for an invisible temporary Scratch run. Set interactive for a persistent visible PTY; otherwise use bounded terminal_run commands. Commands remain filesystem-sandboxed to the session directory. Network is available only for sessions or commands launched while Tool Access is Full Control; leaving that mode stops network-enabled sessions.",
+            "Start a Terminal session in an active materialized Project, or omit project_id for temporary Scratch work. Set interactive for a persistent visible PTY; otherwise use bounded terminal_run commands. A launched shell has the user's normal filesystem and network access; the Project or Scratch path is only its initial working directory. Tool Access and required Lima reviews still gate launch and input.",
             properties: [
                 "project_id": ["type": "string", "description": "Optional active materialized Project UUID. Omit for transient Scratch work."],
                 "directory": ["type": "string", "description": "Optional existing relative directory inside that Project. Omit for the Project or Scratch root."],
@@ -33,7 +33,7 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_run",
-            "Start one bounded command in a non-interactive AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes may use Allow Once or a live, revocable directory grant. The filesystem sandbox confines writes to the session directory; network is enabled only when this command launches in Full Control. Use terminal_wait to verify command exit. For persistent shells use terminal_start with interactive: true and terminal_write. Do not put credentials in commands.",
+            "Start one bounded command in a non-interactive AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes require exact-call review. The command has the user's normal filesystem and network access; directory-scoped grants cannot cover unrestricted shells. Use terminal_wait to verify command exit. For persistent shells use terminal_start with interactive: true and terminal_write. Do not put credentials in commands.",
             properties: [
                 "session_id": ["type": "string", "description": "Opaque ID returned by terminal_start."],
                 "command": ["type": "string", "description": "One command, at most 4096 UTF-8 bytes."],
@@ -153,9 +153,9 @@ enum AIWorkspaceActionTools {
         )
     }
 
-    /// Only a well-formed run against an owned, sandboxed session can offer or
-    /// consume a directory grant. The grant never applies to the older external
-    /// command tool, session creation, directory changes, or another conversation.
+    /// An unrestricted shell cannot be confined by a working-directory grant.
+    /// Keep the parser and grant APIs for existing sessions, but never use a
+    /// directory grant to bypass an exact-call Terminal review.
     private static func runSessionID(_ call: AIOutputItem) -> UUID? {
         guard call.name == "terminal_run", let raw = call.arguments,
               raw.utf8.count <= 8_192, let data = raw.data(using: .utf8),
@@ -181,21 +181,15 @@ enum AIWorkspaceActionTools {
                                    runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) -> String? {
         let policy = actionPolicy ?? .shared
         let runtime = suppliedRuntime ?? .shared
-        guard let definition = definitions.first(where: { $0.id == "terminal_run" }),
-              policy.allows(definition), let id = runSessionID(call),
-              let snapshot = try? runtime.status(sessionID: id),
-              !snapshot.isBoundedExternal, snapshot.belongs(to: conversationID) else { return nil }
-        return snapshot.directory
+        _ = (call, conversationID, policy, runtime)
+        return nil
     }
 
     static func hasApplicableDirectoryGrant(for call: AIOutputItem, conversationID: UUID,
                                             actionPolicy: AIComputerActionPolicy? = nil,
                                             runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) -> Bool {
-        let runtime = suppliedRuntime ?? .shared
-        guard directoryGrantPath(for: call, conversationID: conversationID,
-                                 actionPolicy: actionPolicy, runtime: runtime) != nil,
-              let id = runSessionID(call) else { return false }
-        return runtime.hasDirectoryGrant(sessionID: id, conversationID: conversationID)
+        _ = (call, conversationID, actionPolicy, suppliedRuntime)
+        return false
     }
 
     @discardableResult
@@ -203,14 +197,8 @@ enum AIWorkspaceActionTools {
                                expectedDirectory: String,
                                actionPolicy: AIComputerActionPolicy? = nil,
                                runtime suppliedRuntime: AIWorkspaceTerminalCoordinator? = nil) throws -> AIWorkspaceTerminalSnapshot {
-        let runtime = suppliedRuntime ?? .shared
-        guard directoryGrantPath(for: call, conversationID: conversationID,
-                                 actionPolicy: actionPolicy, runtime: runtime) == expectedDirectory,
-              let id = runSessionID(call) else {
-            throw AIWorkspaceTerminalCoordinator.WorkspaceError.invalidDirectory
-        }
-        return try runtime.grantDirectory(sessionID: id, conversationID: conversationID,
-                                          expectedDirectory: expectedDirectory)
+        _ = (call, conversationID, expectedDirectory, actionPolicy, suppliedRuntime)
+        throw AIWorkspaceTerminalCoordinator.WorkspaceError.invalidDirectory
     }
 
     static func execute(

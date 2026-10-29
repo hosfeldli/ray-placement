@@ -99,7 +99,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             case .completed:
                 completed = true
             case .failed(let detail):
-                throw BridgeError.server(detail)
+                throw BridgeError.server(code: nil, message: detail)
             case .outputItem:
                 await session.interruptActiveTurn()
                 throw BridgeError.unexpectedToolRequest
@@ -305,8 +305,10 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             }
             if let id = value["id"] as? Int, let continuation = requests.removeValue(forKey: id) {
                 if let error = value["error"] as? [String: Any] {
-                    let message = error["message"] as? String ?? "Codex app-server request failed."
-                    continuation.resume(throwing: BridgeError.server(message))
+                    let details = AIProviderFailure.details(error: error)
+                    continuation.resume(throwing: BridgeError.server(
+                        code: details.code, message: details.message
+                    ))
                 } else {
                     continuation.resume(returning: value["result"] as? [String: Any] ?? [:])
                 }
@@ -325,11 +327,19 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             let error = BridgeError.disconnected
             for continuation in requests.values { continuation.resume(throwing: error) }
             requests.removeAll()
+            if !intentional {
+                currentStream?.yield(.diagnostic(AIChatDiagnostic(
+                    stage: .transport, eventType: "app_server_disconnected",
+                    message: "Codex app-server disconnected."
+                )))
+                currentStream?.yield(.failed("Codex app-server disconnected."))
+            }
             currentStream?.finish(throwing: error)
             currentStream = nil
             process = nil
             stdin = nil
             activeTurnID = nil
+            activeThreadID = nil
             pendingTools.removeAll()
             streamedReasoningSummaryItemIDs.removeAll()
             knownThreads.removeAll()
@@ -450,7 +460,14 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             case "turn/completed":
                 let turn = params["turn"] as? [String: Any] ?? [:]
                 if let status = turn["status"] as? String, status == "failed" || status == "interrupted" {
-                    lastError = "Codex turn \(status)."
+                    let details = AIProviderFailure.details(error: turn["error"] as? [String: Any])
+                    lastError = status == "interrupted" ? "Codex turn interrupted." : details.message
+                    emit(.diagnostic(AIChatDiagnostic(
+                        stage: .transport,
+                        eventType: status == "interrupted" ? "interrupted_stream" : "provider_turn_failed",
+                        errorCode: details.code,
+                        message: lastError!
+                    )))
                     emit(.failed(lastError!))
                 } else {
                     emit(.completed(activeThreadID))
@@ -461,7 +478,12 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                 pendingTools.removeAll()
                 streamedReasoningSummaryItemIDs.removeAll()
             case "error":
-                lastError = params["message"] as? String ?? "Codex app-server error."
+                let details = AIProviderFailure.details(error: params["error"] as? [String: Any])
+                lastError = details.code == nil ? "Codex app-server error." : details.message
+                emit(.diagnostic(AIChatDiagnostic(
+                    stage: .transport, eventType: "app_server_error",
+                    errorCode: details.code, message: lastError!
+                )))
                 emit(.failed(lastError!))
                 currentStream?.finish()
                 currentStream = nil
@@ -572,14 +594,36 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                     activeTurnID = (result["turn"] as? [String: Any])?["id"] as? String
                 }
             } catch {
+                let eventType: String
+                switch error as? BridgeError {
+                case .some(.missingCodex): eventType = "cli_executable_missing"
+                case .some(.invalidResponse): eventType = "cli_protocol_failure"
+                case .some(.disconnected): eventType = "app_server_disconnected"
+                case .some(.busy): eventType = "app_server_busy"
+                case .some(.server(_, _)): eventType = "app_server_error"
+                default: eventType = "cli_process_failure"
+                }
+                let safe = AIProviderFailure.diagnosticMessage(error.localizedDescription, status: nil)
+                let providerCode: String?
+                if let bridge = error as? BridgeError,
+                   case .server(let code, _) = bridge { providerCode = code }
+                else { providerCode = nil }
+                let diagnostic = AIChatDiagnostic(
+                    stage: .transport, eventType: eventType,
+                    errorCode: providerCode, message: safe
+                )
+                lastError = safe
                 if installedStream {
-                    lastError = error.localizedDescription
+                    currentStream?.yield(.diagnostic(diagnostic))
+                    currentStream?.yield(.failed(safe))
                     currentStream?.finish(throwing: error)
                     currentStream = nil
                     activeThreadID = nil
                     activeTurnID = nil
                     pendingTools.removeAll()
                 } else {
+                    stream.yield(.diagnostic(diagnostic))
+                    stream.yield(.failed(safe))
                     stream.finish(throwing: error)
                 }
             }
@@ -589,17 +633,61 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             outputs: [[String: Any]],
             stream: AsyncThrowingStream<AIChatStreamEvent, Error>.Continuation
         ) async {
-            guard currentStream == nil, activeThreadID != nil else {
-                stream.finish(throwing: BridgeError.busy)
+            guard process?.isRunning == true, let threadID = activeThreadID else {
+                let message = "Codex app-server disconnected."
+                stream.yield(.diagnostic(AIChatDiagnostic(
+                    stage: .transport, eventType: "app_server_disconnected", message: message
+                )))
+                stream.yield(.failed(message))
+                stream.finish()
+                return
+            }
+            guard currentStream == nil else {
+                stream.yield(.diagnostic(AIChatDiagnostic(
+                    stage: .transport, eventType: "app_server_busy",
+                    message: "Codex app-server is already handling a turn."
+                )))
+                stream.yield(.failed("Codex app-server is already handling a turn."))
+                stream.finish()
+                return
+            }
+            let toolOutputs = outputs.filter { $0["type"] as? String == "function_call_output" }
+            let callIDs = toolOutputs.compactMap { $0["call_id"] as? String }
+            guard !callIDs.isEmpty, callIDs.count == toolOutputs.count,
+                  Set(callIDs).count == callIDs.count,
+                  Set(callIDs).isSubset(of: Set(pendingTools.keys)),
+                  pendingTools.values.allSatisfy({ $0.threadID == threadID }),
+                  toolOutputs.allSatisfy({ $0["output"] is String }) else {
+                let message = "Codex rejected a tool continuation because the pending calls did not match."
+                lastError = message
+                stream.yield(.diagnostic(AIChatDiagnostic(
+                    stage: .transport, eventType: "tool_continuation_rejected",
+                    message: message
+                )))
+                stream.yield(.failed(message))
+                stream.finish()
+                interruptActiveTurn()
                 return
             }
             install(stream)
             continuationCount += 1
-            for output in outputs {
+            for output in toolOutputs {
                 guard let callID = output["call_id"] as? String,
                       let pending = pendingTools.removeValue(forKey: callID),
-                      pending.threadID == activeThreadID else { continue }
-                let text = output["output"] as? String ?? #"{"error":"Missing Lima tool result."}"#
+                      pending.threadID == threadID,
+                      let text = output["output"] as? String else {
+                    let message = "Codex rejected a tool continuation because the pending calls did not match."
+                    lastError = message
+                    currentStream?.yield(.diagnostic(AIChatDiagnostic(
+                        stage: .transport, eventType: "tool_continuation_rejected",
+                        message: message
+                    )))
+                    currentStream?.yield(.failed(message))
+                    currentStream?.finish()
+                    currentStream = nil
+                    interruptActiveTurn()
+                    return
+                }
                 let body = (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any]
                 let state = body?["state"] as? String
                 let success = body?["error"] == nil && body?["is_error"] as? Bool != true &&
@@ -622,8 +710,13 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                         "contentItems": content, "success": success
                     ]])
                 } catch {
-                    lastError = error.localizedDescription
-                    currentStream?.finish(throwing: error)
+                    lastError = "Codex app-server disconnected."
+                    currentStream?.yield(.diagnostic(AIChatDiagnostic(
+                        stage: .transport, eventType: "app_server_disconnected",
+                        message: lastError!
+                    )))
+                    currentStream?.yield(.failed(lastError!))
+                    currentStream?.finish(throwing: BridgeError.disconnected)
                     currentStream = nil
                     return
                 }
@@ -643,7 +736,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         case invalidResponse
         case responseTooLarge
         case unexpectedToolRequest
-        case server(String)
+        case server(code: String?, message: String)
 
         var errorDescription: String? {
             switch self {
@@ -653,7 +746,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             case .invalidResponse: return "Codex app-server returned an invalid response."
             case .responseTooLarge: return "Codex app-server returned too much Grammar data."
             case .unexpectedToolRequest: return "Codex attempted a tool call in an isolated Grammar turn."
-            case .server(let message): return message
+            case .server(_, let message): return message
             }
         }
     }
