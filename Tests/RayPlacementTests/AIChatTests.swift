@@ -1216,7 +1216,9 @@ import Vision
     )
     model.draft = "Resume after timeout"
     model.send()
-    for _ in 0..<300 where model.isStreaming {
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
@@ -1246,7 +1248,9 @@ import Vision
     )
     model.draft = "Retry later"
     model.send()
-    for _ in 0..<300 where model.isStreaming {
+    for _ in 0..<600 {
+        let failure = model.selectedConversation?.messages.last(where: { $0.role == .assistant })?.failure
+        if failure != nil && !model.isStreaming { break }
         try await Task.sleep(for: .milliseconds(5))
     }
 
