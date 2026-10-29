@@ -1,6 +1,6 @@
 # Lima major-release migration and acceptance status
 
-This document describes the in-progress simplification release. It is **not a publication approval**. The Mail-send and real-device gates below remain open.
+This document describes the simplification release and its acceptance status. The Mail-send and real-device gates below remain open. The requester directed a limited-scope `v4.0.0` with these limits disclosed; that is not a claim that the open gates passed.
 
 ## Retired Workflows data
 
@@ -18,9 +18,9 @@ The focused fake-HAL tests verify UID switching, failure to claim success when t
 
 ## Mail safety gate
 
-Source now includes account-scoped Mail reading, draft creation, and reviewed send/reply paths with a persistent pending-send journal. Sending defaults off, and an Apple Mail acceptance result is not proof of delivery. A single user-requested self-addressed live test appeared in Inbox, but Mail had no matching Sent item and retained an outgoing item; the result remains unreconciled and the send must not be repeated merely to investigate it. Synthetic-account Apple Events, signed-app Automation, account identity, attachment handling, timeout uncertainty, no-duplicate behavior, and final-build send/reply acceptance still require validation. Do not use a third-party recipient as a test.
+Source includes account-scoped Mail reading, draft creation, and reviewed send/reply paths with a persistent pending-send journal. Sending defaults off, and an Apple Mail acceptance result is not proof of delivery. An earlier self-addressed live test appeared in Inbox, but Mail had no matching Sent item and retained an outgoing item. A user-supplied October 29 screenshot shows a later self-addressed signed-QA retest in Inbox; it does not show matching Sent or Outgoing reconciliation. The send outcomes remain unreconciled and must not be repeated merely to investigate them. Synthetic-account Apple Events, signed-app Automation, account identity, attachment handling, timeout uncertainty, no-duplicate behavior, and final-build send/reply acceptance still require validation. Do not use a third-party recipient as a test.
 
-The release may not be accepted or published as the requested major release while this gate is open.
+A completed Mail-sending major release may not be claimed while this gate is open. The requester explicitly directed a limited-scope `v4.0.0` with Mail labeled Preview and the unresolved case disclosed in its tag-matched notes. This exception does not mark Mail sending or replies as release-accepted.
 
 ## Release notes, history, and tour
 

@@ -12,28 +12,32 @@ the production updater and verifies its signed appcast; the pinned-certificate
 custom updater remains an explicit recovery/testing backend. Neither path may
 use display-only release metadata to bypass its signature or digest checks.
 
-For the in-progress simplification release, also follow the migration and open
-acceptance gates in [MAJOR_RELEASE_MIGRATION.md](MAJOR_RELEASE_MIGRATION.md).
-The tag-matched `docs/releases/vX.Y.Z.md` file must include reviewed structured
-notes before staging; `UNRELEASED-major.md` is only a draft and must not be
-published or presented as a completed Mail-sending release.
+For the simplification release, also follow the migration and open acceptance
+gates in [MAJOR_RELEASE_MIGRATION.md](MAJOR_RELEASE_MIGRATION.md). The requester
+has directed a limited-scope `v4.0.0` release with Mail and other known limits
+disclosed; this does not complete those gates. The tag-matched
+`docs/releases/vX.Y.Z.md` file must include reviewed structured notes before
+staging; `UNRELEASED-major.md` remains only a draft and must not be presented as
+a completed Mail-sending release.
 
 ## Safety rules
 
 * The complete-scope Browser and AI Workbench publish remains blocked until every
     item in [the embedded Browser release gate](EMBEDDED_BROWSER_RELEASE_GATE.md)
-    is complete. For `v3.14.25` through `v3.14.29` only, the requester explicitly
-    directed limited releases despite open feature and performance gates. Disclose
-    those limits in the tag-matched release notes; never claim the full Workbench is
-    complete or bypass failed build, signing, artifact, or remote-verification checks.
+    is complete. The requester explicitly directed limited `v3.14.25` through
+    `v3.14.29` releases and a limited-scope `v4.0.0` with open Mail, Browser,
+    Workbench, and live-device acceptance disclosed in its tag-matched notes.
+    These exceptions do not complete unchecked gates or bypass failed build,
+    security, signing, artifact, or remote-verification checks.
 * `release_prepare.sh` is the only release script that changes version metadata.
 * Build, stage, verify, and publish scripts do not commit, push, tag, or rewrite
     source files. Tagging is an explicit operation handled only by
     `release_tag.sh`.
 * `release_stage.sh` creates or resumes **draft** releases only.
-* Except for the documented limited `v3.14.25` through `v3.14.29` releases, the
-    embedded Browser release gate must pass before preparing a version. The signed app and DMG
-    verifiers reject legacy Browser Bridge native-host and extension resources.
+* Except for the documented limited `v3.14.25` through `v3.14.29` releases and
+    the limited-scope `v4.0.0` release, the embedded Browser release gate must
+    pass before preparing a version. The signed app and DMG verifiers reject
+    legacy Browser Bridge native-host and extension resources.
 * Published releases are never overwritten by the release scripts.
 * `release_publish.sh` is the only publication step and requires `--yes`.
     Publication is public and should be treated as irreversible.
