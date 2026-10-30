@@ -60,6 +60,10 @@ ISOLATED_TESTS = {
     "enabledNotesToolsRemainVisibleForEveryPrompt",
     "enabledToolsRemainVisibleRegardlessOfPromptWording",
     "endingPendingApprovalClearsPauseWithoutRunningTool",
+    # Late cancellation callbacks can overlap other concurrent model fixtures;
+    # isolate these cases so their lifecycle assertions remain attributable.
+    "endingQuestionCancelsSameRunWithoutToolContinuation",
+    "endingStreamingTaskKeepsVisiblePartialAnswerAndStoppedState",
 }
 
 

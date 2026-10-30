@@ -4989,7 +4989,7 @@ final class AIChatViewModel: ObservableObject {
         if run.state == .waitingForUserInput, run.pendingQuestion != nil,
            !nextState.isTerminal { return }
         guard run.transition(to: nextState, failure: failure) else {
-            assertionFailure("Invalid AI execution run transition: \\(run.state.rawValue) → \\(nextState.rawValue)")
+            assertionFailure("Invalid AI execution run transition: \(run.state.rawValue) → \(nextState.rawValue)")
             return
         }
         executionRun = run
