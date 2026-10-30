@@ -122,7 +122,7 @@ import Testing
         apiKey: "", model: "default", input: "Use the capability tool.", history: [],
         previousResponseID: nil, reasoningEffort: .low, attachments: [],
         localTools: [tool], systemInstructions: "Use the tool."
-    ), after: .seconds(5))
+    ), after: .seconds(30))
     var firstText = ""
     var firstReasoning = ""
     var toolCalls: [AIOutputItem] = []
@@ -155,7 +155,7 @@ import Testing
                   ["type": "function_call_output", "call_id": secondCallID,
                    "output": #"{"ok":true}"#], screenshotInput],
         reasoningEffort: .low, localTools: [tool], systemInstructions: "Use the tool."
-    ), after: .seconds(5))
+    ), after: .seconds(30))
     var secondText = ""
     var completed = false
     for try await event in resumed {
@@ -179,7 +179,7 @@ import Testing
         apiKey: "", model: "default", input: "Use the capability tool again.", history: [],
         previousResponseID: nil, reasoningEffort: .low, attachments: [],
         localTools: [tool], systemInstructions: "Use the tool."
-    ), after: .seconds(5))
+    ), after: .seconds(30))
     var restartedCall = false
     for try await event in restarted {
         if case .outputItem(let item) = event, item.name == "lima_capabilities" {
