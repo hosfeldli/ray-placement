@@ -8,7 +8,7 @@ import RayPlacementCore
 @MainActor
 enum AIWorkspaceActionTools {
     nonisolated static let actionIDs: Set<String> = [
-        "terminal_start", "terminal_run", "terminal_write", "terminal_set_directory",
+        "terminal_start", "terminal_execute", "terminal_run", "terminal_write", "terminal_set_directory",
         "terminal_interrupt", "terminal_resize", "terminal_terminate", "terminal_kill", "terminal_close"
     ]
     nonisolated static let readIDs: Set<String> = ["terminal_sessions", "terminal_status", "terminal_read", "terminal_wait"]
@@ -32,11 +32,21 @@ enum AIWorkspaceActionTools {
             action: true
         ),
         definition(
+            "terminal_execute",
+            "Run an arbitrary shell command or multiline script in an existing absolute working directory, without first creating a session. Supports creating/editing files, pipelines, scripts, builds and tests with normal OS filesystem/network access. Reuse terminal_run for an existing session. Returns a conversation-owned visible session immediately; use terminal_wait to verify exit and read output. Full Control skips Lima review; other modes use Terminal access. A command starting is not proof of success.",
+            properties: [
+                "command": ["type": "string", "description": "Shell command or multiline script, up to 64 KiB UTF-8. Never include credentials."],
+                "working_directory": ["type": "string", "description": "Existing absolute directory as a plain path; spaces and apostrophes allowed."],
+                "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 900]
+            ],
+            required: ["command", "working_directory"], action: true
+        ),
+        definition(
             "terminal_run",
             "Start one bounded command in a non-interactive AI Workspace session under the active Tool Access mode. Full Control needs no Lima prompt; other modes require exact-call review. The command has the user's normal filesystem and network access; directory-scoped grants cannot cover unrestricted shells. Use terminal_wait to verify command exit. For persistent shells use terminal_start with interactive: true and terminal_write. Do not put credentials in commands.",
             properties: [
                 "session_id": ["type": "string", "description": "Opaque ID returned by terminal_start."],
-                "command": ["type": "string", "description": "One command, at most 4096 UTF-8 bytes."],
+                "command": ["type": "string", "description": "Shell command or multiline script, at most 64 KiB UTF-8."],
                 "timeout_seconds": ["type": "integer", "minimum": 1, "maximum": 900, "description": "Optional maximum run time, default 300 seconds."]
             ],
             required: ["session_id", "command"],
@@ -158,12 +168,12 @@ enum AIWorkspaceActionTools {
     /// directory grant to bypass an exact-call Terminal review.
     private static func runSessionID(_ call: AIOutputItem) -> UUID? {
         guard call.name == "terminal_run", let raw = call.arguments,
-              raw.utf8.count <= 8_192, let data = raw.data(using: .utf8),
+              raw.utf8.count <= 400_000, let data = raw.data(using: .utf8),
               let arguments = try? JSONDecoder().decode([String: JSONValue].self, from: data),
               Set(arguments.keys).isSubset(of: ["session_id", "command", "timeout_seconds"]),
               case .string(let rawID)? = arguments["session_id"],
               case .string(let command)? = arguments["command"],
-              !command.isEmpty, command.utf8.count <= 4_096,
+              !command.isEmpty, command.utf8.count <= AIWorkspaceTerminalCoordinator.maximumCommandBytes,
               !command.unicodeScalars.contains(where: {
                   CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
               }) else { return nil }
@@ -216,7 +226,7 @@ enum AIWorkspaceActionTools {
         guard let conversationID else {
             return AIToolFailure(.permissionDenied, message: "This AI Workspace action needs an originating conversation.", recoverable: false).toolExecution()
         }
-        guard let raw = call.arguments, raw.utf8.count <= 8_192,
+        guard let raw = call.arguments, raw.utf8.count <= 400_000,
               let data = raw.data(using: .utf8),
               let arguments = try? JSONDecoder().decode([String: JSONValue].self, from: data),
               Set(arguments.keys).isSubset(of: Set((definition.parameters["properties"] as? [String: Any] ?? [:]).keys)) else {
@@ -232,7 +242,7 @@ enum AIWorkspaceActionTools {
             // The compatibility command already returned its bounded, sanitized
             // result. Its visible output is for the user, not a second AI read
             // channel that could bypass the older 64 KB result limit.
-            if definition.id != "terminal_start" && definition.id != "terminal_sessions" {
+            if !["terminal_start", "terminal_execute", "terminal_sessions"].contains(definition.id) {
                 let id = try sessionID(arguments)
                 let existing = try runtime.status(sessionID: id)
                 guard !existing.isBoundedExternal else {
@@ -274,6 +284,40 @@ enum AIWorkspaceActionTools {
                     "terminal_visible": terminalVisible,
                     "post_action_verified": (try? runtime.status(sessionID: snapshot.id)) != nil
                 ] as [String: Any], uniquingKeysWith: { _, new in new }))
+
+            case "terminal_execute":
+                guard case .string(let command)? = arguments["command"], !command.isEmpty,
+                      command.utf8.count <= AIWorkspaceTerminalCoordinator.maximumCommandBytes,
+                      case .string(let path)? = arguments["working_directory"], path.hasPrefix("/"),
+                      path.utf8.count <= 4096,
+                      !path.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
+                    return invalidArguments("Provide a command of at most 64 KiB and an existing absolute working_directory.")
+                }
+                var isDirectory: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory), isDirectory.boolValue else {
+                    return invalidArguments("working_directory does not exist or is not a directory.")
+                }
+                let timeout: Int
+                switch arguments["timeout_seconds"] {
+                case .none, .some(.null): timeout = 300
+                case .some(.number(let value)) where value.isFinite && value.rounded() == value && (1...900).contains(value):
+                    timeout = Int(value)
+                default: return invalidArguments("timeout_seconds must be an integer from 1 to 900.")
+                }
+                let started = try runtime.start(conversationID: conversationID)
+                do {
+                    let launched = try runtime.run(sessionID: started.id, command: command, timeoutSeconds: timeout,
+                        workingDirectory: URL(fileURLWithPath: path, isDirectory: true))
+                    let visible = runtime.revealAIForegroundSession(launched.id)
+                    return .json(payload(launched).merging([
+                        "launched": true, "working_directory": path, "terminal_visible": visible,
+                        "verified_success": false,
+                        "next_step": "Use terminal_wait with session_id to verify exit and inspect output. Reuse this session with terminal_run, or close it when no longer needed."
+                    ] as [String: Any], uniquingKeysWith: { _, new in new }))
+                } catch {
+                    try? runtime.close(sessionID: started.id)
+                    throw error
+                }
 
             case "terminal_run":
                 let id = try sessionID(arguments)

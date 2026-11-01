@@ -69,8 +69,7 @@ struct LauncherView: View {
     var body: some View {
         ZStack {
             if viewModel.mode != .root {
-                LiquidGlassBackdrop(material: .hudWindow, blendingMode: .behindWindow,
-                                    identityLayer: true, tintOpacity: 0.16)
+                LimaTheme.surfacePrimary
             }
             if viewModel.mode == .root {
                 LauncherSearchWorkspace(model: viewModel, aiChatModel: aiChatModel,
@@ -94,7 +93,7 @@ struct LauncherView: View {
                     searchHeader
                     content
                         .id(viewModel.mode.visualIdentity)
-                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.975)).combined(with: .offset(y: 5)))
+                        .transition(.opacity)
                     footer
                 }
             }
@@ -174,9 +173,9 @@ struct LauncherView: View {
                         .foregroundStyle(LimaTheme.textPrimary)
                         .frame(width: 29, height: 29)
                 }
-                .buttonStyle(LiquidGlassIconButtonStyle(size: 29))
+                .buttonStyle(.plain)
                 .accessibilityLabel("Back")
-                .help("Back to search; active work continues in the Activity Shelf")
+                .help("Back to Search; active work continues")
             }
 
             if let title = viewModel.mode.title, viewModel.mode != .root {
@@ -193,7 +192,7 @@ struct LauncherView: View {
                 StatusCapsule(text: "OFFLINE", color: LimaLauncherPalette.cyan)
             } else if isAIChatSurface {
                 Spacer(minLength: 0)
-                Label("Live Responses · local history", systemImage: "lock.fill")
+                Text("Assistant")
                     .limaFont(.caption.weight(.medium))
                     .foregroundStyle(LimaTheme.textSecondary)
             } else if isOutputMode {

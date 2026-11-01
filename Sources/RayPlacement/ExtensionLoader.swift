@@ -317,7 +317,8 @@ final class ExtensionLoader {
 
         for (file, directory) in manifestFiles {
             do {
-                let manifest = try decoder.decode(ExtensionManifest.self, from: Data(contentsOf: file))
+                let manifestData = try Data(contentsOf: file)
+                let manifest = try decoder.decode(ExtensionManifest.self, from: manifestData)
                 try manifest.validateLifecycleMetadata()
                 if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
                     continue
@@ -330,7 +331,6 @@ final class ExtensionLoader {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "The extension id and name are required."))
                     continue
                 }
-                let manifestData = try Data(contentsOf: file)
                 let manifestHash = ExtensionSecurityPolicy.manifestHash(manifestData)
                 let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
                 if registerPackages {

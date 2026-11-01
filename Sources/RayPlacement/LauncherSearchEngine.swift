@@ -30,6 +30,7 @@ struct LauncherSearchDocumentInput: Sendable {
 private struct LauncherSearchDocument {
     let id: String
     let title: String
+    let aliasTitle: String
     let normalizedTitle: String
     let normalizedSearchText: String
     let normalizedFields: [String]
@@ -41,6 +42,7 @@ private struct LauncherSearchDocument {
     init(_ input: LauncherSearchDocumentInput) {
         id = input.id
         title = input.title
+        aliasTitle = input.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         normalizedTitle = Self.normalize(input.title)
         normalizedSearchText = Self.normalize(input.searchText)
         normalizedFields = ([input.title, input.subtitle] + input.keywords).map(Self.normalize)
@@ -97,7 +99,11 @@ actor LauncherSearchEngine {
         )
         let aliasQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let tokens = normalizedQuery.split { !($0.isLetter || $0.isNumber) }.map(String.init)
-        var ranked: [LauncherSearchHit] = []
+        var ranked = SearchTopResults<LauncherSearchHit>(limit: 24) { first, second in
+            if first.score != second.score { return first.score > second.score }
+            let order = first.title.localizedStandardCompare(second.title)
+            return order == .orderedSame ? first.id < second.id : order == .orderedAscending
+        }
         for document in documents {
             if Task.isCancelled { break }
             guard Self.includes(document.id, for: prefix) else { continue }
@@ -110,7 +116,7 @@ actor LauncherSearchEngine {
                 }.max() ?? -.infinity
             }
             let baseScore: Double
-            if tokenScores.allSatisfy(\.isFinite) {
+            if !tokens.isEmpty && tokenScores.allSatisfy(\.isFinite) {
                 let titleIntent: Double = document.normalizedTitle == normalizedQuery ? 100_000
                     : (document.normalizedTitle.hasPrefix(normalizedQuery) ? 24 : 0)
                 baseScore = max(titleScore ?? -.infinity, wholeScore ?? -.infinity,
@@ -120,7 +126,7 @@ actor LauncherSearchEngine {
             }
             guard baseScore.isFinite else { continue }
             let provenance: (LimaAliasKind, Double)
-            if document.title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == aliasQuery {
+            if document.aliasTitle == aliasQuery {
                 provenance = (.exactTitle, 100_000)
             } else if document.normalizedUserAliases.contains(aliasQuery) {
                 provenance = (.userAlias, 1_200)
@@ -132,20 +138,14 @@ actor LauncherSearchEngine {
             } else {
                 provenance = (.exactTitle, 0)
             }
-            ranked.append(LauncherSearchHit(
+            ranked.insert(LauncherSearchHit(
                 id: document.id, title: document.title,
                 score: baseScore + provenance.1 + document.rankingBonus,
                 aliasKind: provenance.0
             ))
         }
-        ranked.sort { first, second in
-            if first.score == second.score {
-                return first.title.localizedStandardCompare(second.title) == .orderedAscending
-            }
-            return first.score > second.score
-        }
         return LauncherSearchResponse(generation: request.generation,
-                                      hits: Array(ranked.prefix(24)))
+                                      hits: Task.isCancelled ? [] : ranked.elements)
     }
 
     private static func includes(_ id: String, for prefix: String?) -> Bool {

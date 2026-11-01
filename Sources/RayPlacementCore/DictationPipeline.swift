@@ -193,6 +193,18 @@ public struct TranscriptAssembler: Sendable {
         return update(delta: cleanDelta)
     }
 
+    /// Flush a user-chosen speaker boundary without resetting the recognizer's
+    /// full-hypothesis anchor. A later callback cannot replay committed words.
+    public mutating func commitBoundary() -> TranscriptAssemblyUpdate {
+        let candidate = Self.clean(previousPartial)
+        guard candidate.hasPrefix(committedText) else { return update(delta: "") }
+        let delta = String(candidate.dropFirst(committedText.count))
+        committedText = candidate
+        partialText = ""
+        previousPartial = candidate
+        return update(delta: delta)
+    }
+
     public mutating func reset() {
         partialText = ""
         committedText = ""

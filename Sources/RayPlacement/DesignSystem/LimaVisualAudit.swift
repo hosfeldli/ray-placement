@@ -20,6 +20,152 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--overhaul-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for module: LimaWorkspaceModule in [.ai, .notes, .dictation, .browser, .terminal, .extensions] {
+                        for width: CGFloat in [420, 800, 1440] {
+                            let view = LimaMockupWorkspaceFixtures.workspace(module, compact: width < 720)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                                url: directory.appendingPathComponent("overhaul-\(module.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                    for width: CGFloat in [420, 760, 1040] {
+                        for scenario in ["idle", "filtered", "empty", "actions"] {
+                            let view = LauncherSearchAuditFixtures.view(scenario: scenario)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? 158 : 580), appearance: appearance,
+                                url: directory.appendingPathComponent("overhaul-search-\(scenario)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("Overhaul visual audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--dictation-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for module: LimaWorkspaceModule in [.dictation, .extensions] {
+                        for width: CGFloat in [420, 800, 1240] {
+                            let view = LimaMockupWorkspaceFixtures.workspace(module, compact: width < 720)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                                url: directory.appendingPathComponent("live-\(module.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("Dictation/extensions audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--mission-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    let scheme: ColorScheme = dark ? .dark : .light
+                    for status in ["running", "waiting", "failed"] {
+                        let activities = [
+                            AIAgentActivity(kind: .toolCompleted, title: "browser_read", completed: true),
+                            AIAgentActivity(kind: status == "waiting" ? .toolApproval : status == "failed" ? .toolFailed : .toolStarted,
+                                title: status == "waiting" ? "Approval needed" : "terminal_execute")
+                        ]
+                        let messages = [AIChatMessage(role: .user, text: "Build a little word game, then open it in Browser and check that I can play."),
+                            AIChatMessage(role: .assistant, text: "", activities: activities)]
+                        let state = AIChatTaskState(title: status == "waiting" ? "Ready for your review" : status == "failed" ? "A step needs attention" : "Running a shell script",
+                            detail: "", symbol: "sparkles", tone: status == "running" ? .active : .warning,
+                            isActive: status != "failed", canEnd: status != "failed")
+                        for compact in [false, true] {
+                            let view = AIMissionView(mission: AIMissionSnapshot(messages: messages, isActive: state.isActive),
+                                state: state, compact: compact)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                                .padding(12).background(LimaTheme.surfacePrimary)
+                                .environment(\.colorScheme, scheme)
+                            if !(await render(view, size: NSSize(width: compact ? 350 : 420, height: compact ? 130 : 450),
+                                appearance: appearance, url: directory.appendingPathComponent("mission-\(status)-\(compact ? "compact" : "full")-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                    for module: LimaWorkspaceModule in [.ai, .browser, .terminal, .extensions] {
+                        for width: CGFloat in [420, 1040] {
+                            let view = LimaMockupWorkspaceFixtures.workspace(module, compact: width < 720)
+                                .environment(\.colorScheme, scheme)
+                            if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                                url: directory.appendingPathComponent("mission-workspace-\(module.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("Mission visual audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--workspace-search-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for width: CGFloat in [420, 760, 1040] {
+                        for scenario in ["idle", "filtered", "empty", "actions"] {
+                            let view = LauncherSearchAuditFixtures.view(scenario: scenario)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? 158 : 580),
+                                appearance: appearance, url: directory.appendingPathComponent("search-\(scenario)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                    for width: CGFloat in [800, 1240] {
+                        let view = LimaMockupWorkspaceFixtures.workspace(.notes, compact: false)
+                            .environment(\.colorScheme, dark ? .dark : .light)
+                        if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                            url: directory.appendingPathComponent("workspace-notes-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                    }
+                }
+                print("Workspace/search visual audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--autonomy-only") {
+                var failures = 0
+                let model = AIChatViewModel(store: AIConversationStore(fixtures: []),
+                    credentials: AIChatCredentialStore(configuration: .fixture),
+                    nativeToolStore: LimaAIToolStore(fixtures: []), transport: FixtureAITransport.standard,
+                    workspaceStore: AIWorkspaceStore(fixtures: []))
+                model.newConversation()
+                let tasks = AIScheduledTaskStore(url: directory.appendingPathComponent("fixture-tasks.json"))
+                let now = Date()
+                if let conversation = model.selectedConversationID {
+                    _ = try? tasks.create(conversationID: conversation, title: "Try the midnight reservation release",
+                        instructions: "Check https://example.com for a table for two at 7 PM. Prefer indoor seating. Do not accept a deposit or cancellation fee.",
+                        runAt: now.addingTimeInterval(3600), expiresAt: now.addingTimeInterval(5400),
+                        timeZone: TimeZone.current.identifier, autoApproveNonpayment: true)
+                    if let completed = try? tasks.create(conversationID: conversation, title: "Check next week's availability",
+                        instructions: "Read the availability and report the options.",
+                        runAt: now.addingTimeInterval(120), expiresAt: now.addingTimeInterval(1800),
+                        timeZone: TimeZone.current.identifier) {
+                        try? tasks.update(completed.id, state: .finished, detail: "Availability checked. Open the conversation to see the options.")
+                    }
+                }
+                let browser = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+                browser.aiControlMode = .fullControl
+                BrowserTaskApprovalState.shared.select(.independent)
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    let scheme: ColorScheme = dark ? .dark : .light
+                    let suffix = dark ? "dark" : "light"
+                    if !(await render(AIScheduledTasksView(model: model, store: tasks).environment(\.colorScheme, scheme),
+                        size: NSSize(width: 680, height: 680), appearance: appearance,
+                        url: directory.appendingPathComponent("scheduled-tasks-\(suffix).png"))) { failures += 1 }
+                    if !(await render(AIScheduledTasksView(model: model, store: tasks, initiallyCreating: true).environment(\.colorScheme, scheme),
+                        size: NSSize(width: 680, height: 680), appearance: appearance,
+                        url: directory.appendingPathComponent("scheduled-task-editor-\(suffix).png"))) { failures += 1 }
+                    if !(await render(BrowserAIControls(browser: browser).panel.environment(\.colorScheme, scheme),
+                        size: NSSize(width: 430, height: 600), appearance: appearance,
+                        url: directory.appendingPathComponent("browser-controls-\(suffix).png"))) { failures += 1 }
+                }
+                print("Autonomy visual audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
             if CommandLine.arguments.contains("--major-release-only") {
                 let failures = await renderMajorReleaseScreenshots(application: application, directory: directory)
                 print("Major-release visual audit finished: \(failures) failed renders")

@@ -44,9 +44,9 @@ enum SettingsSection: String, CaseIterable, Identifiable {
         switch self {
         case .general: return "General"
         case .workspace: return "Workspace"
-        case .commands: return "Command Center"
+        case .commands: return "Extensions & Commands"
         case .writing: return "Writing & Dictation"
-        case .ai: return "AI Chat"
+        case .ai: return "Assistant"
         case .browser: return "Browser"
         case .appearance: return "Appearance"
         case .capabilities: return "Capabilities"
@@ -71,7 +71,7 @@ enum SettingsSection: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .general: "App behavior and local preferences"
-        case .workspace: "Sections, modules, rail, and layouts"
+        case .workspace: "Navigation, startup, and keyboard shortcuts"
         case .commands: "Commands, extensions, and shortcuts"
         case .writing: "Notes, grammar, and speech to text"
         case .ai: "Existing providers and chat behavior"
@@ -562,9 +562,6 @@ struct SettingsView: View {
             Section("Customize Workspace") {
                 WorkspaceConfigurationEditor(settings: settings)
             }
-            Section("Home") {
-                HomeWorkspaceConfigurationEditor(settings: settings)
-            }
             Section("Workspace profiles") {
                 Picker("Active profile", selection: Binding(
                     get: { workspaceProfiles.activeProfileID ?? workspaceProfiles.profiles.first?.id },
@@ -602,11 +599,13 @@ struct SettingsView: View {
                     ForEach(AppContrastMode.allCases) { Text($0.title).tag($0) }
                 }.pickerStyle(.segmented)
                 Text(settings.contrastMode.detail).limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
-                Picker("Glass", selection: $settings.glassStyle) {
-                    ForEach(AppGlassStyle.allCases) { Text($0.title).tag($0) }
+                DisclosureGroup("Floating panel appearance") {
+                    Picker("Transparency", selection: $settings.glassStyle) {
+                        ForEach(AppGlassStyle.allCases) { Text($0.title).tag($0) }
+                    }
+                    Text("Applies to floating utility panels. The workspace and Search use quiet, opaque surfaces.")
+                        .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
-                Text("Glass affects navigation and controls; notes, messages, and results stay quiet. Reduce Transparency uses opaque surfaces.")
-                    .limaFont(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
             Section("Layout") {
                 InterfaceTextSizeControl()

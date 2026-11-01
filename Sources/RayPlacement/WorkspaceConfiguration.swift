@@ -122,7 +122,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
     init(
         workspaceModules: [LimaWorkspaceModule],
         toolModules: [LimaWorkspaceModule],
-        startupModule: LimaWorkspaceModule = .home,
+        startupModule: LimaWorkspaceModule = .ai,
         railPresentation: WorkspaceRailPresentation = .adaptive,
         railWidth: WorkspaceRailWidth = .standard,
         showsSectionNames: Bool = true,
@@ -147,7 +147,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
 
     init(
         sections: [WorkspaceSectionConfiguration],
-        startupModule: LimaWorkspaceModule = .home,
+        startupModule: LimaWorkspaceModule = .ai,
         railPresentation: WorkspaceRailPresentation = .adaptive,
         railWidth: WorkspaceRailWidth = .standard,
         showsSectionNames: Bool = true,
@@ -156,16 +156,14 @@ struct WorkspaceConfiguration: Codable, Equatable {
         home: HomeWorkspaceConfiguration = .defaultConfiguration
     ) {
         self.sections = Self.normalizedSections(sections)
-        self.startupModule = startupModule == .workflows ? .home : startupModule
+        self.startupModule = [.home, .workflows].contains(startupModule) ? .ai : startupModule
         self.railPresentation = railPresentation
         self.railWidth = railWidth
         self.showsSectionNames = showsSectionNames
         self.showsKeyboardShortcuts = showsKeyboardShortcuts
         self.shortcutOverrides = Self.normalizedShortcutOverrides(shortcutOverrides)
         self.home = home.normalized
-        if !visibleModules.contains(self.startupModule) {
-            self.startupModule = visibleModules.first ?? .home
-        }
+        if !LimaWorkspaceModule.workspaceDestinations.contains(self.startupModule) { self.startupModule = .ai }
     }
 
     static let defaultConfiguration = WorkspaceConfiguration(
@@ -182,7 +180,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
     var visibleModules: [LimaWorkspaceModule] { sections.flatMap(\.modules) }
     var hiddenModules: [LimaWorkspaceModule] {
         let visible = Set(visibleModules)
-        return LimaWorkspaceModule.allCases.filter { !visible.contains($0) }
+        return LimaWorkspaceModule.userFacingModules.filter { !visible.contains($0) }
     }
     var normalized: WorkspaceConfiguration {
         WorkspaceConfiguration(
@@ -263,6 +261,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
         }
     }
     mutating func moveModule(_ module: LimaWorkspaceModule, to sectionID: UUID) {
+        guard module != .context else { return }
         guard let destination = sections.firstIndex(where: { $0.id == sectionID }) else { return }
         for index in sections.indices { sections[index].modules.removeAll { $0 == module } }
         sections[destination].modules.append(module)
@@ -289,6 +288,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
         ensureVisibleStartup()
     }
     mutating func showModule(_ module: LimaWorkspaceModule) {
+        guard module != .context else { return }
         guard sectionID(for: module) == nil, let first = sections.first?.id else { return }
         moveModule(module, to: first)
     }
@@ -329,7 +329,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
 
     private mutating func ensureVisibleStartup() {
         if !visibleModules.contains(startupModule) {
-            startupModule = visibleModules.first ?? .home
+            startupModule = visibleModules.first(where: { LimaWorkspaceModule.workspaceDestinations.contains($0) }) ?? .ai
         }
     }
     private static func normalizedSections(_ sections: [WorkspaceSectionConfiguration]) -> [WorkspaceSectionConfiguration] {
@@ -340,7 +340,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
             let name = section.name.trimmingCharacters(in: .whitespacesAndNewlines)
             result.append(WorkspaceSectionConfiguration(
                 id: section.id, name: name.isEmpty ? "Section" : name,
-                modules: section.modules.filter { $0 != .workflows && seenModules.insert($0).inserted }
+                modules: section.modules.filter { $0 != .workflows && $0 != .context && seenModules.insert($0).inserted }
             ))
         }
         if result.isEmpty {
@@ -356,7 +356,7 @@ struct WorkspaceConfiguration: Codable, Equatable {
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(sections, forKey: .sections)
-        try values.encode(4, forKey: .layoutVersion)
+        try values.encode(6, forKey: .layoutVersion)
         try values.encode(startupModule, forKey: .startupModule)
         try values.encode(railPresentation, forKey: .railPresentation)
         try values.encode(railWidth, forKey: .railWidth)
@@ -399,15 +399,25 @@ struct WorkspaceConfiguration: Codable, Equatable {
         ]
         let previousDefaultWithoutWorkflows = previousDefault.map { section in
             WorkspaceSectionConfiguration(id: section.id, name: section.name,
-                                          modules: section.modules.filter { $0 != .workflows })
+                                          modules: section.modules.filter { $0 != .workflows && $0 != .context })
         }
         if layoutVersion < 3,
            sections == previousDefault || sections == previousDefaultWithoutWorkflows {
             sections = WorkspaceConfiguration.defaultConfiguration.sections
         }
+        let stockVersion4 = [
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.workspaceID, name: "Workspace", modules: [.home, .ai, .browser, .terminal, .notes]),
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.toolsID, name: "Tools", modules: [.clipboard, .extensions, .grammar])
+        ]
+        if layoutVersion < 5, sections == stockVersion4 { sections = WorkspaceConfiguration.defaultConfiguration.sections }
+        let stockVersion5 = [
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.workspaceID, name: "Workspace", modules: [.home, .ai, .browser, .terminal, .notes, .dictation]),
+            WorkspaceSectionConfiguration(id: WorkspaceSectionConfiguration.toolsID, name: "Tools", modules: [.clipboard, .extensions, .grammar])
+        ]
+        if layoutVersion < 6, sections == stockVersion5 { sections = WorkspaceConfiguration.defaultConfiguration.sections }
         self.init(
             sections: sections,
-            startupModule: try values.decodeIfPresent(LimaWorkspaceModule.self, forKey: .startupModule) ?? .home,
+            startupModule: try values.decodeIfPresent(LimaWorkspaceModule.self, forKey: .startupModule) ?? .ai,
             railPresentation: try values.decodeIfPresent(WorkspaceRailPresentation.self, forKey: .railPresentation) ?? .adaptive,
             railWidth: try values.decodeIfPresent(WorkspaceRailWidth.self, forKey: .railWidth) ?? .standard,
             showsSectionNames: try values.decodeIfPresent(Bool.self, forKey: .showsSectionNames) ?? true,
@@ -424,125 +434,33 @@ struct WorkspaceConfigurationEditor: View {
     private var configuration: WorkspaceConfiguration { settings.workspaceConfiguration }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Arrange modules in any section. Hidden modules remain available in Search and commands.")
-                .font(.caption).foregroundStyle(LimaTheme.textSecondary)
-            ForEach(Array(configuration.sections.enumerated()), id: \.element.id) { index, section in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Image(systemName: "line.3.horizontal")
-                            .foregroundStyle(LimaTheme.textTertiary)
-                            .draggable("section:\(section.id.uuidString)")
-                        TextField("Section name", text: Binding(
-                            get: { settings.workspaceConfiguration.sections.first(where: { $0.id == section.id })?.name ?? section.name },
-                            set: { value in update { $0.renameSection(section.id, to: value) } }
-                        ))
-                        .font(.system(size: 11, weight: .bold))
-                        .textFieldStyle(.plain)
-                        Spacer()
-                        orderButton("arrow.up", disabled: index == 0) { update { $0.moveSection(section.id, by: -1) } }
-                        orderButton("arrow.down", disabled: index == configuration.sections.count - 1) { update { $0.moveSection(section.id, by: 1) } }
-                        if section.id != WorkspaceSectionConfiguration.workspaceID &&
-                            section.id != WorkspaceSectionConfiguration.toolsID {
-                            Button("Remove", systemImage: "minus.circle") { update { $0.deleteSection(section.id) } }
-                                .labelStyle(.iconOnly)
-                                .help("Remove section and move its modules to the first section")
-                        }
-                    }
-                    .dropDestination(for: String.self) { items, _ in
-                        drop(items, on: section.id)
-                    }
-                    if section.modules.isEmpty {
-                        Text("No modules").font(.caption).foregroundStyle(LimaTheme.textTertiary)
-                    }
-                    ForEach(Array(section.modules.enumerated()), id: \.element) { moduleIndex, module in
-                        HStack(spacing: 8) {
-                            Image(systemName: "line.3.horizontal")
-                                .foregroundStyle(LimaTheme.textTertiary)
-                                .draggable("module:\(module.rawValue)")
-                            Label(module.title, systemImage: module.symbol)
-                            Spacer(minLength: 8)
-                            shortcutMenu(for: module)
-                            orderButton("arrow.up", disabled: moduleIndex == 0) {
-                                update { $0.moveModule(module, in: section.id, by: -1) }
-                            }
-                            orderButton("arrow.down", disabled: moduleIndex == section.modules.count - 1) {
-                                update { $0.moveModule(module, in: section.id, by: 1) }
-                            }
-                            Menu {
-                                ForEach(configuration.sections.filter { $0.id != section.id }) { destination in
-                                    Button(destination.name) { update { $0.moveModule(module, to: destination.id) } }
-                                }
-                                Divider()
-                                Button("Hide") { update { $0.hideModule(module) } }
-                            } label: { Image(systemName: "ellipsis.circle") }
-                                .menuStyle(.borderlessButton)
-                                .accessibilityLabel("Move \(module.title)")
-                        }
-                        .dropDestination(for: String.self) { items, _ in
-                            guard let value = items.first, value.hasPrefix("module:"),
-                                  let dragged = LimaWorkspaceModule(rawValue: String(value.dropFirst(7))) else { return false }
-                            update { $0.moveModule(dragged, before: module) }
-                            return true
-                        }
-                    }
-                }
-                .padding(.vertical, 4)
-            }
-            HStack {
-                TextField("New section", text: $newSectionName)
-                Button("Add Section") {
-                    update { _ = $0.addSection(named: newSectionName) }
-                    newSectionName = ""
-                }
-                .disabled(newSectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            if !configuration.hiddenModules.isEmpty {
-                Text("HIDDEN").font(.system(size: 10, weight: .bold)).foregroundStyle(LimaTheme.textTertiary)
-                ForEach(configuration.hiddenModules, id: \.self) { module in
-                    HStack {
-                        Label(module.title, systemImage: module.symbol)
-                            .draggable("module:\(module.rawValue)")
-                        Spacer()
-                        shortcutMenu(for: module)
-                        Menu("Show in…") {
-                            ForEach(configuration.sections) { section in
-                                Button(section.name) { update { $0.moveModule(module, to: section.id) } }
-                            }
-                        }
-                    }
-                }
-            }
-            Divider()
-            Picker("Rail presentation", selection: Binding(
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Assistant, Notes, and Recordings share one sidebar. Browser and Terminal open inside Assistant. Other tools are available through Search.")
+                .font(.callout).foregroundStyle(LimaTheme.textSecondary)
+            Picker("Sidebar", selection: Binding(
                 get: { settings.workspaceConfiguration.railPresentation },
                 set: { value in update { $0.railPresentation = value } }
             )) {
-                ForEach(WorkspaceRailPresentation.allCases) { Text($0.title).tag($0) }
+                Text("Adaptive").tag(WorkspaceRailPresentation.adaptive)
+                Text("Icons").tag(WorkspaceRailPresentation.icons)
+                Text("Icons and labels").tag(WorkspaceRailPresentation.iconsAndLabels)
             }
-            Picker("Rail width", selection: Binding(
-                get: { settings.workspaceConfiguration.railWidth },
-                set: { value in update { $0.railWidth = value } }
-            )) {
-                ForEach(WorkspaceRailWidth.allCases) { Text($0.title).tag($0) }
-            }
-            Toggle("Show section names", isOn: Binding(
-                get: { settings.workspaceConfiguration.showsSectionNames },
-                set: { value in update { $0.showsSectionNames = value } }
-            ))
-            Toggle("Show keyboard shortcuts", isOn: Binding(
-                get: { settings.workspaceConfiguration.showsKeyboardShortcuts },
-                set: { value in update { $0.showsKeyboardShortcuts = value } }
-            ))
-            Picker("Startup module", selection: Binding(
-                get: { settings.workspaceConfiguration.startupModule },
+            Picker("Open Lima to", selection: Binding(
+                get: { LimaWorkspaceModule.workspaceDestinations.contains(configuration.startupModule) ? configuration.startupModule : .ai },
                 set: { value in update { $0.startupModule = value } }
             )) {
-                ForEach(configuration.visibleModules, id: \.self) { module in Text(module.title).tag(module) }
+                ForEach(LimaWorkspaceModule.workspaceDestinations, id: \.self) { module in
+                    Text(module.title).tag(module)
+                }
+            }
+            DisclosureGroup("Keyboard shortcuts") {
+                ForEach(LimaWorkspaceModule.userFacingModules.filter { $0 != .home }, id: \.self) { module in
+                    HStack { Label(module.title, systemImage: module.symbol); Spacer(); shortcutMenu(for: module) }
+                        .padding(.vertical, 4)
+                }
             }
             Button("Restore Default Layout") { settings.workspaceConfiguration = .defaultConfiguration }
-        }
-        .padding(.vertical, 4)
+        }.padding(.vertical, 4)
     }
 
     private func drop(_ items: [String], on sectionID: UUID) -> Bool {

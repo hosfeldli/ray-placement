@@ -271,6 +271,11 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         present()
     }
 
+    func presentAISurface(_ module: LimaWorkspaceModule) -> Bool {
+        present(module: module)
+        return window?.isVisible == true && presentation.activeModule == module
+    }
+
     func present(module: LimaWorkspaceModule) {
         selectModule(module)
         present()
@@ -298,7 +303,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
     }
 
     func selectModule(_ requestedModule: LimaWorkspaceModule) {
-        let module: LimaWorkspaceModule = requestedModule == .workflows ? .home : requestedModule
+        let module: LimaWorkspaceModule = [.home, .workflows].contains(requestedModule) ? .ai : requestedModule
         let measurementID = presentation.activeModule == module
             ? nil
             : PerformanceMonitor.shared.begin(.workspaceModuleSwitch)
@@ -336,7 +341,7 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         if let sidebarVisible = state.sidebarVisible { presentation.sidebarVisible = sidebarVisible }
         if let focusMode = state.focusMode { presentation.notesFocusMode = focusMode }
         if let module = (state.activeModule ?? state.notesSection).flatMap(LimaWorkspaceModule.init(rawValue:)) {
-            presentation.activeModule = module == .workflows ? .home : module
+            presentation.activeModule = [.home, .workflows].contains(module) ? .ai : module
         } else {
             presentation.activeModule = SettingsStore.shared.workspaceConfiguration.startupModule
         }
@@ -754,210 +759,82 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
 private struct WorkspaceShellView: View {
     @ObservedObject var presentation: WorkspacePresentationModel
     @ObservedObject private var workspaceProfiles = WorkspaceProfileStore.shared
-    @State private var preferredSidecarWidth: CGFloat = 380
-    @State private var sidecarResizeStart: CGFloat?
+    @ObservedObject private var chats: AIConversationStore
+    @ObservedObject private var notes: NotesStore
+    @ObservedObject private var recordings: DictationConversationStore
     let content: WorkspaceModuleHost
 
     init(content: WorkspaceModuleHost) {
         self.content = content
         self.presentation = content.presentation
+        self.chats = content.aiChatModel.store
+        self.notes = content.store
+        self.recordings = content.conversations
+    }
+
+    private var recentItems: [WorkspaceRecentDestination] {
+        switch presentation.activeModule {
+        case .notes:
+            return notes.notes.prefix(8).map { note in
+                WorkspaceRecentDestination(id: note.id, title: note.title) {
+                    notes.selectNote(note.id); content.selectModule(.notes)
+                }
+            }
+        case .dictation:
+            return recordings.conversations.prefix(8).map { recording in
+                WorkspaceRecentDestination(id: recording.id, title: recording.title) {
+                    recordings.selectedConversationID = recording.id; content.selectModule(.dictation)
+                }
+            }
+        default:
+            return chats.conversations.prefix(8).map { chat in
+                WorkspaceRecentDestination(id: chat.id, title: chat.title) {
+                    content.aiChatModel.select(chat.id); content.selectModule(.ai)
+                }
+            }
+        }
     }
 
     var body: some View {
         GeometryReader { proxy in
             let sizeClass = LimaWorkspaceSizeClass.classify(width: proxy.size.width)
-            let chrome = LimaWorkspaceChromeLayout.resolve(
-                width: proxy.size.width,
-                sidecarRequested: presentation.aiSidecarVisible && presentation.activeModule != .ai,
-                isDocked: presentation.mode.isDocked,
-                preferredSidecarWidth: preferredSidecarWidth
-            )
-            ZStack {
-                LimaGlassBackdrop(material: .underWindowBackground, blendingMode: .behindWindow)
-                WorkspacePrismBackground(module: presentation.activeModule)
-                HStack(spacing: 10) {
-                    LimaWayfinderRail(
-                        current: presentation.activeModule,
-                        previous: presentation.navigation.previous,
-                        sizeClass: chrome.collapsesRail ? .regular : sizeClass,
-                        select: content.selectModule,
-                        openSettings: content.openSettings,
-                        isDocked: presentation.mode.isDocked,
-                        openInWindow: content.restoreWorkspace,
-                        workspaceProfiles: content.switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
-                        activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
-                        selectWorkspaceProfile: content.switchWorkspaceProfile,
-                        createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() },
-                        aiSidecarVisible: presentation.aiSidecarVisible,
-                        toggleAISidecar: !presentation.mode.isDocked && proxy.size.width >= 1_120
-                            ? { presentation.aiSidecarVisible.toggle() } : nil,
-                        openSearch: { content.openCommandSearch("") },
-                        openCaptures: { ScreenshotStudioWindowController.shared.present() },
-                        forceIconOnly: chrome.collapsesRail
-                    )
-                    .padding(.leading, 8)
-                    .padding(.vertical, 8)
-                    content
-                        .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(.trailing, chrome.showsSidecar ? 0 : 8)
-                        .padding(.vertical, 8)
-                    if chrome.showsSidecar {
-                        WorkspaceAISidecar(
-                            model: content.aiChatModel,
-                            notes: content.store,
-                            dictation: content.dictation,
-                            expand: { content.selectModule(.ai) },
-                            openNote: { id in
-                                content.store.selectNote(id)
-                                content.selectModule(.notes)
-                            },
-                            close: { presentation.aiSidecarVisible = false }
-                        )
+            let toolOpen = [.browser, .terminal].contains(presentation.activeModule)
+            let chrome = LimaWorkspaceChromeLayout.resolve(width: proxy.size.width,
+                sidecarRequested: toolOpen && presentation.aiSidecarVisible, isDocked: presentation.mode.isDocked,
+                preferredSidecarWidth: min(420, max(350, proxy.size.width * 0.30)))
+            let split = chrome.showsSidecar
+            HStack(spacing: 0) {
+                LimaWayfinderRail(
+                    current: presentation.activeModule, previous: presentation.navigation.previous,
+                    sizeClass: sizeClass, select: content.selectModule, openSettings: content.openSettings,
+                    isDocked: presentation.mode.isDocked, openInWindow: content.restoreWorkspace,
+                    workspaceProfiles: content.switchWorkspaceProfile == nil ? [] : workspaceProfiles.profiles,
+                    activeWorkspaceProfileID: workspaceProfiles.activeProfileID,
+                    selectWorkspaceProfile: content.switchWorkspaceProfile,
+                    createWorkspaceProfile: content.switchWorkspaceProfile == nil ? nil : { _ = workspaceProfiles.create() },
+                    openSearch: { content.openCommandSearch("") },
+                    openCaptures: { ScreenshotStudioWindowController.shared.present() },
+                    forceIconOnly: chrome.collapsesRail, recentItems: recentItems
+                )
+                Divider()
+                if split {
+                    AIChatWorkspaceView(model: content.aiChatModel, isEmbedded: true,
+                        onDictation: { content.dictation.performPrimaryAction(target: .aiPrompt) },
+                        contextNotes: notes, onOpenNote: { id in notes.selectNote(id); content.selectModule(.notes) })
                         .frame(width: chrome.sidecarWidth)
-                        .overlay(alignment: .leading) {
-                            Rectangle()
-                                .fill(Color.clear)
-                                .frame(width: 8)
-                                .contentShape(Rectangle())
-                                .gesture(DragGesture(minimumDistance: 1)
-                                    .onChanged { value in
-                                        let start = sidecarResizeStart ?? preferredSidecarWidth
-                                        if sidecarResizeStart == nil { sidecarResizeStart = start }
-                                        preferredSidecarWidth = min(max(start - value.translation.width, 350), 480)
-                                    }
-                                    .onEnded { _ in sidecarResizeStart = nil })
-                                .offset(x: -4)
-                                .accessibilityLabel("Resize AI sidecar")
-                        }
-                        .padding(.trailing, 8)
-                        .padding(.vertical, 8)
-                    } else if !presentation.mode.isDocked && presentation.activeModule != .ai &&
-                              proxy.size.width >= 1_120 {
-                        VStack {
-                            Button { presentation.aiSidecarVisible = true } label: {
-                                Image(systemName: "sidebar.right")
-                                    .font(.system(size: 16, weight: .medium))
-                                    .frame(width: 28, height: 42)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Show AI sidecar · ⌘\\")
-                            .accessibilityLabel("Show AI sidecar")
-                            Spacer()
-                        }
-                        .padding(.trailing, 8)
-                        .padding(.vertical, 8)
-                    }
+                        .environment(\.limaWorkspaceSizeClass, .compact)
+                    Divider()
                 }
+                GeometryReader { pane in
+                    content.environment(\.limaWorkspaceSizeClass, LimaWorkspaceSizeClass.classify(width: pane.size.width))
+                        .environment(\.limaAssistantSplitAvailable, !presentation.mode.isDocked && proxy.size.width >= 1120)
+                }
+                .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
             }
+            .background(LimaTheme.surfacePrimary)
             .environment(\.limaWorkspaceSizeClass, sizeClass)
-            .clipShape(RoundedRectangle(cornerRadius: LimaRadius.majorSurface, style: .continuous))
-            .overlay { LimaPrismFrame(radius: LimaRadius.majorSurface) }
-            .padding(sizeClass == .compact ? 4 : 8)
         }
-        .background(Color.clear)
-        .frame(
-            minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720,
-            minHeight: 500
-        )
-    }
-}
-
-/// A second presentation of the same conversation, not a second chat runtime.
-private struct WorkspaceAISidecar: View {
-    private enum Pane: String, CaseIterable {
-        case activity = "Activity"
-        case chat = "Chat"
-    }
-
-    @ObservedObject var model: AIChatViewModel
-    let notes: NotesStore
-    let dictation: NoteDictationService
-    let expand: () -> Void
-    let openNote: (UUID) -> Void
-    let close: () -> Void
-    @State private var pane: Pane = .chat
-
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: "sparkles")
-                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                Text("Lima AI")
-                    .limaFont(.headline)
-                Spacer(minLength: 4)
-                Button(action: expand) {
-                    Image(systemName: "arrow.up.left.and.arrow.down.right")
-                }
-                .buttonStyle(.borderless)
-                .help("Expand AI Chat")
-                .accessibilityLabel("Expand AI Chat")
-                Button(action: close) {
-                    Image(systemName: "sidebar.right")
-                }
-                .buttonStyle(.borderless)
-                .help("Hide AI sidecar · ⌘\\")
-                .accessibilityLabel("Hide AI sidecar")
-            }
-            .padding(.horizontal, 12)
-            .frame(height: 40)
-            Picker("AI sidecar view", selection: $pane) {
-                ForEach(Pane.allCases, id: \.self) { choice in
-                    Text(choice.rawValue).tag(choice)
-                }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 12)
-            .padding(.bottom, 9)
-            .accessibilityIdentifier("workspace.ai.sidecar.mode")
-            GlassHairline()
-            Group {
-                if pane == .activity {
-                    WorkspaceAIActivityView(model: model, showChat: { pane = .chat })
-                } else {
-                    AIChatWorkspaceView(
-                        model: model,
-                        isEmbedded: true,
-                        onDictation: { dictation.performPrimaryAction(target: .aiPrompt) },
-                        contextNotes: notes,
-                        onOpenNote: openNote
-                    )
-                }
-            }
-            .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-        }
-        .onAppear {
-            if model.currentTaskState.isActive { pane = .activity }
-        }
-        .onChange(of: model.currentTaskState.isActive) { active in
-            if active { pane = .activity }
-        }
-        .limaContentSurface(cornerRadius: LimaRadius.panel)
-        .accessibilityIdentifier("workspace.ai.sidecar")
-    }
-}
-
-/// One inexpensive ambient wash belongs to the Workspace canvas, not to each
-/// content card. Reduce Transparency leaves only the opaque backdrop beneath it.
-private struct WorkspacePrismBackground: View {
-    let module: LimaWorkspaceModule
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
-
-    var body: some View {
-        if !reduceTransparency && !(LimaTestEnvironment.isEnabled && testReduceTransparency) {
-            ZStack {
-                RadialGradient(
-                    colors: [module.featureTint.primary.opacity(0.045), .clear],
-                    center: .topLeading, startRadius: 0, endRadius: 650
-                )
-                RadialGradient(
-                    colors: [Color.cyan.opacity(0.018), .clear],
-                    center: .bottomTrailing, startRadius: 20, endRadius: 700
-                )
-            }
-            .ignoresSafeArea()
-            .allowsHitTesting(false)
-        }
+        .frame(minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720, minHeight: 500)
     }
 }
 
@@ -1018,6 +895,7 @@ private struct WorkspaceModuleHost: View {
     @State private var editingTemplate: MarkdownUserTemplate?
     @State private var compareRevision: NoteRevision?
     @State private var exportError: String?
+    @State private var dictationSettingsPresented = false
     @State private var dictationHandoffError: String?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.limaWorkspaceSizeClass) private var sizeClass
@@ -1032,7 +910,7 @@ private struct WorkspaceModuleHost: View {
     var body: some View {
         let _ = activeFeatureRevision
         VStack(spacing: 0) {
-            if presentation.activeModule != .ai && presentation.activeModule != .browser {
+            if ![.ai, .browser, .terminal].contains(presentation.activeModule) {
                 workspaceHeader(sizeClass: sizeClass)
                 Color.clear.frame(height: 8)
             } else {
@@ -1040,6 +918,11 @@ private struct WorkspaceModuleHost: View {
                     .frame(maxWidth: .infinity)
                     .frame(height: 14)
                 GlassHairline()
+            }
+            if [.ai, .browser, .terminal].contains(presentation.activeModule) {
+                WorkspaceToolSwitcher(current: presentation.activeModule,
+                    conversationID: aiChatModel.selectedConversationID, select: selectModule,
+                    conversationVisible: $presentation.aiSidecarVisible)
             }
             workspaceModule(sizeClass: sizeClass)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1189,136 +1072,34 @@ private struct WorkspaceModuleHost: View {
     }
 
     private func workspaceHeader(sizeClass: LimaWorkspaceSizeClass) -> some View {
-        GeometryReader { proxy in
-            let notesSidebarFits = !presentation.notesFocusMode
-                && LimaWorkspaceMetrics.sidebarWidth(contentWidth: proxy.size.width, preferred: sizeClass.contextSidebarWidth) > 0
-            let sidebarWidth = notesSidebarFits && presentation.sidebarVisible ? (sizeClass.contextSidebarWidth ?? 0) : 0
-            HStack(spacing: 8) {
-            if presentation.activeModule != .notes || sizeClass != .expanded {
-                LimaToolbarTitle(
-                    symbol: workspaceModuleSymbol(presentation.activeModule),
-                    title: workspaceModuleTitle(presentation.activeModule)
-                )
-                .frame(maxWidth: 240, alignment: .leading)
-
-                LimaWindowDragRegion()
-                    .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
-            }
-
-            if sizeClass == .expanded {
-                Button { openCommandSearch("") } label: {
-                    HStack(spacing: 9) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(LimaTheme.accentInk)
-                        Text("Search, ask, or run a command…")
-                            .lineLimit(1)
-                        Spacer(minLength: 0)
-                    }
-                    .limaFont(.system(size: 12, weight: .medium))
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .padding(.horizontal, 12)
-                    .frame(width: presentation.activeModule == .notes
-                           ? min(440, max(260, proxy.size.width * 0.44))
-                           : min(330, max(210, proxy.size.width * 0.36)), height: 34)
-                    .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: 10))
-                    .overlay(RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(LimaTheme.borderStrong.opacity(0.55), lineWidth: 0.7))
-                }
-                .buttonStyle(.plain)
-                .help("Open Search")
-                .accessibilityLabel("Open Search")
-            } else {
-                Button { openCommandSearch("") } label: {
-                    Image(systemName: "magnifyingglass").frame(width: 28, height: 28)
-                }
-                .buttonStyle(.borderless)
-                .help("Open Search")
-                .accessibilityLabel("Open Search")
-            }
-
-            if presentation.activeModule == .notes && sizeClass == .expanded {
-                Menu {
-                    Button("Notes", systemImage: "note.text") { selectModule(.notes) }
-                    Button("AI Chat", systemImage: "sparkles") { selectModule(.ai) }
-                    Button("Context", systemImage: "tray") { selectModule(.context) }
-                } label: {
-                    Label("Notes + AI", systemImage: "rectangle.split.3x1")
-                        .limaFont(.system(size: 12, weight: .medium))
-                        .padding(.horizontal, 10)
-                        .frame(height: 34)
-                        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10))
-                        .overlay(RoundedRectangle(cornerRadius: 10)
-                            .strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .fixedSize(horizontal: true, vertical: false)
-                .help("Switch between Notes, AI Chat, and Context")
-                LimaWindowDragRegion()
-                    .frame(minWidth: 8, maxWidth: .infinity, minHeight: 48)
-            }
-
+        HStack(spacing: 10) {
+            Text(presentation.activeModule.title).limaFont(.system(size: 13, weight: .semibold))
+            LimaWindowDragRegion().frame(minWidth: 10, maxWidth: .infinity, minHeight: 38)
             if presentation.activeModule == .notes {
-                if !notesSidebarFits || !presentation.sidebarVisible {
-                    NotesChromeButton(symbol: "list.bullet", label: "Browse notes") { showNoteSwitcher = true }
-                }
-                if store.selectedNote != nil,
-                   presentation.notesFocusMode || !LimaWorkspaceMetrics.showsInspector(contentWidth: proxy.size.width, sidebarWidth: sidebarWidth) {
-                    NotesChromeButton(symbol: "sidebar.right", label: "Note details and actions") { showNoteInspector = true }
-                }
+                Button { showNoteSwitcher = true } label: { Image(systemName: "list.bullet").frame(width: 28, height: 28) }
+                    .buttonStyle(.borderless).help("Browse notes").accessibilityLabel("Browse notes")
+                Button { showNoteInspector = true } label: { Image(systemName: "sidebar.right").frame(width: 28, height: 28) }
+                    .buttonStyle(.borderless).help("Note details and actions").accessibilityLabel("Note details and actions")
+                    .disabled(store.selectedNote == nil)
             }
-            if (presentation.activeModule == .notes && notesSidebarFits) || presentation.activeModule == .dictation {
-                NotesChromeButton(
-                    symbol: presentation.sidebarVisible ? "sidebar.left" : "rectangle.righthalf.inset.filled",
-                    label: presentation.sidebarVisible ? "Hide Sidebar" : "Show Sidebar"
-                ) {
-                    presentation.sidebarVisible.toggle()
-                }
-            }
-
             Menu {
                 if presentation.activeModule == .notes {
-                    Button("New Note") {
-                        noteFilter = .all
-                        searchQuery = ""
-                        store.createNote()
-                    }.keyboardShortcut("n", modifiers: .command)
+                    Button("New Note") { noteFilter = .all; searchQuery = ""; store.createNote() }
+                        .keyboardShortcut("n", modifiers: .command)
+                    Button(presentation.sidebarVisible ? "Hide note list" : "Show note list") { presentation.sidebarVisible.toggle() }
+                    Button(presentation.notesFocusMode ? "Exit Focus Mode" : "Focus Mode", action: toggleNotesFocusMode)
                     Divider()
                 }
-                Section("Window") {
-                    if presentation.mode.isDocked {
-                        Button("Open in Window", action: restoreWorkspace)
-                    }
-                    Button("Dock Workspace Left", action: dockLeft)
-                    Button("Dock Workspace Right", action: dockRight)
-                    Toggle("Keep on Top", isOn: Binding(
-                        get: { presentation.staysOnTop },
-                        set: setStaysOnTop
-                    ))
-                    if presentation.activeModule == .notes {
-                        Button(
-                            presentation.notesFocusMode ? "Exit Focus Mode" : "Focus Mode",
-                            action: toggleNotesFocusMode
-                        )
-                    }
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .frame(width: 30, height: 28)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize(horizontal: true, vertical: false)
-            .help("Workspace options")
-            .accessibilityLabel("Workspace options")
+                if presentation.mode.isDocked { Button("Open in Window", action: restoreWorkspace) }
+                Button("Dock Left", action: dockLeft)
+                Button("Dock Right", action: dockRight)
+                Toggle("Keep on Top", isOn: Binding(get: { presentation.staysOnTop }, set: setStaysOnTop))
+            } label: { Image(systemName: "ellipsis").frame(width: 28, height: 28) }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+            .help("Workspace options").accessibilityLabel("Workspace options")
         }
-        .padding(.horizontal, 8)
-        .frame(height: 44)
-        .limaGlassContainer(region: .toolbar, cornerRadius: 16)
-        .padding(.horizontal, 8)
-        .padding(.top, 2)
-        }
-        .frame(height: 48)
+        .padding(.horizontal, 16).frame(height: 40)
+        .background(LimaTheme.surfacePrimary)
     }
 
     private func workspaceModule(sizeClass: LimaWorkspaceSizeClass) -> some View {
@@ -1354,11 +1135,7 @@ private struct WorkspaceModuleHost: View {
                         }
                         editor
                             .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
-                        if !presentation.notesFocusMode, store.selectedNote != nil,
-                           LimaWorkspaceMetrics.showsInspector(contentWidth: proxy.size.width, sidebarWidth: sidebarWidth) {
-                            Rectangle().fill(LimaDesign.separator).frame(width: LimaDesign.hairlineWidth)
-                            noteInspector.frame(width: LimaWorkspaceMetrics.inspectorWidth)
-                        }
+
                     }
                 case .context:
                     ContextShelfView(store: contextShelf, sendToAI: { items in
@@ -1433,7 +1210,7 @@ private struct WorkspaceModuleHost: View {
                 case .clipboard:
                     ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
                 case .terminal:
-                    DeveloperTerminalView(model: terminalModel)
+                    DeveloperTerminalView(model: terminalModel, startPersonalShell: !LimaTestEnvironment.isEnabled)
                 case .formatter:
                     FormatterWorkspaceView(model: formatterModel)
                 }
@@ -1623,21 +1400,29 @@ private struct WorkspaceModuleHost: View {
             .padding(compact ? 8 : 10)
 
             if !compact {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach(NotesWorkspaceFilter.allCases) { filter in
-                            Button { noteFilter = filter } label: {
-                                Text(filter.rawValue).limaFont(.caption.weight(.medium))
-                                    .padding(.horizontal, 10).padding(.vertical, 7)
-                                    .foregroundStyle(noteFilter == filter ? LimaTheme.accentInk : LimaTheme.textSecondary)
-                                    .background(noteFilter == filter ? LimaTheme.surfaceSelected : LimaTheme.surfaceRaised, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityAddTraits(noteFilter == filter ? .isSelected : [])
+                Menu {
+                    ForEach(NotesWorkspaceFilter.allCases) { filter in
+                        Button { noteFilter = filter } label: {
+                            Label(filter.rawValue, systemImage: noteFilter == filter ? "checkmark" : "line.3.horizontal.decrease")
                         }
                     }
-                    .padding(.horizontal, 10)
+                } label: {
+                    HStack {
+                        Image(systemName: "line.3.horizontal.decrease")
+                        Text(noteFilter == .all ? "All notes" : noteFilter.rawValue)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
+                    }
+                    .limaFont(.caption.weight(.medium))
+                    .foregroundStyle(LimaTheme.accentInk)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(LimaTheme.surfaceSelected, in: RoundedRectangle(cornerRadius: 8))
                 }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .accessibilityLabel("Filter notes: " + noteFilter.rawValue)
+                .padding(.horizontal, 10)
                 .padding(.bottom, 10)
             }
             GlassHairline()
@@ -1736,15 +1521,38 @@ private struct WorkspaceModuleHost: View {
     }
 
     private var dictationSection: some View {
-        HStack(spacing: 0) {
+        let compact = sizeClass == .compact
+        return AnyLayout(compact ? AnyLayout(VStackLayout(spacing: 0)) : AnyLayout(HStackLayout(spacing: 0))) {
+            if compact {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(conversations.conversations) { conversation in
+                            Button(conversation.title) { conversations.selectedConversationID = conversation.id }
+                        }
+                    } label: {
+                        Label("Recordings", systemImage: "waveform")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .disabled(conversations.conversations.isEmpty)
+                    Spacer(minLength: 0)
+                    Button { dictationSettingsPresented = true } label: { Image(systemName: "slider.horizontal.3") }
+                        .buttonStyle(.borderless).accessibilityLabel("Dictation engine and speaker settings")
+                        .popover(isPresented: $dictationSettingsPresented) {
+                            DictationEngineControls(service: dictation).padding(12).frame(width: 300)
+                        }
+                    dictationPrimaryButton
+                }
+                .padding(10)
+            } else {
             VStack(alignment: .leading, spacing: 8) {
                 dictationSidebarHeader
-
-                Text("Dictation is saved here as its own conversation. Notes stay untouched.")
-                    .limaFont(.caption)
-                    .foregroundStyle(LimaTheme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                Button { dictationSettingsPresented = true } label: {
+                    Label("Recording settings", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .popover(isPresented: $dictationSettingsPresented) {
+                    DictationEngineControls(service: dictation).padding(16).frame(width: 320)
+                }
 
                 ScrollView {
                     LazyVStack(spacing: 5) {
@@ -1797,8 +1605,9 @@ private struct WorkspaceModuleHost: View {
                 }
                 .frame(minHeight: 90, maxHeight: .infinity)
             }
-            .frame(width: presentation.mode.isDocked ? 180 : 280)
+            .frame(width: sizeClass == .regular ? 220 : 280)
             .padding(10)
+            }
 
             VStack(alignment: .leading, spacing: 10) {
                 if let conversation = conversations.selectedConversation {
@@ -1809,11 +1618,6 @@ private struct WorkspaceModuleHost: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                                 .help(conversation.title)
-                            Text(dictationConversationStatus(for: conversation))
-                                .limaFont(.caption)
-                                .foregroundStyle(dictationStatusColor(for: conversation))
-                                .lineLimit(2)
-                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .layoutPriority(1)
 
@@ -1880,6 +1684,9 @@ private struct WorkspaceModuleHost: View {
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(dictationAccessibilityStatus(for: conversation))
 
+                    if dictation.selectedEngine != .openAICloud && !conversation.isComplete {
+                        DictationParticipantControls(service: dictation, store: conversations, conversation: conversation)
+                    }
                     ZStack(alignment: .topLeading) {
                         TextEditor(text: Binding(
                             get: { conversations.selectedConversation?.transcript ?? "" },
@@ -1889,7 +1696,7 @@ private struct WorkspaceModuleHost: View {
                         .scrollContentBackground(.hidden)
                         .padding(7)
                         .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+
                         .focused($dictationEditorFocused)
                         .accessibilityLabel("Editable dictation transcript")
                         .accessibilityHint("Correct the transcript directly. Changes are saved locally.")
@@ -1959,6 +1766,7 @@ private struct WorkspaceModuleHost: View {
                         .accessibilityLabel("Live preview: \(dictation.partialTranscript)")
                     }
 
+                    if !conversation.isComplete || dictation.lastError != nil {
                     HStack(alignment: .top, spacing: 7) {
                         Image(systemName: dictationStatusSymbol(for: conversation))
                             .foregroundStyle(dictationStatusColor(for: conversation))
@@ -1973,6 +1781,7 @@ private struct WorkspaceModuleHost: View {
                     .padding(.top, 2)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel(dictationStatusMessage(for: conversation))
+                    }
                 } else {
                     VStack(alignment: .leading, spacing: 9) {
                         Image(systemName: "waveform.and.mic")
@@ -2062,7 +1871,7 @@ private struct WorkspaceModuleHost: View {
     private var dictationSidebarHeader: some View {
         if presentation.mode.isDocked {
             VStack(alignment: .leading, spacing: 7) {
-                Label("Conversations", systemImage: "waveform")
+                Label("Recordings", systemImage: "waveform")
                     .limaFont(.headline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -2081,7 +1890,7 @@ private struct WorkspaceModuleHost: View {
             }
         } else {
             HStack(spacing: 7) {
-                Label("Conversations", systemImage: "waveform")
+                Label("Recordings", systemImage: "waveform")
                     .limaFont(.headline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -2313,28 +2122,7 @@ private struct WorkspaceModuleHost: View {
                     .limaFont(.caption2)
                     .foregroundStyle(LimaTheme.textSecondary)
                 }
-                if !note.tags.isEmpty {
-                    HStack(spacing: 4) {
-                        ForEach(note.tags.prefix(4), id: \.self) { tag in
-                            Text(tag)
-                                .limaFont(.caption.weight(.medium))
-                                .foregroundStyle(LimaTheme.accentInk)
-                                .padding(.horizontal, 7).padding(.vertical, 3)
-                                .background(LimaTheme.accentSoft, in: Capsule())
-                        }
-                    }
-                } else if settings.notesShowMetadata {
-                    Button {
-                        showTags = true
-                    } label: {
-                        Label("Add tag", systemImage: "tag")
-                            .limaFont(.system(size: 10, weight: .medium))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundStyle(SettingsStore.shared.accentTheme.readablePrimary)
-                    .help("Add a tag to this note")
-                    .accessibilityLabel("Add tag to note")
-                }
+
             }
 
             Spacer(minLength: 6)
@@ -2395,7 +2183,7 @@ private struct WorkspaceModuleHost: View {
             .help("More Note Actions")
         }
         .padding(.horizontal, presentation.mode.isDocked ? 8 : 18)
-        .frame(minHeight: presentation.mode.isDocked ? 46 : 88)
+        .frame(minHeight: presentation.mode.isDocked ? 46 : 72)
         .background(Color.clear)
     }
 
@@ -2431,7 +2219,7 @@ private struct WorkspaceModuleHost: View {
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .trailing)))
                     .frame(maxWidth: settings.notesContentWidth.maximum)
                     .background(LimaTheme.fieldBackground, in: RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: LimaRadius.panel, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
+
                 Spacer(minLength: presentation.mode.isDocked ? 0 : 20)
             }
             .background(Color.clear)
@@ -2444,115 +2232,33 @@ private struct WorkspaceModuleHost: View {
     }
 
     private func noteToolbar(_ note: MarkdownNote) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 9) {
-                Menu {
-                    Button("Import Markdown…", action: importMarkdown)
-                    Button("Export All Markdown…", action: exportMarkdown)
-                    Divider()
-                    Button("Append Clipboard", action: appendClipboard)
-                    Button("Append Current Selection", action: appendSelection)
-                    if let conversation = conversations.selectedConversation {
-                        Button("Append Dictation Transcript") { store.appendDictation(conversation, to: note.id) }
-                        Button("Create Note from Dictation") { createNoteFromDictation(conversation) }
-                    }
-                } label: {
-                    Image(systemName: "folder")
-                        .frame(width: 25, height: 24)
-                }
-                .menuStyle(.borderlessButton)
-                .help("Import or export Markdown notes")
-
-                NotesChromeButton(symbol: "mic", label: "Dictate into this note") {
-                    dictation.performPrimaryAction(target: .note(note.id))
-                }
-
-                HStack(spacing: 1) {
-                    Menu {
-                        Button("Heading 1") { MarkdownEditorActions.heading(1) }
-                        Button("Heading 2") { MarkdownEditorActions.heading(2) }
-                        Button("Heading 3") { MarkdownEditorActions.heading(3) }
-                        Divider()
-                        Button("Quote") { MarkdownEditorActions.insert("> Quote") }
-                        Button("Divider") { MarkdownEditorActions.insert("---") }
-                        Button("Table") { MarkdownEditorActions.table() }
-                        Button("Image…") { MarkdownEditorActions.image() }
-                        Button("Chart") { MarkdownEditorActions.chart() }
-                    } label: {
-                        Image(systemName: "textformat")
-                            .limaFont(.system(size: 11, weight: .semibold))
-                            .frame(width: 25, height: 24)
-                    }
-                    .menuStyle(.borderlessButton)
-                    .frame(width: 28)
-                    .help("Headings, quote, divider, or table")
-                    .accessibilityLabel("Insert formatted block")
-
-                    MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)", action: MarkdownEditorActions.bold)
-                    MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)", action: MarkdownEditorActions.italic)
-                    MarkdownInsertButton(symbol: "list.bullet", help: "Apply bullets to selected lines", action: MarkdownEditorActions.bullets)
-                    MarkdownInsertButton(symbol: "checklist", help: "Apply checkboxes to selected lines", action: MarkdownEditorActions.checklist)
-                    MarkdownInsertButton(symbol: "photo", help: "Add an image from Finder", action: MarkdownEditorActions.image)
-                    MarkdownInsertButton(symbol: "chart.bar.xaxis", help: "Insert a native chart", action: MarkdownEditorActions.chart)
-                    MarkdownInsertButton(symbol: "chevron.left.forwardslash.chevron.right", help: "Insert formatted code block") {
-                        MarkdownEditorActions.insert("```\ncode\n```")
-                    }
-                    MarkdownInsertButton(symbol: "link", help: "Link (Command-K)", action: MarkdownEditorActions.link)
-                }
-                .padding(3)
-                .limaNativeSurface(fill: LimaTheme.surfaceSecondary, radius: LimaRadius.control, border: LimaTheme.borderSubtle)
-
-                Spacer(minLength: 5)
-
-                Button("Outline", systemImage: "list.bullet.indent") { showOutline = true }
-                    .buttonStyle(.borderless)
-                    .help("Show heading outline")
-                Button("Tasks", systemImage: "checklist") { showTasks = true }
-                    .buttonStyle(.borderless)
-                    .help("Show global task dashboard")
-
-                if !store.referencedNotes().isEmpty || !store.backlinks().isEmpty {
-                    Menu {
-                        if !store.referencedNotes().isEmpty {
-                            Section("References") {
-                                ForEach(store.referencedNotes()) { linked in
-                                    Button(linked.displayTitle) { selectNote(linked.id) }
-                                }
-                            }
-                        }
-                        if !store.backlinks().isEmpty {
-                            Section("Backlinks") {
-                                ForEach(store.backlinks()) { linked in
-                                    Button(linked.displayTitle) { selectNote(linked.id) }
-                                }
-                            }
-                        }
-                    } label: {
-                        Label("Links", systemImage: "link")
-                            .limaFont(.caption2.weight(.semibold))
-                    }
-                    .menuStyle(.borderlessButton)
-                    .help("References and backlinks")
-                }
-
-                let tasks = taskProgress(note.content)
-                if tasks.total > 0 {
-                    Label("Tasks \(tasks.complete) of \(tasks.total)", systemImage: tasks.complete == tasks.total ? "checkmark.circle.fill" : "circle.dashed")
-                        .limaFont(.caption2.weight(.semibold))
-                        .foregroundStyle(tasks.complete == tasks.total ? Color.green : Color.secondary)
-                        .padding(.horizontal, 8)
-                        .frame(height: 26)
-                        .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous))
-                        .overlay(RoundedRectangle(cornerRadius: LimaRadius.small, style: .continuous).stroke(LimaTheme.borderSubtle, lineWidth: LimaDesign.borderWidth))
-                        .help("Completed tasks")
-                }
-
+        HStack(spacing: 6) {
+            MarkdownInsertButton(symbol: "bold", help: "Bold (Command-B)", action: MarkdownEditorActions.bold)
+            MarkdownInsertButton(symbol: "italic", help: "Italic (Command-I)", action: MarkdownEditorActions.italic)
+            MarkdownInsertButton(symbol: "list.bullet", help: "Bulleted list", action: MarkdownEditorActions.bullets)
+            MarkdownInsertButton(symbol: "checklist", help: "Checklist", action: MarkdownEditorActions.checklist)
+            Menu {
+                Button("Heading 1") { MarkdownEditorActions.heading(1) }
+                Button("Heading 2") { MarkdownEditorActions.heading(2) }
+                Button("Heading 3") { MarkdownEditorActions.heading(3) }
+                Button("Quote") { MarkdownEditorActions.insert("> Quote") }
+                Button("Divider") { MarkdownEditorActions.insert("---") }
+                Divider()
+                Button("Table", action: MarkdownEditorActions.table)
+                Button("Image…", action: MarkdownEditorActions.image)
+                Button("Chart", action: MarkdownEditorActions.chart)
+                Button("Code Block") { MarkdownEditorActions.insert("```\ncode\n```") }
+                Button("Link", action: MarkdownEditorActions.link)
+            } label: { Image(systemName: "plus").frame(width: 26, height: 26) }
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                .help("Insert into note").accessibilityLabel("Insert into note")
+            Spacer(minLength: 0)
+            NotesChromeButton(symbol: "mic", label: "Dictate into this note") {
+                dictation.performPrimaryAction(target: .note(note.id))
             }
-            .padding(.horizontal, presentation.mode.isDocked ? 9 : 12)
-            .padding(.vertical, 8)
         }
-        .frame(height: 52)
-        .background(LimaTheme.surfaceSecondary)
+        .padding(.horizontal, 16).frame(height: 40)
+        .background(LimaTheme.surfacePrimary)
     }
 
     private func appendClipboard() {
@@ -3183,13 +2889,19 @@ enum LimaMockupWorkspaceFixtures {
     static func workspace(_ module: LimaWorkspaceModule, compact: Bool = false) -> some View {
         precondition(LimaTestEnvironment.isEnabled)
         let notes = Self.notes()
+        let dictationConversations = DictationConversationStore()
+        if module == .dictation {
+            var meeting = DictationConversation(segments: ["Alex: Let's plan the launch.", "Sam: I'll finish the design.", "Lee: I'll check the build."], isComplete: true)
+            meeting.participants = ["Alex", "Sam", "Lee"]
+            try? dictationConversations.replace(with: [meeting])
+        }
         let presentation = WorkspacePresentationModel(mode: compact ? .dockedLeft : .workspace)
         presentation.activeModule = module
         let ai = AIChatVisualFixtures.model(for: .conversation)
         ai.prepareNoteDraft(notes.notes[0], prompt: "")
         let launcher = LauncherViewModel(clipboard: .shared, scanApplications: false)
         return WorkspaceShellView(content: WorkspaceModuleHost(
-            store: notes, conversations: DictationConversationStore(),
+            store: notes, conversations: dictationConversations,
             dictation: NoteDictationService(onTranscript: { _ in }),
             aiChatModel: ai, terminalModel: DeveloperTerminalModel(),
             formatterModel: FormatterWorkspaceModel(), launcherViewModel: launcher,

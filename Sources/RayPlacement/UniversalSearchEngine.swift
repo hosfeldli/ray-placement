@@ -48,7 +48,11 @@ actor UniversalSearchEngine {
         let normalizedQuery = query.folding(
             options: [.caseInsensitive, .diacriticInsensitive], locale: .current
         )
-        var grouped: [LimaSearchKind: [LimaSearchResult]] = [:]
+        var grouped: [LimaSearchKind: SearchTopResults<LimaSearchResult>] = [:]
+        let precedes: (LimaSearchResult, LimaSearchResult) -> Bool = {
+            if $0.score != $1.score { return $0.score > $1.score }
+            return $0.id < $1.id
+        }
         for document in snapshot.documents {
             if Task.isCancelled { return [] }
             guard Self.includes(document.kind, for: prefix) else { continue }
@@ -58,7 +62,7 @@ actor UniversalSearchEngine {
             guard let score = FuzzyMatcher.scoreNormalized(
                 document.normalizedSearchText, query: normalizedQuery
             ) else { continue }
-            grouped[document.kind, default: []].append(LimaSearchResult(
+            grouped[document.kind, default: SearchTopResults(limit: Self.limit(for: document.kind), precedes: precedes)].insert(LimaSearchResult(
                 id: document.id, kind: document.kind, title: document.title,
                 subtitle: document.subtitle, keywords: document.keywords,
                 score: score + document.scoreBonus
@@ -71,9 +75,9 @@ actor UniversalSearchEngine {
         var results: [LimaSearchResult] = []
         for kind in order {
             guard let matches = grouped[kind] else { continue }
-            results += matches.sorted { $0.score > $1.score }.prefix(Self.limit(for: kind))
+            results += matches.elements
         }
-        return Array(results.sorted { $0.score > $1.score }.prefix(24))
+        return Array(results.sorted(by: precedes).prefix(24))
     }
 
     private static func includes(_ kind: LimaSearchKind, for prefix: String?) -> Bool {

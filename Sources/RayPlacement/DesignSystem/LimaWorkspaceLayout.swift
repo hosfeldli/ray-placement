@@ -39,8 +39,7 @@ enum LimaWorkspaceSizeClass: Equatable, Sendable {
     }
 }
 
-/// Reserve the webpage before deciding whether the AI sidecar fits. The
-/// chrome budget includes outer padding, inter-pane gaps, and rail insets.
+/// Reserve a usable tool canvas before placing the Assistant conversation beside it.
 struct LimaWorkspaceChromeLayout: Equatable {
     let showsSidecar: Bool
     let collapsesRail: Bool
@@ -50,15 +49,16 @@ struct LimaWorkspaceChromeLayout: Equatable {
                         preferredSidecarWidth: CGFloat) -> Self {
         let showsSidecar = sidecarRequested && !isDocked && width >= 1_120
         let collapsesRail = width < (showsSidecar ? 1_380 : 940)
-        // The expanded rail can reach 315 points with 140% text and Wide
-        // presentation. Budget its maximum so resizing the sidecar never
-        // silently steals the Browser's preferred 650-point minimum.
-        let railBudget: CGFloat = collapsesRail ? 64 : 316
-        let maximumSidecar = max(350, min(480, width - railBudget - 650 - 54))
+        let railBudget: CGFloat = collapsesRail ? 60 : 200
+        let maximumSidecar = max(350, min(420, width - railBudget - 650 - 2))
         let sidecarWidth = min(max(preferredSidecarWidth, 350), maximumSidecar)
         return Self(showsSidecar: showsSidecar, collapsesRail: collapsesRail,
                     sidecarWidth: sidecarWidth)
     }
+}
+
+private struct LimaAssistantSplitAvailableKey: EnvironmentKey {
+    static let defaultValue = false
 }
 
 private struct LimaWorkspaceSizeClassKey: EnvironmentKey {
@@ -68,6 +68,11 @@ private struct LimaWorkspaceSizeClassKey: EnvironmentKey {
 }
 
 extension EnvironmentValues {
+    var limaAssistantSplitAvailable: Bool {
+        get { self[LimaAssistantSplitAvailableKey.self] }
+        set { self[LimaAssistantSplitAvailableKey.self] = newValue }
+    }
+
     var limaWorkspaceSizeClass: LimaWorkspaceSizeClass {
         get { self[LimaWorkspaceSizeClassKey.self] }
         set { self[LimaWorkspaceSizeClassKey.self] = newValue }

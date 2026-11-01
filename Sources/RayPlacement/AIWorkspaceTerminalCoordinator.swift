@@ -159,6 +159,7 @@ private struct AIWorkspaceCommandResult: Sendable {
 @MainActor
 final class AIWorkspaceTerminalCoordinator: ObservableObject {
     static let shared = AIWorkspaceTerminalCoordinator()
+    static let maximumCommandBytes = 65_536
     static let maximumSessions = 8
     static let maximumConcurrentCommands = 4
     static let maximumOutputBytes = 256 * 1_024
@@ -218,6 +219,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         var ptyView: AIWorkspacePTYTerminalView?
         var terminateRequested = false
         var directory: URL
+        var executionDirectory: URL?
         var directoryGrantPath: String?
         var state: AIWorkspaceTerminalState = .idle
         var output = Data()
@@ -244,7 +246,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             AIWorkspaceTerminalSnapshot(
                 id: id,
                 conversationID: conversationID,
-                directory: directory.path,
+                directory: (executionDirectory ?? directory).path,
                 workScope: workScope,
                 isBoundedExternal: isBoundedExternal,
                 isInteractivePTY: isInteractivePTY,
@@ -661,6 +663,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         let directory = try Self.validDirectory(relativeDirectory, root: session.root)
         if directory.path != session.directory.path { session.directoryGrantPath = nil }
         session.directory = directory
+        session.executionDirectory = nil
         publish()
         return session.snapshot
     }
@@ -732,7 +735,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
     }
 
     @discardableResult
-    func run(sessionID: UUID, command: String, timeoutSeconds: Int) throws -> AIWorkspaceTerminalSnapshot {
+    func run(sessionID: UUID, command: String, timeoutSeconds: Int, workingDirectory: URL? = nil) throws -> AIWorkspaceTerminalSnapshot {
         let session = try find(sessionID)
         guard !session.isBoundedExternal else { throw WorkspaceError.notWorkspaceSession }
         guard !session.isInteractivePTY else { throw WorkspaceError.interactiveSessionRequiresWrite }
@@ -740,7 +743,7 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         guard sessionByID.values.filter({ $0.state == .running }).count < Self.maximumConcurrentCommands else {
             throw WorkspaceError.tooManyCommands
         }
-        guard command.utf8.count > 0, command.utf8.count <= 4_096,
+        guard command.utf8.count > 0, command.utf8.count <= Self.maximumCommandBytes,
               !command.unicodeScalars.contains(where: {
                   CharacterSet.controlCharacters.contains($0) && ![9, 10, 13].contains(Int($0.value))
               }), (1...900).contains(timeoutSeconds) else {
@@ -754,6 +757,12 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
             ? "."
             : String(session.directory.path.dropFirst(session.root.path.count + 1))
         session.directory = try Self.validDirectory(relativeDirectory, root: session.root)
+        let launchDirectory = workingDirectory ?? session.executionDirectory ?? session.directory
+        var isDirectory: ObjCBool = false
+        guard launchDirectory.isFileURL,
+              FileManager.default.fileExists(atPath: launchDirectory.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else { throw WorkspaceError.invalidDirectory }
+        session.executionDirectory = launchDirectory
         // Working directories are launch defaults only. The command inherits
         // the user's normal filesystem and network access after Tool Access
         // and any exact-call review have been satisfied.
@@ -767,15 +776,15 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         let taskID = TaskRegistry.shared.begin(
             kind: .aiTool,
             title: "AI Workspace command",
-            detail: session.directory.lastPathComponent,
+            detail: launchDirectory.lastPathComponent,
             isCancellable: true,
             onCancel: { box.cancel() }
         )
         session.taskID = taskID
         publish()
 
-        let directory = session.directory
-        let root = session.directory
+        let directory = launchDirectory
+        let root = session.root
         Task { [weak self] in
             // Keep the blocking pipe reader independent of main-thread work.
             // The serial stream preserves chunk order and drains before the

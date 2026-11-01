@@ -4,12 +4,12 @@ import Testing
 
 @Test func workspaceReturnTogglesWithoutReplacingPreviousOnReselection() {
     var navigation = LimaWorkspaceNavigation()
-    #expect(navigation.current == .home)
+    #expect(navigation.current == .ai)
     #expect(navigation.previous == nil)
     navigation.select(.home)
     #expect(navigation.previous == nil)
     navigation.select(.notes)
-    #expect(navigation.previous == .home)
+    #expect(navigation.previous == .ai)
     navigation.select(.ai)
     #expect(navigation.previous == .notes)
     navigation.select(.ai)
@@ -28,17 +28,17 @@ import Testing
     #expect(modules.map(\.shortcutNumber) == ["1", "2", "3", "B", "4", "5", "6", "8", "9", "T", "F"])
     #expect(LimaWorkspaceModule.context.shortcutAlias == "C")
     #expect(LimaWorkspaceModule.notes.shortcutAlias == nil)
-    #expect(LimaWorkspaceModule.workspaceDestinations == [.home, .ai, .browser, .terminal, .notes])
-    #expect(LimaWorkspaceModule.toolDestinations == [.clipboard, .extensions, .grammar])
+    #expect(LimaWorkspaceModule.workspaceDestinations == [.ai, .notes, .dictation])
+    #expect(LimaWorkspaceModule.toolDestinations.isEmpty)
     #expect(LimaWorkspaceModule.primaryDestinations == LimaWorkspaceModule.workspaceDestinations + LimaWorkspaceModule.toolDestinations)
-    #expect(LimaWorkspaceModule.primaryDestinations == [.home, .ai, .browser, .terminal, .notes, .clipboard, .extensions, .grammar])
-    #expect(LimaWorkspaceModule.hiddenDestinations == [.context, .dictation, .formatter])
+    #expect(LimaWorkspaceModule.primaryDestinations == [.ai, .notes, .dictation])
+    #expect(LimaWorkspaceModule.hiddenDestinations == [.home, .browser, .terminal, .context, .extensions, .clipboard, .grammar, .formatter])
     #expect(Set(LimaWorkspaceModule.primaryDestinations).isDisjoint(with: LimaWorkspaceModule.hiddenDestinations))
     #expect(modules.allSatisfy { !$0.title.isEmpty && !$0.symbol.isEmpty })
     #expect(!modules.contains(.workflows))
     var navigation = LimaWorkspaceNavigation()
     navigation.select(.workflows)
-    #expect(navigation.current == .home)
+    #expect(navigation.current == .ai)
 }
 
 @Test func wayfinderAccentInkMeetsTextContrastForEveryAccentAndAppearance() {

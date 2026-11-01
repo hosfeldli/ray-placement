@@ -131,6 +131,21 @@ enum AIContextTools {
             "tool_access_mode": accessMode.rawValue,
             "routed_tools": routedTools.map(\.name).sorted(),
             "computer_actions": categories,
+            "saved_workspace_data": [
+                "search": available("lima_data_search"), "read": available("lima_data_read"),
+                "sources": ["context", "captured_text", "dictation", "clipboard"],
+                "references": "context:UUID, dictation:UUID, clipboard:UUID; capture:UUID uses native screenshot tools",
+                "reason": unavailableReason("lima_data_read", category: .workspaceData)
+            ] as [String: Any],
+            "scheduled_tasks": [
+                "list": available("task_list"), "schedule": available("task_schedule"),
+                "cancel": available("task_cancel"),
+                "requires": "Lima running, Mac awake, idle chat, current permissions",
+                "time_zone": TimeZone.current.identifier,
+                "local_now": ISO8601DateFormatter().string(from: Date())
+            ] as [String: Any],
+            "calendar": ["read": available("calendar_events"), "check_conflicts": available("calendar_check_conflicts"), "create": available("calendar_create_event")] as [String: Any],
+            "reminders": ["list": available("reminders_list"), "create": available("reminders_create")] as [String: Any],
             "memory": [
                 "read": canReadMemory,
                 "save": canSaveMemory,
@@ -165,6 +180,8 @@ enum AIContextTools {
                 "shared_workspace_session": canStartWorkspace && canRunWorkspace && canReadWorkspace && workspaceRuntimeAvailable,
                 "wait_for_verified_exit": canWaitWorkspace && workspaceRuntimeAvailable,
                 "bounded_external_command": canRunTerminal,
+                "execute_script": available("terminal_execute") && workspaceRuntimeAvailable,
+                "maximum_script_bytes": AIWorkspaceTerminalCoordinator.maximumCommandBytes,
                 "visible_in_terminal": canRunTerminal || (canRunWorkspace && workspaceRuntimeAvailable),
                 "workspace_network_access": canRunWorkspace && workspaceRuntimeAvailable,
                 "bounded_external_network_policy": canRunTerminal ? "normal_user_access" : "unavailable"

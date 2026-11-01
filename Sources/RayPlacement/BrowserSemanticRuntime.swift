@@ -37,6 +37,12 @@ struct BrowserPageIdentity: Codable, Equatable, Sendable {
     let userRevision: UInt64
     let snapshotRevision: UInt64
     let url: String
+
+    func matchesInputRevision(_ other: Self, allowingCanvasUpdates: Bool = false) -> Bool {
+        documentID == other.documentID && routeGeneration == other.routeGeneration &&
+        userRevision == other.userRevision && snapshotRevision == other.snapshotRevision && url == other.url &&
+        (allowingCanvasUpdates || mutationRevision == other.mutationRevision)
+    }
 }
 
 struct BrowserTargetState: Codable, Equatable, Sendable {
@@ -152,6 +158,9 @@ struct BrowserDiagnostics: Codable, Equatable, Sendable {
     let frameCount: Int
     let quietMS: Int
     let truncated: Bool
+    var privacyComplete: Bool? = nil
+
+    var canReleaseContent: Bool { !truncated || privacyComplete == true }
 }
 
 struct BrowserSemanticMatch: Codable, Equatable, Sendable {
@@ -295,7 +304,8 @@ struct BrowserPageSnapshot: Codable, Equatable, Sendable {
             shadowRootCount: snapshots.reduce(0) { $0 + $1.diagnostics.shadowRootCount },
             frameCount: max(expectedFrameCount, snapshots.count),
             quietMS: snapshots.map(\.diagnostics.quietMS).min() ?? 0,
-            truncated: truncated
+            truncated: truncated,
+            privacyComplete: expectedFrameCount <= snapshots.count && snapshots.allSatisfy { $0.diagnostics.canReleaseContent }
         )
         // The main document can be quiet while an embedded app is still
         // hydrating. Aggregate readiness across every observed frame; missing
@@ -368,7 +378,7 @@ struct BrowserPageSnapshot: Codable, Equatable, Sendable {
                 headingCount: 0, semanticRowCount: 0,
                 shadowRootCount: diagnostics.shadowRootCount,
                 frameCount: diagnostics.frameCount, quietMS: diagnostics.quietMS,
-                truncated: diagnostics.truncated
+                truncated: diagnostics.truncated, privacyComplete: diagnostics.privacyComplete
             )
             var safe = BrowserPageSnapshot(
                 identity: main.identity, readiness: readiness,
@@ -737,17 +747,17 @@ enum BrowserSemanticScript {
       government_id: "Government ID"
     };
     const secureValues = [];
-    let shortSecureValue = false, scannedSecure = 0;
+    let shortSecureValue = false, scannedSecure = 0, privacyComplete = true;
     const collectSecureValues = root => {
       for (const node of root.querySelectorAll("*")) {
-        if (++scannedSecure > 20000) { truncated = true; break; }
+        if (++scannedSecure > 20000) { truncated = true; privacyComplete = false; break; }
         if (node.shadowRoot) collectSecureValues(node.shadowRoot);
         if (!secureKind(node)) continue;
         const value = String(node.isContentEditable ? node.textContent : node.value || "");
         if (!value) continue;
         if (value.length < 3) shortSecureValue = true;
         else if (secureValues.length < 120) secureValues.push(value);
-        else truncated = true;
+        else { truncated = true; privacyComplete = false; }
       }
     };
     collectSecureValues(document);
@@ -1051,7 +1061,7 @@ enum BrowserSemanticScript {
       diagnostics: {
         textLength: text.length, linkCount: links.length, controlCount: controls.length,
         headingCount: headings.length, semanticRowCount: rows.length, shadowRootCount, frameCount,
-        quietMS, truncated: truncated || bodyText.length + shadowTextLength > 48000
+        quietMS, privacyComplete, truncated: truncated || bodyText.length + shadowTextLength > 48000
       }
     };
     return JSON.stringify(payload);
@@ -1164,7 +1174,7 @@ enum BrowserSemanticScript {
       identity: {documentID: state.documentID, routeGeneration: state.routeGeneration,
         mutationRevision: state.mutationRevision, userRevision: state.userRevision,
         snapshotRevision: state.snapshotRevision, url: location.href},
-      complete, frameCount, hasFilledSecureField: secrets.length > 0, rects,
+      complete, frameCount, frameID: state.frameID, hasFilledSecureField: secrets.length > 0, rects,
       scrollX: window.scrollX, scrollY: window.scrollY,
       scrollFingerprint: scrolls.join('|')
     });
@@ -1176,7 +1186,6 @@ enum BrowserSemanticScript {
     const state = globalThis.__limaSemantic;
     if (!state || state.documentID !== documentID ||
         state.routeGeneration !== routeGeneration ||
-        state.mutationRevision !== mutationRevision ||
         state.userRevision !== userRevision ||
         state.snapshotRevision !== snapshotRevision ||
         state.lastURL !== location.href) throw new Error("stale_target");
@@ -1191,6 +1200,10 @@ enum BrowserSemanticScript {
     }
     if (!hit || hit.localName === "iframe" || hit.localName === "frame")
       throw new Error("unsupported_action");
+    if (state.mutationRevision !== mutationRevision &&
+        !(typeof allowCanvasUpdates !== "undefined" && allowCanvasUpdates === true && hit.localName === "canvas")) {
+      throw new Error("stale_target");
+    }
     const inComposedTree = (ancestor, node) => {
       for (let depth = 0; depth < 32 && node; depth++) {
         if (node === ancestor) return true;
@@ -1492,20 +1505,33 @@ enum BrowserSemanticScript {
     if (modal && !modal.contains(element) && !(host && modal.contains(host))) {
       throw new Error("target_occluded");
     }
-    const hitTest = () => {
-      const x = Math.max(0, Math.min(innerWidth - 1, rect.left + rect.width / 2));
-      const y = Math.max(0, Math.min(innerHeight - 1, rect.top + rect.height / 2));
-      const root = element.getRootNode();
-      const hit = root.elementFromPoint?.(x, y) || document.elementFromPoint(x, y);
-      const outer = document.elementFromPoint(x, y);
-      const directHit = hit === element || element.contains(hit);
-      const hostHit = host && (hit === host || host.contains(hit));
-      if (!hit || (!directHit && !hostHit) ||
-          (host && outer !== host && !host.contains(outer))) {
-        throw new Error("target_occluded");
+    const composedContains = (ancestor, descendant) => {
+      for (let node = descendant; node; node = node.parentElement || node.getRootNode()?.host) {
+        if (node === ancestor) return true;
       }
+      return false;
     };
-    if (["click", "toggle", "submit", "validate"].includes(action)) hitTest();
+    const hitTest = () => {
+      // Probe the visible intersection, including edges that remain usable
+      // underneath sticky headers. Always hit-test from the outer document so
+      // a shadow root cannot hide an overlay covering its host.
+      const left = Math.max(0, rect.left), right = Math.min(innerWidth, rect.right);
+      const top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+      for (const fy of [0.5, 0.1, 0.9]) {
+        for (const fx of [0.5, 0.1, 0.9]) {
+          const x = left + (right - left) * fx, y = top + (bottom - top) * fy;
+          let hit = document.elementFromPoint(x, y);
+          for (let depth = 0; depth < 32 && hit?.shadowRoot; depth++) {
+            const inner = hit.shadowRoot.elementFromPoint(x, y);
+            if (!inner || inner === hit) break;
+            hit = inner;
+          }
+          if (hit && composedContains(element, hit)) return;
+        }
+      }
+      throw new Error("target_occluded");
+    };
+    hitTest();
     const valueOf = () => element.isContentEditable ? element.textContent : element.value;
     const setNativeValue = next => {
       const input = element.matches(
@@ -1525,7 +1551,7 @@ enum BrowserSemanticScript {
         setter.call(element, next);
       }
       element.dispatchEvent(new InputEvent("input", {
-        bubbles: true, data: next, inputType: next ? "insertText" : "deleteContentBackward"
+        bubbles: true, composed: true, data: next, inputType: next ? "insertText" : "deleteContentBackward"
       }));
       element.dispatchEvent(new Event("change", {bubbles: true}));
     };
@@ -1550,7 +1576,7 @@ enum BrowserSemanticScript {
       expectedOption = matches[0];
       element.focus();
       element.selectedIndex = expectedOption.index;
-      element.dispatchEvent(new Event("input", {bubbles: true}));
+      element.dispatchEvent(new Event("input", {bubbles: true, composed: true}));
       element.dispatchEvent(new Event("change", {bubbles: true}));
     } else if (action === "toggle") {
       if (text !== "true" && text !== "false") throw new Error("invalid_toggle");
@@ -1612,14 +1638,25 @@ enum BrowserSemanticScript {
     }
     const candidates = [];
     const root = document.scrollingElement;
+    const modal = state.activeModal?.isConnected ? state.activeModal : null;
+    const composedContains = (ancestor, descendant) => {
+      for (let node = descendant; node; node = node.parentElement || node.getRootNode()?.host) {
+        if (node === ancestor) return true;
+      }
+      return false;
+    };
+    const canMove = element => direction === "down" ?
+      element.scrollTop < element.scrollHeight - element.clientHeight - 2 : element.scrollTop > 2;
     const consider = element => {
       if (!element || element.clientHeight < 24 ||
-          element.scrollHeight - element.clientHeight < 8) return;
+          element.scrollHeight - element.clientHeight < 8 ||
+          (modal && !composedContains(modal, element))) return;
       const isRoot = element === root;
       const style = getComputedStyle(element);
-      if (!isRoot && !/auto|scroll|overlay/.test(style.overflowY)) return;
+      if (style.display === "none" || style.visibility === "hidden" ||
+          (!isRoot && !/auto|scroll|overlay/.test(style.overflowY))) return;
       const rect = element.getBoundingClientRect();
-      if (rect.width < 8 || rect.height < 8 ||
+      if (rect.width < 8 || rect.height < 8 || rect.right <= 0 || rect.left >= innerWidth ||
           rect.bottom <= 0 || rect.top >= innerHeight) return;
       const role = element.getAttribute("role") || "";
       const semantic = /grid|list|table|feed|tree/.test(role) ? 1000000 : 0;
@@ -1630,21 +1667,26 @@ enum BrowserSemanticScript {
     };
     consider(root);
     let inspected = 0;
-    for (const element of document.querySelectorAll("*")) {
-      if (++inspected > 10000) break;
-      if (element !== root) consider(element);
-    }
+    const walk = container => {
+      for (const element of container.querySelectorAll("*")) {
+        if (++inspected > 10000) return;
+        if (element !== root) consider(element);
+        if (element.shadowRoot) walk(element.shadowRoot);
+      }
+    };
+    walk(document);
     candidates.sort((a, b) => b.score - a.score);
-    const selected = candidates[0];
+    // An exhausted inner list must not prevent scrolling the surrounding page.
+    const selected = candidates.find(candidate => canMove(candidate.element));
     if (!selected) return JSON.stringify({
       performed: false, before: 0, after: 0, endReached: true,
       regionLabel: "", x: 0, y: 0, width: 0, height: 0,
-      availableRegions: 0, truncated: inspected > 10000
+      availableRegions: candidates.length, truncated: inspected > 10000
     });
     const element = selected.element;
     const before = element.scrollTop;
     const amount = Math.max(1, Math.round(element.clientHeight * fraction));
-    element.scrollTop = before + (direction === "down" ? amount : -amount);
+    element.scrollTo({top: before + (direction === "down" ? amount : -amount), behavior: "instant"});
     const after = element.scrollTop;
     if (after !== before) {
       state.mutationRevision++;
@@ -1654,8 +1696,7 @@ enum BrowserSemanticScript {
     const rect = selected.rect;
     return JSON.stringify({
       performed: after !== before, before, after,
-      endReached: direction === "down" ?
-        after >= element.scrollHeight - element.clientHeight - 2 : after <= 2,
+      endReached: !candidates.some(candidate => canMove(candidate.element)),
       regionLabel: (state.redact?.(element.getAttribute("aria-label") || selected.role ||
         element.id || (element === root ? "main page" : "scroll region")) ||
         "scroll region").slice(0, 100),

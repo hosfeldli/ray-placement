@@ -123,6 +123,15 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
         self.panel = LauncherPanel(contentRect: NSRect(x: 0, y: 0, width: 680, height: 452))
         self.updateService = updateService
         super.init()
+        viewModel.revealCommandSearch = { [weak self] query in
+            self?.viewModel.enter(.root)
+            self?.viewModel.query = query
+            self?.presentPanel()
+        }
+        LimaSurfaceAITools.openSurface = { [weak self] module in
+            self?.notesWindow.presentAISurface(module) ?? false
+        }
+        AIScheduledTaskRunner.shared.start(model: aiChatModel)
         BrowserWorkspaceModel.shared.onAIForegroundTab = { [weak self] tabID in
             self?.notesWindow.presentAIBrowserTab(tabID) ?? false
         }

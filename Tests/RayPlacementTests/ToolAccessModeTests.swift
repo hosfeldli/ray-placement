@@ -49,7 +49,7 @@ import Testing
     #expect(store.enabledToolIDs.isSuperset(of: ["read_file", "lima_capabilities"]))
     #expect(store.enabledToolIDs.isSuperset(of: AIWorkspaceActionTools.ids))
     #expect(store.effectiveEnabledToolIDs.contains("browser_read"))
-    #expect(AIComputerActionPolicy(defaults: defaults).enabledCategories == [.savedMemory])
+    #expect(AIComputerActionPolicy(defaults: defaults).enabledCategories == [.savedMemory, .scheduledTasks, .workspaceData])
 
     store.setAccessMode(.fullControl)
     #expect(store.effectiveEnabledToolIDs.contains("browser_read"))
@@ -147,7 +147,7 @@ import Testing
     #expect(!policy.requiresApproval(for: navigation, toolAccessMode: .automatic))
     #expect(!policy.requiresApproval(for: navigation, toolAccessMode: .askForActions))
     #expect(AIComputerActionCategory.allCases == [
-        .localFiles, .savedMemory, .terminal, .screenshotHistory,
+        .localFiles, .savedMemory, .scheduledTasks, .workspaceData, .terminal, .screenshotHistory,
         .screenCapture, .audioOutput, .networkQuality, .calendar, .reminders,
         .contacts, .location, .mailCompose, .messagesCompose
     ])
@@ -266,4 +266,21 @@ import Testing
     #expect(!policy.allows(file, toolAccessMode: .automatic))
     #expect(!policy.permits(file, approvalGranted: false, toolAccessMode: .automatic))
     #expect(policy.access(for: .localFiles) == .disabled)
+}
+
+@Test @MainActor func scheduledTaskToolsMigrateOnceAndPreserveLaterOptOuts() throws {
+    let suite = "ToolAccessScheduledTasks.\(UUID().uuidString)"
+    let defaults = try #require(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    defaults.set(["read_file"], forKey: "lima.ai.enabled-native-tools")
+    defaults.set(LimaAIToolAccessMode.custom.rawValue, forKey: "lima.ai.tool-access-mode")
+    let store = LimaAIToolStore(defaults: defaults)
+    #expect(store.enabledToolIDs.isSuperset(of: AIScheduledTaskTools.ids.union(LimaSurfaceAITools.ids)))
+    let definition = try #require(LimaAIToolRegistry.definition(for: "task_schedule"))
+    let policy = AIComputerActionPolicy(defaults: defaults)
+    #expect(policy.access(for: .scheduledTasks) == .askEveryTime)
+    #expect(policy.requiresApproval(for: definition, toolAccessMode: .custom))
+    #expect(!policy.requiresApproval(for: definition, toolAccessMode: .fullControl))
+    store.setEnabled(definition, enabled: false)
+    #expect(!LimaAIToolStore(defaults: defaults).enabledToolIDs.contains("task_schedule"))
 }

@@ -4,7 +4,7 @@ import SwiftUI
 /// Presentation only: search ranking, grants, and command execution stay in the launcher model.
 enum LauncherSearchDesign {
     /// Search remains a launcher; result details are optional rather than a permanent third pane.
-    static func canShowInspector(at width: CGFloat) -> Bool { width >= 780 }
+    static func canShowInspector(at width: CGFloat) -> Bool { width >= 960 }
     static let inspectorWidth: CGFloat = 250
 
     /// Keyboard navigation only scrolls when the selected row is outside the
@@ -69,7 +69,7 @@ private struct SearchResultsViewportHeightPreferenceKey: PreferenceKey {
 @MainActor
 struct LauncherSearchWorkspace: View {
     @ObservedObject var model: LauncherViewModel
-    @ObservedObject var aiChatModel: AIChatViewModel
+    let aiChatModel: AIChatViewModel
     let openWorkspace: (LimaWorkspaceModule) -> Void
     let openSettings: () -> Void
     let createNote: () -> Void
@@ -135,25 +135,9 @@ struct LauncherSearchWorkspace: View {
                     footer(wide: wide, canShowInspector: canShowInspector)
                 }
             }
-            .background {
-                if !idle {
-                    ZStack {
-                        LimaTheme.surfacePrimary.opacity(opaque ? 1 : settings.glassStyle.baseOpacity)
-                        if !opaque {
-                            LinearGradient(
-                                colors: [settings.accentTheme.primary.opacity(0.12), .clear,
-                                         settings.accentTheme.primary.opacity(0.07)],
-                                startPoint: .topLeading, endPoint: .bottomTrailing
-                            )
-                        }
-                    }
-                }
-            }
+            .background(LimaTheme.surfacePrimary)
             .clipShape(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow, style: .continuous))
-            .overlay {
-                if !idle { LimaPrismFrame(radius: LimaRadius.launcherWindow) }
-            }
-            .shadow(color: idle || opaque ? .clear : settings.accentTheme.primary.opacity(0.22), radius: 14, y: 5)
+            .overlay(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.5))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear { searchFocused = true }
@@ -211,7 +195,7 @@ struct LauncherSearchWorkspace: View {
                     .accessibilityHidden(true)
                 ZStack(alignment: .leading) {
                     if model.query.isEmpty {
-                        Text("Search, ask, or run a command…")
+                        Text(wide ? "Search, ask, or run a command…" : "Search or ask Lima…")
                             .foregroundStyle(LimaTheme.textSecondary)
                             .lineLimit(1)
                             .allowsHitTesting(false)
@@ -246,48 +230,34 @@ struct LauncherSearchWorkspace: View {
                 HStack(spacing: 8) {
                     quickActions(wide: wide)
                     Spacer(minLength: 4)
-                    launcherModelPicker(wide: wide)
-                    searchSubmitButton
+
                 }
                 .frame(height: 39)
+                .padding(.bottom, 6)
             }
         }
         .padding(.horizontal, 17)
         .padding(.vertical, 0)
-        .limaGlassContainer(region: .composer, cornerRadius: idle ? 20 : LimaRadius.searchField)
-        .overlay {
-            if idle {
-                LimaPrismFrame(radius: 20)
-            } else {
-                RoundedRectangle(cornerRadius: LimaRadius.searchField)
-                    .strokeBorder(
-                        LinearGradient(colors: [settings.accentTheme.primary.opacity(0.72),
-                                                LimaTheme.borderStrong,
-                                                settings.accentTheme.primary.opacity(0.48)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        lineWidth: searchFocused ? 1.2 : 0.8
-                    )
-                    .allowsHitTesting(false)
-            }
-        }
-        .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(idle ? 0.22 : 0.17),
-                radius: 9, y: idle ? 3 : 0)
+        .background(LimaTheme.surfaceSecondary,
+                    in: RoundedRectangle(cornerRadius: idle ? 20 : LimaRadius.searchField, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: idle ? 12 : LimaRadius.searchField)
+            .strokeBorder(searchFocused ? LimaTheme.accentInk.opacity(0.35) : LimaTheme.borderSubtle, lineWidth: 0.7))
     }
 
     private func quickActions(wide: Bool) -> some View {
         HStack(spacing: 7) {
-            quickAction("AI", symbol: "sparkles", compact: !wide, selected: true) { openWorkspace(.ai) }
+            quickAction("Assistant", symbol: "sparkles", compact: !wide) { openWorkspace(.ai) }
             quickAction("Notes", symbol: "note.text", compact: !wide) { openWorkspace(.notes) }
-            quickAction("Files", symbol: "doc", compact: !wide) { model.enter(.files) }
-            quickAction("Web", symbol: "globe", compact: !wide) {
-                aiChatModel.appendDraftPrompt("Research with Lima Browser: ")
-                openWorkspace(.ai)
-            }
+            quickAction("Recordings", symbol: "waveform", compact: !wide) { openWorkspace(.dictation) }
             Menu {
                 ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
                     Button(module.title, systemImage: module.symbol) { openWorkspace(module) }
                 }
                 Divider()
+                Button("Files", systemImage: "doc") { model.enter(.files) }
+                Button("Clipboard", systemImage: "doc.on.clipboard") { model.enter(.clipboard) }
+                Button("Writing tools", systemImage: "textformat.abc") { openWorkspace(.grammar) }
+                Button("Formatter", systemImage: "curlybraces") { openWorkspace(.formatter) }
                 Menu("Search in") {
                     Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
                     ForEach(["app", "command", "file", "note", "dictation", "chat", "workspace", "context", "clipboard"], id: \.self) { scope in
@@ -297,10 +267,20 @@ struct LauncherSearchWorkspace: View {
                         }
                     }
                 }
+                Divider()
+                Button("Capture image", systemImage: "viewfinder") {
+                    model.executeCommand(id: "builtin.quick-capture-region")
+                }
+                Button("Capture text", systemImage: "text.viewfinder") {
+                    model.executeCommand(id: "builtin.text-reader-region")
+                }
+                Button("Capture history", systemImage: "photo.on.rectangle") {
+                    model.executeCommand(id: "builtin.screenshot-studio")
+                }
                 Button("Settings", systemImage: "gearshape", action: openSettings)
             } label: {
                 Group {
-                    if wide { Label("Workspace", systemImage: "square.stack.3d.up") }
+                    if wide { Label("More", systemImage: "ellipsis") }
                     else { Image(systemName: "square.stack.3d.up") }
                 }
                 .limaFont(.system(size: 12, weight: .medium))
@@ -316,65 +296,6 @@ struct LauncherSearchWorkspace: View {
         }
         .foregroundStyle(LimaTheme.textSecondary)
         .frame(height: 36)
-    }
-
-    private var searchSubmitButton: some View {
-        Button(action: submitSearch) {
-            Image(systemName: "arrow.up")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 37, height: 37)
-                .background(LinearGradient(colors: [Color.blue, settings.accentTheme.primary, Color.pink],
-                                           startPoint: .topLeading, endPoint: .bottomTrailing),
-                            in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 11).strokeBorder(.white.opacity(0.4), lineWidth: 0.8))
-                .shadow(color: opaque ? .clear : settings.accentTheme.primary.opacity(0.45), radius: 7)
-        }
-        .buttonStyle(.plain)
-        .help(idle ? "Open AI Chat" : "Open selected result")
-        .accessibilityLabel(idle ? "Open AI Chat" : "Open selected result")
-    }
-
-    private func launcherModelPicker(wide: Bool) -> some View {
-        Menu {
-            Text("Choose the model for AI Chat")
-            ForEach(aiChatModel.pickerModels) { option in
-                Button {
-                    aiChatModel.selectModel(option)
-                } label: {
-                    Label(option.displayName, systemImage: aiChatModel.model == option.id ? "checkmark" : "circle")
-                }
-            }
-            Divider()
-            Menu("Switch provider") {
-                ForEach(AIProvider.chatProviders) { provider in
-                    Button(provider.title) { aiChatModel.selectProvider(provider) }
-                }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "sparkle")
-                    .foregroundStyle(LimaTheme.accentInk)
-                if wide {
-                    Text(aiChatModel.selectedModelOption.displayName)
-                        .lineLimit(1)
-                }
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 9, weight: .semibold))
-            }
-            .limaFont(.system(size: 12, weight: .medium))
-            .foregroundStyle(LimaTheme.textPrimary)
-            .padding(.horizontal, 10)
-            .frame(height: 35)
-            .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .fixedSize(horizontal: true, vertical: false)
-        .disabled(aiChatModel.canEndTask)
-        .help("Choose the AI provider and model")
-        .accessibilityLabel("AI model: \(aiChatModel.selectedModelOption.displayName)")
     }
 
     private func submitSearch() {
@@ -393,10 +314,10 @@ struct LauncherSearchWorkspace: View {
             .foregroundStyle(selected ? LimaTheme.accentInk : LimaTheme.textSecondary)
             .padding(.horizontal, compact ? 0 : 10)
             .frame(width: compact ? 32 : nil, height: 32)
-            .background(selected ? LimaTheme.accentSoft : LimaTheme.surfaceSecondary,
+            .background(selected ? LimaTheme.accentSoft : Color.clear,
                         in: RoundedRectangle(cornerRadius: 9))
             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(
-                selected ? settings.accentTheme.primary.opacity(0.75) : LimaTheme.borderSubtle,
+                selected ? settings.accentTheme.primary.opacity(0.75) : .clear,
                 lineWidth: selected ? 0.9 : 0.5))
         }
         .buttonStyle(.plain)
@@ -414,7 +335,14 @@ struct LauncherSearchWorkspace: View {
                             .foregroundStyle(LimaTheme.textSecondary).lineLimit(2).padding(.bottom, 8)
                     }
                     HStack {
-                        Text("Search results")
+                        Menu {
+                            Button("Everything") { model.query = UniversalSearchCoordinator.parse(model.query).query }
+                            ForEach(["app", "command", "file", "note", "dictation", "chat", "context", "clipboard"], id: \.self) { scope in
+                                Button(scope.capitalized) { model.query = scope + ": " + UniversalSearchCoordinator.parse(model.query).query; searchFocused = true }
+                            }
+                        } label: { Label(UniversalSearchCoordinator.parse(model.query).prefix?.capitalized ?? "Results", systemImage: "line.3.horizontal.decrease") }
+                        .menuStyle(.borderlessButton).fixedSize()
+                        .accessibilityLabel("Filter search results")
                             .limaFont(.callout.weight(.semibold))
                         Spacer()
                         if !model.results.isEmpty {
@@ -499,7 +427,7 @@ struct LauncherSearchWorkspace: View {
         return HStack(spacing: 0) {
             Button { model.select(index) } label: {
                 HStack(spacing: 12) {
-                    SearchResultIcon(item: item, size: 39)
+                    SearchResultIcon(item: item, size: 30)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(LauncherSearchDesign.title(for: item))
                             .limaFont(.system(size: 14, weight: .semibold))
@@ -515,7 +443,7 @@ struct LauncherSearchWorkspace: View {
                             .font(.system(size: 11)).foregroundStyle(LimaTheme.textTertiary)
                     }
                 }
-                .padding(.leading, 12).padding(.vertical, 11)
+                .padding(.leading, 12).padding(.vertical, 8)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -533,7 +461,7 @@ struct LauncherSearchWorkspace: View {
                 .accessibilityLabel(LauncherSearchDesign.primaryTitle(for: item) + " " + item.title)
             }
         }
-        .frame(height: 64)
+        .frame(height: 56)
         .background(selected ? LimaTheme.surfaceSelected : (hoveredID == item.id ? LimaTheme.surfaceSecondary : .clear),
                     in: RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(selected ? LimaTheme.borderStrong : .clear, lineWidth: 0.5))
@@ -542,21 +470,7 @@ struct LauncherSearchWorkspace: View {
 
     private func inspector(_ item: LauncherItem) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 24)
-                    .fill(LauncherSearchDesign.tint(for: item).primary.opacity(0.1))
-                    .frame(width: 144, height: 112).rotationEffect(.degrees(-11))
-                RoundedRectangle(cornerRadius: 21)
-                    .fill(LauncherSearchDesign.tint(for: item).primary.opacity(0.12))
-                    .frame(width: 126, height: 109).rotationEffect(.degrees(9))
-                if item.id == "builtin.notes" || item.id == "builtin.quick-note" {
-                    SearchNoteIllustration()
-                } else {
-                    SearchResultIcon(item: item, size: 86)
-                }
-            }
-            .frame(maxWidth: .infinity, minHeight: 138)
-            .accessibilityHidden(true)
+            SearchResultIcon(item: item, size: 40).padding(.vertical, 8)
             Text(LauncherSearchDesign.title(for: item)).limaFont(.system(size: 23, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             Text(item.subtitle).limaFont(.body).foregroundStyle(LimaTheme.textSecondary)
@@ -684,36 +598,6 @@ struct LauncherSearchWorkspace: View {
     }
 }
 
-/// Native vector artwork: no generated assets or external image dependency.
-private struct SearchNoteIllustration: View {
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 13)
-                .fill(Color(red: 0.64, green: 0.59, blue: 0.48))
-                .frame(width: 93, height: 87).rotationEffect(.degrees(-12)).offset(x: -20, y: 9)
-            RoundedRectangle(cornerRadius: 13)
-                .fill(Color(red: 0.73, green: 0.73, blue: 0.75))
-                .frame(width: 93, height: 94).rotationEffect(.degrees(10)).offset(x: 24, y: 5)
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach([68.0, 58.0, 64.0, 38.0], id: \.self) { width in
-                    Capsule().fill(Color(red: 0.62, green: 0.57, blue: 0.48).opacity(0.5))
-                        .frame(width: width, height: 4)
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(16)
-            .frame(width: 108, height: 108)
-            .background(LinearGradient(colors: [Color(red: 1, green: 0.98, blue: 0.92),
-                                                Color(red: 0.84, green: 0.81, blue: 0.75)],
-                                       startPoint: .topLeading, endPoint: .bottomTrailing),
-                        in: RoundedRectangle(cornerRadius: 13))
-            .overlay(RoundedRectangle(cornerRadius: 13).strokeBorder(.white.opacity(0.7), lineWidth: 1))
-            .rotationEffect(.degrees(-3))
-            .shadow(color: .black.opacity(0.12), radius: 7, y: 5)
-        }
-    }
-}
-
 private struct SearchResultIcon: View {
     let item: LauncherItem
     let size: CGFloat
@@ -721,7 +605,7 @@ private struct SearchResultIcon: View {
         Group {
             switch item.icon {
             case .system(let symbol):
-                LimaFeatureIcon(symbol: symbol, tint: LauncherSearchDesign.tint(for: item), size: size)
+                Image(systemName: symbol).font(.system(size: size * 0.62)).foregroundStyle(LimaTheme.accentInk)
             case .application(let url), .file(let url):
                 Image(nsImage: LauncherIconCache.shared.image(for: url)).resizable().scaledToFit()
             case .text(let text):

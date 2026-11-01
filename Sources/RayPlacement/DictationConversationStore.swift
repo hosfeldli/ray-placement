@@ -7,6 +7,7 @@ struct DictationConversation: Codable, Identifiable, Hashable {
     var modifiedAt: Date
     var segments: [String]
     var isComplete: Bool
+    var participants: [String]?
 
     init(id: UUID = UUID(), startedAt: Date = Date(), segments: [String] = [], isComplete: Bool = false) {
         self.id = id
@@ -190,6 +191,20 @@ final class DictationConversationStore: ObservableObject {
         conversations[index].modifiedAt = Date()
         selectedConversationID = identifier
         scheduleSave()
+    }
+
+    @discardableResult
+    func addParticipant(_ name: String, to id: UUID) -> Bool {
+        let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty, clean.count <= 64, !clean.contains(where: \.isNewline),
+              let index = conversations.firstIndex(where: { $0.id == id }) else { return false }
+        var names = conversations[index].participants ?? []
+        guard names.count < 20, !names.contains(where: { $0.localizedCaseInsensitiveCompare(clean) == .orderedSame }) else { return false }
+        names.append(clean)
+        conversations[index].participants = names
+        conversations[index].modifiedAt = Date()
+        scheduleSave()
+        return true
     }
 
     func updateTranscript(_ transcript: String, for conversationID: UUID? = nil) {

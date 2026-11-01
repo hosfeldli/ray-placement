@@ -20,7 +20,7 @@ enum QuickRegionCapturePayload: Equatable, Sendable {
     static func prepare(
         kind: QuickRegionCaptureKind,
         pngData: Data,
-        recognize: (Data) throws -> String? = ScreenshotTextRecognizer.recognize
+        recognize: (Data) throws -> String? = ScreenshotTextRecognizer.recognizeQuickly
     ) throws -> Self {
         switch kind {
         case .image:
@@ -68,8 +68,8 @@ enum QuickRegionCaptureFocus {
     }
 }
 
-/// A direct, user-initiated region-to-clipboard flow. It deliberately does not
-/// open Screenshot Studio, write a file, or import a Screenshot History record.
+/// Clipboard delivery is immediate; saving an AI-referenceable capture follows
+/// independently so image encoding and history indexing never delay the copy.
 @MainActor
 final class QuickRegionCaptureController {
     static let shared = QuickRegionCaptureController()
@@ -105,8 +105,7 @@ final class QuickRegionCaptureController {
         Task { [weak self] in
             guard let self else { return }
             do {
-                let displays = try await captureService.availableTargets()
-                    .filter { $0.kind == .display }
+                let displays = try captureService.availableDisplaysForQuickSelection()
                 guard activeRunID == runID else { return }
                 guard captureContextIsCurrent else {
                     finish(runID: runID, result: nil, restoreApplication: false)
@@ -166,6 +165,15 @@ final class QuickRegionCaptureController {
                 }
                 guard payload.copy() else { throw QuickRegionCaptureError.clipboardUnavailable }
                 finish(runID: runID, result: .success(kind))
+                Task {
+                    do {
+                        _ = try await QuickCaptureArchive.save(captured, payload: payload)
+                        if self.activeRunID == nil { self.toast.show("Copied · saved for AI") }
+                    } catch {
+                        self.toast.show("Copied, but could not save for later: " + error.localizedDescription,
+                                   style: .error, duration: 5)
+                    }
+                }
             } catch {
                 finish(runID: runID, result: .failure(error))
             }

@@ -72,7 +72,7 @@ import Testing
 }
 
 @Test @MainActor func aiWorkspaceToolDefinitionsKeepReadsSeparateFromActions() {
-    #expect(AIWorkspaceActionTools.actionIDs.count == 9)
+    #expect(AIWorkspaceActionTools.actionIDs.count == 10)
     #expect(AIWorkspaceActionTools.readIDs == ["terminal_sessions", "terminal_status", "terminal_read", "terminal_wait"])
     for definition in AIWorkspaceActionTools.definitions {
         if AIWorkspaceActionTools.actionIDs.contains(definition.id) {

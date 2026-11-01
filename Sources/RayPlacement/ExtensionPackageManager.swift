@@ -71,6 +71,8 @@ final class ExtensionPackageManager: ObservableObject {
     func record(for id: String) -> ExtensionPackageRecord? { records[id] }
 
     func register(id: String, name: String, version: String?, provenance: ExtensionPackageProvenance, state: ExtensionPackageState = .installed, manifestHash: String? = nil) {
+        if let existing = records[id], existing.name == name, existing.version == version,
+           existing.provenance == provenance, existing.state == state, existing.manifestHash == manifestHash { return }
         var value = records[id] ?? ExtensionPackageRecord(id: id, name: name, version: version, state: state, provenance: provenance)
         value.name = name; value.version = version; value.provenance = provenance; value.state = state; value.manifestHash = manifestHash; value.updatedAt = Date()
         records[id] = value; persist()

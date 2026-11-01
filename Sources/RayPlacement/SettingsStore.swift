@@ -267,7 +267,7 @@ enum DictationEngine: String, CaseIterable, Identifiable {
         case .appleSpeech:
             return "Uses macOS on-device recognition for the fastest live updates, with short local windows and no cloud transcription."
         case .openAICloud:
-            return "Uploads recorded audio segments to OpenAI after Stop. Optional AI cleanup also sends the transcript to OpenAI; the original text is kept if cleanup fails. Requires an OpenAI API key in Settings → AI."
+            return "Uploads rolling audio windows to OpenAI while recording, then finishes pending windows after Stop. Optional speaker labels distinguish voices within each window. Requires an OpenAI API key in Settings → AI."
         }
     }
 }

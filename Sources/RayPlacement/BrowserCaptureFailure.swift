@@ -35,7 +35,7 @@ enum BrowserCaptureFailure: String, LocalizedError, Sendable {
 
     var recoverable: Bool {
         switch self {
-        case .redactionUnresolved, .frameUnaccounted, .providerUnsupported:
+        case .redactionUnresolved, .providerUnsupported:
             false
         default:
             true
@@ -48,7 +48,9 @@ enum BrowserCaptureFailure: String, LocalizedError, Sendable {
             "Check the Browser tab and viewport, then capture a fresh observation."
         case .navigationChanged, .expired:
             "Capture a fresh observation of the current tab; do not reuse old coordinates."
-        case .redactionUnresolved, .frameUnaccounted:
+        case .frameUnaccounted:
+            "Frame accounting did not settle after bounded retries. Observe the current tab again after navigation finishes; if it persists, use safe semantic content or a user handoff."
+        case .redactionUnresolved:
             "Use safe semantic content or let the user complete this step in the Browser."
         case .webKitFailure:
             "Inspect Browser navigation diagnostics and retry once after the page is usable."

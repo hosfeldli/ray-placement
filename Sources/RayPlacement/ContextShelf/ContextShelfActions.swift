@@ -562,6 +562,14 @@ struct ContextShelfView: View {
         }
         .contextMenu {
             Button("Inspect") { detailItem = item }
+            if !item.isMailReference && !item.isBrowserReference && !item.isMessageReference {
+                Button("Copy AI reference", systemImage: "link") {
+                    let reference = item.source.commandID.flatMap { $0.hasPrefix("capture:") ? $0 : nil }
+                        ?? "context:" + item.id.uuidString
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(reference, forType: .string)
+                }
+            }
             if item.isBrowserReference, onOpenBrowserReference != nil {
                 Button("Open in Lima Browser", systemImage: "globe") {
                     guard case .browserReference(let reference) = item.payload,

@@ -89,6 +89,12 @@ final class LiveAppleSpeechTranscriber {
         }
     }
 
+    func commitSpeakerBoundary() {
+        let update = assembler.commitBoundary()
+        if !update.committedDelta.isEmpty { onCommittedDelta?(update.committedDelta) }
+        onPartial?("")
+    }
+
     func pause() {
         stopAudioCapture()
     }

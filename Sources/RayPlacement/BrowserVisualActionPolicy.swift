@@ -20,13 +20,15 @@ enum BrowserNavigationMode: String, CaseIterable, Codable, Identifiable, Sendabl
 enum BrowserApprovalMode: String, CaseIterable, Identifiable, Sendable {
     case askForActions
     case autoApproveNonpayment
+    case independent
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .askForActions: "Ask for Actions"
-        case .autoApproveNonpayment: "Auto-approve Nonpayment"
+        case .autoApproveNonpayment: "Approved Sites"
+        case .independent: "Independent"
         }
     }
 }
@@ -102,8 +104,9 @@ final class BrowserTaskApprovalState: ObservableObject {
 
     func isAutoApproved(runID: UUID?, url: String) -> Bool {
         guard let runID, activeRunID == runID,
-              activeMode == .autoApproveNonpayment,
               let site = Self.site(url) else { return false }
+        if activeMode == .independent { return true }
+        guard activeMode == .autoApproveNonpayment else { return false }
         // Exact scheme, host, and effective port: no cross-origin or subdomain inheritance.
         return authorizedSites.contains(site)
     }
@@ -201,6 +204,10 @@ struct BrowserVisualActionAssessment: Decodable, Equatable, Sendable {
         // visible fee terms. Uncertainty never qualifies for auto-approval.
         if !clearlyExploratory && ambiguousFinal { return .review }
         return .routine
+    }
+
+    func requiresReview(independent: Bool) -> Bool {
+        decision == .review && (!independent || potentialPaymentCommitment)
     }
 
     var potentialPaymentCommitment: Bool {

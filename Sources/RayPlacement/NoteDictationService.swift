@@ -52,6 +52,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     @Published private(set) var recoveryAudioURL: URL?
     @Published var lastError: String?
 
+    private let cloudKeyProvider: () -> String?
+    private let cloudTranscribe: (URL, String, Bool, Int, TimeInterval) async throws -> String
     private let onTranscript: (String) -> Void
     private let onCommittedDelta: (String) -> Void
     var targetProvider: (() -> DictationTarget)?
@@ -64,6 +66,12 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private let onSessionFailed: () -> Void
     private let localWhisper = LocalWhisperTranscriber()
     private let liveAppleTranscriber = LiveAppleSpeechTranscriber()
+    @Published var speakerLabelsEnabled = true
+    @Published private(set) var selectedSpeakerName: String?
+    private var speakerAttribution = DictationSpeakerAttribution()
+    private var recordingSegmentSpeakers: [String] = []
+    private var activeSpeakerLabels = false
+    private var cloudSegmentIndex = 0
     private var cloudTranscriptionTask: Task<Void, Never>?
     private var liveSpeechWarning: String?
     private var liveAppleRestartCount = 0
@@ -112,8 +120,15 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         onSessionStarted: @escaping () -> Void = {},
         onSessionRetryStarted: @escaping () -> Void = {},
         onSessionFinished: @escaping () -> Void = {},
-        onSessionFailed: @escaping () -> Void = {}
+        onSessionFailed: @escaping () -> Void = {},
+        cloudKeyProvider: (() -> String?)? = nil,
+        cloudTranscribe: ((URL, String, Bool, Int, TimeInterval) async throws -> String)? = nil
     ) {
+        self.cloudKeyProvider = cloudKeyProvider ?? { AIProviderCredentialStore.shared.apiKey(for: .openAI) }
+        self.cloudTranscribe = cloudTranscribe ?? { url, key, speakers, window, offset in
+            try await OpenAICloudTranscriber.transcribe(audioURL: url, apiKey: key,
+                diarize: speakers, window: window, offset: offset)
+        }
         self.onTranscript = onTranscript
         self.onCommittedDelta = onCommittedDelta ?? onTranscript
         self.targetProvider = targetProvider
@@ -124,6 +139,37 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         self.onSessionFailed = onSessionFailed
         super.init()
     }
+
+    var selectedEngine: DictationEngine { activeEngine ?? SettingsStore.shared.dictationEngine }
+    var isBusy: Bool { [.recording, .paused, .requestingPermission, .stopping, .transcribing].contains(phase) }
+
+    func selectSpeaker(_ name: String?) {
+        guard name != selectedSpeakerName else { return }
+        if activeEngine == .appleSpeech { liveAppleTranscriber.commitSpeakerBoundary() }
+        selectedSpeakerName = name
+        if phase == .recording, activeEngine == .localWhisper { rotateRecordingSegment() }
+    }
+
+    #if DEBUG
+    func prepareLiveCloudFixture(urls: [URL], durations: [TimeInterval], target: UUID) {
+        operationIdentifier = UUID()
+        activeEngine = .openAICloud
+        activeSpeakerLabels = speakerLabelsEnabled
+        activeTranscribeWhileRecording = true
+        recordingDirectoryURL = urls.first?.deletingLastPathComponent()
+        recordingSegmentURLs = urls
+        recordingSegmentDurations = durations
+        currentTarget = .conversation(target)
+        phase = .recording
+        beginCloudTranscription()
+    }
+    func finishLiveCloudFixture(durations: [TimeInterval]) {
+        recordingSegmentDurations = durations
+        phase = .transcribing
+        beginCloudTranscription()
+    }
+    func waitForCloudFixture() async { await cloudTranscriptionTask?.value }
+    #endif
 
     var actionTitle: String {
         switch phase {
@@ -277,6 +323,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         phase = .requestingPermission
         activePerformance = SettingsStore.shared.runtimeDictationPerformance
         activeEngine = SettingsStore.shared.dictationEngine
+        activeSpeakerLabels = speakerLabelsEnabled
 
         let retryTarget = currentTarget ?? targetProvider?()
         let beginRetry = { [weak self] in
@@ -420,7 +467,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
             // Keep a private rolling recording for interruption recovery. Apple
             // Speech receives continuous audio buffers; Whisper still consumes
             // short local windows while its persistent-worker path is developed.
-            activeTranscribeWhileRecording = activeEngine != .openAICloud
+            activeTranscribeWhileRecording = true
+            activeSpeakerLabels = speakerLabelsEnabled
             let directory = ApplicationPaths.dictationScratch
                 .appendingPathComponent("note-dictation-\(UUID().uuidString)", isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -513,7 +561,18 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         transcriptionProgress = "Live · committed phrase \(semiLiveSegmentCount)"
     }
 
-    private func publishTargetEvent(_ event: DictationTranscriptEvent) {
+    private func publishTargetEvent(_ incoming: DictationTranscriptEvent, recordedSpeaker: String? = nil) {
+        var event = incoming
+        if case .committedDelta(let delta) = incoming, selectedEngine != .openAICloud {
+            let isConversation: Bool
+            if case .conversation = currentTarget { isConversation = true }
+            else { isConversation = usesDefaultConversationCallbacks }
+            if isConversation {
+                let speaker = recordedSpeaker == "" ? nil : recordedSpeaker ?? selectedSpeakerName
+                let text = speaker == nil ? delta : delta.replacingOccurrences(of: #"\*\*Turn \d+:\*\* "#, with: "", options: .regularExpression)
+                event = .committedDelta(speakerAttribution.label(text, speaker: speaker))
+            }
+        }
         if let currentTarget, let onTargetEvent {
             onTargetEvent(currentTarget, event)
             return
@@ -545,7 +604,8 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     }
 
     private var recordingSegmentLimit: TimeInterval {
-        activeEngine == .appleSpeech
+        if activeEngine == .openAICloud { return 10 }
+        return activeEngine == .appleSpeech
             ? MeetingDictationPlan.appleSpeechSegmentDuration
             : MeetingDictationPlan.localWhisperSegmentDuration
     }
@@ -568,6 +628,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         recorder.isMeteringEnabled = true
         guard recorder.prepareToRecord(), recorder.record() else { throw DictationError.recorderUnavailable }
         recordingSegmentURLs.append(url)
+        recordingSegmentSpeakers.append(selectedSpeakerName ?? "")
         recordingSegmentDurations.append(0)
         self.recorder = recorder
     }
@@ -654,62 +715,79 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private func beginCloudTranscription() {
         guard cloudTranscriptionTask == nil, let operation = operationIdentifier else { return }
         guard AIRequestPolicy.shared.isEnabled else {
-            fail(AIRequestPolicy.Disabled())
+            if phase == .recording { liveTranscriptionPaused = true; liveSpeechWarning = "Cloud transcription paused because AI is disabled. Audio stays local for retry." }
+            else { fail(AIRequestPolicy.Disabled()) }
             return
         }
-        guard let apiKey = AIProviderCredentialStore.shared.apiKey(for: .openAI), !apiKey.isEmpty else {
-            fail(OpenAICloudTranscriber.Failure.missingKey)
+        guard let apiKey = cloudKeyProvider(), !apiKey.isEmpty else {
+            if phase == .recording { liveTranscriptionPaused = true; liveSpeechWarning = "Add the OpenAI key in Settings → AI to transcribe the saved audio." }
+            else { fail(OpenAICloudTranscriber.Failure.missingKey) }
             return
         }
-        let segments = recordingSegmentURLs
-        totalChunkCount = segments.count
-        chunkTranscripts = []
-        deliveredTranscriptCount = 0
-        deliveredCharacterCount = 0
-        transcriptionProgress = "Preparing segment 1 of \(segments.count) for OpenAI…"
         cloudTranscriptionTask = Task { [weak self] in
             guard let self else { return }
-            for (index, url) in segments.enumerated() {
-                guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
-                self.transcriptionProgress = "Sending and transcribing segment \(index + 1) of \(segments.count) with OpenAI…"
+            while self.operationIdentifier == operation, !Task.isCancelled {
+                guard self.recordingSegmentURLs.indices.contains(self.cloudSegmentIndex),
+                      self.recordingSegmentDurations.indices.contains(self.cloudSegmentIndex),
+                      self.recordingSegmentDurations[self.cloudSegmentIndex] > 0 else { break }
+                let index = self.cloudSegmentIndex
+                let url = self.recordingSegmentURLs[index]
+                let offset = self.recordingSegmentDurations.prefix(index).reduce(0, +)
+                self.transcriptionProgress = "Live API · transcribing window \(index + 1)…"
                 do {
-                    let transcript = try await OpenAICloudTranscriber.transcribe(audioURL: url, apiKey: apiKey)
+                    let transcript = try await self.cloudTranscribe(url, apiKey, self.activeSpeakerLabels, index + 1, offset)
                     try Task.checkCancellation()
-                    guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
+                    guard self.operationIdentifier == operation else { return }
+                    self.liveSpeechWarning = nil
+                    self.liveTranscriptionPaused = false
                     self.chunkTranscripts.append(transcript)
+                    if self.phase == .recording || self.phase == .paused {
+                        let delta = (self.deliveredTranscriptCount > 0 ? "\n\n" : "") + transcript
+                        self.publishTargetEvent(.committedDelta(delta))
+                        self.deliveredTranscriptCount = self.chunkTranscripts.count
+                        self.deliveredCharacterCount += delta.count
+                        self.semiLiveSegmentCount += 1
+                        try? FileManager.default.removeItem(at: url)
+                    }
+                    self.cloudSegmentIndex += 1
                 } catch OpenAICloudTranscriber.Failure.emptyTranscript {
-                    // A quiet segment does not invalidate a longer recording.
+                    self.cloudSegmentIndex += 1
+                    try? FileManager.default.removeItem(at: url)
                 } catch {
-                    guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
-                    if Task.isCancelled { return }
-                    self.fail(error is OpenAICloudTranscriber.Failure
-                        ? error
-                        : DictationError.transcriptionFailed("Cloud transcription could not reach OpenAI."))
+                    guard self.operationIdentifier == operation, !Task.isCancelled else { return }
+                    self.cloudTranscriptionTask = nil
+                    if self.phase == .recording || self.phase == .paused {
+                        self.liveTranscriptionPaused = true
+                        self.liveSpeechWarning = "Live API paused. Committed text is safe; pending audio will retry after Stop."
+                    } else {
+                        self.fail(error is OpenAICloudTranscriber.Failure ? error : DictationError.transcriptionFailed("Cloud transcription could not reach OpenAI."))
+                    }
                     return
                 }
             }
-            guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
-            if SettingsStore.shared.dictationAICleanupEnabled, !self.chunkTranscripts.isEmpty {
-                let rawTranscript = self.chunkTranscripts.joined(separator: "\n\n")
-                if rawTranscript.count <= OpenAICloudDictationPostprocessor.maximumInputCharacters {
-                    self.transcriptionProgress = "Cleaning up and formatting transcript with AI…"
-                    do {
-                        let cleaned = try await OpenAICloudDictationPostprocessor.clean(rawTranscript, apiKey: apiKey)
-                        try Task.checkCancellation()
-                        guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
-                        self.chunkTranscripts = [cleaned]
-                    } catch {
-                        guard self.operationIdentifier == operation, self.phase == .transcribing,
-                              !Task.isCancelled else { return }
-                        self.liveSpeechWarning = "AI cleanup was unavailable. The original transcript was kept."
+            guard self.operationIdentifier == operation, !Task.isCancelled else { return }
+            if self.phase == .transcribing {
+                // Previously committed live text is immutable. Cleanup only a
+                // transcript that has not yet been delivered to its destination.
+                if SettingsStore.shared.dictationAICleanupEnabled, self.deliveredTranscriptCount == 0,
+                   !self.chunkTranscripts.isEmpty, !self.activeSpeakerLabels {
+                    let raw = self.chunkTranscripts.joined(separator: "\n\n")
+                    if raw.count <= OpenAICloudDictationPostprocessor.maximumInputCharacters {
+                        do {
+                            let clean = try await OpenAICloudDictationPostprocessor.clean(raw, apiKey: apiKey)
+                            guard self.operationIdentifier == operation, !Task.isCancelled else { return }
+                            self.chunkTranscripts = [clean]
+                        } catch {
+                            guard self.operationIdentifier == operation, !Task.isCancelled else { return }
+                            self.liveSpeechWarning = "Cleanup was unavailable; the original transcript was kept."
+                        }
                     }
-                } else {
-                    self.liveSpeechWarning = "This transcript was too long for optional AI cleanup. The original transcript was kept."
                 }
+                self.cloudTranscriptionTask = nil
+                self.finishTranscription()
+            } else {
+                self.cloudTranscriptionTask = nil
             }
-            guard self.operationIdentifier == operation, self.phase == .transcribing else { return }
-            self.cloudTranscriptionTask = nil
-            self.finishTranscription()
         }
     }
 
@@ -751,8 +829,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
                 if !cleanTranscript.isEmpty {
                     self.livePreviewText = cleanTranscript
                     self.chunkTranscripts.append(cleanTranscript)
-                    if self.phase == .recording {
-                        self.publishTargetEvent(.committedDelta(cleanTranscript))
+                    if self.phase == .recording || self.phase == .transcribing {
+                        let speaker = self.recordingSegmentSpeakers.indices.contains(self.localSegmentIndex)
+                            ? self.recordingSegmentSpeakers[self.localSegmentIndex] : ""
+                        let delta = (self.deliveredTranscriptCount > 0 ? "\n\n" : "") + cleanTranscript
+                        self.publishTargetEvent(.committedDelta(delta), recordedSpeaker: speaker)
                         self.deliveredTranscriptCount = self.chunkTranscripts.count
                         self.deliveredCharacterCount += cleanTranscript.count
                         self.semiLiveSegmentCount += 1
@@ -807,6 +888,7 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
     private func beginLiveTranscriptionIfNeeded() {
         guard phase == .recording, activeTranscribeWhileRecording, !liveTranscriptionPaused else { return }
         if activeEngine == .appleSpeech, liveAppleTranscriber.isActive { return }
+        if activeEngine == .openAICloud { beginCloudTranscription(); return }
         if activeEngine == .localWhisper {
             beginLiveLocalWhisperIfNeeded()
             return
@@ -1004,7 +1086,10 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         warning: String?,
         finalTranscript: String
     ) {
-        if !transcript.isEmpty { publishTargetEvent(.committedDelta(transcript)) }
+        if !transcript.isEmpty {
+            let separator = activeEngine == .openAICloud && deliveredTranscriptCount > 0 ? "\n\n" : ""
+            publishTargetEvent(.committedDelta(separator + transcript))
+        }
         publishTargetEvent(.completed(finalTranscript))
         cleanupAudioFiles()
         finishRegistryTask(state: .completed, detail: "Transcription complete")
@@ -1132,6 +1217,11 @@ final class NoteDictationService: NSObject, ObservableObject, AVAudioRecorderDel
         localSegmentIndex = 0
         localWhisperIsRunning = false
         cloudTranscriptionTask = nil
+        cloudSegmentIndex = 0
+        speakerAttribution = DictationSpeakerAttribution()
+        selectedSpeakerName = nil
+        recordingSegmentSpeakers = []
+        activeSpeakerLabels = false
         liveTranscriptionPaused = false
         activeTranscribeWhileRecording = false
         rotatingRecorder = false

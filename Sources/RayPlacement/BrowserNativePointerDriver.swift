@@ -109,21 +109,53 @@ enum BrowserNativePointerDriver {
     static func click(
         _ point: BrowserVisualInputPoint,
         in webView: WKWebView,
-        expectedAnchor: BrowserVisualInputAnchor
+        expectedAnchor: BrowserVisualInputAnchor,
+        button: String = "left", clickCount: Int = 1
     ) throws {
+        guard ["left", "right"].contains(button), (1...2).contains(clickCount) else {
+            throw BrowserNativePointerError.invalidGeometry
+        }
         let projected = try validatedQuartzPoint(point, in: webView, expectedAnchor: expectedAnchor)
+        let right = button == "right"
         guard let source = CGEventSource(stateID: .combinedSessionState),
-              let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown,
-                                 mouseCursorPosition: projected, mouseButton: .left),
-              let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp,
-                               mouseCursorPosition: projected, mouseButton: .left) else {
+              let down = CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseDown : .leftMouseDown,
+                                 mouseCursorPosition: projected, mouseButton: right ? .right : .left),
+              let up = CGEvent(mouseEventSource: source, mouseType: right ? .rightMouseUp : .leftMouseUp,
+                               mouseCursorPosition: projected, mouseButton: right ? .right : .left) else {
             throw BrowserNativePointerError.eventUnavailable
         }
         down.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
         up.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
         let pid = ProcessInfo.processInfo.processIdentifier
-        down.postToPid(pid)
-        up.postToPid(pid)
+        for count in 1...clickCount {
+            down.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+            up.setIntegerValueField(.mouseEventClickState, value: Int64(count))
+            down.postToPid(pid)
+            up.postToPid(pid)
+        }
+    }
+
+    static func gameKey(_ key: String, holdMilliseconds: Int,
+                        at point: BrowserVisualInputPoint, in webView: WKWebView,
+                        expectedAnchor: BrowserVisualInputAnchor,
+                        isAuthorized: @MainActor () -> Bool) async throws {
+        guard let code = BrowserGameInput.keyCodes[key], (0...1000).contains(holdMilliseconds),
+              isAuthorized() else { throw BrowserNativePointerError.staleForeground }
+        _ = try validatedQuartzPoint(point, in: webView, expectedAnchor: expectedAnchor)
+        guard let source = CGEventSource(stateID: .combinedSessionState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else {
+            throw BrowserNativePointerError.eventUnavailable
+        }
+        try click(point, in: webView, expectedAnchor: expectedAnchor)
+        down.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        up.setIntegerValueField(.eventSourceUserData, value: automationEventTag)
+        let pid = ProcessInfo.processInfo.processIdentifier
+        try Task.checkCancellation()
+        guard isAuthorized() else { throw BrowserNativePointerError.staleForeground }
+        try await BrowserGameInput.hold(milliseconds: holdMilliseconds,
+            press: { down.postToPid(pid) }, release: { up.postToPid(pid) },
+            isAuthorized: { isAuthorized() && BrowserVisualInputAnchor.foreground(for: webView) == expectedAnchor })
     }
 
     static func typeText(
@@ -251,4 +283,31 @@ enum BrowserNativePointerDriver {
         // Address only Lima, never an arbitrary foreground application.
         event.postToPid(ProcessInfo.processInfo.processIdentifier)
     }
+}
+
+/// No modifiers, system shortcuts, or arbitrary text are accepted by game input.
+enum BrowserGameInput {
+    @MainActor
+    static func hold(milliseconds: Int, press: () -> Void, release: () -> Void,
+                     isAuthorized: () -> Bool) async throws {
+        guard (0...1000).contains(milliseconds), isAuthorized() else { throw BrowserNativePointerError.staleForeground }
+        try Task.checkCancellation()
+        press()
+        defer { release() }
+        var remaining = milliseconds
+        while remaining > 0 {
+            let interval = min(remaining, 50)
+            try await Task.sleep(for: .milliseconds(interval))
+            try Task.checkCancellation()
+            guard isAuthorized() else { throw BrowserNativePointerError.staleForeground }
+            remaining -= interval
+        }
+    }
+
+    static let keyCodes: [String: CGKeyCode] = [
+        "ArrowLeft": 123, "ArrowRight": 124, "ArrowDown": 125, "ArrowUp": 126,
+        "w": 13, "a": 0, "s": 1, "d": 2, "q": 12, "e": 14,
+        "Space": 49, "Escape": 53, "Enter": 36,
+        "1": 18, "2": 19, "3": 20, "4": 21, "5": 23
+    ]
 }

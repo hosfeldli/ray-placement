@@ -89,8 +89,9 @@ struct BrowserInputLease: Sendable {
     let captureID: UUID
     let anchor: BrowserVisualInputAnchor
     let pageIdentity: BrowserPageIdentity
+    let allowsCanvasUpdates: Bool
 
-    init(taskID: UUID, capture: BrowserScreenshotResult) throws {
+    init(taskID: UUID, capture: BrowserScreenshotResult, allowsCanvasUpdates: Bool = false) throws {
         guard let anchor = capture.inputAnchor,
               let pageIdentity = capture.pageIdentity,
               capture.protectedRects.count == capture.redactionCount,
@@ -103,6 +104,7 @@ struct BrowserInputLease: Sendable {
         captureID = capture.captureID
         self.anchor = anchor
         self.pageIdentity = pageIdentity
+        self.allowsCanvasUpdates = allowsCanvasUpdates
     }
 
     func viewPoint(pixelX: Double, pixelY: Double,
@@ -112,7 +114,7 @@ struct BrowserInputLease: Sendable {
               capture.tabID == tabID, capture.captureID == captureID,
               capture.inputAnchor == anchor, state.anchor == anchor,
               capture.pageIdentity == pageIdentity,
-              state.pageIdentity == pageIdentity,
+              pageIdentity.matchesInputRevision(state.pageIdentity, allowingCanvasUpdates: allowsCanvasUpdates),
               capture.authorityRevision == state.authorityRevision,
               capture.readRevision == state.readRevision,
               capture.navigationRevision == state.navigationRevision,

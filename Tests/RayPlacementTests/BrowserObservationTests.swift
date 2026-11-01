@@ -362,7 +362,7 @@ private func observationJSON(_ execution: LimaAIToolExecution) throws -> [String
     #expect(error["code"] as? String == "page_unstable")
 }
 
-@Test @MainActor func browserVisualCaptureWorksWhenSemanticTraversalIsIncomplete() async throws {
+@Test @MainActor func browserVisualCaptureKeepsSafePartialSemanticTraversal() async throws {
     let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
     model.aiControlMode = .readOnly
     let tab = model.newTab()
@@ -388,8 +388,9 @@ private func observationJSON(_ execution: LimaAIToolExecution) throws -> [String
     #expect(execution.browserScreenshot != nil)
     let payload = try observationJSON(execution)
     #expect(payload["visual_available"] as? Bool == true)
-    #expect(payload["semantic_available"] as? Bool == false)
-    #expect(payload["page"] == nil)
+    #expect(payload["semantic_available"] as? Bool == true)
+    #expect(payload["page"] != nil)
+    #expect(payload["semantic_error"] == nil)
     #expect((payload["semantic_diagnostics"] as? [String: Any])?["semantic_truncated"] as? Bool == true)
     try await model.close(tab.id)
 }

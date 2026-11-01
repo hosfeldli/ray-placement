@@ -523,6 +523,9 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
         case "lima_capabilities": return "Check tool capabilities"
+        case "browser_read": return "Read the website"
+        case "browser_screenshot": return "Look at the page"
+        case "terminal_execute": return "Run a shell script"
         case "terminal_start": return "Start AI Workspace"
         case "terminal_run": return "Run Workspace command"
         case "terminal_write": return "Write to Workspace shell"
@@ -1767,6 +1770,9 @@ enum LimaAIToolRegistry {
             + AIProjectTools.definitions
             + AIUserQuestionTools.definitions
             + AIProjectFileTools.definitions
+            + LimaSurfaceAITools.definitions
+            + LimaDataAITools.definitions
+            + AIScheduledTaskTools.definitions
             + AIContextTools.definitions
             + AINotesTools.definitions
             + AIMailTools.definitions
@@ -1800,6 +1806,9 @@ enum LimaAIToolRegistry {
             .union(AIProjectTools.readIDs)
             .union(AIUserQuestionTools.ids)
             .union(AIProjectFileTools.readIDs)
+            .union(LimaSurfaceAITools.ids)
+            .union(LimaDataAITools.ids)
+            .union(AIScheduledTaskTools.ids)
             .union(AIContextTools.ids)
             .union(AINotesTools.readIDs)
             .union(AIMailTools.ids)
@@ -1829,7 +1838,7 @@ enum LimaAIToolRegistry {
             if toolAccessMode == .fullControl { return true }
             return definition.actionCategory != nil || definition.risk == .read ||
                 AIContextTools.delegationIDs.contains(definition.id) ||
-                AINotesTools.writeIDs.contains(definition.id)
+                AINotesTools.writeIDs.contains(definition.id) || LimaSurfaceAITools.ids.contains(definition.id)
         }
     }
 
@@ -1870,7 +1879,7 @@ enum LimaAIToolRegistry {
         guard let definition = definition(for: call.name),
               definition.risk == .read || definition.actionCategory != nil
                 || AINotesTools.writeIDs.contains(definition.id)
-                || BrowserWorkspaceAITools.ids.contains(definition.id) else {
+                || BrowserWorkspaceAITools.ids.contains(definition.id) || LimaSurfaceAITools.ids.contains(definition.id) else {
             return .json(["error": "Lima AI Chat only permits registered tools enabled by the current action policy."], isError: true)
         }
         // terminal_run has an additional live, session-scoped grant gate in
@@ -1910,6 +1919,15 @@ enum LimaAIToolRegistry {
         }
         if AIProjectFileTools.ids.contains(definition.id) {
             return await AIProjectFileTools.execute(call, approvalGranted: approvalGranted)
+        }
+        if LimaDataAITools.ids.contains(definition.id) {
+            return LimaDataAITools.execute(call)
+        }
+        if LimaSurfaceAITools.ids.contains(definition.id) {
+            return LimaSurfaceAITools.execute(call)
+        }
+        if AIScheduledTaskTools.ids.contains(definition.id) {
+            return AIScheduledTaskTools.execute(call, conversationID: conversationID)
         }
         if AINotesTools.ids.contains(definition.id) {
             return await AINotesTools.execute(call, approvalGranted: approvalGranted)
@@ -2313,6 +2331,8 @@ struct LimaAIToolGroup: Identifiable, Hashable {
     let toolIDs: Set<String>
 
     static let coreGroups: [LimaAIToolGroup] = [
+        .init(id: "surfaces", title: "Workspace data and navigation", summary: "Find saved Context, captures, transcripts and clipboard text, or open Lima surfaces", symbol: "rectangle.3.group", toolIDs: LimaSurfaceAITools.ids.union(LimaDataAITools.ids)),
+        .init(id: "scheduled-tasks", title: "Scheduled tasks", summary: "Save future AI work with a start time, expiry, and visible results", symbol: "clock.badge.checkmark", toolIDs: AIScheduledTaskTools.ids),
         .init(id: "memory", title: "Memory", summary: "Read saved local context and review it in the inspector",
               symbol: "brain.head.profile", toolIDs: AIContextTools.memoryReadIDs),
         .init(id: "memory-changes", title: "Memory changes", summary: "Save, revise, or forget stable user context under the active Tool Access mode",
@@ -2486,6 +2506,7 @@ extension LimaAIToolDefinition {
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
         case "lima_capabilities": return "Tool capabilities"
+        case "terminal_execute": return "Run a shell script"
         case "terminal_start": return "Start AI Workspace"
         case "terminal_run": return "Run Workspace command"
         case "terminal_write": return "Write to Workspace shell"
@@ -2549,6 +2570,7 @@ extension LimaAIToolDefinition {
         case "replace_text_file": return "Replace a text file"
         case "edit_text_file": return "Replace one unique text span"
         case "run_terminal_command": return "Run one allowlisted developer command"
+        case "terminal_execute": return "Create, edit and run scripts in your working directory"
         case "terminal_start": return "Create a visible AI-owned shell session"
         case "terminal_run": return "Run a bounded shell command with normal user access"
         case "terminal_status": return "Read state and verified exit status"
@@ -2584,7 +2606,7 @@ extension LimaAIToolDefinition {
         case "get_lima_status": return "checkmark.shield"
         case "browser_activate", "browser_click", "browser_type", "browser_submit": return "cursorarrow.click"
         case "create_text_file", "replace_text_file", "edit_text_file": return "doc.badge.plus"
-        case "run_terminal_command", "terminal_run": return "terminal"
+        case "run_terminal_command", "terminal_run", "terminal_execute": return "terminal"
         case "terminal_start": return "terminal.fill"
         case "terminal_status", "terminal_read", "terminal_wait": return "text.alignleft"
         case "terminal_interrupt": return "stop.circle"
@@ -2832,6 +2854,18 @@ final class LimaAIToolStore: ObservableObject {
         // Include memory mutations in existing custom lists once. The separate
         // The saved-memory category and active mode still govern writes;
         // preserve later custom opt-outs.
+        let workspaceDataMigrationKey = "lima.ai.workspace-data-v1"
+        if !defaults.bool(forKey: workspaceDataMigrationKey) {
+            enabledToolIDs.formUnion(LimaDataAITools.ids)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: workspaceDataMigrationKey)
+        }
+        let scheduledTasksMigrationKey = "lima.ai.scheduled-tasks-v1"
+        if !defaults.bool(forKey: scheduledTasksMigrationKey) {
+            enabledToolIDs.formUnion(AIScheduledTaskTools.ids.union(LimaSurfaceAITools.ids))
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: scheduledTasksMigrationKey)
+        }
         let memoryWriteMigrationKey = "lima.ai.memory-writes-v1"
         if !defaults.bool(forKey: memoryWriteMigrationKey) {
             enabledToolIDs.formUnion(AIContextTools.memoryWriteIDs)
@@ -3732,9 +3766,6 @@ struct AIAttachmentStrip: View {
     var body: some View {
         if !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 5) {
-                Label("Ready to send with your next AI message", systemImage: "arrow.right.circle")
-                    .limaFont(.caption2.weight(.medium))
-                    .foregroundStyle(LimaTheme.textSecondary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 6) {
                         ForEach(attachments) { attachment in
@@ -3742,9 +3773,6 @@ struct AIAttachmentStrip: View {
                                 Image(systemName: attachment.kind.symbol)
                                     .foregroundStyle(LimaTheme.accentInk)
                                 VStack(alignment: .leading, spacing: 1) {
-                                    Text(attachment.transferRoute)
-                                        .foregroundStyle(LimaTheme.accentInk)
-                                        .lineLimit(1)
                                     Text(attachment.displayName).lineLimit(1)
                                     if let summary = attachment.metadataSummary {
                                         Text(summary).foregroundStyle(LimaTheme.textSecondary).lineLimit(1)

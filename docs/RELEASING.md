@@ -46,6 +46,8 @@ a completed Mail-sending release.
 * `dist/`, `build/`, and `.release-work/` are local/ignored release artifacts;
     do not commit them.
 
+The November 1, 2026 instruction to publish the implemented overhaul as the next minor release authorizes the incremental `v4.1.0` described in its tag-matched notes. Existing live acceptance gaps remain disclosed and open; automated build, test, signing, integrity, and distribution checks are not waived.
+
 ## Prerequisites
 
 Run these commands from the app repository:

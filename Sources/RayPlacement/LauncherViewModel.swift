@@ -991,6 +991,20 @@ final class LauncherViewModel: ObservableObject {
         delegate?.launcherViewModel(self, perform: action.action, item: item)
     }
 
+    /// Explicit menu actions resolve the current catalog entry and follow the
+    /// same delegate path as search, including source-app restoration for capture.
+    var revealCommandSearch: ((String) -> Void)?
+
+    func findCommandInSearch(_ title: String) {
+        query = title
+        revealCommandSearch?(title)
+    }
+
+    func executeCommand(id: String) {
+        guard let item = rootCatalogItems().first(where: { $0.id == id }) else { return }
+        execute(item: item)
+    }
+
     func repeatLastAction() {
         guard let identifier = usage.lastIdentifier() else { return }
         let items = rootCatalogItems()
@@ -1881,9 +1895,9 @@ final class LauncherViewModel: ObservableObject {
             LauncherItem(id: "builtin.search-files", title: "Search Files", subtitle: "Find files with Spotlight", icon: .system("doc.text.magnifyingglass"), keywords: ["finder", "document", "open"], action: .enterMode(.files)),
             LauncherItem(id: "builtin.notes", title: "Lima Notes", subtitle: "Open Notes in the unified Workspace", icon: .system("note.text"), keywords: ["notes", "markdown", "write"], action: .system(.openNotes), shortcut: SettingsStore.shared.notesHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.notesShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.create-note", title: "New Note", subtitle: "Create and open a local note", icon: .system("square.and.pencil"), keywords: ["notes", "create", "capture", "write"], action: .system(.createNote)),
-            LauncherItem(id: "builtin.ai-chat", title: "Open AI Chat", subtitle: "Start a private, provider-configurable conversation", icon: .system("sparkles"), keywords: ["ai", "chat", "openai", "assistant", "conversation"], action: .system(.openAIChat)),
+            LauncherItem(id: "builtin.ai-chat", title: "Open Assistant", subtitle: "Start a conversation or continue your work", icon: .system("sparkles"), keywords: ["ai", "chat", "openai", "assistant", "conversation"], action: .system(.openAIChat)),
             LauncherItem(id: "builtin.quick-note", title: "Quick Note Sidebar", subtitle: "Pin the most recent note beside your current app", icon: .system("rectangle.righthalf.inset.filled"), keywords: ["notes", "dock", "side", "sidebar", "capture"], action: .system(.openQuickNote), shortcut: SettingsStore.shared.quickNoteHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.quickNoteShortcut)?.displayString : nil),
-            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Dictation", subtitle: "Capture live speech into a dictation conversation", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
+            LauncherItem(id: "builtin.note-dictation", title: "Start or Stop Recording", subtitle: "Capture speech with a live transcript", icon: .system("mic.fill"), keywords: ["notes", "meeting", "speech", "transcribe"], action: .system(.toggleNoteDictation), shortcut: SettingsStore.shared.dictationHotkeyEnabled ? ShortcutSpec(string: SettingsStore.shared.dictationShortcut)?.displayString : nil),
             LauncherItem(id: "builtin.capture-clipboard-note", title: "Capture Clipboard to Note", subtitle: "Create and open a local note from current clipboard text", icon: .system("clipboard.fill"), keywords: ["capture", "notes", "paste", "save"], action: .system(.captureClipboardToNote)),
             LauncherItem(id: "builtin.capture-selection-note", title: "Capture Selection to Note", subtitle: "Create and open a local note from selected text in another app", icon: .system("text.badge.plus"), keywords: ["capture", "notes", "highlight", "selected text"], action: .system(.captureSelectionToNote)),
             LauncherItem(id: "builtin.capture-dictation-note", title: "Dictate into Current Note", subtitle: "Start or stop speech capture in the visible note", icon: .system("mic.badge.plus"), keywords: ["capture", "notes", "speech", "transcribe"], action: .system(.dictateIntoNote)),
@@ -1894,7 +1908,6 @@ final class LauncherViewModel: ObservableObject {
             // the catalog entirely makes the setting apply to search as well as
             // the default command list.
             LauncherItem(id: "builtin.terminal", title: "Terminal", subtitle: "Run commands in a local zsh terminal", icon: .system("terminal.fill"), keywords: ["shell", "console", "command", "vim", "nano", "developer", "term", ">"], action: .system(.openTerminal)),
-            LauncherItem(id: "builtin.context-shelf", title: "Context Shelf", subtitle: "Temporary working memory for text, files, and tool output", icon: .system("tray.full"), keywords: ["shelf", "context", "working", "memory", "capture", "stash", "save selection"], action: .system(.openContextShelf)),
             LauncherItem(id: "builtin.screenshot-studio", title: "Screenshot Studio", subtitle: "Choose a window or display to capture, or browse history", icon: .system("camera.viewfinder"), keywords: ["screenshot", "capture screen", "capture window", "screen recording", "image history"], action: .system(.openScreenshotStudio)),
             LauncherItem(id: "builtin.quick-capture-region", title: "Quick Capture Region", subtitle: "Select a region and copy its image to the clipboard", icon: .system("rectangle.dashed"), keywords: ["screenshot", "region", "capture", "clipboard", "image"], action: .system(.quickCaptureRegion)),
             LauncherItem(id: "builtin.text-reader-region", title: "Text Reader Region", subtitle: "Select a region and copy locally recognized text", icon: .system("text.viewfinder"), keywords: ["ocr", "region", "text", "reader", "clipboard"], action: .system(.textReaderRegion)),

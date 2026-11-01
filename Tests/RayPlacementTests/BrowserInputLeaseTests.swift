@@ -319,3 +319,29 @@ private func browserInputState(
         )
     }
 }
+
+@Test func browserIndependentCanvasLeaseToleratesOnlyDOMMutationRevision() throws {
+    let fixture = browserInputFixture()
+    let dynamic = BrowserPageIdentity(documentID: fixture.identity.documentID,
+        routeGeneration: fixture.identity.routeGeneration, mutationRevision: fixture.identity.mutationRevision + 1,
+        userRevision: fixture.identity.userRevision, snapshotRevision: fixture.identity.snapshotRevision, url: fixture.identity.url)
+    let state = browserInputState(fixture.capture, taskID: fixture.taskID, anchor: fixture.anchor, identity: dynamic)
+    let strict = try BrowserInputLease(taskID: fixture.taskID, capture: fixture.capture)
+    #expect(throws: BrowserRuntimeError.self) {
+        _ = try strict.viewPoint(pixelX: 100, pixelY: 100, capture: fixture.capture, state: state)
+    }
+    let independent = try BrowserInputLease(taskID: fixture.taskID, capture: fixture.capture, allowsCanvasUpdates: true)
+    _ = try independent.viewPoint(pixelX: 100, pixelY: 100, capture: fixture.capture, state: state)
+    let human = BrowserPageIdentity(documentID: dynamic.documentID, routeGeneration: dynamic.routeGeneration,
+        mutationRevision: dynamic.mutationRevision, userRevision: dynamic.userRevision + 1,
+        snapshotRevision: dynamic.snapshotRevision, url: dynamic.url)
+    #expect(throws: BrowserRuntimeError.self) {
+        _ = try independent.viewPoint(pixelX: 100, pixelY: 100, capture: fixture.capture,
+            state: browserInputState(fixture.capture, taskID: fixture.taskID, anchor: fixture.anchor, identity: human))
+    }
+    #expect(throws: BrowserRuntimeError.self) {
+        _ = try independent.viewPoint(pixelX: 100, pixelY: 100, capture: fixture.capture,
+            state: browserInputState(fixture.capture, taskID: fixture.taskID, anchor: fixture.anchor,
+                                     identity: dynamic, scrollY: 10))
+    }
+}

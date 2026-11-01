@@ -69,6 +69,26 @@ final class ScreenshotCaptureService {
         CGRequestScreenCaptureAccess()
     }
 
+    /// The selection overlay only needs monitor geometry. Avoid asking
+    /// ScreenCaptureKit to enumerate every application's windows before a drag.
+    /// Capture still resolves the chosen display against fresh shareable content.
+    func availableDisplaysForQuickSelection() throws -> [ScreenshotCaptureTargetInfo] {
+        guard hasScreenRecordingPermission else { throw ScreenshotCaptureError.permissionRequired }
+        var count: UInt32 = 0
+        guard CGGetActiveDisplayList(0, nil, &count) == .success, count > 0 else {
+            throw ScreenshotCaptureError.targetDisappeared
+        }
+        var displays = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetActiveDisplayList(count, &displays, &count) == .success else {
+            throw ScreenshotCaptureError.targetDisappeared
+        }
+        return displays.prefix(Int(count)).map { id in
+            ScreenshotCaptureTargetInfo(id: "display:\(id)", target: .display(id), kind: .display,
+                title: "Display \(id)", bounds: CGDisplayBounds(id),
+                sourceApplication: nil, sourceBundleID: nil)
+        }
+    }
+
     func availableTargets() async throws -> [ScreenshotCaptureTargetInfo] {
         guard hasScreenRecordingPermission else { throw ScreenshotCaptureError.permissionRequired }
         let content = try await SCShareableContent.excludingDesktopWindows(

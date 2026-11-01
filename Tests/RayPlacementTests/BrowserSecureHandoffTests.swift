@@ -130,11 +130,10 @@ private func secureBrowserCall(_ name: String, _ arguments: [String: Any]) throw
     model.aiControlMode = .readOnly
     let tab = model.newTab()
     tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
-    let buttons = (0..<245).map { index in
-        "<button style='position:absolute;left:20px;top:60px'>Choice \(index)</button>"
-    }.joined()
+    // Exhaust the privacy scan itself, rather than just the returned target list.
+    let nodes = String(repeating: "<span hidden>filler</span>", count: 20010)
     tab.webView.loadHTMLString(
-        "<!doctype html><html><body><h1>private-page-marker</h1>\(buttons)</body></html>",
+        "<!doctype html><html><body><h1>private-page-marker</h1>\(nodes)</body></html>",
         baseURL: URL(string: "https://example.com")!
     )
     var incomplete = false

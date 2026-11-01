@@ -55,18 +55,18 @@ import RayPlacementCore
 
 @Test func workspaceConfigurationCanHideRegroupAndReorderEveryModule() {
     var configuration = WorkspaceConfiguration.defaultConfiguration
-    #expect(configuration.workspaceModules == [.home, .ai, .browser, .terminal, .notes])
-    #expect(configuration.toolModules == [.clipboard, .extensions, .grammar])
-    #expect(configuration.hiddenModules == [.context, .dictation, .formatter])
+    #expect(configuration.workspaceModules == [.ai, .notes, .dictation])
+    #expect(configuration.toolModules.isEmpty)
+    #expect(configuration.hiddenModules == [.browser, .grammar, .extensions, .clipboard, .terminal, .formatter])
 
     configuration.move(.notes, in: .workspace, by: -2)
-    #expect(configuration.workspaceModules == [.home, .ai, .notes, .browser, .terminal])
+    #expect(configuration.workspaceModules == [.notes, .ai, .dictation])
     configuration.setSection(.workspace, for: .grammar)
     #expect(configuration.workspaceModules.last == .grammar)
     #expect(!configuration.hiddenModules.contains(.grammar))
     configuration.setSection(.hidden, for: .notes)
     #expect(configuration.hiddenModules.contains(.notes))
-    #expect(Set(configuration.workspaceModules + configuration.toolModules + configuration.hiddenModules) == Set(LimaWorkspaceModule.allCases))
+    #expect(Set(configuration.workspaceModules + configuration.toolModules + configuration.hiddenModules) == Set(LimaWorkspaceModule.userFacingModules))
 }
 
 @Test func workspaceConfigurationMigratesLegacyGroupsAndKeepsPresentationDefaults() throws {
@@ -77,7 +77,7 @@ import RayPlacementCore
     #expect(layout.sections.count == 2)
     #expect(layout.railPresentation == .adaptive)
     #expect(layout.railWidth == .standard)
-    #expect(layout.startupModule == .home)
+    #expect(layout.startupModule == .ai)
     #expect(try JSONDecoder().decode(WorkspaceConfiguration.self, from: JSONEncoder().encode(layout)) == layout)
 
     // Once written in the new format, deliberately hiding Grammar must stick.
@@ -117,7 +117,7 @@ import RayPlacementCore
     let layout = try JSONDecoder().decode(WorkspaceConfiguration.self, from: legacy)
     #expect(!layout.visibleModules.contains(.workflows))
     #expect(!layout.hiddenModules.contains(.workflows))
-    #expect(layout.startupModule == .home)
+    #expect(layout.startupModule == .ai)
     #expect(layout.shortcutOverrides["workflows"] == nil)
 }
 
@@ -155,7 +155,7 @@ import RayPlacementCore
     ], startupModule: .ai)
     #expect(layout.sections.count == 2)
     #expect(layout.visibleModules == [.home, .notes, .terminal])
-    #expect(layout.startupModule == .home)
+    #expect(layout.startupModule == .ai)
     #expect(layout.sections.first?.name == "Section")
 }
 

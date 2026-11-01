@@ -424,3 +424,227 @@ private func webAgentPage(_ model: BrowserWorkspaceModel, tabID: UUID,
     #expect(blocked.state?.blockedByModal == true)
     #expect(page.activeDialog?.label == "Choose")
 }
+
+@Test @MainActor func browserNavigationScrollContinuesPastExhaustedPanel() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><button>Ready</button>
+        <div id="items" role="list" style="height:100px;overflow:auto">
+          <div style="height:120px">Items</div>
+        </div><div style="height:2000px">Page content</div>
+        """, baseURL: URL(string: "https://example.com")!)
+    _ = try await webAgentPage(model, tabID: tab.id, targetLabel: "Ready")
+    let first = try await model.scroll(tab.id, direction: .down)
+    #expect(first.performed)
+    #expect(!first.endReached)
+    let second = try await model.scroll(tab.id, direction: .down)
+    #expect(second.performed)
+    #expect(second.regionLabel == "main page")
+    #expect(try await tab.webView.evaluateJavaScript("window.scrollY") as? Double ?? 0 > 0)
+}
+
+@Test @MainActor func browserNavigationScrollFindsShadowRegion() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><button>Ready</button><div id="host"></div>
+        <script>
+        document.getElementById('host').attachShadow({mode:'open'}).innerHTML =
+          '<div role="list" aria-label="Shadow items" style="height:100px;overflow:auto;scroll-behavior:smooth"><div style="height:1000px">Items</div></div>';
+        </script>
+        """, baseURL: URL(string: "https://example.com")!)
+    _ = try await webAgentPage(model, tabID: tab.id, targetLabel: "Ready")
+    let outcome = try await model.scroll(tab.id, direction: .down)
+    #expect(outcome.performed)
+    #expect(outcome.regionLabel == "Shadow items")
+    #expect(outcome.after > outcome.before)
+}
+
+@Test @MainActor func browserNavigationUsesExposedPartOfControl() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><button style="position:absolute;left:10px;top:10px;width:200px;height:100px"
+          aria-pressed="false" onclick="this.setAttribute('aria-pressed','true')">Expand details</button>
+        <div style="position:absolute;left:70px;top:10px;width:80px;height:100px;background:white"></div>
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await webAgentPage(model, tabID: tab.id, targetLabel: "Expand details")
+    let target = try #require(page.controls.first { $0.label == "Expand details" })
+    let outcome = try await model.interact(tab.id, targetID: target.id, action: .click)
+    #expect(outcome.postActionVerified)
+}
+
+@Test @MainActor func browserNavigationShadowInputReachesApplicationListener() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><div id="host"></div><script>
+        document.getElementById('host').attachShadow({mode:'open'}).innerHTML =
+          '<input aria-label="Search items" type="search">';
+        document.addEventListener('input', () => { document.body.dataset.inputReceived = 'yes'; });
+        </script>
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await webAgentPage(model, tabID: tab.id, targetLabel: "Search items")
+    let target = try #require(page.controls.first { $0.label == "Search items" })
+    let outcome = try await model.interact(tab.id, targetID: target.id, action: .type, text: "coffee")
+    #expect(outcome.postActionVerified)
+    #expect(try await tab.webView.evaluateJavaScript("document.body.dataset.inputReceived") as? String == "yes")
+}
+
+@Test @MainActor func browserNavigationDoesNotTypeThroughOverlay() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><input aria-label="Search items">
+        <div style="position:fixed;inset:0;background:white;z-index:10"></div>
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await webAgentPage(model, tabID: tab.id, targetLabel: "Search items")
+    let target = try #require(page.controls.first { $0.label == "Search items" })
+    await #expect(throws: BrowserRuntimeError.targetOccluded) {
+        _ = try await model.interact(tab.id, targetID: target.id, action: .type, text: "coffee")
+    }
+    #expect(try await tab.webView.evaluateJavaScript("document.querySelector('input').value") as? String == "")
+}
+
+@Test @MainActor func browserNavigationScrollStaysInsideModal() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><div style="height:3000px">Background</div>
+        <div role="dialog" aria-modal="true" aria-label="Options"
+             style="position:fixed;top:10px;left:10px;height:100px;width:300px;overflow:auto;background:white">
+          <button>Ready</button><div style="height:120px">Options</div>
+        </div>
+        """, baseURL: URL(string: "https://example.com")!)
+    _ = try await webAgentPage(model, tabID: tab.id, targetLabel: "Ready")
+    let first = try await model.scroll(tab.id, direction: .down)
+    #expect(first.performed)
+    #expect(first.regionLabel == "Options")
+    let second = try await model.scroll(tab.id, direction: .down)
+    #expect(!second.performed)
+    #expect(second.endReached)
+    #expect(try await tab.webView.evaluateJavaScript("window.scrollY") as? Double == 0)
+}
+
+@Test @MainActor func browserNavigationCompletesOnContinuouslyUpdatingPage() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let revision = tab.navigationRevision
+    tab.webView.loadHTMLString("""
+        <!doctype html><button>Reserve a table</button><div id="ticker">0</div>
+        <script>setInterval(() => {document.getElementById('ticker').textContent = String(Date.now());}, 20);</script>
+        """, baseURL: URL(string: "https://example.com")!)
+    _ = try await webAgentPage(model, tabID: tab.id, targetLabel: "Reserve a table")
+    // Background WebKit timers are throttled under concurrent test load. Keep
+    // the observer's quiet clock busy deterministically while testing the real
+    // navigation completion and snapshot pipeline.
+    _ = try await tab.webView.callAsyncJavaScript("""
+        Object.defineProperty(globalThis.__limaSemantic, 'lastMutationAt', {
+            get: () => performance.now(), set: () => {}
+        });
+        """, arguments: [:], in: nil, contentWorld: .world(name: BrowserSemanticScript.world))
+    let page = try await model.waitForNavigation(tab.id, after: revision, timeoutMilliseconds: 5000)
+    #expect(tab.completedNavigationRevision > revision)
+    #expect(page.controls.contains { $0.label == "Reserve a table" })
+    #expect(page.readiness != .readyWithContent)
+    #expect(!BrowserWaitCondition.pageStable.matches(page, initialURL: page.identity.url))
+}
+
+@Test @MainActor func browserNavigationRetiresRemovedAndReplacedFrames() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><button>Ready</button><iframe srcdoc="<button>Initial frame</button>"></iframe>
+        """, baseURL: URL(string: "https://example.com")!)
+    _ = try await webAgentPage(model, tabID: tab.id, targetLabel: "Initial frame")
+    let originalIDs = Set(tab.registeredFrames.map(\.0))
+    #expect(originalIDs.count == 1)
+    _ = try await tab.webView.evaluateJavaScript("document.querySelector('iframe').srcdoc = '<button>Replacement frame</button>'")
+    let replaced = try await webAgentPage(model, tabID: tab.id, targetLabel: "Replacement frame")
+    #expect(!replaced.diagnostics.truncated)
+    #expect(tab.registeredFrames.count == 1)
+    #expect(Set(tab.registeredFrames.map(\.0)) != originalIDs)
+    let replacementCapture = try await model.screenshot(tab.id)
+    #expect(replacementCapture.frameIDs.count == 1)
+    _ = try await tab.webView.evaluateJavaScript("document.querySelector('iframe').remove()")
+    // Capture itself must retire a detached frame, without needing a semantic read.
+    let removedCapture = try await model.screenshot(tab.id)
+    #expect(removedCapture.frameIDs.isEmpty)
+    #expect(tab.registeredFrames.isEmpty)
+    let removed = try await model.read(tab.id)
+    #expect(!removed.diagnostics.truncated)
+    #expect(removed.diagnostics.frameCount == 1)
+}
+
+@Test @MainActor func browserBoundedTargetListRemainsUsableAfterCompletePrivacyInspection() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    let buttons = (0..<300).map { "<button style='position:absolute;top:50px;left:10px'>Item \($0)</button>" }.joined()
+    tab.webView.loadHTMLString("""
+        <!doctype html><h1>Large page</h1><p>protected-marker-xyz</p>
+        <input type="password" value="protected-marker-xyz" aria-label="Password">
+        \(buttons)
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await webAgentPage(model, tabID: tab.id, targetLabel: "Item 0")
+    #expect(page.diagnostics.truncated)
+    #expect(page.diagnostics.privacyComplete == true)
+    #expect(page.diagnostics.canReleaseContent)
+    let read = await BrowserWorkspaceAITools.execute(try webAgentCall("browser_read", ["tab_id": tab.id.uuidString]), browser: model)
+    #expect(!read.isError)
+    #expect(read.output.contains("Large page"))
+    #expect(!read.output.contains("protected-marker-xyz"))
+}
+
+@Test @MainActor func browserIndependentCanvasAssessmentAllowsHUDUpdatesButRejectsChangedControls() async throws {
+    let model = BrowserWorkspaceModel(runtime: BrowserRuntime(), dataStore: .nonPersistent())
+    model.aiControlMode = .fullControl
+    let tab = model.newTab()
+    defer { Task { try? await model.close(tab.id) } }
+    tab.webView.frame = CGRect(x: 0, y: 0, width: 800, height: 600)
+    tab.webView.loadHTMLString("""
+        <!doctype html><canvas aria-label="Game board" width="200" height="100"
+            style="position:absolute;left:10px;top:10px"></canvas>
+        <button style="position:absolute;left:10px;top:150px">Pause game</button><div id="hud">Score 0</div>
+        """, baseURL: URL(string: "https://example.com")!)
+    let page = try await webAgentPage(model, tabID: tab.id, targetLabel: "Pause game")
+    _ = try await tab.webView.evaluateJavaScript("document.getElementById('hud').textContent = 'Score 1'")
+    func assess(_ x: Double, _ y: Double, allow: Bool) async throws -> Any? {
+        try await tab.webView.callAsyncJavaScript(BrowserSemanticScript.visualActionAssessment,
+            arguments: ["documentID": page.identity.documentID, "routeGeneration": page.identity.routeGeneration,
+                "mutationRevision": page.identity.mutationRevision, "userRevision": page.identity.userRevision,
+                "snapshotRevision": page.identity.snapshotRevision, "x": x, "y": y, "allowCanvasUpdates": allow],
+            in: nil, contentWorld: .world(name: BrowserSemanticScript.world))
+    }
+    let canvas = try #require(try await assess(50, 50, allow: true) as? String)
+    #expect(canvas.contains("\"isCanvas\":true"))
+    await #expect(throws: Error.self) { _ = try await assess(50, 50, allow: false) }
+    await #expect(throws: Error.self) { _ = try await assess(30, 158, allow: true) }
+}

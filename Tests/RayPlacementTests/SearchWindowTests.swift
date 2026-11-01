@@ -20,7 +20,7 @@ import Testing
         #expect(LauncherSearchPhase(query: "note: ") == .idle)
         #expect(LauncherSearchPhase(query: "notes") == .active)
         let canShowInspector = LauncherSearchDesign.canShowInspector(at: active.width)
-        #expect(canShowInspector == (density == .comfortable))
+        #expect(canShowInspector == (active.width >= 960))
         if canShowInspector {
             #expect(active.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
         }
@@ -337,8 +337,8 @@ import Testing
 }
 
 @Test func searchWindowKeepsDetailsOnDemandAtCompactWidths() {
-    #expect(!LauncherSearchDesign.canShowInspector(at: 779))
-    #expect(LauncherSearchDesign.canShowInspector(at: 780))
+    #expect(!LauncherSearchDesign.canShowInspector(at: 959))
+    #expect(LauncherSearchDesign.canShowInspector(at: 960))
     #expect(LauncherSearchDesign.inspectorWidth == 250)
 }
 
@@ -618,4 +618,15 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     let normalizedQuery = query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     #expect(FuzzyMatcher.score(candidate, query: query)
         == FuzzyMatcher.scoreNormalized(normalizedCandidate, query: normalizedQuery))
+}
+
+@Test @MainActor func searchCaptureMenuUsesCatalogDispatchWhileIdle() {
+    let model = LauncherViewModel(clipboard: ClipboardHistoryService(fixtures: []), scanApplications: false)
+    let recorder = SearchExecutionRecorder()
+    model.delegate = recorder
+    let ids = ["builtin.quick-capture-region", "builtin.text-reader-region", "builtin.screenshot-studio"]
+    for id in ids { model.executeCommand(id: id) }
+    model.executeCommand(id: "unknown.capture")
+    #expect(recorder.executedIDs == ids)
+    #expect(model.query.isEmpty)
 }

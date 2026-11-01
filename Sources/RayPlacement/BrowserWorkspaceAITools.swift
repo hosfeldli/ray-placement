@@ -19,7 +19,7 @@ enum BrowserWorkspaceAITools {
     nonisolated static let interactionIDs: Set<String> = [
         "browser_click", "browser_focus", "browser_type", "browser_set_value",
         "browser_clear", "browser_select", "browser_toggle", "browser_press_key", "browser_submit",
-        "browser_pointer_click", "browser_visual_click", "browser_visual_type"
+        "browser_pointer_click", "browser_visual_click", "browser_visual_type", "browser_game_key"
     ]
     nonisolated static let ids = readIDs.union(navigationIDs).union(interactionIDs)
     /// Page-derived results, including fresh observations after interactions,
@@ -30,7 +30,7 @@ enum BrowserWorkspaceAITools {
         "browser_screenshot", "browser_hit_test", "browser_scroll", "browser_visual_scroll", "browser_scan",
         "browser_click", "browser_focus", "browser_type", "browser_set_value", "browser_clear",
         "browser_select", "browser_toggle", "browser_press_key", "browser_submit",
-        "browser_pointer_click", "browser_visual_click", "browser_visual_type",
+        "browser_pointer_click", "browser_visual_click", "browser_visual_type", "browser_game_key",
         "browser_activate"
     ]
 
@@ -63,7 +63,16 @@ enum BrowserWorkspaceAITools {
              ["tab_id": string("The screenshot tab ID."),
               "capture_id": string("Fresh capture ID from browser_screenshot."),
               "x": number("Horizontal screenshot pixel."),
-              "y": number("Vertical screenshot pixel.")], risk: .write),
+              "y": number("Vertical screenshot pixel."),
+              "button": enumeration(["left", "right"]),
+              "click_count": optionalInteger("One click or two; defaults to one.", 1, 2)], risk: .write,
+             required: ["tab_id", "capture_id", "x", "y"]),
+        tool("browser_game_key", "Click a canvas point and deliver one bounded native game key, then release it even on cancellation. Use fresh screenshot pixels and observe again afterward. Supports arrows, WASD, Q/E, Space, Escape, Enter and 1–5; no system shortcuts or arbitrary text. Maximum hold is 1000 ms. Financial and protected contexts are excluded.",
+             ["tab_id": string("The screenshot tab ID."), "capture_id": string("Fresh screenshot capture ID."),
+              "x": number("Horizontal screenshot pixel on the game canvas."), "y": number("Vertical screenshot pixel on the game canvas."),
+              "key": enumeration(["ArrowLeft", "ArrowRight", "ArrowDown", "ArrowUp", "w", "a", "s", "d", "q", "e", "Space", "Escape", "Enter", "1", "2", "3", "4", "5"]),
+              "hold_ms": optionalInteger("Hold duration, default zero.", 0, 1000)], risk: .write,
+             required: ["tab_id", "capture_id", "x", "y", "key"]),
         tool("browser_visual_type", "Click a nonsensitive editable point in a fresh masked Browser screenshot and type bounded Unicode text with native keyboard events, without the clipboard or a semantic target. Protected fields are unavailable.",
              ["tab_id": string("The screenshot tab ID."),
               "capture_id": string("Fresh capture ID from browser_screenshot."),
@@ -97,11 +106,11 @@ enum BrowserWorkspaceAITools {
               "target": string("A target ID from the latest browser_read or browser_find."),
               "disposition": enumeration(["current_tab", "new_tab", "background_tab"])],
              risk: .navigation, required: ["tab_id", "target"]),
-        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Final-sounding links require exact-call user review. Foreground navigation waits for a stable page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
+        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Final-sounding links require exact-call user review. Foreground navigation waits for a newly loaded page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A link target ID from the latest browser_read or browser_find."),
               "disposition": enumeration(["current_tab", "new_tab", "background_tab"])], risk: .navigation),
-        tool("browser_navigate", "Navigate a Lima Browser tab to an HTTPS or loopback HTTP URL without embedded credentials and verify a newly loaded stable page.",
+        tool("browser_navigate", "Navigate a Lima Browser tab to an HTTPS or loopback HTTP URL without embedded credentials and verify a newly loaded page.",
              ["tab_id": string("A Lima Browser tab ID."), "url": string("An HTTPS or loopback HTTP destination.")], risk: .navigation),
         tool("browser_back", "Go back in a Lima Browser tab.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
@@ -272,7 +281,7 @@ enum BrowserWorkspaceAITools {
                                              runID: UUID?) async -> BrowserCommitReview? {
         guard browser.aiControlMode.canInteract, let arguments = try? decodedArguments(for: call),
               let id = try? tabID(arguments) else { return nil }
-        if call.name == "browser_visual_click" || call.name == "browser_visual_type" {
+        if ["browser_visual_click", "browser_visual_type", "browser_game_key"].contains(call.name ?? "") {
             guard let runID,
                   let captureID = UUID(uuidString: (try? requiredString("capture_id", in: arguments)) ?? ""),
                   let x = try? requiredPixel("x", in: arguments),
@@ -314,7 +323,7 @@ enum BrowserWorkspaceAITools {
                                                approvalGranted: Bool,
                                                runID: UUID?) async throws -> Bool {
         guard ["browser_submit", "browser_click", "browser_activate",
-               "browser_open_link", "browser_pointer_click", "browser_visual_click", "browser_visual_type",
+               "browser_open_link", "browser_pointer_click", "browser_visual_click", "browser_visual_type", "browser_game_key",
                "browser_toggle", "browser_select", "browser_press_key"].contains(call.name ?? "") else { return false }
         let current = await currentCommitReview(for: call, browser: browser, runID: runID)
         let reviewed = call.callID.flatMap { reviewedCalls[$0] }
@@ -427,9 +436,22 @@ enum BrowserWorkspaceAITools {
                 return try await observedResult(
                     await browser.nativeVisualClick(
                         taskID: runID, tabID: tab, captureID: captureID,
-                        pixelX: x, pixelY: y, commitApproved: commitApproved
+                        pixelX: x, pixelY: y, commitApproved: commitApproved,
+                        button: try optionalString("button", in: arguments) ?? "left",
+                        clickCount: try optionalGameInt("click_count", in: arguments) ?? 1
                     ), browser: browser, tabID: tab
                 )
+            case "browser_game_key":
+                guard let runID, let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
+                    throw BrowserRuntimeError.taskScopeDenied
+                }
+                let tab = try tabID(arguments)
+                return try await observedResult(
+                    await browser.nativeGameKey(taskID: runID, tabID: tab, captureID: captureID,
+                        pixelX: try requiredPixel("x", in: arguments), pixelY: try requiredPixel("y", in: arguments),
+                        key: try requiredString("key", in: arguments),
+                        holdMilliseconds: try optionalGameInt("hold_ms", in: arguments) ?? 0,
+                        commitApproved: commitApproved), browser: browser, tabID: tab)
             case "browser_visual_type":
                 guard let runID,
                       let captureID = UUID(uuidString: try requiredString("capture_id", in: arguments)) else {
@@ -733,7 +755,11 @@ enum BrowserWorkspaceAITools {
                 "state": AIToolResultState.completed.rawValue,
                 "requested": true, "performed": true,
                 "tab_id": tabID.uuidString,
-                "post_action_verified": true, "page_state_verified": true,
+                "post_action_verified": true,
+                "page_state_verified": !snapshot.diagnostics.truncated &&
+                    (snapshot.readiness == .readyWithContent || snapshot.readiness == .readyEmpty),
+                "navigation_completed": true,
+                "next_action": "Observe the loaded page in the selected navigation mode. For dynamic pages, wait for a specific target or text instead of page_stable.",
                 "observed_url": publicURL(snapshot.identity.url),
                 "readiness": snapshot.readiness.rawValue
             ]
@@ -911,11 +937,11 @@ enum BrowserWorkspaceAITools {
                 "browser_screenshot", "browser_observe",
                 "browser_new_tab", "browser_close_tab", "browser_focus_tab",
                 "browser_navigate", "browser_back", "browser_forward", "browser_reload",
-                "browser_visual_click", "browser_visual_type", "browser_visual_scroll"
+                "browser_visual_click", "browser_visual_type", "browser_visual_scroll", "browser_game_key"
             ].contains(name)
         case .semanticOnly:
             return !["browser_screenshot", "browser_hit_test", "browser_pointer_click",
-                     "browser_visual_click", "browser_visual_type", "browser_visual_scroll"].contains(name)
+                     "browser_visual_click", "browser_visual_type", "browser_visual_scroll", "browser_game_key"].contains(name)
         }
     }
 
@@ -981,6 +1007,13 @@ enum BrowserWorkspaceAITools {
             state.noteBlockedSite(tab.urlString)
             throw BrowserRuntimeError.taskScopeDenied
         }
+    }
+
+    private static func optionalGameInt(_ key: String, in arguments: [String: JSONValue]) throws -> Int? {
+        guard let value = arguments[key], value != .null else { return nil }
+        guard case .number(let number) = value, number.isFinite, number.rounded() == number,
+              (0...1000).contains(number) else { throw BrowserWorkspaceToolError.invalidArguments }
+        return Int(number)
     }
 
     private static func requiredPixel(_ key: String, in arguments: [String: JSONValue]) throws -> Double {
@@ -1085,7 +1118,7 @@ enum BrowserWorkspaceAITools {
     }
 
     private static func requireComplete(_ page: BrowserPageSnapshot) throws -> BrowserPageSnapshot {
-        guard !page.diagnostics.truncated else { throw BrowserRuntimeError.privatePageIncomplete }
+        guard page.diagnostics.canReleaseContent else { throw BrowserRuntimeError.privatePageIncomplete }
         return page
     }
 
@@ -1181,10 +1214,9 @@ enum BrowserWorkspaceAITools {
         targetsFresh: Bool, semanticError: AIToolFailure?,
         visualError: AIToolFailure?
     ) -> LimaAIToolExecution {
-        // A truncated traversal may have missed a protected child frame while
-        // another frame echoed its value. Keep only structural diagnostics;
-        // never release page text, labels, titles, or target IDs in that case.
-        let completePage = page.flatMap { $0.diagnostics.truncated ? nil : $0 }
+        // A bounded result can remain useful after all privacy checks finish.
+        // Missing frames or an incomplete privacy scan still withhold content.
+        let completePage = page.flatMap { $0.diagnostics.canReleaseContent ? $0 : nil }
         var payload: [String: Any] = [
             "tab_id": tabID.uuidString,
             "mode": mode,
@@ -1246,7 +1278,7 @@ enum BrowserWorkspaceAITools {
         }
         if let semanticError {
             payload["semantic_error"] = semanticError.jsonObject
-        } else if page?.diagnostics.truncated == true {
+        } else if page?.diagnostics.canReleaseContent == false {
             payload["semantic_error"] = failure(for: BrowserRuntimeError.privatePageIncomplete).jsonObject
         }
         if let visualError { payload["visual_error"] = visualError.jsonObject }

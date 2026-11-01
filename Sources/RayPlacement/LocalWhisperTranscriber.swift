@@ -222,7 +222,7 @@ final class LocalWhisperTranscriber {
         }
     }
 
-    private nonisolated static func formattedTranscript(from data: Data) -> String? {
+    nonisolated static func formattedTranscript(from data: Data) -> String? {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let rawSegments = root["transcription"] as? [[String: Any]] else { return nil }
         let segments = rawSegments.compactMap { item -> TimedSegment? in
@@ -258,13 +258,13 @@ final class LocalWhisperTranscriber {
         for segment in segments {
             let gap = segment.startMilliseconds - priorEnd
             if gap >= 1_100 { flush() }
-            if current.isEmpty, hasSpeakerTurns { current = "**Speaker \(speaker):** " }
+            if current.isEmpty, hasSpeakerTurns { current = "**Turn \(speaker):** " }
             if !current.isEmpty, !current.hasSuffix(" ") { current += " " }
             current += segment.text
             priorEnd = segment.endMilliseconds
             if segment.speakerTurnAfter {
                 flush()
-                speaker = speaker == 1 ? 2 : 1
+                speaker += 1
             }
         }
         flush()

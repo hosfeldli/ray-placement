@@ -31,10 +31,11 @@ enum OpenAICloudTranscriber {
     }
 
     static let model = "gpt-4o-mini-transcribe"
+    static let speakerModel = "gpt-4o-transcribe-diarize"
     static let maximumAudioBytes = 24 * 1024 * 1024
     private static let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
 
-    static func request(audio: Data, apiKey: String, boundary: String) throws -> (URLRequest, Data) {
+    static func request(audio: Data, apiKey: String, boundary: String, diarize: Bool = false) throws -> (URLRequest, Data) {
         guard !apiKey.isEmpty else { throw Failure.missingKey }
         guard !audio.isEmpty, audio.count <= maximumAudioBytes else { throw Failure.audioTooLarge }
         var request = URLRequest(url: endpoint)
@@ -45,7 +46,11 @@ enum OpenAICloudTranscriber {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         var body = Data()
         func append(_ value: String) { body.append(Data(value.utf8)) }
-        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n\(model)\r\n")
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n\(diarize ? speakerModel : model)\r\n")
+        if diarize {
+            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ndiarized_json\r\n")
+            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"chunking_strategy\"\r\n\r\nauto\r\n")
+        }
         append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"dictation.wav\"\r\nContent-Type: audio/wav\r\n\r\n")
         body.append(audio)
         append("\r\n--\(boundary)--\r\n")
@@ -61,7 +66,29 @@ enum OpenAICloudTranscriber {
         return clean
     }
 
-    static func transcribe(audioURL: URL, apiKey: String, session: URLSession? = nil) async throws -> String {
+    static func parseSpeakers(_ data: Data, status: Int, window: Int, offset: TimeInterval) throws -> String {
+        guard window > 0, offset.isFinite, offset >= 0 else { throw Failure.invalidResponse }
+        guard (200..<300).contains(status) else { throw Failure.rejected(status) }
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let segments = object["segments"] as? [[String: Any]] else { throw Failure.invalidResponse }
+        var lines: [String] = []
+        for segment in segments {
+            guard let text = segment["text"] as? String else { throw Failure.invalidResponse }
+            if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+            guard let speaker = segment["speaker"] as? String, !speaker.isEmpty,
+                  let start = segment["start"] as? Double, start.isFinite, start >= 0 else { throw Failure.invalidResponse }
+            let seconds = Int(min(max(0, offset + start), 86400))
+            let label = String(speaker.filter { $0.isLetter || $0.isNumber || $0 == " " }.prefix(40))
+            guard !label.trimmingCharacters(in: .whitespaces).isEmpty else { throw Failure.invalidResponse }
+            lines.append(String(format: "[%02d:%02d] Window %d · Speaker %@: %@", seconds / 60, seconds % 60,
+                max(1, window), label, String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(30000))))
+        }
+        guard !lines.isEmpty else { throw Failure.emptyTranscript }
+        return String(lines.joined(separator: "\n\n").prefix(200000))
+    }
+
+    static func transcribe(audioURL: URL, apiKey: String, session: URLSession? = nil,
+                           diarize: Bool = false, window: Int = 1, offset: TimeInterval = 0) async throws -> String {
         try AIRequestPolicy.shared.check()
         let audio = try await Task.detached(priority: .utility) { () throws -> Data in
             let size = (try FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? NSNumber)?.intValue ?? 0
@@ -69,11 +96,12 @@ enum OpenAICloudTranscriber {
             return try Data(contentsOf: audioURL)
         }.value
         try Task.checkCancellation()
-        let (request, body) = try self.request(audio: audio, apiKey: apiKey, boundary: "Lima-\(UUID().uuidString)")
+        let (request, body) = try self.request(audio: audio, apiKey: apiKey, boundary: "Lima-\(UUID().uuidString)", diarize: diarize)
         let uploadSession = try session ?? AIRequestPolicy.shared.checkedSession()
         let (data, response) = try await uploadSession.upload(for: request, from: body)
         try Task.checkCancellation()
         guard let response = response as? HTTPURLResponse else { throw Failure.invalidResponse }
-        return try parse(data, status: response.statusCode)
+        return try diarize ? parseSpeakers(data, status: response.statusCode, window: window, offset: offset)
+            : parse(data, status: response.statusCode)
     }
 }

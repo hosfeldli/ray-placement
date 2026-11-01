@@ -36,11 +36,11 @@ struct BrowserScreenshotResult: Codable, Sendable {
     /// coordinates must not be used to choose or execute an action.
     func verifyActionSafety(_ current: BrowserScreenshotRedaction,
                             viewportWidth: Double, viewportHeight: Double,
-                            frameIDs: Set<String>) throws {
+                            frameIDs: Set<String>, allowingCanvasUpdates: Bool = false) throws {
         guard self.viewportWidth > 0, self.viewportHeight > 0,
               self.viewportWidth == viewportWidth,
               self.viewportHeight == viewportHeight,
-              pageIdentity == current.identity,
+              pageIdentity?.matchesInputRevision(current.identity, allowingCanvasUpdates: allowingCanvasUpdates) == true,
               scrollX == current.scrollX, scrollY == current.scrollY,
               scrollFingerprint == current.scrollFingerprint else {
             throw BrowserRuntimeError.staleTarget
@@ -63,7 +63,9 @@ actor BrowserScreenshotStore {
     private var entries: [BrowserScreenshotResult] = []
     private var taskOwners: [UUID: UUID] = [:]
     private var providerImagePrepared: Set<UUID> = []
-    private let maximumCaptures = 8
+    private let maximumCaptures = 32
+    private let maximumCapturesPerTab = 4
+    private let maximumBytes = 32_000_000
 
     init(directory: URL? = nil) {
         self.directory = directory ?? (LimaTestEnvironment.dataRoot ??
@@ -121,13 +123,25 @@ actor BrowserScreenshotStore {
             frameIDs: frameIDs
         )
         entries.append(capture)
-        while entries.count > maximumCaptures {
-            let old = entries.removeFirst()
-            taskOwners.removeValue(forKey: old.captureID)
-            providerImagePrepared.remove(old.captureID)
-            try? FileManager.default.removeItem(at: old.fileURL)
+        while entries.filter({ $0.tabID == tabID }).count > maximumCapturesPerTab {
+            if let index = entries.firstIndex(where: { $0.tabID == tabID }) { evict(at: index) }
+        }
+        while entries.count > maximumCaptures || entries.reduce(0, { $0 + $1.byteCount }) > maximumBytes {
+            // Prefer an older observation on a tab that has a newer one. A busy
+            // page should not evict another tab's only observation first.
+            let index = entries.indices.first { index in
+                entries.dropFirst(index + 1).contains { $0.tabID == entries[index].tabID }
+            } ?? 0
+            evict(at: index)
         }
         return capture
+    }
+
+    private func evict(at index: Int) {
+        let old = entries.remove(at: index)
+        taskOwners.removeValue(forKey: old.captureID)
+        providerImagePrepared.remove(old.captureID)
+        try? FileManager.default.removeItem(at: old.fileURL)
     }
 
     func capture(id: UUID) -> BrowserScreenshotResult? {

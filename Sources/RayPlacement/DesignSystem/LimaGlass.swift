@@ -42,9 +42,7 @@ enum LimaGlassRegion {
     }
 }
 
-/// One material view per structural region. The current toolchain's macOS 15 SDK
-/// uses NSVisualEffectView; a future SDK can replace only this adapter with the
-/// native glass container while leaving callers and content surfaces unchanged.
+/// Compatibility wrapper for quiet structural surfaces, with no per-panel native blur.
 struct LimaGlassContainer<Content: View>: View {
     @ObservedObject private var appearance = AppearancePreferences.shared
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -63,55 +61,10 @@ struct LimaGlassContainer<Content: View>: View {
 
     var body: some View {
         let shape = RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-        let prismOpacity = min(0.65, appearance.snapshot.glassStyle.prismaticEdgeOpacity * region.prismStrength)
-        let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
         content
-            .background {
-                ZStack {
-                    LimaTheme.surfacePrimary
-                        .opacity(opaque ? 1 : appearance.snapshot.glassStyle.baseOpacity)
-                    if !opaque {
-                        VisualEffectView(material: region.fallbackMaterial, blendingMode: .withinWindow)
-                            .opacity(appearance.snapshot.glassStyle.materialOpacity)
-                        // A static spectral wash makes the structural material legible
-                        // even against a plain desktop, without another blur layer.
-                        if prismOpacity > 0 {
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(prismOpacity * 0.50),
-                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(prismOpacity * 0.24),
-                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(prismOpacity * 0.42)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                            .allowsHitTesting(false)
-                        }
-                    }
-                }
-                .clipShape(shape)
-            }
+            .background(region == .sidebar ? LimaTheme.surfaceSecondary : LimaTheme.surfacePrimary, in: shape)
             .clipShape(shape)
-            .overlay {
-                ZStack {
-                    shape.strokeBorder(LimaDesign.controlBorder, lineWidth: LimaDesign.borderWidth)
-                    if !opaque, prismOpacity > 0 {
-                        shape.strokeBorder(
-                            LinearGradient(
-                                colors: [
-                                    Color(red: 0.35, green: 0.88, blue: 0.94).opacity(prismOpacity),
-                                    Color(red: 0.62, green: 0.48, blue: 0.96).opacity(prismOpacity),
-                                    Color(red: 0.96, green: 0.58, blue: 0.72).opacity(prismOpacity * 0.72)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: LimaDesign.borderWidth + 0.3
-                        )
-                    }
-                }
-                .allowsHitTesting(false)
-            }
+            .overlay(shape.strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth).allowsHitTesting(false))
     }
 }
 
@@ -199,27 +152,9 @@ struct LimaPrismFrame: View {
     @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
     var body: some View {
-        let shape = RoundedRectangle(cornerRadius: radius, style: .continuous)
-        let opaque = reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency)
-        let strength = min(0.82, appearance.snapshot.glassStyle.prismaticEdgeOpacity * 2)
-        ZStack {
-            shape.strokeBorder(LimaTheme.borderStrong, lineWidth: LimaDesign.hairlineWidth)
-            if !opaque && strength > 0 {
-                shape.strokeBorder(
-                    LinearGradient(
-                        colors: [appearance.snapshot.accent.primary.opacity(strength),
-                                 Color.cyan.opacity(strength * 0.68),
-                                 appearance.snapshot.accent.primary.opacity(strength * 0.52),
-                                 Color.pink.opacity(strength * 0.62)],
-                        startPoint: .topLeading, endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1.15
-                )
-                .shadow(color: appearance.snapshot.accent.primary.opacity(strength * 0.36), radius: 9)
-            }
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .strokeBorder(LimaTheme.borderSubtle, lineWidth: LimaDesign.hairlineWidth)
+            .allowsHitTesting(false).accessibilityHidden(true)
     }
 }
 

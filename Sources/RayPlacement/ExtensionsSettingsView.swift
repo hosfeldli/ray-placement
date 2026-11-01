@@ -33,6 +33,11 @@ struct ExtensionsSettingsView: View {
     @State private var detailTab: DetailTab = .commands
     @State private var cachedContributions: [String: ExtensionLoader.ContributionCatalogEntry] = [:]
     @State private var cachedManifests: [ExtensionManifest] = []
+    @State private var installedPackages: [InstalledPackage] = []
+    @State private var metadataTask: Task<Void, Never>?
+    @State private var rebuildTask: Task<Void, Never>?
+    @State private var metadataLoading = false
+    @State private var metadataGeneration = UUID()
 
     private enum DetailTab: String, CaseIterable, Identifiable { case commands = "Commands", contributions = "Tools, Skills & Agents", preferences = "Preferences", permissions = "Permissions"; var id: String { rawValue } }
 
@@ -65,32 +70,48 @@ struct ExtensionsSettingsView: View {
     }
 
     private func refreshPackageMetadata() {
-        let contributions = ExtensionLoader().contributionCatalog()
-        var manifests: [ExtensionManifest] = []
-        if let contents = try? FileManager.default.contentsOfDirectory(
-            at: ApplicationPaths.extensions,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) {
-            let decoder = JSONDecoder()
-            for item in contents {
-                let manifestURL: URL
-                var isDirectory: ObjCBool = false
-                FileManager.default.fileExists(atPath: item.path, isDirectory: &isDirectory)
-                if isDirectory.boolValue {
-                    manifestURL = item.appendingPathComponent("manifest.json")
-                } else if item.pathExtension.lowercased() == "json" {
-                    manifestURL = item
-                } else {
-                    continue
+        metadataTask?.cancel()
+        let generation = UUID()
+        metadataGeneration = generation
+        metadataLoading = true
+        let directory = ApplicationPaths.extensions
+        metadataTask = Task { @MainActor in
+            let entries = await Task.detached(priority: .userInitiated) {
+                ExtensionManagementMetadata.read(directory: directory)
+            }.value
+            guard !Task.isCancelled, metadataGeneration == generation else { return }
+            cachedManifests = entries.map(\.manifest)
+            var contributions: [String: ExtensionLoader.ContributionCatalogEntry] = [:]
+            for entry in entries {
+                let manifest = entry.manifest
+                guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) else { continue }
+                let bundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
+                if !bundled {
+                    guard let approval = ExtensionApprovalStore.record(for: manifest.id),
+                          approval.manifestHash == entry.hash,
+                          approval.capabilities.isSuperset(of: manifest.capabilities) else { continue }
                 }
-                guard let data = try? Data(contentsOf: manifestURL),
-                      let manifest = try? decoder.decode(ExtensionManifest.self, from: data) else { continue }
-                manifests.append(manifest)
+                contributions[manifest.id] = .init(extensionID: manifest.id, extensionName: manifest.name,
+                    capabilities: manifest.capabilities, tools: manifest.contributions.tools,
+                    skills: manifest.contributions.skills, agents: manifest.contributions.agents)
             }
+            cachedContributions = contributions
+            rebuildInstalled()
+            metadataLoading = false
         }
-        cachedContributions = Dictionary(uniqueKeysWithValues: contributions.map { ($0.extensionID, $0) })
-        cachedManifests = manifests
+    }
+
+    private func scheduleRebuild() {
+        rebuildTask?.cancel()
+        rebuildTask = Task { @MainActor in
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            rebuildInstalled()
+        }
+    }
+
+    private func rebuildInstalled() {
+        installedPackages = buildInstalled()
     }
 
     private func reloadInstalled() {
@@ -98,7 +119,9 @@ struct ExtensionsSettingsView: View {
         refreshPackageMetadata()
     }
 
-    private var installed: [InstalledPackage] {
+    private var installed: [InstalledPackage] { installedPackages }
+
+    private func buildInstalled() -> [InstalledPackage] {
         var packages: [String: InstalledPackage] = [:]
         let contributionsByID = cachedContributions
 
@@ -203,7 +226,7 @@ struct ExtensionsSettingsView: View {
             .padding(12)
 
             HStack(spacing: 10) {
-                LimaWorkspaceSearchField(placeholder: "Search extensions and commands…", text: $query)
+                LimaWorkspaceSearchField(placeholder: "Search extensions…", text: $query)
                 Button {
                     reloadInstalled()
                     if !localOnly { storeModel.load() }
@@ -226,8 +249,19 @@ struct ExtensionsSettingsView: View {
         }
         .onAppear {
             if !localOnly { storeModel.load() }
-            reloadInstalled()
+            rebuildInstalled()
+            refreshPackageMetadata()
             if selectedID == nil { selectedID = filteredInstalled.first?.id }
+        }
+        .onDisappear { metadataTask?.cancel(); rebuildTask?.cancel(); metadataLoading = false }
+        .onReceive(viewModel.$extensionCommands) { _ in
+            scheduleRebuild()
+        }
+        .onReceive(commandManager.$profiles) { _ in
+            scheduleRebuild()
+        }
+        .onReceive(commandManager.$activeProfileID) { _ in
+            scheduleRebuild()
         }
         .onChange(of: storeModel.installingID) { installingID in
             if installingID == nil { refreshPackageMetadata() }
@@ -270,8 +304,9 @@ struct ExtensionsSettingsView: View {
     }
 
     private var localWorkspaceTitle: some View {
-        LimaWorkspaceHeading(title: "Extensions", subtitle: "Manage the tools already available on this Mac.",
-                             symbol: "puzzlepiece.extension.fill", tint: .cyan)
+        Label("Your tools", systemImage: "puzzlepiece.extension.fill")
+            .limaFont(.headline)
+            .foregroundStyle(LimaTheme.textPrimary)
     }
 
     private var localWorkspaceActions: some View {
@@ -301,7 +336,7 @@ struct ExtensionsSettingsView: View {
             HStack(alignment: .top, spacing: 0) {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
-                        ScrollView(.horizontal, showsIndicators: false) {
+                        ViewThatFits(in: .horizontal) {
                             HStack(spacing: 6) {
                                 ForEach(ExtensionWorkspaceFilter.allCases) { filter in
                                     Button { installedFilter = filter } label: {
@@ -314,10 +349,24 @@ struct ExtensionsSettingsView: View {
                                     .accessibilityAddTraits(installedFilter == filter ? .isSelected : [])
                                 }
                             }
+                            Menu {
+                                Picker("Filter extensions", selection: $installedFilter) {
+                                    ForEach(ExtensionWorkspaceFilter.allCases) { Text($0.rawValue).tag($0) }
+                                }
+                            } label: {
+                                Label(installedFilter == .all ? "All extensions" : installedFilter.rawValue,
+                                      systemImage: "line.3.horizontal.decrease")
+                                    .limaFont(.caption.weight(.medium))
+                                    .padding(8)
+                            }
+                            .menuStyle(.borderlessButton)
+                            .accessibilityLabel("Filter extensions: " + installedFilter.rawValue)
                         }
                         Text("\(packages.count) matching extensions").limaFont(.callout.weight(.semibold))
                             .padding(.vertical, 6)
-                        if packages.isEmpty {
+                        if metadataLoading && packages.isEmpty {
+                            ProgressView("Loading installed tools…").padding(20)
+                        } else if packages.isEmpty {
                             emptyState("No matching extensions",
                                        detail: installed.isEmpty ? "Add a local package to the Extensions folder, then reload." : "Try a different search or filter.",
                                        symbol: "puzzlepiece.extension")
@@ -370,7 +419,9 @@ struct ExtensionsSettingsView: View {
                 extensionDetail(package)
             }
         }
-        .limaGlassSurface(cornerRadius: 14, depth: .raised, selected: selectedID == package.id)
+        .background(LimaTheme.surfacePrimary, in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(
+            selectedID == package.id ? LimaTheme.accentInk.opacity(0.5) : LimaTheme.borderSubtle, lineWidth: 0.8))
     }
 
     private func installedSummary(_ package: InstalledPackage, catalogEntry: ExtensionStoreEntry?) -> some View {
@@ -382,7 +433,7 @@ struct ExtensionsSettingsView: View {
                 LimaFeatureIcon(symbol: "puzzlepiece.extension.fill", tint: package.bundled ? .blue : .cyan)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(package.name).limaFont(.system(size: 15, weight: .semibold))
-                    Text("\(package.source) · v\(package.version) · \(package.commandCount) commands")
+                    Text("\(package.source) · v\(package.version) · \(package.commandCount) \(package.commandCount == 1 ? "command" : "commands")")
                         .fixedSize(horizontal: false, vertical: true)
                     Text("\(package.lifecycleState.rawValue) · \(package.commands.isEmpty ? "Contributions package" : (package.enabled ? "Commands enabled" : "Commands disabled"))")
                         .font(.caption)
@@ -443,17 +494,21 @@ struct ExtensionsSettingsView: View {
     }
 
     private func extensionDetail(_ package: InstalledPackage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let visibleCommands = package.commands.filter {
+            ExtensionWorkspaceFilter.matches(query: query, name: package.name, id: package.id,
+                commandTitles: [$0.command.title])
+        }
+        return VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Picker("Detail", selection: $detailTab) { ForEach(DetailTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu)
+                Picker("Detail", selection: $detailTab) { ForEach(DetailTab.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.menu).labelsHidden()
                 Spacer()
                 Button("Close") { selectedID = nil }.buttonStyle(.borderless)
             }
-            if detailTab == .commands, package.commands.isEmpty {
-                Text("No launcher commands. Check Tools, Skills & Agents for other contributions.")
+            if detailTab == .commands, visibleCommands.isEmpty {
+                Text(package.commands.isEmpty ? "No launcher commands. Check Tools, Skills & Agents for other contributions." : "No commands match this search. Clear the search to see every command.")
                     .limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
             }
-            if detailTab == .commands { ForEach(package.commands, id: \.settingsIdentifier) { command in
+            if detailTab == .commands { ForEach(visibleCommands, id: \.settingsIdentifier) { command in
                 HStack(spacing: 8) {
                     Toggle("", isOn: Binding(get: { CommandManager.shared.isEnabled(command.settingsIdentifier) }, set: { CommandManager.shared.setEnabled($0, for: command.settingsIdentifier) }))
                         .labelsHidden().toggleStyle(.checkbox)
@@ -463,8 +518,19 @@ struct ExtensionsSettingsView: View {
                             .foregroundStyle(CommandManager.shared.isFavorite(command.settingsIdentifier) ? .yellow : .secondary)
                     }.buttonStyle(.borderless)
                         .accessibilityLabel("Favorite " + command.command.title)
-                    Text(command.command.title).fixedSize(horizontal: false, vertical: true)
-                    Spacer()
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(command.command.title).limaFont(.callout.weight(.medium))
+                        Text("Find in Search to run").limaFont(.caption2).foregroundStyle(LimaTheme.textTertiary)
+                    }
+                    Spacer(minLength: 4)
+                    Button {
+                        viewModel.findCommandInSearch(command.command.title)
+                    } label: {
+                        Image(systemName: "magnifyingglass").frame(width: 24, height: 24)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Find this command in Search")
+                    .accessibilityLabel("Find " + command.command.title + " in Search")
                     Text(command.effectiveShortcutLabel)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(LimaTheme.textSecondary)
