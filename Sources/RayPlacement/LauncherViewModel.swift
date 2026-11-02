@@ -56,6 +56,21 @@ final class LauncherViewModel: ObservableObject {
             }
         }
     }
+    @Published private(set) var isAskingAI = false
+    @Published var aiPrompt = ""
+
+    func beginAskingAI() {
+        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { aiPrompt = query }
+        query = ""
+        isAskingAI = true
+        focusGeneration += 1
+    }
+
+    func endAskingAI() {
+        isAskingAI = false
+        focusGeneration += 1
+    }
+
     @Published private(set) var mode: LauncherMode = .root
     @Published private(set) var searchPhase: LauncherSearchPhase = .idle
     @Published private(set) var isAudioOutputPickerPresented = false
@@ -1060,6 +1075,7 @@ final class LauncherViewModel: ObservableObject {
     }
 
     func handleEscape() {
+        if isAskingAI { endAskingAI(); return }
         if !navigateBack() {
             delegate?.launcherViewModelDidRequestHide(self)
         }

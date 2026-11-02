@@ -143,7 +143,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         viewModel.delegate = self
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(
+        let launcherHost = NSHostingView(rootView: LimaTypographyRoot(content: LauncherView(
                 viewModel: viewModel,
                 terminalModel: terminalModel,
                 aiChatModel: aiChatModel,
@@ -172,6 +172,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 },
                 onDismissSearch: { [weak self] in self?.hide() }
             )))
+        // The controller owns the panel's frame. SwiftUI's previous results
+        // minimum must not keep an empty Search background expanded.
+        launcherHost.sizingOptions = []
+        panel.contentView = launcherHost
         surfaceSessionController.bind(to: viewModel)
         modeSubscription = Publishers.CombineLatest3(
             viewModel.$mode,
@@ -183,8 +187,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                 let size = self.panelPresentationSizing.size(
                     for: mode, density: density, searchPhase: phase
                 )
-                // Typing may expand Search once, but never animates or collapses
-                // the physical panel while this presentation remains visible.
+                // Root Search follows idle/results state without moving its top edge.
+                // Result refreshes do not change the phase or physical size.
                 self.resizePanel(to: size, animated: mode != .root)
             }
         surfaceModeSubscription = viewModel.$mode
@@ -939,6 +943,13 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
                     }
                 }
                 return nil
+            }
+
+            // Ask mode is a text composer: Return and cursor keys belong to
+            // its field, never to the command-results selection underneath it.
+            if self.viewModel.mode == .root && self.viewModel.isAskingAI {
+                if event.keyCode == 53 { self.viewModel.endAskingAI(); return nil }
+                return event
             }
 
             // The inline audio selector owns its own keyboard navigation. An

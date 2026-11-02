@@ -376,7 +376,7 @@ struct LauncherView: View {
                 InlineExtensionSurfacePlaceholder(session: session)
             }
         case .terminal:
-            DeveloperTerminalView(model: terminalModel)
+            DeveloperTerminalView(model: terminalModel, aiChatModel: aiChatModel)
         case .contextShelf:
             ContextShelfView(
                 store: .shared,

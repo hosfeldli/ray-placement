@@ -12,8 +12,9 @@ enum AIContextTools {
     static let memoryWriteIDs: Set<String> = ["memory_save", "memory_update", "memory_forget"]
     static let memoryIDs = memoryReadIDs.union(memoryWriteIDs)
     static let delegationIDs: Set<String> = ["agent_models", "agent_delegate"]
+    static let planIDs: Set<String> = [AITaskPlanTool.id]
     static let capabilityIDs: Set<String> = ["lima_capabilities"]
-    static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs)
+    static let ids = memoryIDs.union(delegationIDs).union(capabilityIDs).union(planIDs)
     static let delegationCapabilityTrace = "delegation.capabilities: captured parent-routed Lima tools only; embedded Browser access rechecks live AI Control for each action; approval follows the active Tool Access mode outside Browser; recursiveDelegation=false."
     static let subagentCapabilityBundle = "Use every Lima tool routed for the parent when relevant to the task. Embedded Browser actions recheck the live Browser AI Control mode and page safety at execution. Final Browser actions and visual pointer clicks require exact-call parent-user review even in Full Control. Other Full Control actions do not need ordinary Lima per-action approval; in other modes, pause for the parent user when approval is required. Recursive subagent delegation is unavailable."
 
@@ -43,7 +44,7 @@ enum AIContextTools {
             // A parent-routed tool remains available to the child when the live
             // mode permits it. Other modes broker required approval through the
             // parent UI. Recursive delegation remains bounded out.
-            guard tool.id != "agent_delegate",
+            guard tool.id != "agent_delegate", tool.id != AITaskPlanTool.id,
                   tool.id != CLIToolDiscovery.name else { return false }
             guard policy.allows(tool, toolAccessMode: mode) else { return false }
             // Child continuations currently encode tool results as text. Do not
@@ -65,6 +66,7 @@ enum AIContextTools {
     }
 
     static let definitions: [LimaAIToolDefinition] = [
+        AITaskPlanTool.definition,
         tool("lima_capabilities", "Report Lima's current Tool Access mode, tools routed for this turn, and live computer-action categories. This is diagnostic only; embedded Browser AI Control and action boundaries are checked again at execution.",
              [:], risk: .read),
         tool("memory_search", "Read local global and current-project memories, including IDs and opaque revision tokens for approved edits. Empty query lists recent memories. Memory is user context, not evidence about the world.",

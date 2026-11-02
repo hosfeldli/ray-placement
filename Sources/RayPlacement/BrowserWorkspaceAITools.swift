@@ -101,12 +101,12 @@ enum BrowserWorkspaceAITools {
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
         tool("browser_focus_tab", "Select one existing Lima Browser tab and open the visible Browser workspace. Check browser_visible before claiming the window opened; this does not read the page.",
              ["tab_id": string("A Lima Browser tab ID.")], risk: .navigation),
-        tool("browser_activate", "Activate a fresh link or control target. Defaults to the current tab; verified ordinary links can also open in a new or background tab. JS-only links and controls require Browser Full Control and cannot open in another tab. Download, unsafe, and sensitive targets are refused.",
+        tool("browser_activate", "Activate a fresh link, form submit button, or control. Current-tab Full Control activation dispatches the website click handlers and pointer events; use this for reservation widgets and scripted navigation. Verified ordinary links can also open in a new or background tab. JS-only links and controls require Browser Full Control and cannot open in another tab. Download, unsafe, and sensitive targets are refused.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A target ID from the latest browser_read or browser_find."),
               "disposition": enumeration(["current_tab", "new_tab", "background_tab"])],
              risk: .navigation, required: ["tab_id", "target"]),
-        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Final-sounding links require exact-call user review. Foreground navigation waits for a newly loaded page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
+        tool("browser_open_link", "Open one fresh ordinary semantic link in this tab, a new tab, or a background tab. Financial commitments require exact-call user review; Independent covers nonpayment actions in this chat. Foreground navigation waits for a newly loaded page; deferred background tabs report page_state_verified false. Download, unknown, and sensitive links are not opened.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A link target ID from the latest browser_read or browser_find."),
               "disposition": enumeration(["current_tab", "new_tab", "background_tab"])], risk: .navigation),
@@ -161,7 +161,7 @@ enum BrowserWorkspaceAITools {
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A control target ID from the latest browser_read or browser_find."),
               "key": enumeration(["Escape", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"])], risk: .write),
-        tool("browser_submit", "Submit a form through a fresh nonconfidential semantic control, including after direct user entry into protected fields. Final actions require separate exact-call user review; secure-field handoff does not authorize submission, and dispatch does not prove acceptance.",
+        tool("browser_submit", "Submit a form through a fresh nonconfidential semantic control, including after direct user entry into protected fields. Independent covers nonpayment actions in this chat; financial commitments still require exact-call review. Secure-field handoff does not itself grant submission authority, and dispatch does not prove acceptance.",
              ["tab_id": string("A Lima Browser tab ID."),
               "target": string("A control target ID from the latest browser_read or browser_find.")], risk: .write)
     ]
@@ -708,8 +708,18 @@ enum BrowserWorkspaceAITools {
         payload["tab_id"] = tabID.uuidString
         payload["remote_outcome_verified"] = false
         do {
-            let page = try requireComplete(await browser.read(tabID))
-            payload["page_state_verified"] = true
+            let tab = try browser.tab(tabID)
+            let page: BrowserPageSnapshot
+            if tab.isLoading && tab.navigationRevision > 0 {
+                // A site's click handler may start a full navigation. Observe
+                // its loaded destination before advertising actionable targets.
+                page = try requireComplete(await browser.waitForNavigation(tabID,
+                    after: tab.navigationRevision - 1, timeoutMilliseconds: 15_000))
+            } else {
+                page = try requireComplete(await browser.read(tabID))
+            }
+            payload["page_state_verified"] = !page.diagnostics.truncated &&
+                (page.readiness == .readyWithContent || page.readiness == .readyEmpty)
             payload["post_action_observation"] = actionPageSummary(page)
             payload["next_action"] = "Use the fresh page evidence to check the intended outcome before continuing. A page change alone does not confirm a remote transaction."
         } catch {

@@ -25,23 +25,23 @@ import Testing
             #expect(active.width - LauncherSearchDesign.inspectorWidth - 48 >= 380)
         }
         switch density {
-        case .compact: #expect(idle == NSSize(width: 720, height: 146))
-        case .balanced: #expect(idle == NSSize(width: 760, height: 150))
-        case .comfortable: #expect(idle == NSSize(width: 840, height: 158))
+        case .compact: #expect(idle == NSSize(width: 720, height: 172))
+        case .balanced: #expect(idle == NSSize(width: 760, height: 176))
+        case .comfortable: #expect(idle == NSSize(width: 840, height: 184))
         }
         #expect(LauncherPanelLayout.size(for: .files, density: density).width == density.launcherWidth)
         #expect(LauncherPanelLayout.size(for: .terminal, density: density) == LauncherPanelLayout.terminalSize)
     }
 }
 
-@Test func searchPanelExpandsOnceAndPreservesTopEdgeAcrossPickerTransitions() {
+@Test func searchPanelCollapsesBackgroundAndPreservesTopEdgeAcrossPickerTransitions() {
     for density in AppInterfaceDensity.allCases {
         var sizing = LauncherPanelPresentationSizing()
         let idle = sizing.size(for: .root, density: density, searchPhase: .idle)
         let expanded = sizing.size(for: .root, density: density, searchPhase: .active)
         #expect(expanded.height > idle.height)
         #expect(sizing.hasExpandedSearch)
-        #expect(sizing.size(for: .root, density: density, searchPhase: .idle) == expanded)
+        #expect(sizing.size(for: .root, density: density, searchPhase: .idle) == idle)
         #expect(sizing.size(for: .root, density: density, searchPhase: .active) == expanded)
 
         let picker = sizing.size(for: .picker(.timezone), density: density, searchPhase: .idle)
@@ -51,7 +51,7 @@ import Testing
         let restoredSize = sizing.size(for: .root, density: density, searchPhase: .idle)
         let restoredFrame = LauncherPanelLayout.resizedFrame(pickerFrame, to: restoredSize, anchorTop: true)
         #expect(restoredFrame.maxY == original.maxY)
-        #expect(restoredSize == expanded)
+        #expect(restoredSize == idle)
 
         sizing.reset()
         #expect(sizing.size(for: .root, density: density, searchPhase: .idle) == idle)
@@ -124,8 +124,9 @@ import Testing
         openWorkspace: { _ in }, openSettings: {}, createNote: {}, dismiss: {}
     )
     let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
     let window = NSWindow(
-        contentRect: NSRect(x: 0, y: 0, width: 760, height: 150),
+        contentRect: NSRect(x: 0, y: 0, width: 760, height: 176),
         styleMask: [.borderless], backing: .buffered, defer: false
     )
     window.contentView = host
@@ -160,7 +161,7 @@ import Testing
     }
 
     model.query = ""
-    window.setContentSize(NSSize(width: 760, height: 150))
+    window.setContentSize(NSSize(width: 760, height: 176))
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     host.layoutSubtreeIfNeeded()
     let idleAgain = fields(in: host)
@@ -629,4 +630,35 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     model.executeCommand(id: "unknown.capture")
     #expect(recorder.executedIDs == ids)
     #expect(model.query.isEmpty)
+}
+
+@Test @MainActor func searchHostingWindowActuallyShrinksAfterQueryClears() async {
+    let model = LauncherViewModel(clipboard: .shared, scanApplications: false)
+    let view = LauncherSearchWorkspace(model: model, aiChatModel: AIChatVisualFixtures.model(for: .empty),
+        openWorkspace: { _ in }, openSettings: {}, createNote: {}, dismiss: {})
+    let host = NSHostingView(rootView: view)
+    host.sizingOptions = []
+    let idle = LauncherPanelLayout.idleSearchSize(density: .balanced)
+    let window = LauncherPanel(contentRect: NSRect(x: 100, y: 300, width: idle.width, height: idle.height))
+    window.contentView = host
+    var sizing = LauncherPanelPresentationSizing()
+    let subscription = model.$searchPhase.sink { phase in
+        let size = sizing.size(for: .root, density: .balanced, searchPhase: phase)
+        window.setFrame(LauncherPanelLayout.resizedFrame(window.frame, to: size, anchorTop: true), display: false)
+    }
+    defer { subscription.cancel(); window.orderOut(nil) }
+    let top = window.frame.maxY
+    for _ in 0..<3 {
+        model.query = "notes"
+        try? await Task.sleep(for: .milliseconds(60))
+        host.layoutSubtreeIfNeeded()
+        #expect(window.frame.height == LauncherPanelLayout.searchSize(density: .balanced).height)
+        #expect(window.frame.maxY == top)
+        model.query = ""
+        try? await Task.sleep(for: .milliseconds(60))
+        host.layoutSubtreeIfNeeded()
+        #expect(window.frame.height == idle.height)
+        #expect(host.frame.height == idle.height)
+        #expect(window.frame.maxY == top)
+    }
 }

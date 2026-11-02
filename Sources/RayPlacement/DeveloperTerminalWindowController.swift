@@ -188,10 +188,12 @@ struct DeveloperTerminalView: View {
     @Environment(\.limaWorkspaceSizeClass) private var workspaceSizeClass
     @State private var selectedSessionID: UUID?
     private let startPersonalShell: Bool
+    let aiChatModel: AIChatViewModel?
 
-    init(model: DeveloperTerminalModel, startPersonalShell: Bool = true) {
+    init(model: DeveloperTerminalModel, startPersonalShell: Bool = true, aiChatModel: AIChatViewModel? = nil) {
         self.model = model
         self.startPersonalShell = startPersonalShell
+        self.aiChatModel = aiChatModel
         _selectedSessionID = State(initialValue: AIWorkspaceTerminalCoordinator.shared.foregroundSessionID)
     }
 
@@ -281,6 +283,10 @@ struct DeveloperTerminalView: View {
             .background(LimaTheme.surfaceSecondary)
             GlassHairline()
             if let session = selectedAISession {
+                if let aiChatModel, let chatID = session.conversationID {
+                    AITerminalActivityView(model: aiChatModel, conversationID: chatID)
+                    GlassHairline()
+                }
                 aiSessionView(session)
             } else {
                 ZStack(alignment: .topLeading) {

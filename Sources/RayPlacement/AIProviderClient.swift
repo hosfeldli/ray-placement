@@ -25,8 +25,13 @@ struct AIProviderMessage: Sendable {
 
     static func transcript(_ messages: [AIChatMessage]) -> [AIProviderMessage] {
         messages.compactMap { message in
-            guard !message.text.isEmpty else { return nil }
-            return AIProviderMessage(role: message.role, text: message.text)
+            let planContext = message.role == .assistant ? message.taskPlan.map { plan in
+                "\n\nSaved task checklist (revision \(plan.revision), reported progress):\n" + plan.steps.map {
+                    "[\($0.status.rawValue)] \($0.id): \($0.title)\($0.evidence.isEmpty ? "" : " — " + $0.evidence)"
+                }.joined(separator: "\n")
+            } ?? "" : ""
+            guard !message.text.isEmpty || !planContext.isEmpty else { return nil }
+            return AIProviderMessage(role: message.role, text: message.text + planContext)
         }
     }
 }

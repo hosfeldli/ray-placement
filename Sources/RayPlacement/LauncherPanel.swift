@@ -26,9 +26,9 @@ enum LauncherPanelLayout {
         // Keep the input's horizontal position unchanged when results appear.
         let width = searchSize(density: density).width
         switch density {
-        case .compact: return NSSize(width: width, height: 146)
-        case .balanced: return NSSize(width: width, height: 150)
-        case .comfortable: return NSSize(width: width, height: 158)
+        case .compact: return NSSize(width: width, height: 172)
+        case .balanced: return NSSize(width: width, height: 176)
+        case .comfortable: return NSSize(width: width, height: 184)
         }
     }
 
@@ -71,9 +71,8 @@ enum LauncherPanelLayout {
     }
 }
 
-/// A Search panel expands at most once during a visible presentation. Clearing
-/// a query, receiving delayed results, or returning from a picker cannot move
-/// the search field by collapsing the physical window.
+/// The panel follows the visible Search phase, so clearing the query collapses
+/// both the content and its background. Result updates cannot resize the panel.
 struct LauncherPanelPresentationSizing {
     private(set) var hasExpandedSearch = false
 
@@ -89,7 +88,7 @@ struct LauncherPanelPresentationSizing {
         guard mode == .root else {
             return LauncherPanelLayout.size(for: mode, density: density, searchPhase: searchPhase)
         }
-        if searchPhase == .active { hasExpandedSearch = true }
+        hasExpandedSearch = searchPhase == .active
         return hasExpandedSearch
             ? LauncherPanelLayout.searchSize(density: density)
             : LauncherPanelLayout.idleSearchSize(density: density)

@@ -10,6 +10,8 @@ struct WorkspaceToolSwitcher: View {
     @ObservedObject private var terminal = AIWorkspaceTerminalCoordinator.shared
     @Environment(\.limaWorkspaceSizeClass) private var sizeClass
     @Environment(\.limaAssistantSplitAvailable) private var canSplit
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var selectionMotion
     private let destinations: [LimaWorkspaceModule] = [.ai, .browser, .terminal]
 
     private var runningCount: Int {
@@ -34,8 +36,12 @@ struct WorkspaceToolSwitcher: View {
                     .foregroundStyle(current == module ? LimaTheme.accentInk : LimaTheme.textSecondary)
                     .padding(.horizontal, sizeClass == .compact ? 8 : 11)
                     .frame(height: 29)
-                    .background(current == module ? LimaTheme.surfaceSelected : Color.clear,
-                                in: RoundedRectangle(cornerRadius: 8))
+                    .background {
+                        if current == module {
+                            RoundedRectangle(cornerRadius: 8).fill(LimaTheme.surfaceSelected)
+                                .matchedGeometryEffect(id: "tool-selection", in: selectionMotion)
+                        }
+                    }
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -57,6 +63,7 @@ struct WorkspaceToolSwitcher: View {
         }
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(LimaTheme.surfaceSecondary.opacity(0.8))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: current)
         .accessibilityIdentifier("workspace.tool-switcher")
     }
 }

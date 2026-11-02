@@ -94,6 +94,7 @@ struct AIExecutionCallbacks: Sendable {
     let executeTool: @MainActor @Sendable (AIOutputItem, Int?) async -> AIEngineToolOutput?
     let toolFailure: @MainActor @Sendable (AIOutputItem, String) -> AIEngineToolOutput?
     let persistPreparedOutputs: @MainActor @Sendable ([AIEngineToolOutput]) async -> Bool
+    var finalizationReminder: (@MainActor @Sendable () -> String?)? = nil
 }
 
 struct AIExecutionHealth {
@@ -257,6 +258,7 @@ actor AIExecutionEngine {
         var latestResponseID = initialResponseID
         var handledCallIDs = Set<String>()
         var health = AIExecutionHealth()
+        var checklistReminders = 0
 
         while await shouldContinue(callbacks) {
             let cycle = await consume(
@@ -277,7 +279,21 @@ actor AIExecutionEngine {
                 handledCallIDs.insert(callID)
                 return true
             }
-            guard !calls.isEmpty else { break }
+            if calls.isEmpty {
+                // Recover an unfinished declared plan twice at most. Blocked
+                // plans stop normally, and every round rechecks cancellation.
+                if checklistReminders < 2, let reminder = await callbacks.finalizationReminder?(),
+                   await shouldContinue(callbacks) {
+                    checklistReminders += 1
+                    currentHistory.append(AIProviderMessage(role: .user, content: [.text(reminder)]))
+                    stream = client.streamReply(apiKey: apiKey, model: model, input: reminder,
+                        history: currentHistory, previousResponseID: latestResponseID,
+                        reasoningEffort: reasoningEffort, attachments: [], localTools: localTools,
+                        systemInstructions: systemInstructions)
+                    continue
+                }
+                break
+            }
 
             var firstApprovalIndex: Int?
             for (index, call) in calls.enumerated() where firstApprovalIndex == nil {

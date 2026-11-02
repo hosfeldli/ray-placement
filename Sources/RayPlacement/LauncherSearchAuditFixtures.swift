@@ -7,6 +7,7 @@ enum LauncherSearchAuditFixtures {
         precondition(LimaTestEnvironment.isEnabled)
         let launcher = LauncherViewModel(clipboard: .shared, scanApplications: false)
         if scenario == "actions" { launcher.query = "notes"; launcher.openActionPanel(); launcher.moveActionPanelSelection(by: 1) }
+        if scenario == "ask" { launcher.beginAskingAI(); launcher.aiPrompt = "Find a dinner reservation for two tomorrow at seven" }
         if scenario == "filtered" { launcher.query = "notes" }
         if scenario == "empty" { launcher.query = "zzzz_no_matching_command_zzzz" }
         if scenario == "selection" {

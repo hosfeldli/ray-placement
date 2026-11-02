@@ -1210,11 +1210,12 @@ private struct WorkspaceModuleHost: View {
                 case .clipboard:
                     ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
                 case .terminal:
-                    DeveloperTerminalView(model: terminalModel, startPersonalShell: !LimaTestEnvironment.isEnabled)
+                    DeveloperTerminalView(model: terminalModel, startPersonalShell: !LimaTestEnvironment.isEnabled, aiChatModel: aiChatModel)
                 case .formatter:
                     FormatterWorkspaceView(model: formatterModel)
                 }
             }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: presentation.activeModule)
         }
     }
 

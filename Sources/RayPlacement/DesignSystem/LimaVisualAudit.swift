@@ -20,6 +20,81 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--workflow-experience-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for scale in [1.0, 1.4] {
+                        AppTypography.shared.scale = scale
+                        for width: CGFloat in [420, 800] {
+                            for phase in ["working", "blocked", "done"] {
+                                let plan = AITaskPlan(revision: 2, steps: [
+                                    AITaskPlanStep(id: "find", title: "Find the restaurant and reservation form", status: .completed, evidence: "Opened the verified reservation page."),
+                                    AITaskPlanStep(id: "choose", title: "Choose a date and check the available times", status: phase == "done" ? .completed : phase == "blocked" ? .blocked : .inProgress,
+                                        evidence: phase == "blocked" ? "Reservations open tomorrow. The remaining work is saved." : ""),
+                                    AITaskPlanStep(id: "confirm", title: "Verify the confirmation and report the outcome", status: phase == "done" ? .completed : .pending, evidence: "")])
+                                let card = VStack(alignment: .leading, spacing: 16) {
+                                    Text("Dinner for two").limaFont(.title3)
+                                    AITaskPlanView(plan: plan, isActive: phase == "working")
+                                    Spacer()
+                                }.padding(20).background(LimaTheme.surfacePrimary)
+                                    .environment(\.colorScheme, dark ? .dark : .light)
+                                let suffix = "\(Int(width))-\(Int(scale * 100))-\(dark ? "dark" : "light").png"
+                                if !(await render(card, size: NSSize(width: width, height: 440), appearance: appearance,
+                                    url: directory.appendingPathComponent("plan-\(phase)-" + suffix))) { failures += 1 }
+                                if phase == "working" {
+                                    let conversation = AIConversation(model: "gpt-5.6-terra", messages: [
+                                        AIChatMessage(role: .user, text: "Find and verify a dinner reservation for two."),
+                                        AIChatMessage(role: .assistant, text: "Checking available times.", taskPlan: plan)])
+                                    let model = AIChatViewModel(store: AIConversationStore(fixtures: [conversation]),
+                                        credentials: AIChatCredentialStore(configuration: .fixture),
+                                        nativeToolStore: LimaAIToolStore(fixtures: []), transport: FixtureAITransport.standard)
+                                    let terminal = VStack(spacing: 0) {
+                                        WorkspaceToolSwitcher(current: .terminal, conversationID: conversation.id, select: { _ in }, conversationVisible: .constant(true))
+                                        AITerminalActivityView(model: model, conversationID: conversation.id)
+                                        Spacer()
+                                    }.background(LimaTheme.surfacePrimary).environment(\.colorScheme, dark ? .dark : .light)
+                                    if !(await render(terminal, size: NSSize(width: width, height: 340), appearance: appearance,
+                                        url: directory.appendingPathComponent("terminal-work-log-" + suffix))) { failures += 1 }
+                                }
+                            }
+                            let messages = [
+                                MessagesMessage(guid: "one", conversationGUID: "fixture", senderAddress: "Alex", sentAt: Date(timeIntervalSince1970: 1700000000), text: "Dinner tomorrow? I found a place with a table for two.", contentStatus: "plain_text", isFromMe: false, service: "iMessage"),
+                                MessagesMessage(guid: "two", conversationGUID: "fixture", senderAddress: nil, sentAt: Date(timeIntervalSince1970: 1700000060), text: "Sounds good! Let's try seven. 🙂", contentStatus: "attributed_text", isFromMe: true, service: "iMessage")]
+                            let transcript = MessagesTranscriptView(messages: messages, selectedMessageGUID: "one")
+                                .padding(16).background(LimaTheme.surfacePrimary).environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(transcript, size: NSSize(width: width, height: 440), appearance: appearance,
+                                url: directory.appendingPathComponent("messages-\(Int(width))-\(Int(scale * 100))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("Workflow experience audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--search-resize-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for density in AppInterfaceDensity.allCases {
+                        SettingsStore.shared.interfaceDensity = density
+                        for scale in [1.0, 1.4] {
+                            AppTypography.shared.scale = scale
+                            for scenario in ["idle", "filtered", "ask"] {
+                                let size = LauncherPanelLayout.size(for: .root, density: density,
+                                    searchPhase: scenario == "filtered" ? .active : .idle)
+                                let view = LauncherSearchAuditFixtures.view(scenario: scenario)
+                                    .environment(\.colorScheme, dark ? .dark : .light)
+                                if !(await render(view, size: size, appearance: appearance,
+                                    url: directory.appendingPathComponent("search-\(scenario)-\(density.rawValue)-\(Int(scale * 100))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                            }
+                        }
+                    }
+                }
+                print("Search sizing audit finished: \(failures) failed renders")
+                exit(failures == 0 ? 0 : 1)
+            }
             if CommandLine.arguments.contains("--overhaul-only") {
                 var failures = 0
                 for dark in [false, true] {
@@ -37,7 +112,7 @@ enum LimaVisualAudit {
                         for scenario in ["idle", "filtered", "empty", "actions"] {
                             let view = LauncherSearchAuditFixtures.view(scenario: scenario)
                                 .environment(\.colorScheme, dark ? .dark : .light)
-                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? 158 : 580), appearance: appearance,
+                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? LauncherPanelLayout.idleSearchSize(density: SettingsStore.shared.interfaceDensity).height : 580), appearance: appearance,
                                 url: directory.appendingPathComponent("overhaul-search-\(scenario)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
                         }
                     }
@@ -110,7 +185,7 @@ enum LimaVisualAudit {
                         for scenario in ["idle", "filtered", "empty", "actions"] {
                             let view = LauncherSearchAuditFixtures.view(scenario: scenario)
                                 .environment(\.colorScheme, dark ? .dark : .light)
-                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? 158 : 580),
+                            if !(await render(view, size: NSSize(width: width, height: scenario == "idle" ? LauncherPanelLayout.idleSearchSize(density: SettingsStore.shared.interfaceDensity).height : 580),
                                 appearance: appearance, url: directory.appendingPathComponent("search-\(scenario)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
                         }
                     }

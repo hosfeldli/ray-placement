@@ -263,12 +263,12 @@ final class AIScheduledTaskRunner {
 
         Recheck current availability and any existing confirmation before committing. Follow current permissions and ask for required approvals. Do not repeat a completed booking or claim success without confirmation. Do not schedule another attempt unless my saved instructions explicitly request it.
         """
-        BrowserTaskApprovalState.shared.select(task.autoApproveNonpayment ? (task.independentBrowser ? .independent : .autoApproveNonpayment) : .askForActions)
+        BrowserTaskApprovalState.shared.overrideNextRun(task.autoApproveNonpayment ? (task.independentBrowser ? .independent : .autoApproveNonpayment) : .askForActions)
         model.send()
         if model.canEndTask, let runID = model.executionRun?.id {
             try? store.update(task.id, state: .running, detail: "Running in the original conversation", runID: runID)
         } else {
-            BrowserTaskApprovalState.shared.select(.askForActions)
+            BrowserTaskApprovalState.shared.overrideNextRun(nil)
             model.draft = ""
             try? store.update(task.id, state: .needsAttention,
                               detail: model.streamError ?? "The AI run could not start.")

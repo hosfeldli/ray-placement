@@ -59,7 +59,8 @@ enum BrowserCommitAuthorization {
     static func review(tabID: UUID, target: BrowserTarget,
                        action: BrowserInteractionAction,
                        page: BrowserPageSnapshot,
-                       autoApproveNonpayment: Bool = false) -> BrowserCommitReview? {
+                       autoApproveNonpayment: Bool = false,
+                       independent: Bool = false) -> BrowserCommitReview? {
         guard [.click, .submit, .toggle, .select, .pressKey].contains(action) else {
             return nil
         }
@@ -90,9 +91,10 @@ enum BrowserCommitAuthorization {
               ["button", "link", "genericClickable"].contains(target.role)))
         )
         guard isCommit else { return nil }
+        if independent && autoApproveNonpayment && !financialRisk { return nil }
         // Only explicitly nonfinancial form submissions may skip the normal
-        // final-action prompt. Unknown submits, bookings, payments, and account
-        // changes retain review even when the task has an auto-approval grant.
+        // final-action prompt in Approved Sites mode. Independent additionally
+        // covers nonfinancial commitments; financial commitments retain review.
         if autoApproveNonpayment && !financialRisk &&
            confidentlyOrdinarySubmission(target: target, action: action, page: page) {
             return nil

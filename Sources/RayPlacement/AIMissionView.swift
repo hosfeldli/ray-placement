@@ -3,11 +3,13 @@ import SwiftUI
 /// A public-facing summary of the request and recorded work, never a prediction
 /// of the model's internal reasoning or a percentage of an unknown plan.
 struct AIMissionSnapshot {
+    let plan: AITaskPlan?
     let goal: String
     let steps: [AIActivityStreamStep]
 
     init(messages: [AIChatMessage], isActive: Bool) {
         guard let userIndex = messages.lastIndex(where: { $0.role == .user }) else {
+            plan = nil
             goal = "Give Lima a goal to get started."
             steps = []
             return
@@ -15,6 +17,7 @@ struct AIMissionSnapshot {
         let request = messages[userIndex].text.trimmingCharacters(in: .whitespacesAndNewlines)
         goal = request.isEmpty ? "Work with the context you shared." : String(request.prefix(300))
         let response = messages.dropFirst(userIndex + 1).last(where: { $0.role == .assistant })
+        plan = response?.taskPlan
         steps = AIActivityStream.steps(from: response?.activities ?? [], isActive: isActive)
     }
 
@@ -32,25 +35,35 @@ struct AIMissionView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var expanded = false
 
+    private var activityTitle: String {
+        if let plan = mission.plan {
+            if plan.unfinished.isEmpty { return "Checklist complete" }
+            if !state.isActive { return state.title }
+            if let step = plan.steps.first(where: { $0.status == .inProgress }) { return step.title }
+        }
+        return mission.current?.title ?? state.title
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 9) {
                 mascot
                 Button { expanded.toggle() } label: {
                     HStack(spacing: 8) {
-                        Text(mission.current?.title ?? state.title)
+                        Text(activityTitle)
                             .limaFont(.system(size: 12, weight: .medium))
                             .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                         Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.caption2)
                     }.contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Activity: " + (mission.current?.title ?? state.title))
+                .accessibilityLabel("Activity: " + activityTitle)
             }
             if expanded || !compact {
                 Text(mission.goal).limaFont(.callout).foregroundStyle(LimaTheme.textSecondary)
                     .lineLimit(4).textSelection(.enabled)
-                ForEach(mission.steps.suffix(8)) { step in
+                if let plan = mission.plan { AITaskPlanView(plan: plan, isActive: state.isActive) }
+                ForEach(mission.plan == nil ? Array(mission.steps.suffix(8)) : []) { step in
                     HStack(spacing: 8) {
                         Image(systemName: step.symbol).frame(width: 16)
                             .foregroundStyle(step.status == .failed ? LimaColors.danger : LimaTheme.accentInk)
@@ -63,6 +76,7 @@ struct AIMissionView: View {
         .padding(.horizontal, 10).padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8))
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: expanded)
         .accessibilityIdentifier("workspace.ai.mission")
     }
 

@@ -4,8 +4,11 @@ import SQLite3
 /// SQLite is an undocumented Messages implementation detail. This adapter only
 /// issues fixed, parameterized, bounded SELECTs against a read-only snapshot.
 actor MessagesReadAdapter {
-    private let databaseURL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Messages/chat.db")
+    private let databaseURL: URL
+    init(databaseURL: URL? = nil) {
+        self.databaseURL = databaseURL ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Messages/chat.db")
+    }
 
     private struct Schema {
         let chat: Set<String>
@@ -64,11 +67,14 @@ actor MessagesReadAdapter {
             let groupCount = schema.chatHandleJoin.isSuperset(of: ["chat_id", "handle_id"])
                 ? "(SELECT COUNT(*) FROM chat_handle_join ch WHERE ch.chat_id = c.ROWID)"
                 : "0"
+            let people = schema.chatHandleJoin.isSuperset(of: ["chat_id", "handle_id"]) && schema.handle.contains("id")
+                ? "(SELECT GROUP_CONCAT(person, ', ') FROM (SELECT h.id AS person FROM chat_handle_join ch JOIN handle h ON h.ROWID = ch.handle_id WHERE ch.chat_id = c.ROWID LIMIT 3))"
+                : "NULL"
             let selected = selectedGUIDs?.sorted() ?? []
             let scope = selectedGUIDs == nil ? "" :
                 "WHERE c.guid IN (\(Array(repeating: "?", count: selected.count).joined(separator: ",")))"
             let sql = """
-                SELECT c.guid, \(title), \(service), MAX(m.date), \(groupCount)
+                SELECT c.guid, \(title), \(service), MAX(m.date), \(groupCount), \(people)
                 FROM chat c
                 JOIN chat_message_join cmj ON cmj.chat_id = c.ROWID
                 JOIN message m ON m.ROWID = cmj.message_id
@@ -78,10 +84,11 @@ actor MessagesReadAdapter {
                 """
             return try rows(db, sql, selected.map(Bind.text) + [.int(limit)]) { row in
                 guard let guid = Self.text(row, 0, maximum: 512), !guid.isEmpty else { return nil }
-                let name = Self.text(row, 1, maximum: 200)
+                let name = Self.text(row, 1, maximum: 200)?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let people = Self.text(row, 5, maximum: 1_024)
                 return MessagesConversation(
                     guid: guid,
-                    title: name?.isEmpty == false ? name! : "Conversation",
+                    title: name?.isEmpty == false ? name! : String((people ?? "Conversation").prefix(200)),
                     service: Self.text(row, 2, maximum: 80),
                     lastMessageAt: Self.date(row, 3),
                     isGroup: sqlite3_column_int(row, 4) > 1
@@ -222,19 +229,22 @@ actor MessagesReadAdapter {
                   .double(before.timeIntervalSinceReferenceDate)]
         var filter = ""
         if let query {
-            guard schema.message.contains("text") else { throw MessagesCapabilityError.schemaUnsupported }
-            // Escape LIKE metacharacters. Search remains scoped by chat and time.
+            guard schema.message.contains("text") || schema.message.contains("attributedBody") else {
+                throw MessagesCapabilityError.schemaUnsupported
+            }
             let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
                 .replacingOccurrences(of: "%", with: "\\%")
                 .replacingOccurrences(of: "_", with: "\\_")
-            filter = "AND m.text LIKE ? ESCAPE '\\'"
+            // Rich-body candidates must be decoded before matching. Keep reads
+            // scoped and bounded; never scan or expose unrelated conversations.
+            filter = "AND (\(body) LIKE ? ESCAPE '\\' OR ((\(body) IS NULL OR \(body) = '') AND \(rich) IS NOT NULL))"
             binds.append(.text("%\(escaped)%"))
         }
         if let messageGUID {
             filter += " AND m.guid = ?"
             binds.append(.text(messageGUID))
         }
-        binds.append(.int(limit))
+        binds.append(.int(query == nil ? limit : 1_000))
         let sql = """
             SELECT c.guid, m.guid, \(sender), m.date, \(body), \(rich), \(mine), \(service)
             FROM chat c
@@ -246,13 +256,13 @@ actor MessagesReadAdapter {
               \(filter)
             ORDER BY m.date DESC LIMIT ?
             """
-        return try rows(db, sql, binds) { row in
+        let messages: [MessagesMessage] = try rows(db, sql, binds) { row in
             guard let chat = Self.text(row, 0, maximum: 512),
                   let guid = Self.text(row, 1, maximum: 512),
                   let date = Self.date(row, 3) else { return nil }
-            let plain = Self.text(row, 4, maximum: 64 * 1_024)
+            let plain = Self.text(row, 4, maximum: 64 * 1_024).flatMap { $0.isEmpty ? nil : $0 }
             let attributed = Self.blob(row, 5, maximum: 256 * 1_024)
-            let decoded = plain ?? attributed.flatMap(Self.decodeAttributedBody)
+            let decoded = plain ?? attributed.flatMap(MessagesBodyDecoder.decode)
             let status: String
             if decoded != nil { status = plain != nil ? "plain_text" : "attributed_text" }
             else if attributed != nil { status = "unsupported_attributed_body" }
@@ -265,6 +275,10 @@ actor MessagesReadAdapter {
                 service: Self.text(row, 7, maximum: 80)
             )
         }
+        return Array(messages.filter { message in
+            guard let query else { return true }
+            return message.text?.localizedStandardContains(query) == true
+        }.prefix(limit))
     }
 
     private func withSnapshot<T>(_ body: (OpaquePointer, Schema) throws -> T) throws -> T {
@@ -359,16 +373,4 @@ actor MessagesReadAdapter {
         return Date(timeIntervalSinceReferenceDate: seconds)
     }
 
-    private static func decodeAttributedBody(_ data: Data) -> String? {
-        // Only a bounded secure keyed archive is accepted. Legacy typedstream
-        // and unknown serialized formats are reported as partial data, not run
-        // through a general-purpose object unarchiver.
-        guard data.count <= 256 * 1_024, data.starts(with: Data("bplist".utf8)),
-              let object = try? NSKeyedUnarchiver.unarchivedObject(
-                ofClasses: [NSAttributedString.self, NSString.self], from: data
-              ) else { return nil }
-        let value = (object as? NSAttributedString)?.string ?? (object as? String)
-        guard let value, value.utf8.count <= 64 * 1_024 else { return nil }
-        return value
-    }
 }

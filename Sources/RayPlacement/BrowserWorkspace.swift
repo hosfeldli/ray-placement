@@ -767,7 +767,9 @@ final class BrowserWorkspaceModel: ObservableObject {
         let main = try JSONDecoder().decode(BrowserPageSnapshot.self, from: data)
         var children: [BrowserPageSnapshot] = []
         let registered = tab.registeredFrames
-        for (frameID, frameInfo) in registered.prefix(12) {
+        // Match the registration capacity: ordinary ad/analytics frames must
+        // not consume a smaller read budget and block the entire page.
+        for (frameID, frameInfo) in registered.prefix(32) {
             try Task.checkCancellation()
             guard aiControlMode.canRead else { throw BrowserRuntimeError.controlDisabled }
             try requireAIAccess(id)
@@ -1672,18 +1674,19 @@ final class BrowserWorkspaceModel: ObservableObject {
         try requireFreshTarget(id)
         let target = try await runtime.resolveAny(tabID: id, targetID: targetID)
         if target.role == "link" {
-            if target.destination != nil {
+            if target.destination != nil && (disposition != .currentTab || !aiControlMode.canInteract) {
                 return .navigated(try await openLink(id, targetID: targetID, disposition: disposition,
                                                      commitApproved: commitApproved))
             }
-            guard target.relationship == "scripted" else { throw BrowserRuntimeError.invalidDestination }
+            guard target.destination != nil || target.relationship == "scripted" else { throw BrowserRuntimeError.invalidDestination }
         }
         guard disposition == .currentTab else { throw BrowserRuntimeError.noVerifiedDestination }
-        guard target.availableActions?.contains("activate") != false else {
+        let action: BrowserInteractionAction = target.availableActions?.contains("submit") == true ? .submit : .click
+        guard target.availableActions?.contains(action == .submit ? "submit" : "activate") != false else {
             throw BrowserRuntimeError.unsupportedAction
         }
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
-        return .interacted(try await interact(id, targetID: targetID, action: .click,
+        return .interacted(try await interact(id, targetID: targetID, action: action,
                                               commitApproved: commitApproved))
     }
 
@@ -1764,9 +1767,11 @@ final class BrowserWorkspaceModel: ObservableObject {
         let auto = approval.isAutoApproved(
             runID: approval.activeRunID, url: page.identity.url
         )
+        let effectiveAction: BrowserInteractionAction = action == .click && target.isSubmit == true ? .submit : action
         return BrowserCommitAuthorization.review(
-            tabID: tabID, target: target, action: action,
-            page: page, autoApproveNonpayment: auto
+            tabID: tabID, target: target, action: effectiveAction,
+            page: page, autoApproveNonpayment: auto,
+            independent: approval.activeMode == .independent
         )
     }
 
@@ -1778,14 +1783,26 @@ final class BrowserWorkspaceModel: ObservableObject {
         return actionCommitReview(tabID: id, target: target, action: action, page: page)
     }
 
-    func interact(_ id: UUID, targetID: String, action: BrowserInteractionAction,
+    func interact(_ id: UUID, targetID: String, action requestedAction: BrowserInteractionAction,
                   text: String? = nil, commitApproved: Bool = false) async throws -> BrowserActionOutcome {
         guard aiControlMode.canInteract else { throw BrowserRuntimeError.controlDisabled }
         let authorityRevision = authorityRevisions[id, default: 0]
         beginOperation(on: id)
         defer { endOperation(on: id) }
         try requireFreshTarget(id)
-        let (identity, target) = try await runtime.resolve(tabID: id, targetID: targetID, link: false)
+        let candidate = try await runtime.resolveAny(tabID: id, targetID: targetID)
+        let isLink = candidate.role == "link" && candidate.destination != nil
+        let (identity, target) = try await runtime.resolve(tabID: id, targetID: targetID, link: isLink)
+        let action: BrowserInteractionAction = requestedAction == .click && target.isSubmit == true ? .submit : requestedAction
+        if isLink && action == .click {
+            guard let destination = BrowserRuntime.safeLinkDestination(target) else { throw BrowserRuntimeError.invalidDestination }
+            let approval = BrowserTaskApprovalState.shared
+            if let runID = approval.activeRunID, approval.activeMode == .autoApproveNonpayment,
+               !approval.isWithinScope(runID: runID, url: destination.absoluteString) {
+                approval.noteBlockedSite(destination.absoluteString)
+                throw BrowserRuntimeError.taskScopeDenied
+            }
+        }
         if action == .type || action == .setValue {
             guard let text, text.utf8.count <= 4_000,
                   !text.unicodeScalars.contains(where: { $0.value == 0 }) else {
@@ -1854,6 +1871,13 @@ final class BrowserWorkspaceModel: ObservableObject {
         try Task.checkCancellation()
         let result: Any?
         do {
+            if target.frameID != "main", let root = before?.identity {
+                _ = try await webView.callAsyncJavaScript(
+                    BrowserSemanticScript.validateTransactionContext,
+                    arguments: ["documentID": root.documentID, "routeGeneration": root.routeGeneration,
+                                "userRevision": root.userRevision, "snapshotRevision": root.snapshotRevision],
+                    in: nil, contentWorld: .world(name: BrowserSemanticScript.world))
+            }
             result = try await webView.callAsyncJavaScript(
                 BrowserSemanticScript.action,
                 arguments: [

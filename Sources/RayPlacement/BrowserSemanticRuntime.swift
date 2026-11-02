@@ -548,6 +548,28 @@ enum BrowserSemanticScript {
         frameReports: new Map(), frameGeometry: new Map()
       };
       globalThis.__limaSemantic = state;
+      // Private signatures bind semantic IDs to their original DOM node and
+      // transaction context. Unrelated clocks, ads, and carousels may update
+      // without making an otherwise unchanged control unusable.
+      state.targetFingerprints = new Map();
+      state.semanticFinancialContext = () => JSON.stringify([
+        location.pathname, document.title,
+        (document.body?.innerText || "").split(/\n/).filter(line =>
+          /\$|€|£|¥|\b(pay(?:ment)?|purchase|charge|deposit|fee|billing|checkout|total|refund|cancel(?:lation)? policy|subscribe|subscription|transfer|credit|card hold)\b/i.test(line)
+        )
+      ]);
+      state.semanticTargetFingerprint = element => {
+        const form = element.form || element.closest("form,[role=form]") || element.getRootNode().host?.closest("form,[role=form]");
+        const attributes = Array.from(element.attributes).filter(a => a.name !== "style")
+          .map(a => [a.name, a.value]).sort((a,b) => a[0].localeCompare(b[0]));
+        return JSON.stringify([
+          element.localName, attributes, element.innerText || element.textContent || "",
+          element.disabled, element.readOnly, element.checked, element.selectedIndex,
+          state.secureKind?.(element) ? null : element.value,
+          form?.getAttribute("action"), form?.getAttribute("method"), form?.getAttribute("target"),
+          form?.getAttribute("aria-label"), form?.querySelector("legend,h1,h2,h3,[role=heading]")?.textContent
+        ]);
+      };
       try { window.webkit.messageHandlers.limaSemanticFrame.postMessage({frameID: state.frameID}); } catch {}
       // Frames report through parent windows because WKFrameInfo has no viewport
       // rectangle. Match the sender to an actual iframe rather than trusting
@@ -694,6 +716,8 @@ enum BrowserSemanticScript {
     }
     state.snapshotRevision++;
     state.targets.clear();
+    state.targetFingerprints.clear();
+    state.snapshotFinancialContext = state.semanticFinancialContext();
     state.visualHits.clear();
     const links = [], controls = [], headings = [], rowElements = [];
     const shadowTextParts = [];
@@ -841,6 +865,7 @@ enum BrowserSemanticScript {
       const rect = element.getBoundingClientRect();
       const id = "t_" + state.frameID + "_" + state.snapshotRevision + "_" + state.targets.size;
       state.targets.set(id, element);
+      state.targetFingerprints.set(id, state.semanticTargetFingerprint(element));
       const protectedTarget = sensitive(element);
       const confidential = secureKind(element);
       const host = element.getRootNode().host;
@@ -894,7 +919,7 @@ enum BrowserSemanticScript {
         relationship === "unverified" || relationship === "download" ? [] :
         submitControl ? ["focus", "submit"] :
         nativeSelect ? ["focus", "select"] :
-        nativeText ? ["focus", "type", "set_value", "clear"] :
+        nativeText ? (element.readOnly ? ["activate", "focus"] : ["activate", "focus", "type", "set_value", "clear"]) :
         ["checkbox", "radio", "switch"].includes(kind) ? ["activate", "focus", "toggle"] :
         ["button", "link", "tab", "menuitem", "option", "gridcell", "combobox", "genericClickable"].includes(kind)
           ? ["activate", "focus"] : [];
@@ -1454,16 +1479,28 @@ enum BrowserSemanticScript {
     });
     """#
 
+    static let validateTransactionContext = #"""
+    const state = globalThis.__limaSemantic;
+    if (!state || state.documentID !== documentID || state.routeGeneration !== routeGeneration ||
+        state.userRevision !== userRevision || state.snapshotRevision !== snapshotRevision ||
+        state.lastURL !== location.href || state.snapshotFinancialContext !== state.semanticFinancialContext()) {
+      throw new Error("stale_target");
+    }
+    return true;
+    """#
+
     static let action = #"""
     const state = globalThis.__limaSemantic;
     if (!state || state.documentID !== documentID ||
         state.routeGeneration !== routeGeneration ||
-        state.mutationRevision !== mutationRevision ||
         state.userRevision !== userRevision ||
         state.snapshotRevision !== snapshotRevision ||
         state.lastURL !== location.href) throw new Error("stale_target");
     const element = state.targets.get(targetID);
     if (!element || !element.isConnected) throw new Error("stale_target");
+    if (state.mutationRevision !== mutationRevision &&
+        (state.targetFingerprints.get(targetID) !== state.semanticTargetFingerprint(element) ||
+         state.snapshotFinancialContext !== state.semanticFinancialContext())) throw new Error("stale_target");
     const rect = element.getBoundingClientRect();
     const style = getComputedStyle(element);
     if (rect.width <= 0 || rect.height <= 0 || rect.bottom <= 0 ||
@@ -1499,7 +1536,9 @@ enum BrowserSemanticScript {
       "dialog[open],[role=dialog][aria-modal=true],[role=alertdialog]"
     )).filter(node => {
       const box = node.getBoundingClientRect();
-      return box.width > 0 && box.height > 0 && getComputedStyle(node).display !== "none";
+      const style = getComputedStyle(node);
+      return box.width > 0 && box.height > 0 && style.display !== "none" &&
+        style.visibility !== "hidden" && style.visibility !== "collapse";
     }).at(-1);
     const host = element.getRootNode().host;
     if (modal && !modal.contains(element) && !(host && modal.contains(host))) {
@@ -1557,10 +1596,36 @@ enum BrowserSemanticScript {
     };
     let expectedValue = null, expectedChecked = null, expectedOption = null;
     if (action === "click") {
-      if (element.closest("a[href]") || element.hasAttribute("href")) throw new Error("use_open_link");
+      const link = element.closest("a[href]") || (element.hasAttribute("href") ? element : null);
+      if (link) {
+        let destination;
+        try { destination = new URL(link.getAttribute("href"), document.baseURI); } catch { throw new Error("invalid_destination"); }
+        const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(destination.hostname.toLowerCase());
+        if ((destination.protocol !== "https:" && !(destination.protocol === "http:" && loopback)) ||
+            destination.username || destination.password || link.hasAttribute("download")) throw new Error("invalid_destination");
+      }
       if (form && submitButton) throw new Error("use_submit");
       if (!hint.trim()) throw new Error("unlabeled_target");
-      element.click();
+      // Combobox and calendar libraries often open on pointerdown, not click.
+      // Synthetic mouse events do not generate a second default click.
+      const x = Math.max(0, Math.min(innerWidth - 1, rect.x + rect.width / 2));
+      const y = Math.max(0, Math.min(innerHeight - 1, rect.y + rect.height / 2));
+      const pointer = (name, buttons) => {
+        const options = {bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y, button: 0, buttons};
+        element.dispatchEvent(name.startsWith("pointer") && globalThis.PointerEvent
+          ? new PointerEvent(name, {...options, pointerId: 1, pointerType: "mouse", isPrimary: true})
+          : new MouseEvent(name, options));
+      };
+      // Input targets are one-shot even when the page only updates unrelated
+      // data. An uncertain click must never be replayed from its old ID.
+      state.targets.delete(targetID);
+      state.targetFingerprints.delete(targetID);
+      pointer("pointerdown", 1);
+      pointer("mousedown", 1);
+      if (element.isConnected) element.focus({preventScroll: true});
+      pointer("pointerup", 0);
+      pointer("mouseup", 0);
+      if (element.isConnected) element.click();
     } else if (action === "focus") {
       element.focus();
     } else if (["type", "setValue", "clear"].includes(action)) {
@@ -1606,6 +1671,8 @@ enum BrowserSemanticScript {
         state.secureKind?.(node) && node.required && !String(node.value || "").trim()
       );
       if (missingProtected) throw new Error("sensitive_form");
+      state.targets.delete(targetID);
+      state.targetFingerprints.delete(targetID);
       form.requestSubmit(element);
     } else throw new Error("unsupported_action");
     if (["type", "setValue", "clear", "select", "toggle"].includes(action)) {
@@ -1628,7 +1695,6 @@ enum BrowserSemanticScript {
     const state = globalThis.__limaSemantic;
     if (!state || state.documentID !== documentID ||
         state.routeGeneration !== routeGeneration ||
-        state.mutationRevision !== mutationRevision ||
         state.userRevision !== userRevision ||
         state.snapshotRevision !== snapshotRevision ||
         state.lastURL !== location.href) throw new Error("stale_page");

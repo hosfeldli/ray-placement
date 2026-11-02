@@ -75,6 +75,7 @@ struct LauncherSearchWorkspace: View {
     let createNote: () -> Void
     let dismiss: () -> Void
     @FocusState private var searchFocused: Bool
+    @State private var launchError: String?
     @State private var hoveredID: String?
     @State private var showingDetails = false
     @State private var showingInspector = false
@@ -86,7 +87,8 @@ struct LauncherSearchWorkspace: View {
     @Environment(\.limaTestReduceTransparency) private var testReduceTransparency
 
     private var opaque: Bool { reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency) }
-    private var idle: Bool { model.searchPhase == .idle }
+    private var idle: Bool { model.isAskingAI || model.searchPhase == .idle }
+    private var input: Binding<String> { model.isAskingAI ? $model.aiPrompt : $model.query }
     private var selection: LauncherItem? {
         guard let item = model.selectedItem, model.isActionable(item) else { return nil }
         return item
@@ -129,7 +131,7 @@ struct LauncherSearchWorkspace: View {
                 }
                 .padding(.horizontal, wide ? 16 : 12)
                 .padding(.top, 0)
-                .padding(.bottom, idle ? 1 : (wide ? 16 : 12))
+                .padding(.bottom, idle ? 12 : (wide ? 16 : 12))
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 if !idle && !model.isAudioOutputPickerPresented {
                     footer(wide: wide, canShowInspector: canShowInspector)
@@ -140,6 +142,8 @@ struct LauncherSearchWorkspace: View {
             .overlay(RoundedRectangle(cornerRadius: LimaRadius.launcherWindow).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.5))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.isAskingAI)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: showingInspector)
         .onAppear { searchFocused = true }
         .onChange(of: model.focusGeneration) { _ in searchFocused = true }
         .sheet(isPresented: $showingDetails) {
@@ -167,18 +171,19 @@ struct LauncherSearchWorkspace: View {
         HStack(spacing: 12) {
             HStack(spacing: 5) {
                 keycap("↩")
-                Text("Search or run")
+                Text(model.isAskingAI ? "Start new chat" : "Search or run")
             }
             Rectangle().fill(LimaTheme.borderSubtle).frame(width: 1, height: 13)
             HStack(spacing: 5) {
                 keycap("esc")
-                Text("Close")
+                Text(model.isAskingAI ? "Back to search" : "Close")
             }
         }
         .limaFont(.caption)
         .foregroundStyle(LimaTheme.textSecondary)
         .padding(.horizontal, 12)
         .frame(height: 27)
+        .fixedSize(horizontal: false, vertical: true)
         .background(LimaTheme.surfaceSecondary.opacity(opaque ? 1 : 0.9),
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(LimaTheme.borderSubtle, lineWidth: 0.6))
@@ -188,33 +193,39 @@ struct LauncherSearchWorkspace: View {
     private func searchField(wide: Bool) -> some View {
         VStack(spacing: 7) {
             HStack(spacing: 12) {
-                Image(systemName: "magnifyingglass")
+                Image(systemName: model.isAskingAI ? "sparkles" : "magnifyingglass")
                     .font(.system(size: 21, weight: .medium))
                     .foregroundStyle(idle ? LimaTheme.textPrimary : LimaTheme.accentInk)
                     .frame(width: 23)
                     .accessibilityHidden(true)
                 ZStack(alignment: .leading) {
-                    if model.query.isEmpty {
-                        Text(wide ? "Search, ask, or run a command…" : "Search or ask Lima…")
+                    if input.wrappedValue.isEmpty {
+                        Text(model.isAskingAI ? "What would you like Lima to do?" : (wide ? "Search, ask, or run a command…" : "Search or ask Lima…"))
                             .foregroundStyle(LimaTheme.textSecondary)
                             .lineLimit(1)
                             .allowsHitTesting(false)
                             .accessibilityHidden(true)
                     }
-                    TextField("", text: $model.query)
+                    TextField("", text: input)
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                         .onSubmit(submitSearch)
-                        .accessibilityLabel("Search commands, apps, and local content")
+                        .accessibilityLabel(model.isAskingAI ? "Ask Lima in a new chat" : "Search commands, apps, and local content")
                         .accessibilityIdentifier("lima-search-input")
                 }
                 .limaFont(.system(size: 17))
+                if !idle {
+                    Button { model.beginAskingAI() } label: { Image(systemName: "sparkles") }
+                        .buttonStyle(.plain).foregroundStyle(LimaTheme.accentInk)
+                        .help("Ask Lima with this text in a new chat")
+                        .accessibilityLabel("Ask Lima with this search")
+                }
                 if !idle && model.isSearching {
                     ProgressView().controlSize(.small)
                 }
-                if !model.query.isEmpty {
+                if !input.wrappedValue.isEmpty {
                     Button {
-                        model.query = ""
+                        input.wrappedValue = ""
                         searchFocused = true
                     } label: {
                         Image(systemName: "xmark.circle.fill")
@@ -240,13 +251,24 @@ struct LauncherSearchWorkspace: View {
         .padding(.vertical, 0)
         .background(LimaTheme.surfaceSecondary,
                     in: RoundedRectangle(cornerRadius: idle ? 20 : LimaRadius.searchField, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: idle ? 12 : LimaRadius.searchField)
+        .overlay(RoundedRectangle(cornerRadius: idle ? 20 : LimaRadius.searchField)
             .strokeBorder(searchFocused ? LimaTheme.accentInk.opacity(0.35) : LimaTheme.borderSubtle, lineWidth: 0.7))
     }
 
     private func quickActions(wide: Bool) -> some View {
         HStack(spacing: 7) {
-            quickAction("Assistant", symbol: "sparkles", compact: !wide) { openWorkspace(.ai) }
+            if model.isAskingAI {
+                quickAction("Search", symbol: "arrow.left", compact: !wide) { model.endAskingAI(); launchError = nil }
+                Text(launchError ?? "A fresh chat, ready to work")
+                    .limaFont(.caption).foregroundStyle(launchError == nil ? LimaTheme.textSecondary : LimaTheme.warning)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Button(action: submitSearch) { Image(systemName: "arrow.up.circle.fill").font(.system(size: 22)) }
+                    .buttonStyle(.plain).foregroundStyle(LimaTheme.accentInk)
+                    .disabled(model.aiPrompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .accessibilityLabel("Start new AI chat")
+            } else {
+            quickAction("Ask Lima", symbol: "sparkles", compact: !wide) { model.beginAskingAI() }
             quickAction("Notes", symbol: "note.text", compact: !wide) { openWorkspace(.notes) }
             quickAction("Recordings", symbol: "waveform", compact: !wide) { openWorkspace(.dictation) }
             Menu {
@@ -293,13 +315,22 @@ struct LauncherSearchWorkspace: View {
             .fixedSize()
             .tint(LimaTheme.textSecondary)
             .accessibilityLabel("Workspace options and search scope")
+            }
         }
         .foregroundStyle(LimaTheme.textSecondary)
         .frame(height: 36)
     }
 
     private func submitSearch() {
-        if idle { openWorkspace(.ai) }
+        if model.isAskingAI {
+            guard aiChatModel.startNewChat(prompt: model.aiPrompt) else {
+                launchError = aiChatModel.canEndTask ? "The current chat is still working. Try again when it finishes." : "Type a request first."
+                return
+            }
+            model.aiPrompt = ""
+            model.endAskingAI()
+            openWorkspace(.ai)
+        } else if idle { model.beginAskingAI() }
         else { model.executeSelected() }
     }
 

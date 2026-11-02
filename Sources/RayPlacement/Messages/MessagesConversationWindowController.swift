@@ -61,7 +61,7 @@ private struct MessagesConversationView: View {
                 Spacer()
                 Button("Refresh") { Task { await load() } }
                     .disabled(loading)
-                Button("Add to Context Shelf") {
+                Button("Use as context") {
                     Task { await addToContext() }
                 }
                     .disabled(loading)
@@ -81,39 +81,7 @@ private struct MessagesConversationView: View {
                     .foregroundStyle(.orange)
                     .textSelection(.enabled)
             }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    ForEach(messages) { message in
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(message.isFromMe
-                                     ? "You" : (message.senderAddress ?? "Unknown sender"))
-                                    .fontWeight(.semibold)
-                                Spacer()
-                                Text(message.sentAt.formatted(date: .abbreviated,
-                                                              time: .shortened))
-                                    .limaFont(.caption)
-                                    .foregroundStyle(LimaTheme.textSecondary)
-                            }
-                            Text(message.text ?? "Content unavailable (\(message.contentStatus))")
-                                .textSelection(.enabled)
-                                .foregroundStyle(message.text == nil
-                                                 ? LimaTheme.textSecondary : Color.primary)
-                            if message.guid == selectedMessageGUID {
-                                Text("Selected search result")
-                                    .limaFont(.caption)
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                        }
-                        .padding(10)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(message.guid == selectedMessageGUID
-                                    ? Color.accentColor.opacity(0.12)
-                                    : Color.primary.opacity(0.04))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-            }
+            MessagesTranscriptView(messages: messages, selectedMessageGUID: selectedMessageGUID)
             Text("Local read-only view · recent selected scope only. Messages may contain partial or unsupported content. Sending requires a separate exact-message review.")
                 .limaFont(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)

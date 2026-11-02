@@ -522,6 +522,7 @@ struct AIAgentActivity: Codable, Hashable, Identifiable, Sendable {
         case "read_file": return "Read a file"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
+        case "update_task_plan": return "Update task checklist"
         case "lima_capabilities": return "Check tool capabilities"
         case "browser_read": return "Read the website"
         case "browser_screenshot": return "Look at the page"
@@ -2505,6 +2506,7 @@ extension LimaAIToolDefinition {
         case "read_file": return "Read a file"
         case "list_extensions": return "Browse extensions"
         case "get_lima_status": return "Lima status"
+        case "update_task_plan": return "Update task checklist"
         case "lima_capabilities": return "Tool capabilities"
         case "terminal_execute": return "Run a shell script"
         case "terminal_start": return "Start AI Workspace"
@@ -2676,6 +2678,12 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(AIContextTools.ids)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: migrationKey)
+        }
+        let planMigrationKey = "lima.ai.task-plan-v1"
+        if !defaults.bool(forKey: planMigrationKey) {
+            enabledToolIDs.formUnion(AIContextTools.planIDs)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: planMigrationKey)
         }
         // Preselect action schemas once. Outside Full Control, category policy
         // remains a separate gate: browser, file, and terminal start Off, while

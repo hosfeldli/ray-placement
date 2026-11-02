@@ -159,7 +159,7 @@ enum AIActivityStream {
     }
 
     static func terminalState(from activities: [AIAgentActivity], steps: [AIActivityStreamStep]) -> AIActivityTerminalState {
-        if steps.contains(where: { $0.status == .failed }) { return .needsAttention }
+        if steps.contains(where: { $0.status == .failed }) || activities.contains(where: { $0.title == "Checklist unfinished" }) { return .needsAttention }
         if steps.contains(where: { $0.status == .interrupted }) || activities.contains(where: {
             $0.kind == .completed && ($0.title == "Stopped" || $0.title == "Task ended")
         }) { return .stopped }

@@ -48,6 +48,8 @@ a completed Mail-sending release.
 
 The November 1, 2026 instruction to publish the implemented overhaul as the next minor release authorizes the incremental `v4.1.0` described in its tag-matched notes. Existing live acceptance gaps remain disclosed and open; automated build, test, signing, integrity, and distribution checks are not waived.
 
+The November 2, 2026 instruction to publish the completed changes authorizes the incremental `v4.1.1` described in its tag-matched notes. Remaining live acceptance gates stay open and disclosed. All automated CI, signing, integrity, and public-asset verification checks remain mandatory.
+
 ## Prerequisites
 
 Run these commands from the app repository:

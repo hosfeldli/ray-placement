@@ -26,6 +26,10 @@ SWIFT_TEST = ["swift", "test", "--disable-sandbox", "--scratch-path", str(SCRATC
 # peers. The OCR/Search fixture shares a SQLite index with screenshot-history
 # tests, so keep its database writes out of their concurrent batch.
 ISOLATED_TESTS = {
+    "searchStartsAFreshRunningChatWithoutChangingExistingMessages",
+    "unfinishedChecklistActuallyContinuesAndChecksOffBeforeFinalizing",
+    "unfinishedChecklistRemindersAreBoundedAndNeverAutoCompleteTasks",
+    "independentReservationFlowClicksLinksPointerWidgetsFramesAndSubmitButtons",
     "completedAnswerMountsInHostedChatWithoutScrollGesture",
     "completedLongMarkdownAnswerShowsItsTailWithoutScrollGesture",
     "embeddedBrowserSelectedTabMountsItsOwnPageOnRepeatedSwitches",

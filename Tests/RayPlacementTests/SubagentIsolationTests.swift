@@ -292,5 +292,5 @@ private struct MultiRoundChildTransport: AIChatTransport {
         #expect(!store.isEnabled(group))
         #expect(group.toolIDs.isDisjoint(with: store.enabledToolIDs))
     }
-    #expect(store.enabledToolIDs == AIContextTools.capabilityIDs)
+    #expect(store.enabledToolIDs == AIContextTools.capabilityIDs.union(AIContextTools.planIDs))
 }

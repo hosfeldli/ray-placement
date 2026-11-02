@@ -33,12 +33,11 @@ enum BrowserApprovalMode: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// A non-persisted grant. Arming applies to one next AI run, never to every
-/// conversation. The run's exact origins are established at start; the user
-/// can explicitly add a visible or blocked destination in the Browser toolbar.
+/// Independent access belongs to the selected conversation. Each execution still
+/// gets a fresh run identity; grants never authorize another chat or stale run.
 @MainActor
 final class BrowserTaskApprovalState: ObservableObject {
-    static let shared = BrowserTaskApprovalState()
+    static let shared = BrowserTaskApprovalState(defaults: LimaTestEnvironment.userDefaults)
 
     @Published private(set) var armedMode: BrowserApprovalMode = .askForActions
     @Published private(set) var activeMode: BrowserApprovalMode = .askForActions
@@ -46,20 +45,66 @@ final class BrowserTaskApprovalState: ObservableObject {
     @Published private(set) var authorizedSites: Set<String> = []
     @Published private(set) var requestedSite: String?
 
+    @Published private(set) var selectedConversationID: UUID?
+    private(set) var activeConversationID: UUID?
+    private var independentConversations: Set<UUID>
+    private let defaults: UserDefaults?
+    private var nextRunOverride: BrowserApprovalMode?
+    private static let persistenceKey = "browserIndependentConversations"
+
+    init(defaults: UserDefaults? = nil) {
+        self.defaults = defaults
+        independentConversations = Set((defaults?.stringArray(forKey: Self.persistenceKey) ?? []).compactMap(UUID.init(uuidString:)))
+    }
+
     var displayMode: BrowserApprovalMode {
-        activeRunID == nil ? armedMode : activeMode
+        if activeRunID != nil { return activeMode }
+        if let nextRunOverride { return nextRunOverride }
+        if let selectedConversationID, independentConversations.contains(selectedConversationID) { return .independent }
+        return armedMode
+    }
+
+    func selectConversation(_ id: UUID?) {
+        if selectedConversationID != nil && selectedConversationID != id { armedMode = .askForActions }
+        selectedConversationID = id
+    }
+
+    func forgetConversation(_ id: UUID) {
+        independentConversations.remove(id)
+        persist()
+        if selectedConversationID == id { selectedConversationID = nil }
+    }
+
+    /// A saved task's explicit approval choice overrides the chat for one run,
+    /// without granting or revoking permission on the conversation itself.
+    func overrideNextRun(_ mode: BrowserApprovalMode?) { nextRunOverride = mode }
+
+    private func persist() {
+        defaults?.set(independentConversations.map(\.uuidString).sorted(), forKey: Self.persistenceKey)
     }
 
     func select(_ mode: BrowserApprovalMode) {
         if activeRunID == nil { armedMode = mode }
         else { activeMode = mode }
+        if let id = activeConversationID ?? selectedConversationID {
+            if mode == .independent { independentConversations.insert(id) }
+            else { independentConversations.remove(id) }
+            persist()
+        }
         if mode != .autoApproveNonpayment { requestedSite = nil }
     }
 
-    func begin(runID: UUID, instruction: String, initialURL: String?) {
-        // A new task cannot inherit the previous task's authority.
+    func begin(runID: UUID, instruction: String, initialURL: String?, conversationID: UUID? = nil) {
         activeRunID = runID
-        activeMode = armedMode
+        activeConversationID = conversationID
+        if let conversationID { selectedConversationID = conversationID }
+        let inherited = conversationID.map { independentConversations.contains($0) } ?? false
+        activeMode = nextRunOverride ?? (inherited ? .independent : armedMode)
+        if nextRunOverride == nil, activeMode == .independent, let conversationID {
+            independentConversations.insert(conversationID)
+            persist()
+        }
+        nextRunOverride = nil
         armedMode = .askForActions
         var sites = Self.explicitSites(in: instruction)
         // An explicit destination should not silently authorize an unrelated
@@ -74,6 +119,7 @@ final class BrowserTaskApprovalState: ObservableObject {
     func end(runID: UUID) {
         guard activeRunID == runID else { return }
         activeRunID = nil
+        activeConversationID = nil
         activeMode = .askForActions
         authorizedSites = []
         requestedSite = nil
