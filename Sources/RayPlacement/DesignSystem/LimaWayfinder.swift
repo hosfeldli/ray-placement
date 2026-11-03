@@ -177,17 +177,29 @@ struct LimaWayfinderRail: View {
                     .padding(.bottom, 12)
                     .keyboardShortcut("k", modifiers: .command)
             }
+            if labeled {
+                Text("WORKSPACE").font(.system(size: 10, weight: .semibold)).tracking(0.7)
+                    .foregroundStyle(LimaTheme.textTertiary).padding(.horizontal, 10).padding(.bottom, 4)
+            }
             ForEach(LimaWorkspaceModule.workspaceDestinations, id: \.self) { module in
-                row(module.title, symbol: module.symbol, selected: destination == module) { select(module) }
+                row(module.title, symbol: module.symbol, selected: current == module) { select(module) }
                     .accessibilityIdentifier(LimaQAIdentifiers.Workspace.module(module))
                     .keyboardShortcut(KeyEquivalent(Character(layout.configuration.shortcutKey(for: module).lowercased())), modifiers: [.command, .option])
             }
+            Divider().padding(.vertical, 8)
+            if labeled {
+                Text("TOOLS").font(.system(size: 10, weight: .semibold)).tracking(0.7)
+                    .foregroundStyle(LimaTheme.textTertiary).padding(.horizontal, 10).padding(.bottom, 4)
+            }
+            row("Browser", symbol: "globe", selected: current == .browser) { select(.browser) }
+            row("Terminal", symbol: "terminal", selected: current == .terminal) { select(.terminal) }
+            if let openCaptures { row("Captures", symbol: "viewfinder", action: openCaptures) }
             if labeled, !recentItems.isEmpty {
-                Text("RECENT").limaFont(.system(size: 10, weight: .semibold))
+                Text("RECENT WORK").limaFont(.system(size: 10, weight: .semibold))
                     .tracking(0.7).foregroundStyle(LimaTheme.textTertiary)
-                    .padding(.top, 24).padding(.horizontal, 10).padding(.bottom, 4)
+                    .padding(.top, 14).padding(.horizontal, 10).padding(.bottom, 4)
                 ScrollView {
-                    VStack(spacing: 2) {
+                    LazyVStack(spacing: 2) {
                         ForEach(recentItems.prefix(8)) { item in
                             Button(action: item.open) {
                                 Text(item.title.isEmpty ? "Untitled" : item.title)

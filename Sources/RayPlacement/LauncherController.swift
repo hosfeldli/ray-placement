@@ -311,7 +311,11 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
     func showSettings() {
         hide()
-        settingsWindow.present()
+        // Finish the Search action and its focus/layout callbacks before hosting Settings.
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            self?.settingsWindow.present()
+        }
     }
 
     func showDeveloperGrammarSettings() {
@@ -361,6 +365,8 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
 
     func showExtensionStore() {
+        SettingsStore.shared.requestedSettingsSection = .commands
+        ExtensionLibraryStore.shared.requestedArea = .discover
         showSettings()
     }
 
@@ -3062,7 +3068,7 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
             NSWorkspace.shared.open(ApplicationPaths.extensions)
 
         case .openExtensionStore:
-            showSettings()
+            showExtensionStore()
 
         case .reloadExtensions:
             viewModel.reloadExtensions()
@@ -3085,6 +3091,10 @@ final class LauncherController: NSObject, NSWindowDelegate, LauncherViewModelDel
 
         case .openQuickNote:
             showQuickNote()
+
+        case .startNoteDictation:
+            hide()
+            notesWindow.presentAndStartDictation()
 
         case .toggleNoteDictation:
             showNotesAndToggleDictation()

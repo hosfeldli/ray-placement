@@ -1057,8 +1057,8 @@ enum ExtensionToolHostAdapterRegistry {
         return adapters[id]
     }
 
-    static func approvedBindings() -> [ExtensionAIToolBinding] {
-        ExtensionLoader().contributionCatalog().flatMap { entry in
+    static func approvedBindings(fresh: Bool = false) -> [ExtensionAIToolBinding] {
+        ExtensionLoader().contributionCatalog(fresh: fresh).flatMap { entry in
             entry.tools.compactMap { tool in
                 guard let schemaData = try? JSONEncoder().encode(tool.inputSchema),
                       schemaData.count <= 32_768,
@@ -1078,7 +1078,7 @@ enum ExtensionToolHostAdapterRegistry {
     }
 
     static func execute(_ binding: ExtensionAIToolBinding, arguments: JSONValue) async throws -> JSONValue {
-        guard let current = approvedBindings().first(where: { $0 == binding }),
+        guard let current = approvedBindings(fresh: true).first(where: { $0 == binding }),
               let adapter = adapter(for: current.tool.hostAdapterID),
               current.tool.isReadOnly,
               current.tool.execution == .hostReadOnly,
@@ -1770,6 +1770,7 @@ enum LimaAIToolRegistry {
             + AIWorkspaceReadTools.definitions
             + AIProjectTools.definitions
             + AIUserQuestionTools.definitions
+            + [AIWorkspaceReportTool.definition]
             + AIProjectFileTools.definitions
             + LimaSurfaceAITools.definitions
             + LimaDataAITools.definitions
@@ -1806,6 +1807,7 @@ enum LimaAIToolRegistry {
             .union(AIWorkspaceReadTools.ids)
             .union(AIProjectTools.readIDs)
             .union(AIUserQuestionTools.ids)
+            .union([AIWorkspaceReportTool.id])
             .union(AIProjectFileTools.readIDs)
             .union(LimaSurfaceAITools.ids)
             .union(LimaDataAITools.ids)
@@ -2815,6 +2817,12 @@ final class LimaAIToolStore: ObservableObject {
             enabledToolIDs.formUnion(AIUserQuestionTools.ids)
             defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
             defaults.set(true, forKey: projectDiscoveryMigrationKey)
+        }
+        let reportsMigrationKey = "lima.ai.workspace-reports-v1"
+        if !defaults.bool(forKey: reportsMigrationKey) {
+            enabledToolIDs.insert(AIWorkspaceReportTool.id)
+            defaults.set(Array(enabledToolIDs).sorted(), forKey: defaultsKey)
+            defaults.set(true, forKey: reportsMigrationKey)
         }
         let terminalSessionsMigrationKey = "lima.ai.terminal-sessions-v1"
         if !defaults.bool(forKey: terminalSessionsMigrationKey) {

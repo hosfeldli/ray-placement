@@ -5,7 +5,8 @@ enum LauncherSearchPhase: Equatable, Sendable {
     case active
 
     init(query: String) {
-        self = UniversalSearchCoordinator.parse(query).query.isEmpty ? .idle : .active
+        let parsed = UniversalSearchCoordinator.parse(query)
+        self = parsed.query.isEmpty && parsed.prefix != "note" ? .idle : .active
     }
 }
 

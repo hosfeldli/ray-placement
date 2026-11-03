@@ -144,6 +144,13 @@ final class CommandManager: ObservableObject {
         NotificationCenter.default.post(name: .rayPlacementCommandProfilesChanged, object: nil)
     }
 
+    func migrateExtensionIdentifiers(_ commands: [LoadedExtensionCommand]) {
+        let updated = profiles.map { ExtensionDeveloperKit.migrateProfile($0, commands: commands) }
+        let favorites = ExtensionDeveloperKit.migrateProfile(CommandProfile(name: "Favorites", favoriteCommandIDs: favoriteIDs), commands: commands).favoriteCommandIDs
+        guard updated != profiles || favorites != favoriteIDs else { return }
+        profiles = updated; favoriteIDs = favorites; save(); notifyChanged()
+    }
+
     func validateShortcuts(_ commands: [LoadedExtensionCommand]) {
         let settings = SettingsStore.shared
         let builtIns: [(id: String, title: String, value: String)] = [

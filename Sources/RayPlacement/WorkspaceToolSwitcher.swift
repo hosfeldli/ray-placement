@@ -7,6 +7,10 @@ struct WorkspaceToolSwitcher: View {
     let conversationID: UUID?
     let select: (LimaWorkspaceModule) -> Void
     @Binding var conversationVisible: Bool
+    var parallelToolsVisible = false
+    var toggleParallelTools: (() -> Void)? = nil
+    @ObservedObject private var reports = AIWorkspaceReportStore.shared
+    @ObservedObject private var browser = BrowserWorkspaceModel.shared
     @ObservedObject private var terminal = AIWorkspaceTerminalCoordinator.shared
     @Environment(\.limaWorkspaceSizeClass) private var sizeClass
     @Environment(\.limaAssistantSplitAvailable) private var canSplit
@@ -50,6 +54,17 @@ struct WorkspaceToolSwitcher: View {
                 .help("Switch to \(module.title) · keeps your task running")
             }
             Spacer(minLength: 0)
+            workMenu
+            if current != .ai, let toggleParallelTools {
+                Button(action: toggleParallelTools) {
+                    Image(systemName: parallelToolsVisible ? "rectangle.split.2x1.fill" : "rectangle.split.2x1")
+                        .foregroundStyle(parallelToolsVisible ? LimaTheme.accentInk : LimaTheme.textSecondary)
+                        .frame(width: 28, height: 28)
+                }.buttonStyle(.plain)
+                    .help(parallelToolsVisible ? "Show one tool" : "Show Browser and Terminal together")
+                    .accessibilityLabel("Show Browser and Terminal together")
+                    .accessibilityValue(parallelToolsVisible ? "On" : "Off")
+            }
             if current != .ai && canSplit {
                 Button { conversationVisible.toggle() } label: {
                     Image(systemName: conversationVisible ? "sidebar.left" : "bubble.left")
@@ -66,4 +81,32 @@ struct WorkspaceToolSwitcher: View {
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.22), value: current)
         .accessibilityIdentifier("workspace.tool-switcher")
     }
+    private var workMenu: some View {
+            Menu {
+                Section("Browser pages") {
+                    ForEach(browser.tabs) { tab in
+                        Button(tab.title.isEmpty ? tab.urlString : tab.title) {
+                            try? browser.focus(tab.id); select(.browser)
+                        }
+                    }
+                }
+                Section("Terminals") {
+                    ForEach(terminal.sessions(for: conversationID)) { session in
+                        Button(session.title + (session.state == .running ? " · running" : "")) {
+                            _ = terminal.revealAIForegroundSession(session.id); select(.terminal)
+                        }
+                    }
+                }
+                Section("Temporary reports") {
+                    ForEach(reports.reports(for: conversationID)) { report in
+                        Button(report.title) { reports.open(report) }
+                    }
+                }
+            } label: {
+                Label("Work", systemImage: "rectangle.3.group")
+                    .limaFont(.caption)
+            }.menuStyle(.borderlessButton).fixedSize()
+                .help("Open the pages, terminals and reports involved in this task")
+    }
+
 }

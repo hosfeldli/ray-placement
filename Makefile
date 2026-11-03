@@ -31,3 +31,8 @@ visual-lab: build
 
 clean:
 	$(SWIFT_ENV) swift package --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)" clean
+
+.PHONY: extension-kit-test
+extension-kit-test:
+	$(SWIFT_ENV) swift build --disable-sandbox --scratch-path "$(SCRATCH_DIRECTORY)" --product lima-extension
+	python3 scripts/test_extension_kit.py "$(SCRATCH_DIRECTORY)/debug/lima-extension"

@@ -1,22 +1,42 @@
 # Lima Extensions
 
-Lima extensions add commands and interactive tools directly to Lima's central launcher. Inline presentation is the default: selecting an extension command should normally transform the launcher into the extension's picker, form, generator, or output surface without opening another window.
+Extensions are packages containing a `manifest.json` and optional local scripts. They add commands to Search and can contribute supported AI tools, skills and agents. New packages use **schema v3**; existing v1 and v2 manifests continue to load.
 
-Extensions should request a separate workspace only when the task genuinely requires sustained independent interaction. Background presentation is for actions that need no interactive surface.
+## Start in the app
 
-Extensions can participate in Lima's search, direct command arguments, Context Shelf, contextual selected-text actions, and universal host actions such as Copy, Paste, Add to Shelf, and Send to Note.
+Open **Settings → Extensions & Commands → Extension Library**. The same library is used in Workspace.
 
-# Build a Lima extension
+- **My Extensions** shows every package, including broken or duplicate packages. Select one to see Overview, Commands & Shortcuts, or Diagnostics.
+- **Add → Install a Folder** copies a validated package. Review its capabilities and choose **Approve & Enable** before using it.
+- **Add → Link a Development Folder** keeps your source in place. Lima reloads manifest edits while it is running. A changed manifest requires a new review. Unlinking never deletes your source.
+- **Build** creates a working website shortcut, script command, form with script, or read-only AI text tool. It writes the manifest, executable where needed, and a quick-start README.
+- **Discover** browses the existing verified catalog. A download is not permission to execute: use My Extensions to review it.
 
-Lima extensions add searchable commands and compact local macOS workflows without rebuilding the app. An extension is a folder containing a UTF-8 `manifest.json`; it may also contain reviewed executables and local assets.
+The package switch controls its commands **and** AI contributions. Individual command switches, favorites and shortcuts remain yours; a package update or disable/enable cycle does not reset them. Diagnostics identify the affected field and give a repair step. Built-in packages are restored rather than deleted. Removed user packages are moved to the hidden `.removed` folder under the installed extension directory; command preferences remain intact.
 
-Installed extensions live at:
+## Start from a terminal
 
-```text
-~/Library/Application Support/Lima/Extensions/
+From the Lima source repository:
+
+```sh
+swift run lima-extension init ./my-tools --id local.example.my-tools --name "My Tools" --template form
+swift run lima-extension check ./my-tools
+swift run lima-extension run ./my-tools run message="Hello from Lima"
+swift run lima-extension pack ./my-tools ./my-tools.zip
 ```
 
-Open that folder from Lima, add or edit an extension, then run **Reload Extensions**. Commands appear in global search immediately. Every command has its own enable switch and optional configurable shortcut in **Settings → Extensions**.
+Templates: `link`, `script`, `form`, and `ai-tool`. Use `check --json` for machine-readable diagnostics. `check` never runs package code. `run` explicitly runs the chosen script/form with separate arguments; test native actions and AI tools in Lima. ZIP packaging excludes hidden files, rejects links/special files, preserves executable permissions, and refuses to overwrite an existing archive. Packages are limited to 2,000 entries and 50 MB before compression.
+
+To avoid rebuilding the CLI on every call, run `swift build --product lima-extension`, then use `.build/debug/lima-extension`.
+
+## Four concepts
+
+1. **Package:** stable ID, version, commands, capabilities, and optional AI contributions.
+2. **Command:** a searchable action. Use a native action first; add a script or form when needed.
+3. **Capability:** declared host access that the user reviews. Scripts run as the user's macOS account; declarations are **not an OS sandbox**.
+4. **AI contribution:** a tool, skill or agent configuration. A tool marked `metadataOnly` cannot execute. `hostReadOnly` tools need a supported typed host adapter, package approval, and the user's AI Tool Access choice. The `ai-tool` starter is a working text-transform adapter. Declaring a tool does not turn arbitrary extension code into an AI executor.
+
+Installed packages live in `~/Library/Application Support/Lima/Extensions/`. Stable package, command and field IDs preserve settings across updates. Linked source folders can live elsewhere. Global command-profile IDs use `extension.<package-id>.<command-id>`; shortcut storage retains its older keys for compatibility.
 
 ## Design principles
 
@@ -33,7 +53,7 @@ A manifest may identify a built-in pack:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "com.example.window-tools",
   "name": "Window Tools",
   "version": "1.0.0",
@@ -53,7 +73,7 @@ Create `my-tools/manifest.json`:
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "id": "local.example.my-tools",
   "name": "My Tools",
   "description": "Small shortcuts for a local workflow",

@@ -189,11 +189,13 @@ struct DeveloperTerminalView: View {
     @State private var selectedSessionID: UUID?
     private let startPersonalShell: Bool
     let aiChatModel: AIChatViewModel?
+    let openChat: (() -> Void)?
 
-    init(model: DeveloperTerminalModel, startPersonalShell: Bool = true, aiChatModel: AIChatViewModel? = nil) {
+    init(model: DeveloperTerminalModel, startPersonalShell: Bool = true, aiChatModel: AIChatViewModel? = nil, openChat: (() -> Void)? = nil) {
         self.model = model
         self.startPersonalShell = startPersonalShell
         self.aiChatModel = aiChatModel
+        self.openChat = openChat
         _selectedSessionID = State(initialValue: AIWorkspaceTerminalCoordinator.shared.foregroundSessionID)
     }
 
@@ -282,6 +284,10 @@ struct DeveloperTerminalView: View {
             .frame(height: LimaDesign.toolbarHeight)
             .background(LimaTheme.surfaceSecondary)
             GlassHairline()
+            if let aiChatModel {
+                AITerminalComposer(model: aiChatModel, openChat: openChat)
+                GlassHairline()
+            }
             if let session = selectedAISession {
                 if let aiChatModel, let chatID = session.conversationID {
                     AITerminalActivityView(model: aiChatModel, conversationID: chatID)

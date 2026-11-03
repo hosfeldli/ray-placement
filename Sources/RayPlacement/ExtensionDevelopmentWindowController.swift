@@ -28,7 +28,7 @@ final class ExtensionDevelopmentWindowController: NSWindowController {
     }
 }
 
-struct ExtensionDevelopmentView: View {
+struct ExtensionReferenceView: View {
     private let manuals = ExtensionGuide.manuals
     @State private var selectedManualID = ExtensionGuide.manuals.first?.id ?? "builder"
     @State private var selectedSectionID: String?
@@ -76,9 +76,9 @@ struct ExtensionDevelopmentView: View {
             LimaToolbarTitle(
                 symbol: "puzzlepiece.extension.fill",
                 title: "Extension Lab",
-                subtitle: "API 2 · local manuals"
+                subtitle: "Schema v3 · local manuals"
             )
-            Text("API 2")
+            Text("Schema v3")
                 .limaFont(.system(size: 9, weight: .bold, design: .rounded))
                 .tracking(0.7)
                 .foregroundStyle(SettingsStore.shared.accentTheme.readableTertiary)
@@ -258,9 +258,10 @@ private enum ExtensionGuide {
 
     static let starter = """
     {
-      "schemaVersion": 1,
+      "schemaVersion": 3,
       "id": "local.example.my-tools",
       "name": "My Tools",
+      "capabilities": ["filesystem"],
       "commands": [
         {
           "id": "open-projects",

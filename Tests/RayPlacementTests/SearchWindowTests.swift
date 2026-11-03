@@ -17,7 +17,7 @@ import Testing
         let expanded = LauncherPanelLayout.resizedFrame(original, to: active, anchorTop: true)
         #expect(expanded.minX == original.minX)
         #expect(expanded.maxY == original.maxY)
-        #expect(LauncherSearchPhase(query: "note: ") == .idle)
+        #expect(LauncherSearchPhase(query: "note: ") == .active)
         #expect(LauncherSearchPhase(query: "notes") == .active)
         let canShowInspector = LauncherSearchDesign.canShowInspector(at: active.width)
         #expect(canShowInspector == (active.width >= 960))
@@ -108,12 +108,12 @@ import Testing
     #expect(model.searchPhase == .active)
     model.query = "no"
     model.query = "note: "
-    #expect(model.searchPhase == .idle)
+    #expect(model.searchPhase == .active)
     model.query = "note: n"
     model.query = "note: no"
     model.query = ""
     #expect(model.searchPhase == .idle)
-    #expect(phases == [.active, .idle, .active, .idle])
+    #expect(phases == [.active, .idle])
 }
 
 @Test @MainActor func searchFieldKeepsNativeControlAcrossPhaseChanges() {
@@ -496,8 +496,7 @@ private final class SearchExecutionRecorder: LauncherViewModelDelegate {
     #expect(recorder.executedIDs.isEmpty)
     #expect(model.actionPanelItem == nil)
     model.query = "note: "
-    #expect(model.results.isEmpty)
-    #expect(!model.isSearching)
+    #expect(model.searchPhase == .active)
     model.query = "notes"
     await model.waitForLocalSearchForTesting()
     #expect(model.results.contains { $0.id == "builtin.notes" })

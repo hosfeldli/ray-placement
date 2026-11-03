@@ -1351,7 +1351,8 @@ import Vision
     #expect(prepared)
     #expect(model.selectedConversationID != original.id)
     #expect(model.selectedConversation?.messages == [previousAnswer])
-    #expect(model.selectedConversation?.lastResponseID == "resp_previous")
+    // Failed-run retries rebuild from durable messages rather than a potentially unfinished exchange.
+    #expect(model.selectedConversation?.lastResponseID == nil)
     #expect(model.draft == "Original request")
     #expect(model.attachments == [attachment])
     #expect(store.conversation(id: original.id)?.messages == [previousAnswer, userMessage, assistantMessage])

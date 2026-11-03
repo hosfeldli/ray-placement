@@ -6,6 +6,7 @@ enum AIUserQuestionKind: String, Codable, Sendable {
     case multipleChoice = "multiple_choice"
     case freeResponse = "free_response"
     case confirmation
+    case form
 }
 
 enum AIUserQuestionPurpose: String, Codable, Sendable {
@@ -17,6 +18,33 @@ struct AIUserQuestionOption: Codable, Equatable, Identifiable, Sendable {
     let id: String
     let label: String
     let detail: String?
+}
+
+struct AIUserFormField: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let label: String
+    let type: String
+    let required: Bool
+    let placeholder: String?
+    let options: [String]?
+    let value: String?
+
+    func accepts(_ raw: String) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.isEmpty { return !required }
+        guard raw.count <= 1000 else { return false }
+        switch type {
+        case "email": return text.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil
+        case "number": return Double(text).map { $0.isFinite } ?? false
+        case "select": return options?.contains(text) == true
+        case "date":
+            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = "yyyy-MM-dd"; formatter.isLenient = false
+            return formatter.date(from: text).map { formatter.string(from: $0) == text } ?? false
+        case "time": return text.range(of: #"^([01]\d|2[0-3]):[0-5]\d$"#, options: .regularExpression) != nil
+        default: return true
+        }
+    }
 }
 
 struct AIUserQuestion: Codable, Equatable, Identifiable, Sendable {
@@ -36,6 +64,7 @@ struct AIUserQuestion: Codable, Equatable, Identifiable, Sendable {
     let multiline: Bool
     let createdAt: Date
     /// Secure handoff metadata contains no values and is never model-provided copy.
+    var fields: [AIUserFormField]? = nil
     var browserTabID: UUID? = nil
     var browserPageHost: String? = nil
     var browserDocumentID: String? = nil
@@ -48,6 +77,7 @@ struct AIUserQuestionResponse: Equatable, Sendable {
     let selectedOptionIDs: [String]
     let text: String?
     var secureFields: [BrowserSecureFieldStatus]? = nil
+    var fieldValues: [String: String]? = nil
     var postHandoffNavigation = false
 
     func isValid(for question: AIUserQuestion) -> Bool {
@@ -73,6 +103,11 @@ struct AIUserQuestionResponse: Equatable, Sendable {
         case .freeResponse:
             return selectedOptionIDs.isEmpty
                 && !(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .form:
+            guard let fields = question.fields, let fieldValues,
+                  Set(fieldValues.keys).isSubset(of: Set(fields.map(\.id))),
+                  text == nil, selectedOptionIDs.isEmpty else { return false }
+            return fields.allSatisfy { $0.accepts(fieldValues[$0.id] ?? "") }
         case .confirmation:
             return text == nil &&
                 (selectedOptionIDs == ["confirm"] || selectedOptionIDs == ["cancel"])
@@ -87,6 +122,7 @@ struct AIUserQuestionResponse: Equatable, Sendable {
             "free_response": text as Any? ?? NSNull(),
             "confirmed": selectedOptionIDs == ["confirm"]
         ]
+        if let fieldValues { payload["field_values"] = fieldValues }
         if let secureFields {
             payload["secure_fields"] = secureFields.map { field in
                 ["kind": field.kind, "label": field.label,
@@ -109,11 +145,11 @@ enum AIUserQuestionTools {
     static let definitions: [LimaAIToolDefinition] = [
         LimaAIToolDefinition(
             id: "request_user_input", name: "request_user_input",
-            description: "Pause this same AI run for a structured user answer, then continue with the answer as this tool's output. Ask only when a material decision cannot be inferred from the request, Project, files, or other available context. Supports single_choice, multiple_choice, free_response, and confirmation.",
+            description: "Pause this same AI run for a structured user answer, then continue with the answer as this tool's output. Ask only when a material decision cannot be inferred from the request, Project, files, or other available context. Supports single_choice, multiple_choice, free_response, confirmation, and form. Use form with separately labeled fields for reservations, contact details, dates and other multi-field requests. Prefill known values; request only missing data. Never collect passwords or payment secrets.",
             parameters: [
                 "type": "object",
                 "properties": [
-                    "kind": ["type": "string", "enum": ["single_choice", "multiple_choice", "free_response", "confirmation"]],
+                    "kind": ["type": "string", "enum": ["single_choice", "multiple_choice", "free_response", "confirmation", "form"]],
                     "purpose": ["type": "string", "enum": ["project_resolution", "secure_browser_input"]],
                     "browser_tab_id": ["type": "string"],
                     "title": ["type": "string"],
@@ -129,7 +165,15 @@ enum AIUserQuestionTools {
                     "minimum_selections": ["type": "integer", "minimum": 1, "maximum": 12],
                     "confirm_label": ["type": "string"],
                     "cancel_label": ["type": "string"],
-                    "multiline": ["type": "boolean"]
+                    "multiline": ["type": "boolean"],
+                    "fields": ["type": "array", "maxItems": 12, "items": [
+                        "type": "object", "properties": [
+                            "id": ["type": "string"], "label": ["type": "string"],
+                            "type": ["type": "string", "enum": ["text", "email", "number", "date", "time", "select", "multiline"]],
+                            "required": ["type": "boolean"], "placeholder": ["type": "string"],
+                            "options": ["type": "array", "items": ["type": "string"]], "value": ["type": "string"]
+                        ], "required": ["id", "label", "type", "required"], "additionalProperties": false
+                    ]]
                 ],
                 "required": ["kind", "question"],
                 "additionalProperties": false
@@ -149,7 +193,7 @@ enum AIUserQuestionTools {
               question.count <= 1_000 else { return nil }
         let allowed: Set<String> = ["kind", "purpose", "title", "question", "options", "allow_other",
                                     "placeholder", "minimum_selections", "confirm_label",
-                                    "cancel_label", "multiline", "browser_tab_id"]
+                                    "cancel_label", "multiline", "browser_tab_id", "fields"]
         guard Set(body.keys).isSubset(of: allowed) else { return nil }
         func value(_ key: String) -> Any? {
             guard let raw = body[key], !(raw is NSNull) else { return nil }
@@ -195,13 +239,33 @@ enum AIUserQuestionTools {
             }
         }
         guard Set(options.map(\.id)).count == options.count else { return nil }
+        var fields: [AIUserFormField] = []
+        if let rawFields = value("fields") {
+            guard kind == .form, let array = rawFields as? [[String: Any]],
+                  (1...12).contains(array.count),
+                  let data = try? JSONSerialization.data(withJSONObject: array),
+                  let decoded = try? JSONDecoder().decode([AIUserFormField].self, from: data) else { return nil }
+            for field in decoded {
+                guard !field.id.isEmpty, field.id.count <= 64,
+                      !field.label.isEmpty, field.label.count <= 160,
+                      ["text", "email", "number", "date", "time", "select", "multiline"].contains(field.type),
+                      field.placeholder.map({ $0.count <= 160 }) ?? true,
+                      field.value.map({ $0.count <= 1000 && ($0.isEmpty || field.accepts($0)) }) ?? true,
+                      field.options.map({ $0.count <= 20 && Set($0).count == $0.count && $0.allSatisfy { !$0.isEmpty && $0.count <= 160 } }) ?? true,
+                      field.type != "select" || field.options?.isEmpty == false else { return nil }
+            }
+            guard Set(decoded.map(\.id)).count == decoded.count else { return nil }
+            fields = decoded
+        }
+        guard kind != .form || !fields.isEmpty else { return nil }
         // Every general form shape, including fixed choices and confirmation,
         // must reject prompts for credentials or payment secrets. Only the
         // secure Browser handoff may mention them; it never collects values.
         if purpose != .secureBrowserInput {
-            let prompt = ([question, title ?? "", placeholder ?? "", confirmLabel ?? "", cancelLabel ?? ""]
-                          + options.flatMap { [$0.id, $0.label, $0.detail ?? ""] })
-                .joined(separator: " ")
+            var promptParts: [String] = [question, title ?? "", placeholder ?? "", confirmLabel ?? "", cancelLabel ?? ""]
+            promptParts += options.flatMap { [$0.id, $0.label, $0.detail ?? ""] }
+            for field in fields { promptParts += [field.id, field.label, field.placeholder ?? "", field.value ?? ""] + (field.options ?? []) }
+            let prompt = promptParts.joined(separator: " ")
             let protectedPattern = #"\b(password|passcode|one[- ]?time[- ]?code|otp|verification[- ]?code|security[- ]?code|card[- ]?number|credit[- ]?card|debit[- ]?card|cvv|cvc|bank[- ]?account|routing[- ]?number|social[- ]?security|ssn|api[- ]?key|access[- ]?token|private[- ]?key|recovery[- ]?code|seed[- ]?phrase)\b"#
             if prompt.range(of: protectedPattern, options: [.regularExpression, .caseInsensitive]) != nil {
                 return nil
@@ -210,7 +274,7 @@ enum AIUserQuestionTools {
         switch kind {
         case .singleChoice, .multipleChoice:
             guard options.count >= 2, minimum <= options.count + (allowsOther ? 1 : 0) else { return nil }
-        case .freeResponse, .confirmation:
+        case .freeResponse, .confirmation, .form:
             guard options.isEmpty, !allowsOther else { return nil }
         }
         guard purpose != .projectResolution || (kind == .singleChoice
@@ -235,6 +299,7 @@ enum AIUserQuestionTools {
             confirmLabel: confirmLabel, cancelLabel: cancelLabel,
             multiline: multiline, createdAt: Date()
         )
+        parsedQuestion.fields = fields.isEmpty ? nil : fields
         parsedQuestion.browserTabID = browserTabID
         return parsedQuestion
     }
@@ -250,6 +315,7 @@ struct AIUserQuestionView: View {
     @State private var selected: Set<String> = []
     @State private var otherText = ""
     @State private var responseText = ""
+    @State private var fieldValues: [String: String] = [:]
 
     private var selectedIDs: [String] {
         question.options.map(\.id).filter { selected.contains($0) }
@@ -261,8 +327,17 @@ struct AIUserQuestionView: View {
             questionID: question.id,
             selectedOptionIDs: selectedIDs,
             text: question.kind == .freeResponse ? responseText
-                : selected.contains("other") ? otherText : nil
+                : selected.contains("other") ? otherText : nil,
+            fieldValues: question.kind == .form ? resolvedFieldValues : nil
         )
+    }
+
+    private var resolvedFieldValues: [String: String] {
+        Dictionary(uniqueKeysWithValues: (question.fields ?? []).map { ($0.id, fieldValues[$0.id] ?? $0.value ?? "") })
+    }
+
+    private func fieldBinding(_ field: AIUserFormField) -> Binding<String> {
+        Binding(get: { fieldValues[field.id] ?? field.value ?? "" }, set: { fieldValues[field.id] = $0 })
     }
 
     var body: some View {
@@ -329,6 +404,33 @@ struct AIUserQuestionView: View {
                     }
                 }
                 Button("Continue") { answer(currentResponse) }
+                    .disabled(!currentResponse.isValid(for: question))
+            case .form:
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        ForEach(question.fields ?? []) { field in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(field.label + (field.required ? " *" : ""))
+                                    .font(.callout.weight(.medium))
+                                if field.type == "select" {
+                                    Picker(field.label, selection: fieldBinding(field)) {
+                                        Text("Choose…").tag("")
+                                        ForEach(field.options ?? [], id: \.self) { Text($0).tag($0) }
+                                    }.labelsHidden()
+                                } else if field.type == "multiline" {
+                                    TextEditor(text: fieldBinding(field)).frame(height: 70)
+                                } else {
+                                    TextField(field.placeholder ?? (field.type == "date" ? "YYYY-MM-DD" : field.type == "time" ? "HH:mm (24-hour)" : field.label), text: fieldBinding(field))
+                                        .textFieldStyle(.roundedBorder)
+                                }
+                            }
+                        }
+                    }.padding(2)
+                }.frame(maxHeight: 240)
+                Text("Only these answers are shared with this chat. Submitting this form does not make a booking.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button(question.confirmLabel ?? "Submit details") { answer(currentResponse) }
+                    .buttonStyle(.borderedProminent)
                     .disabled(!currentResponse.isValid(for: question))
             case .freeResponse:
                 if question.multiline {

@@ -27,6 +27,7 @@ private typealias NotesSection = LimaWorkspaceModule
 private final class WorkspacePresentationModel: ObservableObject {
     @Published fileprivate(set) var mode: NotesWindowMode
     @Published var sidebarVisible = true
+    @Published var parallelToolsVisible = false
     @Published var aiSidecarVisible: Bool {
         didSet { LimaTestEnvironment.userDefaults.set(aiSidecarVisible, forKey: "workspaceAISidecarVisible") }
     }
@@ -503,6 +504,13 @@ final class NotesWindowController: NSObject, NSWindowDelegate {
         presentation.focusDictationEditor = true
     }
 
+    func presentAndStartDictation() {
+        selectModule(.dictation)
+        present()
+        guard [.idle, .completed, .failed].contains(dictation.phase) else { return }
+        dictation.performPrimaryAction()
+    }
+
     func presentMostRecentAndToggleDictation() {
         selectModule(.dictation)
         present()
@@ -820,7 +828,8 @@ private struct WorkspaceShellView: View {
                 if split {
                     AIChatWorkspaceView(model: content.aiChatModel, isEmbedded: true,
                         onDictation: { content.dictation.performPrimaryAction(target: .aiPrompt) },
-                        contextNotes: notes, onOpenNote: { id in notes.selectNote(id); content.selectModule(.notes) })
+                        contextNotes: notes, onOpenNote: { id in notes.selectNote(id); content.selectModule(.notes) },
+                        showsTerminalMonitor: presentation.activeModule != .terminal && !presentation.parallelToolsVisible)
                         .frame(width: chrome.sidecarWidth)
                         .environment(\.limaWorkspaceSizeClass, .compact)
                     Divider()
@@ -832,6 +841,9 @@ private struct WorkspaceShellView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
             }
             .background(LimaTheme.surfacePrimary)
+            .background {
+                if [.ai, .browser, .terminal].contains(presentation.activeModule) { AIWorkspaceVisibilityMarker() }
+            }
             .environment(\.limaWorkspaceSizeClass, sizeClass)
         }
         .frame(minWidth: presentation.mode.isDocked ? NotesWindowLayout.minimumDockWidth : 720, minHeight: 500)
@@ -922,7 +934,9 @@ private struct WorkspaceModuleHost: View {
             if [.ai, .browser, .terminal].contains(presentation.activeModule) {
                 WorkspaceToolSwitcher(current: presentation.activeModule,
                     conversationID: aiChatModel.selectedConversationID, select: selectModule,
-                    conversationVisible: $presentation.aiSidecarVisible)
+                    conversationVisible: $presentation.aiSidecarVisible,
+                    parallelToolsVisible: presentation.parallelToolsVisible,
+                    toggleParallelTools: { presentation.parallelToolsVisible.toggle() })
             }
             workspaceModule(sizeClass: sizeClass)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1160,8 +1174,41 @@ private struct WorkspaceModuleHost: View {
                             selectModule(.notes)
                         }
                     )
-                case .browser:
-                    BrowserWorkspaceView(
+                case .browser, .terminal:
+                    if presentation.parallelToolsVisible {
+                        parallelToolPanes(width: proxy.size.width)
+                    } else if presentation.activeModule == .browser {
+                        browserPane
+                    } else {
+                        terminalPane
+                    }
+                case .grammar:
+                    GrammarWorkspaceView()
+                        .background(Color.clear)
+                case .dictation:
+                    dictationSection
+                case .workflows:
+                    Color.clear.onAppear { selectModule(.home) }
+                case .extensions:
+                    ExtensionsSettingsView(
+                        viewModel: launcherViewModel,
+                        storeModel: extensionStoreModel,
+                        reloadExtensions: reloadExtensions,
+                        localOnly: true
+                    )
+                    .background(Color.clear)
+                case .clipboard:
+                    ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
+                case .formatter:
+                    FormatterWorkspaceView(model: formatterModel)
+                }
+            }
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: presentation.activeModule)
+        }
+    }
+
+    private var browserPane: some View {
+BrowserWorkspaceView(
                         onCreateNote: { handoff in
                             let id = try CaptureNoteService.save(
                                 handoff.noteMarkdown,
@@ -1192,30 +1239,24 @@ private struct WorkspaceModuleHost: View {
                         },
                         onOpenShelf: { selectModule(.context) }
                     )
-                case .grammar:
-                    GrammarWorkspaceView()
-                        .background(Color.clear)
-                case .dictation:
-                    dictationSection
-                case .workflows:
-                    Color.clear.onAppear { selectModule(.home) }
-                case .extensions:
-                    ExtensionsSettingsView(
-                        viewModel: launcherViewModel,
-                        storeModel: extensionStoreModel,
-                        reloadExtensions: reloadExtensions,
-                        localOnly: true
-                    )
-                    .background(Color.clear)
-                case .clipboard:
-                    ClipboardWorkspaceView(service: ClipboardHistoryService.shared, openSettings: openSettings)
-                case .terminal:
-                    DeveloperTerminalView(model: terminalModel, startPersonalShell: !LimaTestEnvironment.isEnabled, aiChatModel: aiChatModel)
-                case .formatter:
-                    FormatterWorkspaceView(model: formatterModel)
-                }
+    }
+
+    private var terminalPane: some View {
+        DeveloperTerminalView(model: terminalModel, startPersonalShell: !LimaTestEnvironment.isEnabled,
+            aiChatModel: aiChatModel, openChat: { selectModule(.ai) })
+    }
+
+    @ViewBuilder private func parallelToolPanes(width: CGFloat) -> some View {
+        if width >= 900 {
+            HSplitView {
+                browserPane.frame(minWidth: 300)
+                terminalPane.frame(minWidth: 300)
             }
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: presentation.activeModule)
+        } else {
+            VSplitView {
+                browserPane.frame(minHeight: 180)
+                terminalPane.frame(minHeight: 180)
+            }
         }
     }
 
@@ -2887,7 +2928,7 @@ enum LimaMockupWorkspaceFixtures {
         ])
     }
 
-    static func workspace(_ module: LimaWorkspaceModule, compact: Bool = false) -> some View {
+    static func workspace(_ module: LimaWorkspaceModule, compact: Bool = false, parallelTools: Bool = false) -> some View {
         precondition(LimaTestEnvironment.isEnabled)
         let notes = Self.notes()
         let dictationConversations = DictationConversationStore()
@@ -2898,6 +2939,7 @@ enum LimaMockupWorkspaceFixtures {
         }
         let presentation = WorkspacePresentationModel(mode: compact ? .dockedLeft : .workspace)
         presentation.activeModule = module
+        presentation.parallelToolsVisible = parallelTools
         let ai = AIChatVisualFixtures.model(for: .conversation)
         ai.prepareNoteDraft(notes.notes[0], prompt: "")
         let launcher = LauncherViewModel(clipboard: .shared, scanApplications: false)

@@ -20,6 +20,79 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--extension-library-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for scale in [1.0, 1.4] {
+                        AppTypography.shared.scale = scale
+                        for width: CGFloat in [520, 1080] {
+                            let suffix = "\(Int(width))-\(Int(scale * 100))-\(dark ? "dark" : "light").png"
+                            for broken in [false, true] {
+                                let view = ExtensionLibraryVisualFixtures.view(diagnostics: broken)
+                                    .environment(\.colorScheme, dark ? .dark : .light)
+                                if !(await render(view, size: NSSize(width: width, height: 780), appearance: appearance,
+                                                  url: directory.appendingPathComponent((broken ? "diagnostics-" : "library-") + suffix))) { failures += 1 }
+                            }
+                            let builder = ExtensionBuilderView(reload: {}).environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(builder, size: NSSize(width: width, height: 780), appearance: appearance,
+                                              url: directory.appendingPathComponent("builder-" + suffix))) { failures += 1 }
+                        }
+                    }
+                }
+                print("Extension library audit finished: \(failures) render failures")
+                exit(failures == 0 ? 0 : 1)
+            }
+            if CommandLine.arguments.contains("--workspace-repair-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for scale in [1.0, 1.4] {
+                        AppTypography.shared.scale = scale
+                        for width: CGFloat in [420, 800] {
+                            let raw = #"{"kind":"form","title":"Dinner reservation","question":"Confirm the remaining details before I check availability.","fields":[{"id":"date","label":"Reservation date","type":"date","required":true,"value":"2026-11-02"},{"id":"time","label":"Preferred time","type":"time","required":true,"value":"19:00"},{"id":"guests","label":"Guests","type":"number","required":true,"value":"2"},{"id":"email","label":"Confirmation email","type":"email","required":true},{"id":"seating","label":"Seating preference","type":"select","required":false,"options":["Indoor","Outdoor"]}]}"#
+                            let question = AIUserQuestionTools.parse(raw, runID: UUID())!
+                            let form = AIUserQuestionView(question: question, secureInputChecking: false,
+                                secureInputError: nil, showBrowserTab: {}, answer: { _ in })
+                                .padding(18).frame(maxHeight: .infinity, alignment: .top)
+                                .background(LimaTheme.surfacePrimary).environment(\.colorScheme, dark ? .dark : .light)
+                            let suffix = "\(Int(width))-\(Int(scale * 100))-\(dark ? "dark" : "light").png"
+                            if !(await render(form, size: NSSize(width: width, height: 580), appearance: appearance,
+                                              url: directory.appendingPathComponent("reservation-form-" + suffix))) { failures += 1 }
+                            let model = AIChatVisualFixtures.model(for: .terminalRunning)
+                            let terminal = VStack(spacing: 0) {
+                                WorkspaceToolSwitcher(current: .terminal, conversationID: model.selectedConversationID,
+                                    select: { _ in }, conversationVisible: .constant(true))
+                                AITerminalComposer(model: model, openChat: {})
+                                Spacer()
+                            }.background(LimaTheme.surfacePrimary).environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(terminal, size: NSSize(width: width, height: 340), appearance: appearance,
+                                              url: directory.appendingPathComponent("terminal-composer-" + suffix))) { failures += 1 }
+                        }
+                        let rail = LimaWayfinderRail(current: .terminal, previous: .ai, sizeClass: .expanded,
+                            select: { _ in }, openSettings: {}, isDocked: false, openInWindow: {},
+                            openSearch: {}, openCaptures: {}, recentItems: [])
+                            .environment(\.colorScheme, dark ? .dark : .light)
+                        if !(await render(rail, size: NSSize(width: 200, height: 720), appearance: appearance,
+                                          url: directory.appendingPathComponent("rail-\(Int(scale * 100))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                    }
+                    for width: CGFloat in [800, 1800] {
+                        AppTypography.shared.scale = 1
+                        let parallel = LimaMockupWorkspaceFixtures.workspace(.browser, parallelTools: true)
+                            .environment(\.colorScheme, dark ? .dark : .light)
+                        if !(await render(parallel, size: NSSize(width: width, height: 900), appearance: appearance,
+                                          url: directory.appendingPathComponent("parallel-tools-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                    }
+                    AppTypography.shared.scale = 1
+                    let settings = LimaMockupWorkspaceFixtures.settings().environment(\.colorScheme, dark ? .dark : .light)
+                    if !(await render(settings, size: NSSize(width: 1060, height: 780), appearance: appearance,
+                                      url: directory.appendingPathComponent("capture-settings-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                }
+                print("Workspace repair visual audit finished: \(failures) render failures")
+                exit(failures == 0 ? 0 : 1)
+            }
             if CommandLine.arguments.contains("--workflow-experience-only") {
                 var failures = 0
                 for dark in [false, true] {
@@ -81,9 +154,9 @@ enum LimaVisualAudit {
                         SettingsStore.shared.interfaceDensity = density
                         for scale in [1.0, 1.4] {
                             AppTypography.shared.scale = scale
-                            for scenario in ["idle", "filtered", "ask"] {
+                            for scenario in ["idle", "filtered", "notes", "ask"] {
                                 let size = LauncherPanelLayout.size(for: .root, density: density,
-                                    searchPhase: scenario == "filtered" ? .active : .idle)
+                                    searchPhase: ["filtered", "notes"].contains(scenario) ? .active : .idle)
                                 let view = LauncherSearchAuditFixtures.view(scenario: scenario)
                                     .environment(\.colorScheme, dark ? .dark : .light)
                                 if !(await render(view, size: size, appearance: appearance,

@@ -150,18 +150,47 @@ struct CommandCenterView: View {
     @ObservedObject private var nativeToolStore = LimaAIToolStore.shared
     @ObservedObject private var browser = BrowserWorkspaceModel.shared
     @State private var shortcutLookup = ""
-    @State private var selectedArea: Area = .catalog
+    @State private var selectedArea: Area = .extensions
     @State private var selectedFilter: CommandCenterFilter = .all
     @State private var query = ""
     @State private var selectedID: String?
 
     private enum Area: String, CaseIterable, Identifiable {
-        case catalog = "Commands"
-        case extensions = "Extensions"
+        case catalog = "All Commands"
+        case extensions = "Extension Library"
         var id: String { rawValue }
     }
 
-    private var entries: [CommandCenterEntry] {
+    @State private var cachedEntries: [CommandCenterEntry] = []
+    @State private var cachedVisibleEntries: [CommandCenterEntry] = []
+    @State private var filterCounts: [CommandCenterFilter: Int] = [:]
+    @State private var refreshTask: Task<Void, Never>?
+
+    private var entries: [CommandCenterEntry] { cachedEntries }
+
+    private func rebuildCatalog() {
+        cachedEntries = buildEntries()
+        filterCounts = Dictionary(uniqueKeysWithValues: CommandCenterFilter.allCases.map {
+            ($0, CommandCenterCatalog.visibleEntries(cachedEntries, filter: $0, query: "").count)
+        })
+        refilter()
+    }
+
+    private func refilter() {
+        cachedVisibleEntries = CommandCenterCatalog.visibleEntries(cachedEntries, filter: selectedFilter, query: query)
+        keepSelectionVisible()
+    }
+
+    private func scheduleRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            rebuildCatalog()
+        }
+    }
+
+    private func buildEntries() -> [CommandCenterEntry] {
         let extensionCommands = viewModel.extensionCommands
         let byCommandID = Dictionary(
             uniqueKeysWithValues: extensionCommands.map {
@@ -360,7 +389,7 @@ struct CommandCenterView: View {
     }
 
     private var visibleEntries: [CommandCenterEntry] {
-        CommandCenterCatalog.visibleEntries(entries, filter: selectedFilter, query: query)
+        cachedVisibleEntries
     }
 
     private var selectedEntry: CommandCenterEntry? {
@@ -396,9 +425,17 @@ struct CommandCenterView: View {
                 catalogContent
             }
         }
-        .onAppear { commandManager.validateShortcuts(viewModel.extensionCommands) }
-        .onChange(of: selectedFilter) { _ in keepSelectionVisible() }
-        .onChange(of: query) { _ in keepSelectionVisible() }
+        .onReceive(ExtensionLibraryStore.shared.$requestedArea) { request in
+            if request != nil { selectedArea = .extensions }
+        }
+        .onAppear { commandManager.validateShortcuts(viewModel.extensionCommands); scheduleRefresh() }
+        .onChange(of: selectedFilter) { _ in refilter() }
+        .onChange(of: query) { _ in refilter() }
+        .onReceive(commandManager.objectWillChange) { _ in scheduleRefresh() }
+        .onReceive(nativeToolStore.objectWillChange) { _ in scheduleRefresh() }
+        .onReceive(settings.objectWillChange) { _ in scheduleRefresh() }
+        .onReceive(viewModel.$extensionCommands) { _ in scheduleRefresh() }
+        .onDisappear { refreshTask?.cancel() }
         .onChange(of: viewModel.extensionCommands.count) { _ in
             commandManager.validateShortcuts(viewModel.extensionCommands)
         }
@@ -461,7 +498,7 @@ struct CommandCenterView: View {
                             Text(filter.rawValue)
                                 .lineLimit(1)
                             Spacer(minLength: 0)
-                            Text("\(CommandCenterCatalog.visibleEntries(entries, filter: filter, query: "").count)")
+                            Text("\(filterCounts[filter, default: 0])")
                                 .font(.caption2.monospacedDigit())
                                 .foregroundStyle(LimaTheme.textTertiary)
                         }

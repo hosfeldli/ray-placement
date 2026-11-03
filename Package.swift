@@ -22,12 +22,14 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
+        .executable(name: "lima-extension", targets: ["LimaExtensionKit"]),
         .executable(name: "RayPlacement", targets: ["RayPlacement"]),
         .library(name: "RayPlacementCore", targets: ["RayPlacementCore"]),
         .library(name: "RayPlacementWriting", targets: ["RayPlacementWriting"])
     ],
     dependencies: packageDependencies,
     targets: [
+        .executableTarget(name: "LimaExtensionKit", dependencies: ["RayPlacementCore"]),
         .target(name: "RayPlacementCore", resources: [.process("Fixtures")]),
         .target(name: "RayPlacementWriting"),
         .executableTarget(

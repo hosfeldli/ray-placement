@@ -98,7 +98,6 @@ actor LauncherSearchEngine {
             options: [.caseInsensitive, .diacriticInsensitive], locale: .current
         )
         let aliasQuery = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let tokens = normalizedQuery.split { !($0.isLetter || $0.isNumber) }.map(String.init)
         var ranked = SearchTopResults<LauncherSearchHit>(limit: 24) { first, second in
             if first.score != second.score { return first.score > second.score }
             let order = first.title.localizedStandardCompare(second.title)
@@ -108,39 +107,25 @@ actor LauncherSearchEngine {
             if Task.isCancelled { break }
             guard Self.includes(document.id, for: prefix) else { continue }
             if document.id.hasPrefix("clipboard."), prefix == nil, query.count < 2 { continue }
-            let titleScore = FuzzyMatcher.scoreNormalized(document.normalizedTitle, query: normalizedQuery)
-            let wholeScore = FuzzyMatcher.scoreNormalized(document.normalizedSearchText, query: normalizedQuery)
-            let tokenScores = tokens.map { token in
-                document.normalizedFields.compactMap {
-                    FuzzyMatcher.scoreNormalized($0, query: token)
-                }.max() ?? -.infinity
-            }
-            let baseScore: Double
-            if !tokens.isEmpty && tokenScores.allSatisfy(\.isFinite) {
-                let titleIntent: Double = document.normalizedTitle == normalizedQuery ? 100_000
-                    : (document.normalizedTitle.hasPrefix(normalizedQuery) ? 24 : 0)
-                baseScore = max(titleScore ?? -.infinity, wholeScore ?? -.infinity,
-                                14_000 + tokenScores.reduce(0, +) + titleIntent)
-            } else {
-                baseScore = max(titleScore ?? -.infinity, wholeScore ?? -.infinity)
-            }
-            guard baseScore.isFinite else { continue }
+            guard let baseScore = SearchRelevance.score(title: document.title,
+                fields: document.normalizedFields + Array(document.normalizedUserAliases) + Array(document.normalizedExtensionAliases),
+                body: document.normalizedSearchText, query: normalizedQuery) else { continue }
             let provenance: (LimaAliasKind, Double)
             if document.aliasTitle == aliasQuery {
-                provenance = (.exactTitle, 100_000)
+                provenance = (.exactTitle, 0)
             } else if document.normalizedUserAliases.contains(aliasQuery) {
-                provenance = (.userAlias, 1_200)
+                provenance = (.userAlias, 90_000)
             } else if document.id.hasPrefix("extension."), document.normalizedExtensionAliases.contains(aliasQuery) {
-                provenance = (.extensionAlias, 900)
+                provenance = (.extensionAlias, 85_000)
             } else if (document.id.hasPrefix("builtin.") || document.id.hasPrefix("context.")),
                       document.normalizedKeywords.contains(aliasQuery) {
-                provenance = (.builtInAlias, 600)
+                provenance = (.builtInAlias, 0)
             } else {
                 provenance = (.exactTitle, 0)
             }
             ranked.insert(LauncherSearchHit(
                 id: document.id, title: document.title,
-                score: baseScore + provenance.1 + document.rankingBonus,
+                score: max(baseScore, provenance.1) + SearchRelevance.functionPriority(document.id) + SearchRelevance.bonus(document.rankingBonus),
                 aliasKind: provenance.0
             ))
         }

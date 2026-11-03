@@ -165,21 +165,32 @@ private final class ScreenshotRegionOverlayView: NSView {
             NSGraphicsContext.current?.compositingOperation = .clear
             rect.fill()
             NSGraphicsContext.restoreGraphicsState()
-            NSColor.white.setStroke()
+            NSColor.controlAccentColor.setStroke()
             let outline = NSBezierPath(rect: rect)
             outline.lineWidth = 2
             outline.stroke()
+            NSColor.white.setFill()
+            for point in [rect.origin, NSPoint(x: rect.maxX, y: rect.minY), NSPoint(x: rect.minX, y: rect.maxY), NSPoint(x: rect.maxX, y: rect.maxY)] {
+                NSBezierPath(roundedRect: NSRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6), xRadius: 2, yRadius: 2).fill()
+            }
+            let dimensions = "\(Int(rect.width)) × \(Int(rect.height))"
+            let dimensionAttributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium), .foregroundColor: NSColor.white]
+            let size = dimensions.size(withAttributes: dimensionAttributes)
+            let label = NSRect(x: min(max(10, rect.minX), bounds.width - size.width - 20), y: max(65, rect.minY - 30), width: size.width, height: size.height)
+            NSColor.black.withAlphaComponent(0.8).setFill()
+            NSBezierPath(roundedRect: label.insetBy(dx: -7, dy: -5), xRadius: 7, yRadius: 7).fill()
+            dimensions.draw(in: label, withAttributes: dimensionAttributes)
         }
         let title = instruction
         let attributes: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 16, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
             .foregroundColor: NSColor.white
         ]
         let size = title.size(withAttributes: attributes)
         let label = CGRect(x: (bounds.width - size.width) / 2, y: 30,
                            width: size.width, height: size.height)
         NSColor.black.withAlphaComponent(0.65).setFill()
-        label.insetBy(dx: -14, dy: -9).fill()
+        NSBezierPath(roundedRect: label.insetBy(dx: -16, dy: -10), xRadius: 14, yRadius: 14).fill()
         title.draw(in: label, withAttributes: attributes)
     }
 

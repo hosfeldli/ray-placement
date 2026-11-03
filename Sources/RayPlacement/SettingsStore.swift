@@ -1450,16 +1450,36 @@ final class SettingsStore: ObservableObject {
         notifyExtensionConfigurationChanged()
     }
 
-    /// Retained for settings migrations and user extensions that predate pack
-    /// metadata. New UI writes the pack-level store through `setPackEnabled`.
+    /// Legacy package choice. New library controls use setPackageEnabled to
+    /// supersede an old group choice without changing other packages.
     func setExtensionEnabled(_ enabled: Bool, extensionID: String) {
         extensionEnabledOverrides[extensionID] = enabled
         defaults.set(extensionEnabledOverrides, forKey: Key.extensionEnabledOverrides)
         notifyExtensionConfigurationChanged()
     }
 
+    /// The new library has one package switch. Keep legacy group switches as a
+    /// fallback until the user explicitly chooses a package-level setting.
+    func setPackageEnabled(_ enabled: Bool, extensionID: String) {
+        let key = "lima.extensionPackageSwitches.v1"
+        var ids = Set(defaults.stringArray(forKey: key) ?? [])
+        ids.insert(extensionID); defaults.set(ids.sorted(), forKey: key)
+        setExtensionEnabled(enabled, extensionID: extensionID)
+    }
+
+    func isManifestEnabled(_ manifest: ExtensionManifest) -> Bool {
+        guard let command = manifest.commands.first else { return isExtensionEnabled(manifest.id) }
+        let loaded = LoadedExtensionCommand(extensionID: manifest.id, extensionName: manifest.name,
+            directory: URL(fileURLWithPath: "/"), command: command, capabilities: manifest.capabilities,
+            trust: manifest.trust, pack: manifest.pack, category: manifest.category, bundled: manifest.bundled)
+        return isCommandEnabled(loaded)
+    }
+
     func isCommandEnabled(_ loaded: LoadedExtensionCommand) -> Bool {
-        isPackEnabled(for: loaded) && isExtensionEnabled(loaded.extensionID)
+        if (defaults.stringArray(forKey: "lima.extensionPackageSwitches.v1") ?? []).contains(loaded.extensionID) {
+            return isExtensionEnabled(loaded.extensionID)
+        }
+        return isPackEnabled(for: loaded) && isExtensionEnabled(loaded.extensionID)
     }
 
     func isHotkeyEnabled(_ loaded: LoadedExtensionCommand) -> Bool {

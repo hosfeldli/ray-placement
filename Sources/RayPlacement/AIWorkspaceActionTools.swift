@@ -54,12 +54,13 @@ enum AIWorkspaceActionTools {
         ),
         definition(
             "terminal_write",
-            "Send up to 4096 UTF-8 bytes to a running shared AI Workspace PTY, including an optional newline or response to an interactive prompt. This is an action governed by Terminal access. It acknowledges input only; call terminal_wait or terminal_read to observe output and do not treat input acceptance as command success. Binary controls and escape sequences are rejected.",
+            "Send up to 4096 UTF-8 bytes to a running shared AI Workspace PTY, including an optional newline or response to an interactive prompt. This is an action governed by Terminal access. It acknowledges input only; call terminal_wait or terminal_read to observe output and do not treat input acceptance as command success. Use key instead of input for named Enter, Tab, arrows, Escape, Backspace, or supported control keys. Raw control sequences remain rejected.",
             properties: [
                 "session_id": ["type": "string"],
-                "input": ["type": "string", "description": "Text or a command followed by a newline, at most 4096 UTF-8 bytes."]
+                "input": ["type": "string", "description": "Text or a command followed by a newline, at most 4096 UTF-8 bytes."],
+                "key": ["type": "string", "enum": AIWorkspaceTerminalCoordinator.keySequences.keys.sorted()]
             ],
-            required: ["session_id", "input"],
+            required: ["session_id"],
             action: true
         ),
         definition(
@@ -340,7 +341,11 @@ enum AIWorkspaceActionTools {
                 ] as [String: Any], uniquingKeysWith: { _, new in new }))
 
             case "terminal_write":
-                guard case .string(let input)? = arguments["input"] else {
+                if case .string(let key)? = arguments["key"] {
+                    guard arguments["input"] == nil else { return invalidArguments("Choose input or key, not both.") }
+                    return .json(try runtime.sendKey(sessionID: sessionID(arguments), key: key))
+                }
+                guard arguments["key"] == nil, case .string(let input)? = arguments["input"] else {
                     return invalidArguments("input is required.")
                 }
                 return .json(try runtime.write(sessionID: sessionID(arguments), input: input))

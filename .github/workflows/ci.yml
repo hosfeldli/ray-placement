@@ -54,6 +54,10 @@ jobs:
           set -euo pipefail
           make test
 
+      - name: Test extension developer workflows
+        shell: bash
+        run: make extension-kit-test
+
       - name: Validate extension manifests against the public schema
         shell: bash
         run: |

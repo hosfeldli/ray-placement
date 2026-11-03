@@ -58,7 +58,8 @@ struct ActivityShelfTaskSlots {
     let primary: LimaTask?
     let grammar: LimaTask?
 
-    init(_ activeTasks: [LimaTask]) {
+    init(_ activeTasks: [LimaTask], assistantVisible: Bool = false) {
+        let activeTasks = activeTasks.filter { !assistantVisible || ($0.kind != .aiGeneration && $0.kind != .aiTool) }
         primary = activeTasks.last { $0.kind != .grammar }
         grammar = activeTasks.last { $0.kind == .grammar }
     }
@@ -79,6 +80,7 @@ final class ActivityHUDController {
     private var settingsObserver: AnyCancellable?
     private var expansionObserver: AnyCancellable?
     private var collisionObserver: AnyCancellable?
+    private var assistantVisibilityObserver: AnyCancellable?
 
     init(
         dictation: NoteDictationService,
@@ -118,6 +120,9 @@ final class ActivityHUDController {
             settings.$musicShowWhenPaused
         )
         .sink { [weak self] _, _, _ in self?.updateLayout(dictation: dictation) }
+        assistantVisibilityObserver = AIWorkspaceVisibility.shared.$isVisible.sink { [weak self] _ in
+            Task { @MainActor in self?.updateLayout(dictation: dictation) }
+        }
         taskObserver = tasks.objectWillChange.sink { [weak self] _ in
             Task { @MainActor in self?.updateLayout(dictation: dictation) }
         }
@@ -135,7 +140,7 @@ final class ActivityHUDController {
     private func updateLayout(dictation: NoteDictationService) {
         let dictationVisible = shouldShowRecordingHUD(for: dictation.phase)
         let musicVisible = shouldShowMusicHUD(music.nowPlaying)
-        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks)
+        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks, assistantVisible: AIWorkspaceVisibility.shared.isVisible)
         guard dictationVisible || musicVisible || taskSlots.count > 0 else {
             panel.orderOut(nil)
             return
@@ -452,6 +457,7 @@ private struct ActivityHUDView: View {
     @ObservedObject var hudState: ActivityHUDState
     @ObservedObject var settings: SettingsStore
     @ObservedObject var tasks: TaskRegistry
+    @ObservedObject private var assistantVisibility = AIWorkspaceVisibility.shared
     let openDictation: () -> Void
     @State private var volumePopoverVisible = false
     @State private var tasksExpanded = false
@@ -463,26 +469,30 @@ private struct ActivityHUDView: View {
         let dictationVisible = dictation.phase == .recording || dictation.phase == .paused
         let musicVisible = music.nowPlaying.map { $0.isPlaying || settings.musicShowWhenPaused } ?? false
         let presentation = effectivePresentation(dictationVisible: dictationVisible)
-        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks)
+        let taskSlots = ActivityShelfTaskSlots(tasks.activeTasks, assistantVisible: assistantVisibility.isVisible)
 
         return HStack(spacing: 8) {
-            if dictationVisible { dictationPill.frame(width: 210) }
+            if dictationVisible { dictationPill.frame(width: 210).background(segmentBackground) }
             if musicVisible, let track = music.nowPlaying {
                 musicPill(track, presentation: presentation)
                     .frame(width: presentation.hudWidth)
+                    .background(segmentBackground)
             }
             if let task = taskSlots.primary {
                 taskSegment(task)
                     .frame(width: hudState.collisionMini ? 180 : 254)
+                    .background(segmentBackground)
             }
             if let task = taskSlots.grammar {
                 taskSegment(task)
                     .frame(width: hudState.collisionMini ? 180 : 254)
+                    .background(segmentBackground)
             }
             Button { audioPopoverVisible.toggle() } label: {
                 Image(systemName: audioOutput.devices.first(where: \.isDefault)?.transport.symbol ?? "speaker.wave.2")
                     .font(.system(size: 13, weight: .semibold))
                     .frame(width: 28, height: 28)
+                    .background(LimaTheme.surfaceSecondary, in: RoundedRectangle(cornerRadius: 8))
             }
             .buttonStyle(.plain)
             .help("Sound Output: \(audioOutput.devices.first(where: \.isDefault)?.name ?? "Unavailable")")
@@ -512,6 +522,13 @@ private struct ActivityHUDView: View {
         }
     }
 
+    private var segmentBackground: some View {
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .fill(LimaTheme.surfaceSecondary.opacity(0.55))
+            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(LimaTheme.textTertiary.opacity(0.1), lineWidth: 0.5))
+            .padding(.vertical, 4)
+    }
+
     private func taskSegment(_ task: LimaTask) -> some View {
         HStack(spacing: 8) {
             Button { tasksExpanded.toggle() } label: {
@@ -526,7 +543,7 @@ private struct ActivityHUDView: View {
                             .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                             .lineLimit(1)
                         Text(task.detail ?? (task.state == .waiting ? "Needs attention" : "Working"))
-                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .limaFont(.system(size: 10.5, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -613,7 +630,7 @@ private struct ActivityHUDView: View {
                             .limaFont(.system(size: 11.5, weight: .semibold, design: .rounded))
                             .lineLimit(1)
                         Text(secondaryText)
-                            .limaFont(.system(size: 9.5, weight: .medium, design: .rounded))
+                            .limaFont(.system(size: 10.5, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
@@ -690,7 +707,7 @@ private struct ActivityHUDView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(track.title).limaFont(.system(size: 11.5, weight: .semibold, design: .rounded)).lineLimit(1)
                     Text(playbackStatus(for: track))
-                        .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .limaFont(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(music.controlAvailabilityMessage == nil ? LimaColors.secondaryText : LimaColors.danger)
                         .lineLimit(1)
                         .help(playbackStatus(for: track))
@@ -730,15 +747,15 @@ private struct ActivityHUDView: View {
                             .lineLimit(1)
                     }
                     Text(playbackStatus(for: track))
-                        .limaFont(.system(size: 8.5, weight: .medium, design: .rounded))
+                        .limaFont(.system(size: 10, weight: .medium, design: .rounded))
                         .foregroundStyle(music.controlAvailabilityMessage == nil ? LimaColors.secondaryText : LimaColors.danger)
                         .lineLimit(1)
                         .help(playbackStatus(for: track))
                     if settings.musicShowProgress {
                         HStack(spacing: 4) {
-                            Text(timeLabel(track.position)).limaFont(.system(size: 7.5, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
+                            Text(timeLabel(track.position)).limaFont(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
                             MusicSignalRibbon(progress: track.duration > 0 ? track.position / track.duration : 0, accent: track.source.accent)
-                            Text(timeLabel(track.duration)).limaFont(.system(size: 7.5, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
+                            Text(timeLabel(track.duration)).limaFont(.system(size: 9, weight: .medium, design: .monospaced)).foregroundStyle(.secondary)
                         }
                     }
                 }

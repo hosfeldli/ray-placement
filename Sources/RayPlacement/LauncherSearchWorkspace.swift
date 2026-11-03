@@ -88,7 +88,15 @@ struct LauncherSearchWorkspace: View {
 
     private var opaque: Bool { reduceTransparency || (LimaTestEnvironment.isEnabled && testReduceTransparency) }
     private var idle: Bool { model.isAskingAI || model.searchPhase == .idle }
-    private var input: Binding<String> { model.isAskingAI ? $model.aiPrompt : $model.query }
+    private var searchingNotes: Bool { !model.isAskingAI && UniversalSearchCoordinator.parse(model.query).prefix == "note" }
+    private var input: Binding<String> {
+        if model.isAskingAI { return $model.aiPrompt }
+        if searchingNotes {
+            return Binding(get: { UniversalSearchCoordinator.parse(model.query).query },
+                           set: { model.query = "note: " + $0 })
+        }
+        return $model.query
+    }
     private var selection: LauncherItem? {
         guard let item = model.selectedItem, model.isActionable(item) else { return nil }
         return item
@@ -198,9 +206,20 @@ struct LauncherSearchWorkspace: View {
                     .foregroundStyle(idle ? LimaTheme.textPrimary : LimaTheme.accentInk)
                     .frame(width: 23)
                     .accessibilityHidden(true)
+                if searchingNotes {
+                    Button {
+                        model.query = UniversalSearchCoordinator.parse(model.query).query
+                        searchFocused = true
+                    } label: { Label("Notes", systemImage: "xmark.circle.fill") }
+                        .buttonStyle(.plain).limaFont(.caption)
+                        .padding(.horizontal, 8).padding(.vertical, 5)
+                        .background(LimaTheme.accentInk.opacity(0.12), in: Capsule())
+                        .help("Search everything")
+                        .accessibilityLabel("Notes search. Remove filter to search everything")
+                }
                 ZStack(alignment: .leading) {
                     if input.wrappedValue.isEmpty {
-                        Text(model.isAskingAI ? "What would you like Lima to do?" : (wide ? "Search, ask, or run a command…" : "Search or ask Lima…"))
+                        Text(model.isAskingAI ? "What would you like Lima to do?" : searchingNotes ? "Search your notes…" : (wide ? "Search, ask, or run a command…" : "Search or ask Lima…"))
                             .foregroundStyle(LimaTheme.textSecondary)
                             .lineLimit(1)
                             .allowsHitTesting(false)
@@ -210,7 +229,7 @@ struct LauncherSearchWorkspace: View {
                         .textFieldStyle(.plain)
                         .focused($searchFocused)
                         .onSubmit(submitSearch)
-                        .accessibilityLabel(model.isAskingAI ? "Ask Lima in a new chat" : "Search commands, apps, and local content")
+                        .accessibilityLabel(model.isAskingAI ? "Ask Lima in a new chat" : searchingNotes ? "Search your notes" : "Search commands, apps, and local content")
                         .accessibilityIdentifier("lima-search-input")
                 }
                 .limaFont(.system(size: 17))
@@ -269,8 +288,8 @@ struct LauncherSearchWorkspace: View {
                     .accessibilityLabel("Start new AI chat")
             } else {
             quickAction("Ask Lima", symbol: "sparkles", compact: !wide) { model.beginAskingAI() }
-            quickAction("Notes", symbol: "note.text", compact: !wide) { openWorkspace(.notes) }
-            quickAction("Recordings", symbol: "waveform", compact: !wide) { openWorkspace(.dictation) }
+            quickAction("Notes", symbol: "note.text", compact: !wide) { model.searchNotes(); searchFocused = true }
+            quickAction("Record", symbol: "mic.fill", compact: !wide) { model.startRecordingFromSearch() }
             Menu {
                 ForEach(LimaWorkspaceModule.primaryDestinations, id: \.self) { module in
                     Button(module.title, systemImage: module.symbol) { openWorkspace(module) }
@@ -352,8 +371,8 @@ struct LauncherSearchWorkspace: View {
                 lineWidth: selected ? 0.9 : 0.5))
         }
         .buttonStyle(.plain)
-        .help("Open \(title)")
-        .accessibilityLabel("Open \(title)")
+        .help(title == "Record" ? "Start recording" : title == "Notes" ? "Search your notes" : "Open \(title)")
+        .accessibilityLabel(title == "Record" ? "Start recording" : title == "Notes" ? "Search your notes" : "Open \(title)")
     }
 
     private var results: some View {

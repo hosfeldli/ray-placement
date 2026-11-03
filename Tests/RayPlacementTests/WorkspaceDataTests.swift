@@ -98,7 +98,7 @@ private func workspaceDataCall(_ name: String, _ args: [String: Any]) throws -> 
             scoreBonus: Double(i % 47))
     }
     let scored: [(String, Double)] = docs.map { doc in
-        let base = FuzzyMatcher.scoreNormalized(doc.normalizedSearchText, query: "quartz") ?? -Double.infinity
+        let base = SearchRelevance.score(title: doc.title, fields: doc.keywords + [doc.subtitle], body: doc.normalizedSearchText, query: "quartz") ?? -Double.infinity
         return (doc.id, base + doc.scoreBonus)
     }
     let ordered = scored.sorted { a, b in

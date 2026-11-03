@@ -3,6 +3,37 @@ import RayPlacementCore
 
 @MainActor
 final class ExtensionLoader {
+    private let rootOverride: URL?
+    private let developmentOverride: [URL]?
+    init(root: URL? = nil, developmentFolders: [URL]? = nil) {
+        rootOverride = root; developmentOverride = developmentFolders
+    }
+    private var root: URL { rootOverride ?? ApplicationPaths.extensions }
+    private var developmentFolders: [URL] { developmentOverride ?? ExtensionDevelopmentFolders.shared.folders }
+    private func sources() -> [(URL, URL)] {
+        let files = FileManager.default
+        let entries = (try? files.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? []
+        var result: [(URL, URL)] = []
+        for entry in entries {
+            let isDirectory = (try? entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDirectory { result.append((entry.appendingPathComponent("manifest.json"), entry)) }
+            else if entry.pathExtension.lowercased() == "json" { result.append((entry, entry.deletingLastPathComponent())) }
+        }
+        result += developmentFolders.map { ($0.appendingPathComponent("manifest.json"), $0) }
+        return result.sorted { $0.0.path < $1.0.path }
+    }
+
+    private static var inspectionCache: [String: (String, ExtensionInspection)] = [:]
+    private func inspect(_ file: URL, directory: URL, fresh: Bool) -> ExtensionInspection {
+        let values = try? file.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        let stamp = "\(values?.fileSize ?? -1):\(values?.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        if !fresh, let cached = Self.inspectionCache[file.path], cached.0 == stamp { return cached.1 }
+        let result = ExtensionDeveloperKit.inspect(directory, manifestFile: file)
+        if Self.inspectionCache.count >= 128 { Self.inspectionCache.removeAll(keepingCapacity: true) }
+        Self.inspectionCache[file.path] = (stamp, result)
+        return result
+    }
+
     func prepareFolder() {
         do {
             try ApplicationPaths.prepare()
@@ -228,41 +259,26 @@ final class ExtensionLoader {
     /// Read schema-v3 contribution metadata from packages that would be eligible
     /// to load. This intentionally avoids `prepareFolder()` and package
     /// registration so callers such as AI catalog inspection remain read-only.
-    func contributionCatalog() -> [ContributionCatalogEntry] {
-        let fileManager = FileManager.default
-        guard let contents = try? fileManager.contentsOfDirectory(
-            at: ApplicationPaths.extensions,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return [] }
+    func contributionCatalog(fresh: Bool = false) -> [ContributionCatalogEntry] {
+        let manifestFiles = sources().map { $0.0 }
 
-        let manifestFiles = contents.compactMap { url -> URL? in
-            var isDirectory: ObjCBool = false
-            guard fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory) else { return nil }
-            if isDirectory.boolValue {
-                let manifest = url.appendingPathComponent("manifest.json")
-                return fileManager.fileExists(atPath: manifest.path) ? manifest : nil
-            }
-            return url.pathExtension.lowercased() == "json" ? url : nil
-        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
-
-        let decoder = JSONDecoder()
+        let approvals = ExtensionApprovalStore.records()
         var catalog: [ContributionCatalogEntry] = []
         var seenIDs = Set<String>()
         for file in manifestFiles {
-            guard let data = try? Data(contentsOf: file),
-                  let manifest = try? decoder.decode(ExtensionManifest.self, from: data),
-                  (1...3).contains(manifest.schemaVersion),
-                  (try? manifest.validateLifecycleMetadata()) != nil else { continue }
+            let inspection = inspect(file, directory: file.deletingLastPathComponent(), fresh: fresh)
+            guard inspection.isValid, let manifest = inspection.manifest else { continue }
 
             let isBundled = manifest.bundled
                 || manifest.provenance == .bundled
                 || manifest.trust == .bundled
                 || manifest.trust == .builtIn
-            guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) else { continue }
+            guard !ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id),
+                  SettingsStore.shared.isManifestEnabled(manifest),
+                  !(isBundled && developmentFolders.contains(file.deletingLastPathComponent())) else { continue }
             if !isBundled {
-                let hash = ExtensionSecurityPolicy.manifestHash(data)
-                guard let approval = ExtensionApprovalStore.record(for: manifest.id),
+                let hash = inspection.manifestHash
+                guard let approval = approvals[manifest.id],
                       approval.manifestHash == hash,
                       approval.capabilities.isSuperset(of: manifest.capabilities) else { continue }
             }
@@ -288,38 +304,22 @@ final class ExtensionLoader {
     /// manifests and cannot create, update, approve, or otherwise alter a pack.
     func load(prepare: Bool = true, registerPackages: Bool = true) -> (commands: [LoadedExtensionCommand], issues: [ExtensionIssue]) {
         if prepare { prepareFolder() }
-        let fileManager = FileManager.default
-        guard let contents = try? fileManager.contentsOfDirectory(
-            at: ApplicationPaths.extensions,
-            includingPropertiesForKeys: [.isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return ([], []) }
-
-        var manifestFiles: [(URL, URL)] = []
-        for url in contents {
-            var isDirectory: ObjCBool = false
-            fileManager.fileExists(atPath: url.path, isDirectory: &isDirectory)
-            if isDirectory.boolValue {
-                let manifest = url.appendingPathComponent("manifest.json")
-                if fileManager.fileExists(atPath: manifest.path) { manifestFiles.append((manifest, url)) }
-            } else if url.pathExtension.lowercased() == "json" {
-                manifestFiles.append((url, url.deletingLastPathComponent()))
-            }
-        }
-
-        manifestFiles.sort { $0.0.path.localizedStandardCompare($1.0.path) == .orderedAscending }
+        let manifestFiles = sources()
 
         var loaded: [LoadedExtensionCommand] = []
         var issues: [ExtensionIssue] = []
         var seenExtensionIDs = Set<String>()
         var seenCommandIDs = Set<String>()
-        let decoder = JSONDecoder()
 
         for (file, directory) in manifestFiles {
             do {
-                let manifestData = try Data(contentsOf: file)
-                let manifest = try decoder.decode(ExtensionManifest.self, from: manifestData)
-                try manifest.validateLifecycleMetadata()
+                let inspection = inspect(file, directory: directory, fresh: true)
+                guard inspection.isValid, let manifest = inspection.manifest, let manifestHash = inspection.manifestHash else {
+                    for diagnostic in inspection.diagnostics where diagnostic.severity == .error {
+                        issues.append(ExtensionIssue(file: file.path, message: "\(diagnostic.path): \(diagnostic.message) \(diagnostic.fix)"))
+                    }
+                    continue
+                }
                 if (manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn), ExtensionPackageManager.shared.isLogicallyRemoved(manifest.id) {
                     continue
                 }
@@ -331,10 +331,13 @@ final class ExtensionLoader {
                     issues.append(ExtensionIssue(file: file.lastPathComponent, message: "The extension id and name are required."))
                     continue
                 }
-                let manifestHash = ExtensionSecurityPolicy.manifestHash(manifestData)
+                if developmentFolders.contains(directory), manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn {
+                    issues.append(ExtensionIssue(file: file.path, message: "Development folders cannot claim bundled trust."))
+                    continue
+                }
                 let isBundled = manifest.bundled || manifest.provenance == .bundled || manifest.trust == .bundled || manifest.trust == .builtIn
                 if registerPackages {
-                    ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (manifest.provenance == .unsigned ? .localDeveloper : .userInstalled), manifestHash: manifestHash)
+                    ExtensionPackageManager.shared.register(id: manifest.id, name: manifest.name, version: manifest.version, provenance: isBundled ? .bundled : (developmentFolders.contains(directory) ? .localDeveloper : .userInstalled), state: SettingsStore.shared.isManifestEnabled(manifest) ? .installed : .disabled, manifestHash: manifestHash)
                 }
                 if isBundled {
                     // Bundled packs are shipped and verified with Lima; they do not
@@ -452,8 +455,6 @@ final class ExtensionLoader {
                         presentation: command.presentation ?? (command.runInBackground == true ? .background : manifest.presentation)
                     ))
                 }
-            } catch {
-                issues.append(ExtensionIssue(file: file.lastPathComponent, message: error.localizedDescription))
             }
         }
 
@@ -461,43 +462,7 @@ final class ExtensionLoader {
     }
 
     private func requiredCapabilities(for action: ExtensionAction) -> Set<ExtensionManifest.Capability> {
-        switch action.type {
-        case .url: return [.network]
-        case .file: return [.filesystem]
-        case .application:
-            guard let operation = action.operation else { return [.filesystem] }
-            switch operation {
-            case "quit", "forceQuit", "restart", "activate", "hide", "unhide": return [.processControl]
-            default: return [.processControl]
-            }
-        case .shell: return [.shell, .filesystem]
-        case .clipboard:
-            return (action.operation ?? "copy") == "copy" ? [.clipboard] : [.clipboard, .accessibility]
-        case .picker:
-            switch action.operation {
-            case "emoji": return [.clipboard, .accessibility]
-            case "application": return [.processControl]
-            case "file": return [.filesystem]
-            default: return []
-            }
-        case .system: return [.systemControl]
-        case .window: return [.accessibility]
-        case .workspace:
-            switch action.operation {
-            case "writingReview": return [.selectedText, .clipboard, .accessibility]
-            case "focusedFileLauncher": return [.filesystem]
-            default: return []
-            }
-        case .form:
-            guard let form = action.form else { return [] }
-            var required: Set<ExtensionManifest.Capability> = [.shell]
-            if form.fields.contains(where: { $0.type == .file || $0.type == .directory }) { required.insert(.filesystem) }
-            return required
-        case .generator:
-            return []
-        case .nativeCapability:
-            return NativeCapabilityOperation(rawValue: action.operation ?? "").map { [$0.capability] } ?? []
-        }
+        action.inferredCapabilities
     }
 
     static let extensionReadme = """

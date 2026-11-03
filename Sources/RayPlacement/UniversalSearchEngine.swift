@@ -44,7 +44,13 @@ actor UniversalSearchEngine {
             revision = incomingRevision
         }
         let (prefix, query) = UniversalSearchCoordinator.parse(raw)
-        guard !query.isEmpty, !Task.isCancelled else { return [] }
+        guard !Task.isCancelled else { return [] }
+        if query.isEmpty {
+            return prefix == "note" ? snapshot.documents.filter { $0.kind == .note }.prefix(20).map {
+                LimaSearchResult(id: $0.id, kind: $0.kind, title: $0.title, subtitle: $0.subtitle,
+                                 keywords: $0.keywords, score: 0)
+            } : []
+        }
         let normalizedQuery = query.folding(
             options: [.caseInsensitive, .diacriticInsensitive], locale: .current
         )
@@ -59,13 +65,13 @@ actor UniversalSearchEngine {
             if (document.kind == .aiConversation || document.kind == .clipboard), query.count < 2 {
                 continue
             }
-            guard let score = FuzzyMatcher.scoreNormalized(
-                document.normalizedSearchText, query: normalizedQuery
-            ) else { continue }
+            guard let score = SearchRelevance.score(title: document.title,
+                fields: document.keywords + [document.subtitle], body: document.normalizedSearchText,
+                query: normalizedQuery) else { continue }
             grouped[document.kind, default: SearchTopResults(limit: Self.limit(for: document.kind), precedes: precedes)].insert(LimaSearchResult(
                 id: document.id, kind: document.kind, title: document.title,
                 subtitle: document.subtitle, keywords: document.keywords,
-                score: score + document.scoreBonus
+                score: score + SearchRelevance.bonus(document.scoreBonus)
             ))
         }
         let order: [LimaSearchKind] = [

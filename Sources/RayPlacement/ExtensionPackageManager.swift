@@ -63,7 +63,7 @@ final class ExtensionPackageManager: ObservableObject {
     private let defaults: UserDefaults
     private var activePackageID: String?
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = LimaTestEnvironment.userDefaults) {
         self.defaults = defaults
         records = (try? JSONDecoder().decode([String: ExtensionPackageRecord].self, from: defaults.data(forKey: Self.recordsKey) ?? Data())) ?? [:]
     }

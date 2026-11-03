@@ -2,13 +2,26 @@
 
 Use this document when an AI or automation creates, repairs, or reviews a Lima extension. The goal is a small, predictable local macOS workflow that remains keyboard-first and does not widen its authority beyond the requested task.
 
+## Preferred workflow
+
+Start with the shared Developer Kit instead of hand-writing a manifest:
+
+```sh
+swift run lima-extension init ./my-extension --id local.example.tools --name "My Tools" --template form
+swift run lima-extension check ./my-extension --json
+swift run lima-extension run ./my-extension run message="Fixture input"
+swift run lima-extension pack ./my-extension ./my-extension.zip
+```
+
+Choose `link`, `script`, `form`, or `ai-tool`. The app's Build screen uses the same generator and validator. Use My Extensions to review the package; link its source folder for development. Never self-approve a package, claim bundled trust, change released IDs, or mistake a metadata-only tool for an executable integration. Manifest edits reload inside Lima; scripts are not run automatically.
+
 ## Non-negotiable workflow
 
 1. Read `docs/extension-manifest.schema.json` completely.
 2. Read `docs/EXTENSIONS.md` and `docs/starter-extension/manifest.json`.
 3. Treat those files as the complete public manifest contract; never assume an unlisted field or action exists.
 4. Choose the smallest generic native action that satisfies the request.
-5. Use a schema-v2 form only when the command needs variable input or output.
+5. Use a schema-v3 form only when the command needs variable input or output.
 6. Add an executable only when the public native actions cannot express the deterministic behavior.
 7. Preserve stable extension, command, and field IDs.
 8. Validate JSON, then verify loading, search, execution, cancellation, and failure feedback in Lima.
@@ -34,8 +47,8 @@ Use reverse-domain-style IDs. Shortcut and enablement settings are keyed by `<ex
 Does the command have fixed input?
 ├─ Yes → use a generic native action
 └─ No
-   ├─ Can a reusable picker or form solve it? → schema-v2 form or picker action
-   ├─ Can a direct executable solve it safely? → schema-v2 shell form
+   ├─ Can a reusable picker or form solve it? → schema-v3 form or picker action
+   ├─ Can a direct executable solve it safely? → schema-v3 shell form
    └─ Does it require a large persistent surface? → propose a reviewed native host capability
 ```
 

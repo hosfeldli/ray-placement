@@ -1818,6 +1818,21 @@ struct SettingsView: View {
             }
 
             Section {
+                PrimaryShortcutRow(title: "Screenshot a region", symbol: "camera.viewfinder",
+                    enabled: $settings.quickCaptureRegionHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.quick-capture-region"))
+                PrimaryShortcutRow(title: "Read text on screen", symbol: "text.viewfinder",
+                    enabled: $settings.textReaderRegionHotkeyEnabled,
+                    shortcut: shortcutBinding(for: "builtin.text-reader-region"))
+                Text("Capture an area from any app. Screenshots and recognized text receive references that you can attach to an AI chat.")
+                    .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                Button("Open Capture History") { ScreenshotStudioWindowController.shared.present() }
+                    .buttonStyle(.borderless)
+            } header: {
+                Label("Capture & Screen Reader shortcuts", systemImage: "viewfinder").limaFont(.headline)
+            }
+
+            Section {
                 Toggle(isOn: Binding(get: { settings.launchAtLogin }, set: settings.setLaunchAtLogin)) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("Launch Lima at login")
@@ -2304,7 +2319,7 @@ final class SettingsWindowController: NSWindowController {
         self.settingsStore = settings
         let view = SettingsView(settings: settings, viewModel: viewModel, aiChatModel: aiChatModel, updateService: updateService, reloadExtensions: reloadExtensions, openGrammarDebugger: openGrammarDebugger, extensionStoreModel: extensionStoreModel)
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 820, height: 590),
+            contentRect: NSRect(x: 0, y: 0, width: 1060, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -2313,11 +2328,13 @@ final class SettingsWindowController: NSWindowController {
             window,
             title: "Lima Settings",
             accessibilityLabel: "Lima Settings",
-            minSize: NSSize(width: 760, height: 540),
+            minSize: NSSize(width: 900, height: 620),
             movableByBackground: false
         )
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: LimaTypographyRoot(content: view))
+        let host = NSHostingView(rootView: LimaTypographyRoot(content: view))
+        if #available(macOS 13.0, *) { host.sizingOptions = [] }
+        window.contentView = host
         window.center()
         super.init(window: window)
     }

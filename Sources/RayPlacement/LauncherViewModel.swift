@@ -185,6 +185,10 @@ final class LauncherViewModel: ObservableObject {
             SettingsStore.shared.$dictationShortcut.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) },
             SettingsStore.shared.$dictationHotkeyEnabled.sink { [weak self] _ in self?.rootCatalogDidChange(.builtins) }
         ]
+        catalogObservers.append(NotificationCenter.default.publisher(for: ExtensionDevelopmentFolders.changed).sink { [weak self] _ in
+            Task { @MainActor in self?.reloadExtensions() }
+        })
+        ExtensionDevelopmentFolders.shared.startMonitoring()
         reloadExtensions(notify: false)
         if scanApplications {
             applicationIndex.scan { [weak self] records in
@@ -195,9 +199,24 @@ final class LauncherViewModel: ObservableObject {
         refreshResults()
     }
 
+    func startRecordingFromSearch() {
+        let item = LauncherItem(id: "builtin.start-recording", title: "Start Recording",
+            subtitle: "Record speech with a live transcript", icon: .system("mic.fill"),
+            keywords: ["dictation", "microphone"], action: .system(.startNoteDictation))
+        closeActionPanel()
+        recordUsage(for: item)
+        delegate?.launcherViewModel(self, perform: item.action, item: item)
+    }
+
+    func searchNotes() {
+        let text = UniversalSearchCoordinator.parse(query).query
+        if mode != .root { enter(.root) }
+        query = "note: " + text
+    }
+
     var placeholder: String {
         switch mode {
-        case .root: return "Search commands and applications…"
+        case .root: return UniversalSearchCoordinator.parse(query).prefix == "note" ? "Search your notes…" : "Search commands and applications…"
         case .files: return "Search files with Spotlight…"
         case .picker(.timezone): return "Enter a time like 9:30 AM, 14:00, or now"
         case .picker(.applications): return "Search running applications…"
@@ -815,6 +834,7 @@ final class LauncherViewModel: ObservableObject {
     func reloadExtensions(notify: Bool = true) {
         let loaded = extensionLoader.load()
         extensionCommands = loaded.commands
+        CommandManager.shared.migrateExtensionIdentifiers(loaded.commands)
         manifestExtensionIssues = loaded.issues
         updateExtensionIssues()
         rootCatalogDidChange(.extensions)
@@ -826,6 +846,7 @@ final class LauncherViewModel: ObservableObject {
         let report = extensionLoader.repairBundledExtensions()
         let loaded = extensionLoader.load()
         extensionCommands = loaded.commands
+        CommandManager.shared.migrateExtensionIdentifiers(loaded.commands)
         manifestExtensionIssues = loaded.issues
         updateExtensionIssues()
         rootCatalogDidChange(.extensions)
@@ -1164,7 +1185,7 @@ final class LauncherViewModel: ObservableObject {
         rootLocalSearchPending = false
         rootFileSearchPending = false
         rootUniversalSearchPending = false
-        guard !parsed.query.isEmpty else {
+        guard !parsed.query.isEmpty || parsed.prefix == "note" else {
             lastScheduledRootQuery = ""
             results = []
             renderedRootQuery = ""
@@ -1330,8 +1351,11 @@ final class LauncherViewModel: ObservableObject {
 
     private func rootResults() -> [LauncherItem] {
         // The idle launcher has no result rows or hidden keyboard targets.
-        guard !UniversalSearchCoordinator.parse(query).query.isEmpty else { return [] }
         let parsed = UniversalSearchCoordinator.parse(query)
+        if parsed.prefix == "note", parsed.query.isEmpty {
+            return universalResults.map(universalItem)
+        }
+        guard !parsed.query.isEmpty else { return [] }
         let cleanQuery = parsed.query
         // Deliberately undocumented developer gate; never part of the catalog.
         if cleanQuery == "🤖" {
@@ -1363,26 +1387,28 @@ final class LauncherViewModel: ObservableObject {
         let localIDs = Set(localSearchHits.map(\.id))
         dynamic += universalResults.map(universalItem).filter { !localIDs.contains($0.id) }
         let providerScores = Dictionary(universalResults.map {
-            ($0.id.replacingOccurrences(of: ":", with: "."), 14_000 + $0.score)
+            ($0.id.replacingOccurrences(of: ":", with: "."), $0.score)
         }, uniquingKeysWith: max)
 
         let localRanked: [(LauncherItem, Double)] = localSearchHits.compactMap { hit in
             guard var item = rootCatalogByID[hit.id] else { return nil }
             item.aliasKind = hit.aliasKind
-            return (item, hit.score)
+            return (item, max(hit.score, providerScores[item.id] ?? -.infinity))
         }
         let dynamicRanked: [(LauncherItem, Double)] = dynamic.compactMap { item in
             // Provider matches may come from full note/transcript content,
             // not the visible preview. Keep that score when local text misses.
-            guard let baseScore = searchScore(for: item, query: cleanQuery)
-                ?? providerScores[item.id] else { return nil }
+            let baseScore = max(providerScores[item.id] ?? -.infinity,
+                                searchScore(for: item, query: cleanQuery) ?? -.infinity)
+            guard baseScore.isFinite else { return nil }
             let provenance = aliasProvenance(for: item, query: cleanQuery)
             var rankedItem = item
             rankedItem.aliasKind = provenance.kind
             let favoriteRank = CommandManager.shared.favoriteRank(item.id)
             let favoriteBonus = favoriteRank == Int.max ? 0 : max(0, 500 - Double(favoriteRank * 20))
-            return (rankedItem, baseScore + provenance.bonus + usage.score(for: item.id, sourceApplicationID: sourceApplicationID,
-                                                               sourceApplicationName: sourceApplicationName) + favoriteBonus)
+            return (rankedItem, baseScore + SearchRelevance.functionPriority(item.id)
+                + SearchRelevance.bonus(usage.score(for: item.id, sourceApplicationID: sourceApplicationID,
+                    sourceApplicationName: sourceApplicationName) + favoriteBonus))
         }
         let ranked = (localRanked + dynamicRanked).sorted { first, second in
             if first.1 == second.1 {
@@ -1428,29 +1454,8 @@ final class LauncherViewModel: ObservableObject {
     }
 
     private func searchScore(for item: LauncherItem, query: String) -> Double? {
-        let clean = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty else { return 0 }
-        let fields = [item.title, item.subtitle] + item.keywords
-        let wholeText = item.searchableText
-        let titleScore = FuzzyMatcher.score(item.title, query: clean)
-        let wholeScore = FuzzyMatcher.score(wholeText, query: clean)
-        let tokens = normalizedSearchTokens(clean)
-        let tokenScores = tokens.map { token in
-            fields.compactMap { FuzzyMatcher.score($0, query: token) }.max() ?? -.infinity
-        }
-        guard tokenScores.allSatisfy(\.isFinite) else {
-            return max(titleScore ?? -.infinity, wholeScore ?? -.infinity).isFinite
-                ? max(titleScore ?? -.infinity, wholeScore ?? -.infinity)
-                : nil
-        }
-        let normalizedTitle = item.title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let normalizedQuery = clean.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
-        let titleIntent: Double
-        if normalizedTitle == normalizedQuery { titleIntent = 100_000 }
-        else if normalizedTitle.hasPrefix(normalizedQuery) { titleIntent = 24 }
-        else { titleIntent = 0 }
-        let tokenScore = 14_000 + tokenScores.reduce(0, +) + titleIntent
-        return max(titleScore ?? -.infinity, wholeScore ?? -.infinity, tokenScore)
+        SearchRelevance.score(title: item.title, fields: [item.subtitle] + item.keywords,
+                              body: item.searchableText, query: query)
     }
 
     /// Converts a typed command plus trailing words into the same public action

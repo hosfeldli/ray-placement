@@ -492,6 +492,23 @@ final class AIWorkspaceTerminalCoordinator: ObservableObject {
         ]
     }
 
+    static let keySequences: [String: [UInt8]] = [
+        "enter": [13], "tab": [9], "escape": [27], "backspace": [127],
+        "up": [27, 91, 65], "down": [27, 91, 66], "right": [27, 91, 67], "left": [27, 91, 68],
+        "ctrl_c": [3], "ctrl_d": [4], "ctrl_l": [12], "ctrl_a": [1], "ctrl_e": [5]
+    ]
+
+    func sendKey(sessionID: UUID, key: String) throws -> [String: Any] {
+        let session = try find(sessionID)
+        guard let bytes = Self.keySequences[key] else { throw WorkspaceError.invalidInput }
+        guard session.isInteractivePTY, let view = session.ptyView else { throw WorkspaceError.notInteractiveSession }
+        guard session.state == .running, view.process.running else { throw WorkspaceError.notRunning }
+        view.process.send(data: bytes[...])
+        return ["session_id": sessionID.uuidString, "key": key, "input_accepted": true,
+                "verified_success": false, "next_byte": session.nextOutputByte,
+                "next_step": "Read fresh terminal output before continuing."]
+    }
+
     /// Resize the same PTY shown to the user. Read back the kernel window size
     /// rather than treating a SwiftTerm emulator update as verified delivery.
     func resize(sessionID: UUID, columns: Int, rows: Int) throws -> [String: Any] {

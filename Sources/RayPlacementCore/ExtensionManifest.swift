@@ -810,9 +810,16 @@ public struct ExtensionFormExecution: Codable, Equatable, Sendable {
 
 public enum ExtensionTemplate {
     public static func render(_ template: String, values: [String: String]) -> String {
-        values.reduce(template) { partial, pair in
-            partial.replacingOccurrences(of: "{{\(pair.key)}}", with: pair.value)
+        guard let expression = try? NSRegularExpression(pattern: #"\{\{([^{}]+)\}\}"#) else { return template }
+        var result = "", cursor = template.startIndex
+        for match in expression.matches(in: template, range: NSRange(template.startIndex..., in: template)) {
+            guard let range = Range(match.range, in: template), let key = Range(match.range(at: 1), in: template) else { continue }
+            result += template[cursor..<range.lowerBound]
+            result += values[String(template[key])] ?? String(template[range])
+            cursor = range.upperBound
         }
+        result += template[cursor...]
+        return result
     }
 }
 
@@ -838,6 +845,7 @@ public enum ExtensionBundleUpdatePolicy {
 }
 
 public struct LoadedExtensionCommand: Sendable {
+    public var launcherIdentifier: String { "extension.\(extensionID).\(command.id)" }
     public var extensionID: String
     public var extensionName: String
     public var directory: URL

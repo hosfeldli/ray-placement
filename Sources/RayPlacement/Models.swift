@@ -258,6 +258,7 @@ enum SystemAction {
     case openAIChat
     case openQuickNote
     case toggleNoteDictation
+    case startNoteDictation
     case dictateIntoNote
     case captureClipboardToNote
     case captureSelectionToNote

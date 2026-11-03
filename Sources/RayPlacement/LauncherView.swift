@@ -418,9 +418,13 @@ struct LauncherView: View {
                 .padding(.horizontal, 10)
                 .onSurfaceInteraction(onSurfaceInteraction)
         case .extensionStore:
-            ExtensionStoreView(model: extensionStoreModel)
-                .onChange(of: extensionStoreModel.query) { _ in onSurfaceInteraction() }
-                .onSurfaceInteraction(onSurfaceInteraction)
+            VStack(spacing: 10) { ProgressView(); Text("Opening Extension Library…").font(.callout) }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .task {
+                    SettingsStore.shared.requestedSettingsSection = .commands
+                    ExtensionLibraryStore.shared.requestedArea = .discover
+                    onOpenSettings()
+                }
         case .workflows:
             VStack(alignment: .leading, spacing: 12) {
                 Text("Workflows has been retired")
