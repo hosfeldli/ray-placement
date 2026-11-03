@@ -2436,3 +2436,35 @@ private func openAIStrictSchemaIssue(
     }
     return nil
 }
+
+@Test @MainActor func stoppingProviderDiagnosisCannotReviveCancelledRun() async throws {
+    for _ in 0..<12 {
+        let model = AIChatViewModel(
+            store: AIConversationStore(fixtures: []),
+            credentials: AIChatCredentialStore(configuration: .fixture),
+            nativeToolStore: LimaAIToolStore(fixtures: []),
+            transport: FixtureAITransport(events: [
+                .diagnostic(AIChatDiagnostic(stage: .transport, httpStatus: 429,
+                    errorCode: "insufficient_quota", message: "Fixture quota exhausted")),
+                .failed("Fixture failure")
+            ])
+        )
+        model.draft = "Cancel while diagnosing"
+        model.send()
+        for _ in 0..<500 {
+            if model.executionRun?.state == .diagnosingFailure || model.executionRun?.state == .waitingForConfiguration { break }
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        #expect([AIExecutionRunState.diagnosingFailure, .waitingForConfiguration].contains(model.executionRun?.state ?? .preparing))
+        let runID = try #require(model.executionRun?.id)
+        model.endTask()
+        #expect(model.executionRun?.state == .cancelled)
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(model.executionRun?.id == runID)
+        #expect(model.executionRun?.state == .cancelled)
+        #expect(!model.canEndTask)
+        let checkpoint = try #require(try await AIExecutionCheckpointStore.shared.checkpoint(runID: runID))
+        #expect(checkpoint.phase == .cancelled)
+        #expect(!checkpoint.automaticResume)
+    }
+}

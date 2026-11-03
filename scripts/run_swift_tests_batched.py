@@ -29,6 +29,7 @@ ISOLATED_TESTS = {
     # Provider-switch fixtures retain native workspace observers; keep teardown
     # separate from unrelated approval/audio fixtures.
     "allCLIProvidersKeepSavedModelsSelectableInUI",
+    "stoppingProviderDiagnosisCannotReviveCancelledRun",
     "temporaryReportOpensAnActualScriptFreeWebPage",
     "interruptedResponseActuallyRebuildsOnceWithoutReplayingTools",
     "searchSettingsHandoffOpensTheRetainedSettingsWindow",

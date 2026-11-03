@@ -5078,6 +5078,7 @@ final class AIChatViewModel: ObservableObject {
     ) {
         guard var run = executionRun,
               expectedAssistantID == nil || run.assistantMessageID == expectedAssistantID,
+              !run.state.isTerminal,
               run.state != nextState else { return }
         // Activity callbacks may still arrive while a question is displayed.
         // They must not resume the run or dismiss its pending answer.
@@ -5371,6 +5372,7 @@ final class AIChatViewModel: ObservableObject {
             finalizeRecoveryFailure(runID: runID, responseID: responseID)
             return
         }
+        guard providerDiagnosisIsCurrent(runID) else { return }
         do {
             try await AIExecutionCheckpointStore.shared.update(runID: runID) { saved in
                 saved.phase = .diagnosingFailure
@@ -5382,6 +5384,7 @@ final class AIChatViewModel: ObservableObject {
             finalizeRecoveryFailure(runID: runID, responseID: responseID)
             return
         }
+        guard providerDiagnosisIsCurrent(runID) else { return }
         updateAssistant(conversationID: run.conversationID, assistantID: run.assistantMessageID) {
             $0.failure = failure
         }
@@ -5392,7 +5395,7 @@ final class AIChatViewModel: ObservableObject {
         let decision = await AIRecoveryCoordinator.shared.decide(
             event: event, checkpoint: checkpoint, policy: AIRecoveryPreferences.shared.snapshot
         )
-        guard executionRun?.id == runID, executionRun?.state == .diagnosingFailure else { return }
+        guard providerDiagnosisIsCurrent(runID) else { return }
         switch decision {
         case .retryNow:
             appendTurnActivity(AIAgentActivity(
@@ -5409,10 +5412,12 @@ final class AIChatViewModel: ObservableObject {
                 ) { [weak self] in
                     await self?.resumeProviderRun(runID: runID)
                 }
+                guard providerDiagnosisIsCurrent(runID) else { return }
                 try await AIExecutionCheckpointStore.shared.update(runID: runID) { saved in
                     saved.phase = .waitingForProvider
                     saved.cooldownUntil = date
                 }
+                guard providerDiagnosisIsCurrent(runID) else { return }
                 transitionExecutionRun(to: .waitingForProvider, expectedAssistantID: run.assistantMessageID)
                 pausedConversationIDs.insert(run.conversationID)
                 recoveryNextAttemptAt = date
@@ -5437,6 +5442,7 @@ final class AIChatViewModel: ObservableObject {
             try? await AIExecutionCheckpointStore.shared.update(runID: runID) {
                 $0.phase = .waitingForConfiguration
             }
+            guard providerDiagnosisIsCurrent(runID) else { return }
             transitionExecutionRun(to: .waitingForConfiguration, expectedAssistantID: run.assistantMessageID)
             pausedConversationIDs.insert(run.conversationID)
             appendTurnActivity(AIAgentActivity(
@@ -5450,6 +5456,16 @@ final class AIChatViewModel: ObservableObject {
             streamError = message
             finalizeRecoveryFailure(runID: runID, responseID: responseID)
         }
+    }
+
+    /// Check again after actor/file work: Stop may have ended this run while
+    /// recovery was saving its checkpoint. A late callback cannot revive it.
+    private func providerDiagnosisIsCurrent(_ runID: UUID) -> Bool {
+        if executionRun?.id == runID, executionRun?.state == .diagnosingFailure { return true }
+        if executionRun?.id != runID || executionRun?.state == .cancelled {
+            stopAutomaticRecovery(runID: runID)
+        }
+        return false
     }
 
     private func finalizeRecoveryFailure(runID: UUID, responseID: String?) {
