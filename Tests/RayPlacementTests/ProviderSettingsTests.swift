@@ -341,3 +341,22 @@ private func providerSettingsFixture(
     #expect(client.makeModelsRequest(configuration: configuration) == nil)
     #expect(client.makeRequest(text: "fixture", configuration: configuration, systemPrompt: "fixture") == nil)
 }
+
+@Test @MainActor func allCLIProvidersKeepSavedModelsSelectableInUI() {
+    let suite = "dev.liam.lima.tests.cli-model-choices.\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let catalog = AIModelCatalogStore(defaults: defaults, storageKey: "catalog")
+    let model = providerSettingsFixture(conversations: [AIConversation(provider: .claudeCLI, model: "default")], modelCatalog: catalog)
+    #expect(Set(model.pickerModels.map(\.id)).isSuperset(of: ["default", "sonnet", "opus", "haiku"]))
+    for provider in [AIProvider.codexCLI, .claudeCLI, .opencodeCLI] {
+        model.selectProvider(provider)
+        #expect(model.selectCustomModel("fixture/first"))
+        #expect(model.selectCustomModel("fixture/second"))
+        #expect(Set(model.pickerModels.map(\.id)).isSuperset(of: ["default", "fixture/first", "fixture/second"]))
+        let first = model.pickerModels.first { $0.id == "fixture/first" }!
+        model.selectModel(first)
+        #expect(model.model == "fixture/first")
+        #expect(catalog.lastSelectedModelID(for: provider) == "fixture/first")
+    }
+}

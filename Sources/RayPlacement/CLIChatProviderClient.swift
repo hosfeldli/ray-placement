@@ -112,15 +112,9 @@ struct CLIChatProviderClient: AIChatTransport {
         case .opencodeCLI: name = "opencode"
         default: return nil
         }
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        let pathEntries = (ProcessInfo.processInfo.environment["PATH"] ?? "")
-            .split(separator: ":").map(String.init)
-        let directories = [home + "/.opencode/bin", home + "/.bun/bin", home + "/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] + pathEntries
-        for directory in directories where directory.hasPrefix("/") {
-            let url = URL(fileURLWithPath: directory).appendingPathComponent(name)
-            if FileManager.default.isExecutableFile(atPath: url.path) { return url }
-        }
-        return nil
+        return CLILaunchEnvironment.find(name, environment: ProcessInfo.processInfo.environment,
+            home: FileManager.default.homeDirectoryForCurrentUser,
+            override: CLILaunchEnvironment.configuredPath(for: provider))
     }
 
     func listModels(apiKey: String) async throws -> [AIModelOption] {
@@ -729,6 +723,11 @@ struct CLIChatProviderClient: AIChatTransport {
         if provider == .opencodeCLI {
             process.environment = try openCodeEnvironment(in: ProcessInfo.processInfo.environment)
         }
+        let launch = CLILaunchEnvironment.plan(executable: executable, arguments: process.arguments ?? [],
+            environment: process.environment ?? ProcessInfo.processInfo.environment)
+        process.executableURL = launch.executable
+        process.arguments = launch.arguments
+        process.environment = launch.environment
         let inputPipe = Pipe()
         let outputPipe = Pipe()
         let errorPipe = Pipe()

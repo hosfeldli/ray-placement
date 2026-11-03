@@ -20,6 +20,25 @@ enum LimaVisualAudit {
         } catch { fputs("Cannot create visual audit output\n", stderr); exit(1) }
 
         Task { @MainActor in
+            if CommandLine.arguments.contains("--cli-models-only") {
+                var failures = 0
+                for dark in [false, true] {
+                    let appearance = NSAppearance(named: dark ? .darkAqua : .aqua)!
+                    application.appearance = appearance
+                    for width: CGFloat in [420, 1000] {
+                        for provider in [AIProvider.codexCLI, .claudeCLI, .opencodeCLI] {
+                            let model = AIChatVisualFixtures.model(for: .empty)
+                            model.selectProvider(provider)
+                            let view = AIChatWorkspaceView(model: model, isEmbedded: true)
+                                .environment(\.colorScheme, dark ? .dark : .light)
+                            if !(await render(view, size: NSSize(width: width, height: 800), appearance: appearance,
+                                url: directory.appendingPathComponent("models-\(provider.rawValue)-\(Int(width))-\(dark ? "dark" : "light").png"))) { failures += 1 }
+                        }
+                    }
+                }
+                print("CLI model controls audit finished: \(failures) render failures")
+                exit(failures == 0 ? 0 : 1)
+            }
             if CommandLine.arguments.contains("--opencode-only") {
                 var failures = 0
                 for dark in [false, true] {

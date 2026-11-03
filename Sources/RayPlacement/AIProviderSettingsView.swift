@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Configuration for the existing Workspace conversation, never a second runtime.
 @MainActor
@@ -16,6 +17,7 @@ struct AIProviderSettingsView: View {
     @State private var apiKey = ""
     @State private var customModel = ""
     @State private var endpoint = ""
+    @State private var cliExecutable = ""
     @State private var message: String?
     @State private var webSearchRemovalMessage: String?
     @State private var confirmRemove = false
@@ -30,7 +32,8 @@ struct AIProviderSettingsView: View {
     private var busy: Bool { model.canEndTask || model.isLoadingModels }
     private var configurationChanged: Bool {
         customModel.trimmingCharacters(in: .whitespacesAndNewlines) != model.model ||
-        (model.provider == .openAICompatible && endpoint != model.providerPreferences.openAICompatibleBaseURL)
+        (model.provider == .openAICompatible && endpoint != model.providerPreferences.openAICompatibleBaseURL) ||
+        (model.provider.isCLI && cliExecutable != CLILaunchEnvironment.configuredPath(for: model.provider))
     }
 
     var body: some View {
@@ -163,11 +166,29 @@ struct AIProviderSettingsView: View {
                     : model.provider == .codexCLI
                     ? "Models come from your installed Codex app-server catalog. Listed models are not guaranteed to be available for your account; a successful request verifies access. Your selection stays visible and is never silently reset."
                     : model.provider.isCLI
-                        ? "Shows the CLI default and model IDs that passed a connection test in the last 30 days. The current model stays visible even if it has not been tested."
+                        ? "Shows CLI aliases and saved model IDs. Your selection stays visible; Test Connection verifies access with your CLI login."
                         : "Shows recent models from the provider’s model list. The current custom or older model stays visible until you change it.")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 TextField("Custom model ID", text: $customModel).disabled(busy)
                 if model.provider.isCLI {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextField("CLI executable", text: $cliExecutable)
+                        HStack {
+                            Text(cliExecutable.isEmpty ? "Automatic discovery" : "Custom executable")
+                                .font(.caption).foregroundStyle(LimaTheme.textSecondary)
+                            Spacer()
+                            Button("Browse…") {
+                                let panel = NSOpenPanel()
+                                panel.canChooseDirectories = false
+                                panel.showsHiddenFiles = true
+                                if panel.runModal() == .OK, let url = panel.url { cliExecutable = url.path }
+                            }
+                            Button("Automatic") { cliExecutable = "" }
+                        }
+                    }
+                    .disabled(busy)
+                    Text("Automatically finds Bun, Homebrew, and local installs. Choose the original executable for a custom location; no wrapper is needed for Bun-managed JavaScript launchers.")
+                        .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                     AIProviderSetupChecklist(provider: model.provider)
                     Text("CLI providers use Lima's authorized tool catalog and Tool Access policy. CLI default lets the CLI choose a model. Codex and OpenCode can receive attached images here; Claude CLI remains text-only in this adapter.")
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
@@ -178,6 +199,10 @@ struct AIProviderSettingsView: View {
                         .font(.caption).foregroundStyle(LimaTheme.textSecondary)
                 }
                 Button("Apply Configuration") {
+                    if model.provider.isCLI {
+                        do { try CLILaunchEnvironment.setConfiguredPath(cliExecutable, for: model.provider) }
+                        catch { message = "Choose an existing executable using an absolute path, or select Automatic."; return }
+                    }
                     let saved = model.provider == .openAICompatible
                         ? model.configureCompatibleProvider(baseURL: endpoint, modelID: customModel)
                         : model.selectCustomModel(customModel)
@@ -316,6 +341,7 @@ struct AIProviderSettingsView: View {
 
     private func loadConfiguration() {
         customModel = model.model
+        cliExecutable = CLILaunchEnvironment.configuredPath(for: model.provider)
         endpoint = model.providerPreferences.openAICompatibleBaseURL
     }
 }

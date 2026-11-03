@@ -133,6 +133,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         }
 
         private var process: Process?
+        private var launchedExecutablePath: String?
         private var generation = 0
         private var stdin: FileHandle?
         private var workingDirectory: URL?
@@ -209,8 +210,12 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
         }
 
         private func launchIfNeeded() async throws {
-            if process?.isRunning == true { return }
-            guard let executable = executableURL ?? CLIChatProviderClient.executableURL(for: .codexCLI) else {
+            let selectedExecutable = executableURL ?? CLIChatProviderClient.executableURL(for: .codexCLI)
+            if process?.isRunning == true {
+                if launchedExecutablePath == selectedExecutable?.path { return }
+                shutdown()
+            }
+            guard let executable = selectedExecutable else {
                 throw BridgeError.missingCodex
             }
             let directory = FileManager.default.temporaryDirectory
@@ -221,6 +226,7 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
             )
             workingDirectory = directory
             let p = Process()
+            launchedExecutablePath = executable.path
             p.executableURL = executable
             // Grammar gets an empty Codex home instead of inheriting the user's
             // MCP servers, plugins, skills, or instructions. Link only the existing
@@ -248,6 +254,11 @@ final class CodexAppServerClient: AIProviderClient, @unchecked Sendable {
                    "--config", "web_search=\"disabled\""]
                 : ["app-server", "--stdio"]
             p.currentDirectoryURL = directory
+            let launch = CLILaunchEnvironment.plan(executable: executable, arguments: p.arguments ?? [],
+                environment: p.environment ?? ProcessInfo.processInfo.environment)
+            p.executableURL = launch.executable
+            p.arguments = launch.arguments
+            p.environment = launch.environment
             let input = Pipe()
             let output = Pipe()
             p.standardInput = input

@@ -1759,12 +1759,8 @@ final class AIChatViewModel: ObservableObject {
     /// catalog. Codex model/list is a catalog, not an account-access guarantee.
     var pickerModels: [AIModelOption] {
         let choices: [AIModelOption]
-        if provider == .codexCLI || provider == .opencodeCLI {
-            let listed = modelCatalog.listedIDs(for: provider)
-            choices = availableModels.filter { $0.id == "default" || listed.contains($0.id) }
-        } else if provider.isCLI {
-            let verified = modelCatalog.verifiedCLIModelIDs(for: provider)
-            choices = availableModels.filter { $0.id == "default" || verified.contains($0.id) }
+        if provider.isCLI {
+            choices = availableModels
         } else {
             choices = recentListedModels
         }
@@ -1778,7 +1774,7 @@ final class AIChatViewModel: ObservableObject {
                 || modelCatalog.verifiedCLIModelIDs(for: provider).contains(model)
         }
         if provider.isCLI {
-            return model == "default" || modelCatalog.verifiedCLIModelIDs(for: provider).contains(model)
+            return provider.chatModels.contains { $0.id == model } || modelCatalog.verifiedCLIModelIDs(for: provider).contains(model)
         }
         return recentListedModels.contains { $0.id == model }
     }
@@ -5989,12 +5985,18 @@ struct AIChatWorkspaceView: View {
             Text("Configure " + model.provider.title + " model")
                 .limaFont(.headline)
             Text(model.provider.isCLI
-                ? "Enter a model supported by your local CLI. Test it before relying on it; Lima will add successful CLI models to this picker for 30 days."
+                ? "Choose a saved model or enter an ID supported by your local CLI. Your selection is saved; Test Connection checks account access."
                 : "Enter a model ID for \(model.provider.title). Custom IDs are not verified until you test the connection.")
                 .limaFont(.caption)
                 .foregroundStyle(LimaTheme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             if model.provider.isCLI {
+                Picker("Available models", selection: $customModelID) {
+                    if !model.pickerModels.contains(where: { $0.id == customModelID }) {
+                        Text(customModelID.isEmpty ? "Enter a model ID" : customModelID).tag(customModelID)
+                    }
+                    ForEach(model.pickerModels) { Text($0.displayName).tag($0.id) }
+                }
                 Button("Use CLI Default") {
                     customModelID = "default"
                     applyCustomModel()
@@ -7112,6 +7114,16 @@ struct AIChatWorkspaceView: View {
                 Label("AI is off · Enable it in Settings", systemImage: "sparkles.slash")
                     .font(.caption).foregroundStyle(LimaTheme.textSecondary)
             }
+            if model.aiEnabled && model.provider.isCLI {
+                HStack(spacing: 10) {
+                    Text(model.provider.title)
+                        .foregroundStyle(LimaTheme.textSecondary)
+                        .fixedSize()
+                    modelPicker
+                }
+                .limaFont(.caption)
+                .accessibilityIdentifier("ai-cli-model-controls")
+            }
             if model.aiEnabled && model.hasProviderAPIKey && (!isEmbedded || composerExpanded) {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 7) {
@@ -7545,69 +7557,78 @@ struct AIChatWorkspaceView: View {
     }
 
     private var modelPicker: some View {
-        Menu {
-            Text(model.provider == .opencodeCLI
-                ? "CLI default and models discovered from OpenCode"
-                : model.provider == .codexCLI
-                ? "CLI default and models discovered from Codex"
-                : (model.provider == .claudeCLI
-                    ? "CLI default and recently tested models"
-                    : "Recent models listed by the provider"))
-            ForEach(model.pickerModels) { option in
-                Button {
-                    model.selectModel(option)
-                } label: {
-                    Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+        HStack(spacing: 8) {
+            Menu {
+                Text(model.provider == .opencodeCLI
+                    ? "CLI default and models discovered from OpenCode"
+                    : model.provider == .codexCLI
+                    ? "CLI default and models discovered from Codex"
+                    : (model.provider == .claudeCLI
+                        ? "CLI aliases and saved models"
+                        : "Recent models listed by the provider"))
+                ForEach(model.pickerModels) { option in
+                    Button {
+                        model.selectModel(option)
+                    } label: {
+                        Label(option.displayName, systemImage: model.model == option.id ? "checkmark" : "circle")
+                    }
                 }
-            }
-            if !model.selectedModelIsRecommended {
-                Text("Current model is custom, older, or not yet tested.")
-            }
-            if !model.provider.isCLI && model.pickerModels.count == 1 {
-                Text("Refresh to load a current model list.")
-            }
-            Divider()
-            Menu("Switch provider") { providerChoices }
-            Menu("AI setup") {
-                agentPicker
-                skillPicker
-                reasoningPicker
-            }
-            Button("Configure Model ID…", action: presentModelEditor)
-            Button("Provider Settings…") { showingProviderSetup = true }
-            if model.isLoadingModels {
-                Label("Updating model list…", systemImage: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(LimaTheme.textSecondary)
-            } else {
-                if model.provider == .codexCLI || model.provider == .opencodeCLI || !model.provider.isCLI {
-                    Button("Refresh Model List", action: model.refreshModels)
-                        .disabled(!model.hasProviderAPIKey)
-                }
-                if model.provider.isCLI {
-                    Button("Test Selected Model", action: model.testConnection)
-                        .disabled(!model.hasProviderAPIKey)
-                }
-            }
-        } label: {
-            HStack(spacing: 5) {
-                Label("Model · " + model.selectedModelOption.displayName, systemImage: "chevron.down")
-                    .lineLimit(1)
                 if !model.selectedModelIsRecommended {
-                    Image(systemName: "questionmark.circle")
-                        .foregroundStyle(LimaTheme.textTertiary)
+                    Text("Current model is custom, older, or not yet tested.")
                 }
+                if !model.provider.isCLI && model.pickerModels.count == 1 {
+                    Text("Refresh to load a current model list.")
+                }
+                Divider()
+                Menu("Switch provider") { providerChoices }
+                Menu("AI setup") {
+                    agentPicker
+                    skillPicker
+                    reasoningPicker
+                }
+                Button("Configure Model ID…", action: presentModelEditor)
+                Button("Provider Settings…") { showingProviderSetup = true }
+                if model.isLoadingModels {
+                    Label("Updating model list…", systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(LimaTheme.textSecondary)
+                } else {
+                    if model.provider == .codexCLI || model.provider == .opencodeCLI || !model.provider.isCLI {
+                        Button("Refresh Model List", action: model.refreshModels)
+                            .disabled(!model.hasProviderAPIKey)
+                    }
+                    if model.provider.isCLI {
+                        Button("Test Selected Model", action: model.testConnection)
+                            .disabled(!model.hasProviderAPIKey)
+                    }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    Label("Model · " + model.selectedModelOption.displayName, systemImage: "chevron.down")
+                        .lineLimit(1)
+                    if !model.selectedModelIsRecommended {
+                        Image(systemName: "questionmark.circle")
+                            .foregroundStyle(LimaTheme.textTertiary)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .disabled(model.canEndTask)
+            .help(model.selectedModelIsRecommended
+                ? "Choose a model for " + model.provider.title
+                : (model.provider == .codexCLI
+                    ? "This model was not in the last Codex model list; test it before sending."
+                    : "The current model is not in the recent provider list or has not passed a CLI connection test."))
+            .accessibilityLabel("AI model")
+            if model.provider.isCLI {
+                Button("Change…", action: presentModelEditor)
+                    .buttonStyle(.borderless)
+                    .disabled(model.canEndTask || model.isLoadingModels)
+                    .help("Choose a model or enter a custom model ID")
+                    .accessibilityLabel("Change CLI model")
+            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .disabled(model.canEndTask)
-        .help(model.selectedModelIsRecommended
-            ? "Choose a model for " + model.provider.title
-            : (model.provider == .codexCLI
-                ? "This model was not in the last Codex model list; test it before sending."
-                : "The current model is not in the recent provider list or has not passed a CLI connection test."))
-        .accessibilityLabel("AI model")
     }
 
     private var reasoningPicker: some View {

@@ -169,7 +169,12 @@ extension AIProvider {
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
         case .openAICompatible:
             return [AIModelOption(id: "local-model", displayName: "Custom model", supportsReasoning: false)]
-        case .codexCLI, .claudeCLI, .opencodeCLI:
+        case .claudeCLI:
+            return [("default", "CLI default"), ("sonnet", "Sonnet (CLI alias)"),
+                    ("opus", "Opus (CLI alias)"), ("haiku", "Haiku (CLI alias)")].map {
+                AIModelOption(id: $0.0, displayName: $0.1, supportsReasoning: false)
+            }
+        case .codexCLI, .opencodeCLI:
             return [AIModelOption(id: "default", displayName: "CLI default", supportsReasoning: false)]
         case .mistral, .xAI, .deepSeek, .openRouter:
             return modelOptions.map { AIModelOption(id: $0.id, displayName: $0.title, supportsReasoning: false) }
